@@ -1,0 +1,1 @@
+ALTER TABLE "bots" ADD COLUMN "coordinator_eligible" boolean DEFAULT false NOT NULL;

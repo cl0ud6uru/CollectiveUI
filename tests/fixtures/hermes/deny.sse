@@ -1,0 +1,180 @@
+data: {"event": "tool.started", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.2656143, "tool": "terminal", "preview": "rm -rf /tmp/hermes-keep-dir"}
+
+data: {"command": "rm -rf /tmp/hermes-keep-dir", "pattern_key": "delete in root path", "pattern_keys": ["delete in root path"], "description": "delete in root path", "allow_permanent": true, "allow_session": true, "request_id": "7d44fe820f104e93a8b2007556c52fea", "event": "approval.request", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.4443545, "choices": ["once", "session", "always", "deny"]}
+
+data: {"event": "approval.responded", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.4934366, "choice": "deny", "request_id": "7d44fe820f104e93a8b2007556c52fea", "resolved": 1}
+
+data: {"event": "tool.completed", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.503221, "tool": "terminal", "duration": 0.233, "error": true, "preview": "{\"output\": \"\", \"exit_code\": -1, \"error\": \"BLOCKED: Command denied by user. The user has NOT consented to this action. Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command. Stop the current workflow and wait for the user to respond before taking any further destructive or irreversible action.\", \"status\": \"blocked\", \"user_summary\": \"You denied this command \u2014 it did not run.\"}"}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.516912, "delta": "\n\nThe "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.5318234, "delta": "`terminal` "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.547303, "delta": "tool "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.5628154, "delta": "returned:\n\n"}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.5784006, "delta": "```json\n"}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.5947776, "delta": "{\"output\": "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6096246, "delta": "\"\", "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6254146, "delta": "\"exit_code\": "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6395726, "delta": "-1, "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6553392, "delta": "\"error\": "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6696198, "delta": "\"BLOCKED: "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6850233, "delta": "Command "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.6995456, "delta": "denied "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.7150688, "delta": "by "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.7296686, "delta": "user. "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.7449443, "delta": "The "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.7594514, "delta": "user "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.7750807, "delta": "has "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.7903428, "delta": "NOT "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.8058817, "delta": "consented "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.821234, "delta": "to "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.8367023, "delta": "this "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.8522093, "delta": "action. "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.867661, "delta": "Do "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.883147, "delta": "NOT "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.914104, "delta": "retry "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.9144099, "delta": "this "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.928601, "delta": "command, "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.9438827, "delta": "do "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.9585788, "delta": "NOT "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.9741135, "delta": "rephrase "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744186.9885643, "delta": "it, "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.0040975, "delta": "and "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.019516, "delta": "do "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.0349076, "delta": "NOT "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.0495715, "delta": "attempt "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.064946, "delta": "the "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.0794017, "delta": "same "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.0952833, "delta": "outcome "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.110188, "delta": "via "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.1257098, "delta": "a "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.1412318, "delta": "different "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.156695, "delta": "command. "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.1722171, "delta": "Stop "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.187627, "delta": "the "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.2031379, "delta": "current "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.2184937, "delta": "workflow "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.233904, "delta": "and "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.2484217, "delta": "wait "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.2638526, "delta": "for "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.2793324, "delta": "the "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.2947757, "delta": "user "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.3103547, "delta": "to "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.3258455, "delta": "respond "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.3411667, "delta": "before "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.3565161, "delta": "taking "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.3719273, "delta": "any "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.3863199, "delta": "further "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.401903, "delta": "destructive "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.4174194, "delta": "or "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.4327407, "delta": "irreversible "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.448233, "delta": "action.\", "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.4640841, "delta": "\"status\": "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.4786282, "delta": "\"blocked\", "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.4941227, "delta": "\"user_summary\": "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.508585, "delta": "\"You "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.524171, "delta": "denied "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.5385115, "delta": "this "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.5540433, "delta": "command "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.5686452, "delta": "\u2014 "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.584139, "delta": "it "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.5996604, "delta": "did "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.6150792, "delta": "not "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.636149, "delta": "run.\"}\n"}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.644866, "delta": "```\n\n"}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.6604943, "delta": "Let "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.6758482, "delta": "me "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.6915996, "delta": "know "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.7070675, "delta": "if "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.7214587, "delta": "you "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.7367058, "delta": "need "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.7524629, "delta": "anything "}
+
+data: {"event": "message.delta", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.767773, "delta": "else."}
+
+data: {"event": "reasoning.available", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.789125, "text": "The `terminal` tool returned:\n\n```json\n{\"output\": \"\", \"exit_code\": -1, \"error\": \"BLOCKED: Command denied by user. The user has NOT consented to this action. Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command. Stop the current workflow and wait for the user to respond before taking any further destructive or irreversible action.\", \"status\": \"blocked\", \"user_summary\": \"You denied this command \u2014 it did not run.\"}\n```\n\nLet me know if you need a"}
+
+data: {"event": "run.completed", "run_id": "run_7e1fafafd9744c2abe2000e258d6c51f", "timestamp": 1790744187.8175678, "output": "The `terminal` tool returned:\n\n```json\n{\"output\": \"\", \"exit_code\": -1, \"error\": \"BLOCKED: Command denied by user. The user has NOT consented to this action. Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command. Stop the current workflow and wait for the user to respond before taking any further destructive or irreversible action.\", \"status\": \"blocked\", \"user_summary\": \"You denied this command \u2014 it did not run.\"}\n```\n\nLet me know if you need anything else.", "usage": {"input_tokens": 5787, "output_tokens": 129, "total_tokens": 5916, "cache_read_tokens": 0, "cache_write_tokens": 0}, "runtime": {"provider": "custom", "model": "mock-gpt", "route_source": "global"}, "completed": true, "partial": false, "interrupted": false}
+
+: stream closed
+

@@ -1,0 +1,43 @@
+#!/usr/bin/python3 -I
+"""Stops a workspace command started by run-agent: kill-run RUN_ID
+
+SIGTERM to its process group, SIGKILL after 3 s. Idempotent (a finished or unknown run is not an error). Doesn't
+fork, so it still works when the sandbox is out of processes.
+"""
+import os
+import signal
+import sys
+import time
+
+RUNS = "/tmp/.portal/runs"
+
+
+def main():
+    run_id = sys.argv[1] if len(sys.argv) == 2 else ""
+    if not run_id.isalnum() or len(run_id) != 16:
+        sys.stderr.write("kill-run: invalid run id\n")
+        sys.exit(2)
+    try:
+        with open(os.path.join(RUNS, run_id)) as f:
+            pgid = int(f.read().strip())
+    except (OSError, ValueError):
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+if __name__ == "__main__":
+    main()

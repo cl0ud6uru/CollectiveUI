@@ -1,0 +1,47 @@
+# Dev directory for local testing (mirrors a small AD layout).
+# Users: alice (admin group), bob (engineering → nested in ai-users), carol (no groups). Password for all: Passw0rd!
+dn: ou=people,dc=corp,dc=local
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=corp,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,ou=people,dc=corp,dc=local
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Admin
+sn: Admin
+displayName: Alice Admin
+mail: alice@corp.local
+userPassword: Passw0rd!
+
+dn: uid=bob,ou=people,dc=corp,dc=local
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Builder
+sn: Builder
+displayName: Bob Builder
+mail: bob@corp.local
+userPassword: Passw0rd!
+
+dn: uid=carol,ou=people,dc=corp,dc=local
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Contractor
+sn: Contractor
+displayName: Carol Contractor
+mail: carol@corp.local
+userPassword: Passw0rd!
+
+dn: cn=AI Admins,ou=groups,dc=corp,dc=local
+objectClass: groupOfNames
+cn: AI Admins
+member: uid=alice,ou=people,dc=corp,dc=local
+
+dn: cn=Engineering,ou=groups,dc=corp,dc=local
+objectClass: groupOfNames
+cn: Engineering
+member: uid=bob,ou=people,dc=corp,dc=local
+member: uid=alice,ou=people,dc=corp,dc=local

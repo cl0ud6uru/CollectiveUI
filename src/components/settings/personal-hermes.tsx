@@ -1,0 +1,52 @@
+'use client';
+import Link from 'next/link';
+import { useEffect, useState, useTransition } from 'react';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { PetArt } from '@/components/pets/pet-art';
+import { DEFAULT_PET } from '@/lib/pets/shared';
+import type { DockerStatus } from '@/docker-hermes/types';
+import { enablePersonalHermes, finishPersonalHermes, linkPersonalHermesBot, personalHermesStatus, stopPersonalHermes } from '@/app/(chat)/settings/hermes-actions';
+const labels: Record<DockerStatus['phase'], string> = { disabled: 'Not enabled', checking_image: 'Checking the pinned Hermes image', creating_storage: 'Preparing your private storage', starting_container: 'Starting your runtime', checking_native: 'Checking native Hermes', pairing: 'Pairing your starter bot', ready: 'Runtime ready', stopping: 'Stopping safely', stopped: 'Stopped · data retained', error: 'Setup needs attention', interrupted: 'Setup was interrupted' };
+const busy = (s?: DockerStatus | null) => !!s && !['disabled', 'ready', 'stopped', 'error', 'interrupted'].includes(s.phase);
+export function PersonalHermes({ canCreate }: { canCreate: boolean }) {
+  const [state, setState] = useState<DockerStatus | null>(null);
+  const [error, setError] = useState('');
+  const [pending, start] = useTransition();
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    let active = true, running = false;
+    const refresh = async () => {
+      if (running) return; running = true;
+      try { let s = await personalHermesStatus(); if (s.phase === 'pairing' && canCreate) { await finishPersonalHermes(); s = await personalHermesStatus(); } if (active) { setState(s); setError(''); } }
+      catch (e) { if (active) { setState(null); setError(e instanceof Error ? e.message : 'Status unavailable'); } }
+      finally { running = false; }
+    };
+    void refresh(); const timer = setInterval(refresh, 2500);
+    return () => { active = false; clearInterval(timer); };
+  }, [open, canCreate]);
+  function action(run: () => Promise<unknown>) {
+    start(async () => { try { await run(); setState(await personalHermesStatus()); setError(''); } catch (e) { setError(e instanceof Error ? e.message : 'Operation failed'); } });
+  }
+  return <details className="rounded-xl border border-border p-4" onToggle={e => setOpen(e.currentTarget.open)}>
+    <summary className="cursor-pointer text-sm font-medium">Personal Hermes <span className="font-normal text-muted">· private native bots</span></summary>
+    <div className="mt-3 space-y-3 text-sm">
+      <p className="text-muted">Enable once to create your private Hermes starter bot. Your bots share your own runtime, with separate native profiles.</p>
+      <div className="flex items-center gap-3" role="status" aria-live="polite">
+        <PetArt pet={{ ...DEFAULT_PET, enabled: true }} state={busy(state) ? 'working' : state?.phase === 'error' ? 'attention' : 'idle'} size={52} fallback={<span>🌱</span>} />
+        <span>{state ? labels[state.phase] : 'Checking runtime status…'}</span>
+      </div>
+      {(error || state?.error) && <p role="alert" className="text-danger">{error || state?.error}</p>}
+      {state?.phase === 'ready' ? <>
+        {state.network === 'none' && <p role="status" className="text-xs text-muted">Offline runtime: external provider access is not configured. An operator must configure the private egress proxy before online chat can work.</p>}
+        <p className="text-xs text-muted">Native provider sign-in and configuration stay in Hermes. Runtime readiness does not confirm provider credentials.</p>
+        <div className="flex flex-wrap gap-2">{state.bindings.map(b => <Link key={b.botId} href={`/bots/${b.botId}`} className="underline">{b.name}</Link>)}</div>
+        {canCreate && <div className="flex gap-3"><Link href="/bots/new" className="underline">Create a bot</Link></div>}
+        {canCreate && state.unlinked.length > 0 && <details><summary className="cursor-pointer">Unlinked profiles ({state.unlinked.length})</summary><ul className="mt-2 space-y-2">{state.unlinked.map(p => <li key={p.name} className="flex items-center justify-between gap-3"><span>{p.name}</span><Button variant="ghost" disabled={pending} onClick={() => action(async () => { await linkPersonalHermesBot({ profile: p.name, identity: p.identity, name: p.name }); toast.success('Native profile added as a private bot'); })}>Add as bot</Button></li>)}</ul></details>}
+      </> : canCreate && <Button disabled={pending || busy(state) || !state} onClick={() => action(enablePersonalHermes)}>{state?.phase === 'disabled' ? 'Enable Hermes' : 'Retry / start'}</Button>}
+      {state && !['disabled', 'stopped'].includes(state.phase) && <Button variant="ghost" disabled={pending} onClick={() => action(stopPersonalHermes)}>{busy(state) ? 'Cancel setup' : 'Stop runtime'}</Button>}
+      <p className="text-xs text-muted">Stopping keeps your native profiles, skills, memory and sessions. Personal bots cannot be shared or used in groups, templates or delegation.</p>
+    </div>
+  </details>;
+}

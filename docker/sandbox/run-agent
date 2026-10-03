@@ -1,0 +1,144 @@
+#!/usr/bin/python3 -I
+"""Runs one workspace command for sandboxd (as the agent user, uid 1000).
+
+    run-agent --id ID --timeout SECONDS --cwd DIR [--env KEY=VALUE]... -- ARGV...
+
+- The command gets its own process group (killable as a whole) and /dev/null as stdin.
+- run-agent's own stdin is a lifeline: sandboxd keeps it open while the command may run. EOF (sandboxd killed the
+  command, the portal went away, or sandboxd died) stops the command: SIGTERM to the group, SIGKILL 3 s later.
+- A timer stops it after --timeout seconds (exit 124).
+- The first bytes on stderr are a start marker (written once the arguments check out), so sandboxd can tell "couldn't
+  start" (bad directory, container gone) from the command's own exit code.
+- When the command exits, the rest of its process group is stopped too.
+- Exit status: the command's, or 128 + signal.
+"""
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+WORKSPACE = "/home/agent/workspace"
+RUNS = "/tmp/.portal/runs"
+MARKER = b"\x1eportal-run-started\n"
+
+
+def fail(msg, code=125):
+    sys.stderr.write("run-agent: %s\n" % msg)
+    sys.exit(code)
+
+
+def parse(argv):
+    opts = {"env": []}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            return opts, argv[i + 1:]
+        if a in ("--id", "--timeout", "--cwd", "--env") and i + 1 < len(argv):
+            if a == "--env":
+                opts["env"].append(argv[i + 1])
+            else:
+                opts[a[2:]] = argv[i + 1]
+            i += 2
+            continue
+        fail("unexpected argument %r" % a)
+    fail("missing -- before the command")
+
+
+def confined_cwd(rel):
+    os.makedirs(WORKSPACE, exist_ok=True)
+    path = os.path.realpath(os.path.join(WORKSPACE, rel))
+    if path != WORKSPACE and not path.startswith(WORKSPACE + "/"):
+        fail("the working directory must be inside the workspace")
+    if not os.path.isdir(path):
+        fail("no such directory: %s" % rel)
+    return path
+
+
+def main():
+    opts, cmd = parse(sys.argv[1:])
+    run_id = opts.get("id") or ""
+    if not run_id.isalnum() or len(run_id) != 16:
+        fail("invalid run id")
+    if not cmd:
+        fail("no command")
+    try:
+        timeout = int(opts.get("timeout", "120"))
+    except ValueError:
+        fail("invalid timeout")
+    cwd = confined_cwd(opts.get("cwd", "."))
+    env = dict(os.environ)
+    for kv in opts["env"]:
+        k, sep, v = kv.partition("=")
+        if not sep or not k:
+            fail("invalid environment entry")
+        env[k] = v
+
+    os.makedirs(RUNS, mode=0o700, exist_ok=True)
+    pidfile = os.path.join(RUNS, run_id)
+
+    # Everything above failed before the marker: sandboxd reports it as "couldn't start" (with the message).
+    # After the marker, stderr is the command's own.
+    os.write(2, MARKER)
+    try:
+        child = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        fail("could not start the command: %s" % e.strerror, 127)
+    with open(pidfile, "w") as f:
+        f.write(str(child.pid))
+
+    stopped = {"why": None}
+    lock = threading.Lock()
+
+    def stop_group(why):
+        with lock:
+            if stopped["why"] is None:
+                stopped["why"] = why
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                break
+            time.sleep(0.05)
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def lifeline():
+        try:
+            while os.read(0, 4096):
+                pass
+        except OSError:
+            pass
+        if child.poll() is None:
+            stop_group("lifeline")
+
+    threading.Thread(target=lifeline, daemon=True).start()
+    timer = threading.Timer(timeout, lambda: stop_group("timeout"))
+    timer.daemon = True
+    timer.start()
+
+    code = child.wait()
+    timer.cancel()
+    # Stragglers in the command's group (e.g. "sleep 100 &") go too; setsid'd daemons live until the sandbox stops.
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        os.unlink(pidfile)
+    except OSError:
+        pass
+    if stopped["why"] == "timeout":
+        sys.exit(124)
+    sys.exit(128 - code if code < 0 else code)
+
+
+if __name__ == "__main__":
+    main()

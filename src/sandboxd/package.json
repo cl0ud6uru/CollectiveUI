@@ -1,0 +1,6 @@
+{
+  "name": "ai-portal-sandboxd",
+  "license": "MIT",
+  "type": "module",
+  "private": true
+}

@@ -1,0 +1,70 @@
+# Production-style stack: Postgres (pgvector) + web + worker.
+#   cp .env.example .env   # fill in secrets and choose local, Entra and/or LDAP authentication
+#   docker compose up -d --build
+# Add `--profile demo` to also start the mock LLM for a first look without a real model endpoint.
+# Workspaces (sandboxed containers bots can run commands in) are an add-on file: see docker-compose.sandbox.yml.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: portal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal"]
+      interval: 5s
+      retries: 20
+
+  # Runs every chat reply (the web only records, relays and tails them): chat needs it running.
+  worker:
+    build: { context: ., target: worker }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in .env}@db:5432/portal
+      # Each running reply writes its stream in small transactions: room for AGENT_RUN_CONCURRENCY (16) of them.
+      DATABASE_POOL_MAX: ${WORKER_DATABASE_POOL_MAX:-20}
+      # Pinned to the uploads volume below. environment overrides env_file, so .env.example's dev default
+      # (./data/uploads, i.e. /app/data inside the image, not writable) can't send uploads off the volume.
+      STORAGE_DIR: /data/uploads
+    # A reaper as PID 1 (signals forwarded, zombies reaped), and time for running replies to save on `docker stop`
+    # (the worker gives them 20 s, then pg-boss 10 s).
+    init: true
+    stop_grace_period: 45s
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db: { condition: service_healthy }
+
+  web:
+    build: { context: ., target: web }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in .env}@db:5432/portal
+      STORAGE_DIR: /data/uploads # the uploads volume; see the worker
+    ports:
+      # WEB_BIND=127.0.0.1 (or one interface's address) when a reverse proxy on this host terminates TLS.
+      - "${WEB_BIND:-0.0.0.0}:${PORT:-3000}:3000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db: { condition: service_healthy }
+      worker: { condition: service_started } # the worker applies migrations on start
+
+  mock-llm:
+    profiles: ["demo"]
+    image: node:22-slim
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    volumes:
+      - ./dev/mock-llm:/app:ro
+    ports:
+      - "4010:4010"
+
+volumes:
+  pgdata:
+  uploads:

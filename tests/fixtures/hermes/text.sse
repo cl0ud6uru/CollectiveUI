@@ -1,0 +1,14 @@
+data: {"event": "message.delta", "run_id": "run_6f3e084d56464021938e64772425141a", "timestamp": 1790744104.801531, "delta": "You "}
+
+data: {"event": "message.delta", "run_id": "run_6f3e084d56464021938e64772425141a", "timestamp": 1790744104.8092024, "delta": "said: "}
+
+data: {"event": "message.delta", "run_id": "run_6f3e084d56464021938e64772425141a", "timestamp": 1790744104.8249226, "delta": "\"hello "}
+
+data: {"event": "message.delta", "run_id": "run_6f3e084d56464021938e64772425141a", "timestamp": 1790744104.8395996, "delta": "there\""}
+
+data: {"event": "reasoning.available", "run_id": "run_6f3e084d56464021938e64772425141a", "timestamp": 1790744104.879804, "text": "You said: \"hello there\""}
+
+data: {"event": "run.completed", "run_id": "run_6f3e084d56464021938e64772425141a", "timestamp": 1790744104.914993, "output": "You said: \"hello there\"", "usage": {"input_tokens": 2806, "output_tokens": 6, "total_tokens": 2812, "cache_read_tokens": 0, "cache_write_tokens": 0}, "runtime": {"provider": "custom", "model": "mock-gpt", "route_source": "global"}, "completed": true, "partial": false, "interrupted": false}
+
+: stream closed
+

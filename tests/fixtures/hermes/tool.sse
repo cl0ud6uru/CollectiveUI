@@ -1,0 +1,54 @@
+data: {"event": "tool.started", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744150.961713, "tool": "terminal", "preview": "echo hi from hermes + 1 command"}
+
+data: {"event": "tool.completed", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.308229, "tool": "terminal", "duration": 0.353, "error": false, "preview": "{\"output\": \"hi from hermes\\nroot\", \"exit_code\": 0, \"error\": null}"}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.3198438, "delta": "\n\nThe "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.335056, "delta": "`terminal` "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.3507414, "delta": "tool "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.3654873, "delta": "returned:\n\n"}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.3808944, "delta": "```json\n"}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.3954215, "delta": "{\"output\": "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.4112089, "delta": "\"hi "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.4253533, "delta": "from "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.4408789, "delta": "hermes\\nroot\", "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.4564118, "delta": "\"exit_code\": "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.4718883, "delta": "0, "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.4865184, "delta": "\"error\": "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.502308, "delta": "null}\n"}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.5178728, "delta": "```\n\n"}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.5322971, "delta": "Let "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.5476449, "delta": "me "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.5634148, "delta": "know "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.5790272, "delta": "if "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.5936413, "delta": "you "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.6089926, "delta": "need "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.6234736, "delta": "anything "}
+
+data: {"event": "message.delta", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.6389964, "delta": "else."}
+
+data: {"event": "reasoning.available", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.6603453, "text": "The `terminal` tool returned:\n\n```json\n{\"output\": \"hi from hermes\\nroot\", \"exit_code\": 0, \"error\": null}\n```\n\nLet me know if you need anything else."}
+
+data: {"event": "run.completed", "run_id": "run_e188e61075a345f1855a9ad6124d98ef", "timestamp": 1790744151.7020981, "output": "The `terminal` tool returned:\n\n```json\n{\"output\": \"hi from hermes\\nroot\", \"exit_code\": 0, \"error\": null}\n```\n\nLet me know if you need anything else.", "usage": {"input_tokens": 5717, "output_tokens": 37, "total_tokens": 5754, "cache_read_tokens": 0, "cache_write_tokens": 0}, "runtime": {"provider": "custom", "model": "mock-gpt", "route_source": "global"}, "completed": true, "partial": false, "interrupted": false}
+
+: stream closed
+

@@ -1,0 +1,312 @@
+#!/usr/bin/python3 -I
+"""File operations for sandboxd's file tools, run as the agent user (uid 1000). No shell, no command execution.
+
+    fsops read  --max-bytes N [--start-line A] [--end-line B] -- PATH
+    fsops write --max-bytes N -- PATH            (content on stdin)
+    fsops list  --depth D --max-entries N -- PATH
+    fsops grep  --max-matches N [--ignore-case] [--glob G] -- PATTERN PATH
+    fsops du
+
+Paths are relative to the workspace (or absolute inside it) and must resolve inside it, symlinks included. That is
+defence in depth: commands run as the same user anyway, and the container is the boundary.
+
+Output: one header line "PORTALFS1 <json>" on stdout, then (read only) the raw bytes. Errors are a header with
+{"ok": false, "code": ..., "message": ...} and a non-zero exit, so sandboxd never mistakes daemon noise for data.
+"""
+import json
+import os
+import sys
+import tempfile
+
+WORKSPACE = "/home/agent/workspace"
+HOME = "/home/agent"
+MAGIC = b"PORTALFS1 "
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", ".cache"}
+
+
+class Fail(Exception):
+    def __init__(self, code, message, status=2):
+        super().__init__(message)
+        self.code, self.message, self.status = code, message, status
+
+
+def header(obj):
+    sys.stdout.buffer.write(MAGIC + json.dumps(obj, separators=(",", ":")).encode() + b"\n")
+    sys.stdout.buffer.flush()
+
+
+def rel(path):
+    return os.path.relpath(path, WORKSPACE)
+
+
+def inside(real):
+    return real == WORKSPACE or real.startswith(WORKSPACE + "/")
+
+
+def resolve(path, must_exist=True):
+    """The real path for PATH, which must stay inside the workspace."""
+    os.makedirs(WORKSPACE, exist_ok=True)
+    if "\0" in path:
+        raise Fail("bad_request", "invalid path")
+    joined = os.path.normpath(os.path.join(WORKSPACE, path))
+    if not inside(joined):
+        raise Fail("outside_workspace", "the path must be inside the workspace", 3)
+    if must_exist:
+        if not os.path.lexists(joined):
+            raise Fail("not_found", "no such file or directory: %s" % path)
+        real = os.path.realpath(joined)
+        if not inside(real):
+            raise Fail("outside_workspace", "the path leads outside the workspace", 3)
+        return real
+    # For writes: the nearest existing ancestor must resolve inside the workspace.
+    probe = joined
+    while not os.path.lexists(probe):
+        probe = os.path.dirname(probe)
+    if not inside(os.path.realpath(probe)):
+        raise Fail("outside_workspace", "the path leads outside the workspace", 3)
+    if os.path.lexists(joined):
+        real = os.path.realpath(joined)
+        if not inside(real):
+            raise Fail("outside_workspace", "the path leads outside the workspace", 3)
+        return real
+    return joined
+
+
+def parse(argv, flags, valued):
+    opts, rest, i = {}, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            rest = argv[i + 1:]
+            break
+        if a in flags:
+            opts[a[2:]] = True
+            i += 1
+        elif a in valued and i + 1 < len(argv):
+            opts[a[2:]] = argv[i + 1]
+            i += 2
+        else:
+            raise Fail("bad_request", "unexpected argument %r" % a)
+    return opts, rest
+
+
+def num(opts, key, default=None):
+    if key not in opts:
+        if default is None:
+            raise Fail("bad_request", "missing --%s" % key)
+        return default
+    try:
+        return int(opts[key])
+    except ValueError:
+        raise Fail("bad_request", "invalid --%s" % key)
+
+
+def cmd_read(argv):
+    opts, rest = parse(argv, (), ("--max-bytes", "--start-line", "--end-line"))
+    if len(rest) != 1:
+        raise Fail("bad_request", "read takes one path")
+    max_bytes = num(opts, "max-bytes")
+    path = resolve(rest[0])
+    if os.path.isdir(path):
+        raise Fail("bad_request", "%s is a directory" % rest[0])
+    size = os.path.getsize(path)
+    start = num(opts, "start-line", 1)
+    end = num(opts, "end-line", 0)
+    out, truncated = bytearray(), False
+    with open(path, "rb") as f:
+        if start == 1 and end == 0:
+            out += f.read(max_bytes + 1)
+        else:
+            for n, line in enumerate(f, 1):
+                if n < start:
+                    continue
+                if end and n > end:
+                    break
+                out += line
+                if len(out) > max_bytes:
+                    break
+    if len(out) > max_bytes:
+        del out[max_bytes:]
+        truncated = True
+    header({"ok": True, "size": size, "bytes": len(out), "truncated": truncated})
+    sys.stdout.buffer.write(out)
+
+
+def cmd_write(argv):
+    opts, rest = parse(argv, (), ("--max-bytes",))
+    if len(rest) != 1:
+        raise Fail("bad_request", "write takes one path")
+    max_bytes = num(opts, "max-bytes")
+    data = sys.stdin.buffer.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise Fail("too_large", "the content is larger than %d bytes" % max_bytes, 4)
+    path = resolve(rest[0], must_exist=False)
+    if os.path.isdir(path):
+        raise Fail("bad_request", "%s is a directory" % rest[0])
+    created = not os.path.exists(path)
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    if not inside(os.path.realpath(parent)):
+        raise Fail("outside_workspace", "the path leads outside the workspace", 3)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".portal-write-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        if not created:
+            try:
+                os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    header({"ok": True, "bytes": len(data), "created": created})
+
+
+def kind(st_mode, is_link):
+    import stat
+
+    if is_link:
+        return "link"
+    if stat.S_ISDIR(st_mode):
+        return "dir"
+    if stat.S_ISREG(st_mode):
+        return "file"
+    return "other"
+
+
+def cmd_list(argv):
+    opts, rest = parse(argv, (), ("--depth", "--max-entries"))
+    depth = num(opts, "depth")
+    max_entries = num(opts, "max-entries")
+    root = resolve(rest[0] if rest else ".")
+    if not os.path.isdir(root):
+        raise Fail("bad_request", "%s is not a directory" % (rest[0] if rest else "."))
+    entries, truncated = [], False
+
+    def walk(d, level):
+        nonlocal truncated
+        try:
+            items = sorted(os.scandir(d), key=lambda e: e.name)
+        except OSError:
+            return
+        for e in items:
+            if len(entries) >= max_entries:
+                truncated = True
+                return
+            try:
+                st = e.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            t = kind(st.st_mode, e.is_symlink())
+            entries.append({"path": rel(e.path), "type": t, "size": st.st_size if t == "file" else 0})
+            if t == "dir" and level < depth and e.name not in SKIP_DIRS:
+                walk(e.path, level + 1)
+                if truncated:
+                    return
+
+    walk(root, 1)
+    header({"ok": True, "entries": entries, "truncated": truncated})
+
+
+def cmd_grep(argv):
+    import fnmatch
+    import re
+
+    opts, rest = parse(argv, ("--ignore-case",), ("--max-matches", "--glob"))
+    if len(rest) != 2:
+        raise Fail("bad_request", "grep takes a pattern and a path")
+    max_matches = num(opts, "max-matches")
+    pattern, target = rest
+    try:
+        rx = re.compile(pattern.encode("utf-8"), re.IGNORECASE if opts.get("ignore-case") else 0)
+    except re.error as e:
+        raise Fail("bad_request", "invalid pattern: %s" % e)
+    glob = opts.get("glob")
+    root = resolve(target)
+    matches, truncated = [], False
+    budget = {"files": 20000, "bytes": 256 * 1024 * 1024}
+
+    def search(path):
+        nonlocal truncated
+        r = rel(path)
+        if glob and not (fnmatch.fnmatch(r, glob) or fnmatch.fnmatch(os.path.basename(r), glob)):
+            return
+        try:
+            st = os.stat(path)
+            if st.st_size > 10 * 1024 * 1024:
+                return
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return
+        budget["files"] -= 1
+        budget["bytes"] -= len(data)
+        if b"\0" in data[:8192]:
+            return
+        for n, line in enumerate(data.split(b"\n"), 1):
+            if rx.search(line):
+                matches.append({"path": r, "line": n, "text": line.decode("utf-8", "replace").rstrip("\r")[:400]})
+                if len(matches) >= max_matches:
+                    truncated = True
+                    return
+
+    if os.path.isfile(root):
+        search(root)
+    else:
+        for d, dirs, names in os.walk(root):
+            dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS and not os.path.islink(os.path.join(d, x)))
+            for n in sorted(names):
+                p = os.path.join(d, n)
+                if os.path.islink(p):
+                    continue
+                search(p)
+                if truncated:
+                    break
+                if budget["files"] <= 0 or budget["bytes"] <= 0:
+                    truncated = True
+                    break
+            if truncated:
+                break
+    header({"ok": True, "matches": matches, "truncated": truncated})
+
+
+def cmd_du(argv):
+    total, files = 0, 0
+    for d, dirs, names in os.walk(HOME):
+        for n in names + dirs:
+            try:
+                st = os.lstat(os.path.join(d, n))
+            except OSError:
+                continue
+            total += st.st_blocks * 512
+            files += 1
+    header({"ok": True, "bytes": total, "files": files})
+
+
+COMMANDS = {"read": cmd_read, "write": cmd_write, "list": cmd_list, "grep": cmd_grep, "du": cmd_du}
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        header({"ok": False, "code": "bad_request", "message": "unknown command"})
+        sys.exit(2)
+    try:
+        COMMANDS[sys.argv[1]](sys.argv[2:])
+    except Fail as f:
+        header({"ok": False, "code": f.code, "message": f.message})
+        sys.exit(f.status)
+    except PermissionError as e:
+        header({"ok": False, "code": "bad_request", "message": "permission denied: %s" % (e.filename or "")})
+        sys.exit(5)
+    except OSError as e:
+        header({"ok": False, "code": "bad_request", "message": e.strerror or str(e)})
+        sys.exit(5)
+
+
+if __name__ == "__main__":
+    main()

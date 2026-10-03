@@ -1,0 +1,47 @@
+# Local development dependencies. Run the app itself with `npm run dev` + `npm run worker:dev`.
+#   docker compose -f docker-compose.dev.yml up -d
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: portal
+    ports: ["5432:5432"]
+    volumes: [devpg:/var/lib/postgresql/data]
+
+  # Seeded directory: alice (AI Admins + Engineering), bob (Engineering), carol (no groups). Password: Passw0rd!
+  ldap:
+    image: osixia/openldap:1.5.0
+    command: --copy-service
+    environment:
+      LDAP_ORGANISATION: Corp
+      LDAP_DOMAIN: corp.local
+      LDAP_ADMIN_PASSWORD: adminpw
+    ports: ["389:389"]
+    volumes:
+      - ./dev/ldap/seed.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/50-seed.ldif:ro
+
+  mock-llm:
+    image: node:22-slim
+    working_dir: /app
+    command: ["node", "server.mjs"]
+    volumes: ["./dev/mock-llm:/app:ro"]
+    ports: ["4010:4010"]
+
+  # Sample MCP server (echo, get_time, lookup_employee, whoami, delete_record) at http://localhost:4020/mcp.
+  # Runs from the repo, so `npm install` first. Set MCP_TOKEN / MCP_IDENTITY_SECRET to test auth.
+  mcp-echo:
+    image: node:22-slim
+    working_dir: /app
+    command: ["node", "dev/mcp-echo/server.mjs"]
+    environment:
+      MCP_TOKEN: ${MCP_TOKEN:-}
+      MCP_IDENTITY_SECRET: ${MCP_IDENTITY_SECRET:-}
+      MCP_IDENTITY_AUDIENCE: ${MCP_IDENTITY_AUDIENCE:-}
+      MCP_REQUIRE_IDENTITY: ${MCP_REQUIRE_IDENTITY:-}
+    volumes: ["./:/app:ro"]
+    ports: ["4020:4020"]
+
+volumes:
+  devpg:

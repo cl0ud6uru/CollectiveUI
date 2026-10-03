@@ -1,0 +1,82 @@
+data: {"event": "tool.started", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744165.7856245, "tool": "terminal", "preview": "rm -rf /tmp/hermes-demo-dir"}
+
+data: {"command": "rm -rf /tmp/hermes-demo-dir", "pattern_key": "delete in root path", "pattern_keys": ["delete in root path"], "description": "delete in root path", "allow_permanent": true, "allow_session": true, "request_id": "1da63e5d47e748e6a12abbbacd6ef077", "event": "approval.request", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744165.9615183, "choices": ["once", "session", "always", "deny"]}
+
+data: {"event": "approval.responded", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.0539203, "choice": "once", "request_id": "1da63e5d47e748e6a12abbbacd6ef077", "resolved": 1}
+
+data: {"event": "tool.completed", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.0912685, "tool": "terminal", "duration": 0.303, "error": false, "preview": "{\"output\": \"\", \"exit_code\": 0, \"error\": null, \"approval\": \"Command required approval (delete in root path) and was approved by the user.\"}"}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.1037817, "delta": "\n\nThe "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.1187708, "delta": "`terminal` "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.1334589, "delta": "tool "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.1487365, "delta": "returned:\n\n"}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.1644247, "delta": "```json\n"}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.179892, "delta": "{\"output\": "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.194548, "delta": "\"\", "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.2100236, "delta": "\"exit_code\": "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.2245126, "delta": "0, "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.240551, "delta": "\"error\": "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.2555223, "delta": "null, "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.2714036, "delta": "\"approval\": "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.2865663, "delta": "\"Command "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.3022738, "delta": "required "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.3176908, "delta": "approval "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.3330975, "delta": "(delete "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.3484702, "delta": "in "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.3638194, "delta": "root "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.378501, "delta": "path) "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.3941164, "delta": "and "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.408678, "delta": "was "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.4242175, "delta": "approved "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.4397018, "delta": "by "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.4551647, "delta": "the "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.471299, "delta": "user.\"}\n"}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.4863756, "delta": "```\n\n"}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.5018706, "delta": "Let "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.5174055, "delta": "me "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.532906, "delta": "know "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.5479307, "delta": "if "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.5634317, "delta": "you "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.5788498, "delta": "need "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.5945263, "delta": "anything "}
+
+data: {"event": "message.delta", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.6101162, "delta": "else."}
+
+data: {"event": "reasoning.available", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.630371, "text": "The `terminal` tool returned:\n\n```json\n{\"output\": \"\", \"exit_code\": 0, \"error\": null, \"approval\": \"Command required approval (delete in root path) and was approved by the user.\"}\n```\n\nLet me know if you need anything else."}
+
+data: {"event": "run.completed", "run_id": "run_5342e3bb7daf43b9b78bac2cb910640c", "timestamp": 1790744166.659114, "output": "The `terminal` tool returned:\n\n```json\n{\"output\": \"\", \"exit_code\": 0, \"error\": null, \"approval\": \"Command required approval (delete in root path) and was approved by the user.\"}\n```\n\nLet me know if you need anything else.", "usage": {"input_tokens": 5712, "output_tokens": 56, "total_tokens": 5768, "cache_read_tokens": 0, "cache_write_tokens": 0}, "runtime": {"provider": "custom", "model": "mock-gpt", "route_source": "global"}, "completed": true, "partial": false, "interrupted": false}
+
+: stream closed
+

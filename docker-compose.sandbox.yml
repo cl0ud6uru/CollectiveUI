@@ -1,0 +1,58 @@
+# Workspaces: adds sandboxd, the only service with the Docker socket, and lets web and worker reach it on an internal
+# network. Layer it on the main file:
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
+# (or put COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml in .env). Before the first start:
+#   scripts/build-sandbox-image.sh                  # the workspace image (docker/sandbox)
+#   DOCKER_GID=$(getent group docker | cut -d: -f3)  # in .env: the host's docker group id (a number)
+#   SANDBOXD_SECRET=$(openssl rand -base64 32)       # in .env: shared by web, worker and sandboxd
+# Host setup (gVisor, userns-remap) is in the README under "Workspaces".
+services:
+  sandboxd:
+    build: { context: ., target: sandboxd }
+    restart: unless-stopped
+    # Deliberately no env_file: sandboxd gets only its own settings, never the database URL, auth secrets or keys.
+    environment:
+      SANDBOXD_SECRET: ${SANDBOXD_SECRET:?set SANDBOXD_SECRET in .env (openssl rand -base64 32)}
+      SANDBOXD_LISTEN: 0.0.0.0:4200
+      # runsc = gVisor required (recommended); auto = gVisor when it works, else runc; runc = never gVisor.
+      SANDBOXD_RUNTIME: ${SANDBOXD_RUNTIME:-runsc}
+      SANDBOXD_IMAGE: ${SANDBOXD_IMAGE:-ai-portal-sandbox:p5}
+      SANDBOXD_INSTANCE: ${SANDBOXD_INSTANCE:-default}
+      # Capacity limits (empty = sandboxd's defaults, see src/sandboxd/config.ts).
+      SANDBOXD_MEMORY_MB: ${SANDBOXD_MEMORY_MB:-}
+      SANDBOXD_CPUS: ${SANDBOXD_CPUS:-}
+      SANDBOXD_PIDS: ${SANDBOXD_PIDS:-}
+      SANDBOXD_IDLE_MINUTES: ${SANDBOXD_IDLE_MINUTES:-}
+      SANDBOXD_MAX_RUNNING: ${SANDBOXD_MAX_RUNNING:-}
+      SANDBOXD_MAX_EXECS: ${SANDBOXD_MAX_EXECS:-}
+      SANDBOXD_MAX_EXEC_SECONDS: ${SANDBOXD_MAX_EXEC_SECONDS:-}
+    # Access to the socket is root-equivalent on this host: keep sandboxd small, unprivileged and unreachable
+    # from anything but web and worker. (A :ro mount wouldn't limit the API, so it isn't used.)
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env (getent group docker | cut -d: -f3)}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [control]
+
+  worker:
+    networks: [default, control]
+    environment:
+      SANDBOXD_URL: http://sandboxd:4200
+      SANDBOXD_SECRET: ${SANDBOXD_SECRET:?set SANDBOXD_SECRET in .env}
+    depends_on:
+      sandboxd: { condition: service_started }
+
+  web:
+    networks: [default, control]
+    environment:
+      SANDBOXD_URL: http://sandboxd:4200
+      SANDBOXD_SECRET: ${SANDBOXD_SECRET:?set SANDBOXD_SECRET in .env}
+    depends_on:
+      sandboxd: { condition: service_started }
+
+networks:
+  # No route out: sandboxd needs only the socket, and web/worker reach it by name.
+  control:
+    internal: true

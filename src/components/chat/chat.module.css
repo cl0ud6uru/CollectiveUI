@@ -1,0 +1,48 @@
+/* Only populated, available bot chats overlap the transcript. Empty chats and
+   unavailable notices retain their normal flow and spacing. */
+.overlay {
+  position: relative;
+  z-index: 20;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    to bottom,
+    var(--bg),
+    color-mix(in srgb, var(--bg) 72%, transparent) 45%,
+    transparent
+  );
+}
+
+/* Fade the background only; keep the pet, status and controls at full opacity. */
+.overlay .controls,
+.overlay .identity {
+  pointer-events: auto;
+  border-radius: 0.75rem;
+  background: var(--bg);
+}
+
+.overlay .identity {
+  width: fit-content;
+  max-width: min(100%, 32rem);
+  padding-inline: 0.5rem;
+}
+
+.overlay .avatar {
+  pointer-events: auto;
+}
+
+.scroller {
+  margin-top: calc(-1 * var(--bot-chat-header-height, 0px));
+  scroll-padding-top: calc(var(--bot-chat-header-height, 0px) + 1rem);
+}
+
+.messages {
+  padding-top: calc(var(--bot-chat-header-height, 0px) + 1rem);
+}
