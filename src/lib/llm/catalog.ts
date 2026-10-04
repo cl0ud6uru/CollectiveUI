@@ -256,6 +256,7 @@ const common = {
   sortOrder: z.number().int().default(0),
   groupIds: z.array(z.string()).default([]),
   credentials: CredentialsInput,
+  providerConnectionId: z.string().min(1).max(100).nullable().optional(),
 };
 
 export const AppInput = z
@@ -270,6 +271,9 @@ export const AppInput = z
     z.object({ provider: z.literal("hermes"), config: CONFIG_SCHEMAS.hermes.default({ profile: "", approvalTimeoutSec: 300, allowedModels: "" }), ...common }),
   ])
   .superRefine((v, ctx) => {
+    if (v.providerConnectionId && v.provider !== "openai") {
+      ctx.addIssue({ code: "custom", path: ["providerConnectionId"], message: "Saved provider connections currently support OpenAI API models only" });
+    }
     if (v.embeddingModel?.trim() && !supportsEmbeddings(v.provider)) {
       ctx.addIssue({ code: "custom", path: ["embeddingModel"], message: `${CATALOG[v.provider].label} doesn't provide embeddings` });
     }
@@ -513,3 +517,9 @@ export function isEligibleEmbeddingApp(app: {
 }): boolean {
   return isEligibleUtilityApp(app) && supportsEmbeddings(app.provider) && !!app.embeddingModel;
 }
+
+/** Safe admin metadata for named API credentials. No secret or ciphertext can enter model forms. */
+export type ProviderConnectionView = {
+  id: string; name: string; provider: "openai"; baseUrl: string | null; organization: string | null; project: string | null;
+  enabled: boolean; createdBy: string | null; updatedAt: string;
+};

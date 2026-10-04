@@ -31,7 +31,7 @@ export async function serviceConfigHash(bot: Bot, q: DbOrTx = db) {
       instructions: bot.instructions, boundaries: bot.boundaries, description: bot.description,
       appId: bot.appId, visibility: bot.visibility, maxSteps: bot.maxSteps, enabled: bot.enabled },
     app: { id: app.id, provider: app.provider, providerConfig: app.providerConfig, baseUrl: app.baseUrl,
-      apiKeyEnc: app.apiKeyEnc, model: app.model, systemPrompt: app.systemPrompt,
+      apiKeyEnc: app.apiKeyEnc, ...(app.providerConnectionId ? { providerConnectionId: app.providerConnectionId } : {}), model: app.model, systemPrompt: app.systemPrompt,
       credentialMode: app.credentialMode, supportsTools: app.supportsTools, enabled: app.enabled },
     groups: access.map((a) => a.groupId).sort(),
     tools: tools.sort((a, b) => a.toolKey.localeCompare(b.toolKey)),

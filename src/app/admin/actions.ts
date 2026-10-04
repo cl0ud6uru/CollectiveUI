@@ -6,7 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
-import { aiApps, appAccess, bots, groupMappings, groups, mcpServerAccess, mcpServers } from "@/db/schema";
+import { aiApps, appAccess, bots, groupMappings, groups, mcpServerAccess, mcpServers, providerConnections, auditLog } from "@/db/schema";
 import { getAccessibleModel, HttpError } from "@/lib/authz";
 import { assertDefaultBot } from "@/lib/chat/targets";
 import { saveLoginPet as storeLoginPet } from "@/lib/branding/login-pet";
@@ -23,7 +23,8 @@ import { testChatGPTConnection } from "@/lib/llm/chatgpt/models";
 import { assertCreatableProvider, planAppWrite, planConnectionTest } from "@/lib/llm/app-form";
 import { AppInput as AppInputSchema, CATALOG, CredentialsInput, isEligibleEmbeddingApp, isEligibleUtilityApp, isEnabledKind, type AppInput } from "@/lib/llm/catalog";
 import { checkHermesUrl } from "@/lib/llm/providers/hermes";
-import { sealAppSecret } from "@/lib/llm/secrets";
+import { activeProviderConnection, assertConnectionTarget, connectionConfig, openProviderCredential } from "@/lib/llm/provider-connections";
+import { decodeSecret, sealAppSecret } from "@/lib/llm/secrets";
 import { DEFAULT_IDENTITY_HEADER, newIdentitySecret, sealIdentitySecret, validIdentityHeader } from "@/lib/mcp/identity";
 import { MAX_IMPORT_CHARS, parseMcpConfig } from "@/lib/mcp/import";
 import { acceptMcpDrift, refreshMcpServer } from "@/lib/mcp/servers";
@@ -55,68 +56,82 @@ export type { AppInput } from "@/lib/llm/catalog";
 export async function saveApp(raw: AppInput) {
   const p = await requireAdmin();
   const input = AppInputSchema.parse(raw);
-  const [existing] = input.id ? await db.select().from(aiApps).where(eq(aiApps.id, input.id)) : [];
-  if (input.id && !existing) throw new HttpError(404, "App not found");
-  if (existing?.providerConfig.managed !== undefined || existing?.providerConfig.local !== undefined || existing?.providerConfig.docker !== undefined) throw new HttpError(400, "Manage local and automatic Hermes runtimes in Admin → Hermes. Their bindings are immutable.");
-  assertCreatableProvider(input.provider, { chatgptEnabled: (await getSetting("chatgpt")).enabled, existingProvider: existing?.provider });
-  const plan = planAppWrite(input, existing);
-  const appId = input.id ?? newId();
-  // ChatGPT apps run on each person's own plan: no company credentials, no embeddings, no sampling settings.
-  const personal = input.provider === "chatgpt";
-  // Hermes profiles run their own model and tools: no sampling settings or embeddings, and they can always host a bot.
-  const hermes = input.provider === "hermes";
-  if (hermes) {
-    const problem = await checkHermesUrl(plan.baseUrl ?? "");
-    if (problem) throw new HttpError(400, problem);
-  }
-  const values = {
-    name: input.name,
-    description: input.description,
-    icon: input.icon,
-    kind: "model" as const,
-    provider: input.provider,
-    providerConfig: plan.providerConfig,
-    credentialMode: personal ? ("user" as const) : ("org" as const),
-    baseUrl: plan.baseUrl,
-    model: input.model,
-    systemPrompt: input.systemPrompt,
-    temperature: personal || hermes ? null : input.temperature,
-    maxTokens: personal || hermes ? null : input.maxTokens,
-    supportsVision: hermes ? false : input.supportsVision,
-    supportsTools: hermes ? true : input.supportsTools,
-    embeddingModel: personal || hermes ? null : input.embeddingModel?.trim() || null,
-    isPublic: input.isPublic,
-    enabled: input.enabled,
-    sortOrder: input.sortOrder,
-    updatedAt: new Date(),
-    ...(plan.secret === undefined ? {} : { apiKeyEnc: plan.secret === null ? null : sealAppSecret(appId, plan.secret) }),
-  };
-  if (existing) await db.update(aiApps).set(values).where(eq(aiApps.id, appId));
-  else await db.insert(aiApps).values({ id: appId, ...values });
-  await db.delete(appAccess).where(eq(appAccess.appId, appId));
-  if (!input.isPublic && input.groupIds.length) await db.insert(appAccess).values(input.groupIds.map((g) => ({ appId, groupId: g })));
-  await audit(p.user.id, existing ? "app.update" : "app.create", appId, { name: input.name, provider: input.provider, baseUrl: plan.baseUrl });
-  // A new Hermes profile shows up under Bots straight away (edit or delete the bot like any other).
-  let botId: string | undefined;
-  if (hermes && !existing) {
-    const profile = (plan.providerConfig as { profile?: string }).profile || "default";
-    [{ id: botId }] = await db
-      .insert(bots)
-      .values({
-        ownerId: p.user.id,
-        name: input.name,
-        avatar: hermesAvatar(profile),
-        label: "Hermes",
-        description: input.description?.trim() || `Hermes profile "${profile}"`,
-        instructions: "",
-        appId,
-        visibility: input.isPublic ? "org" : "private",
-      })
-      .returning({ id: bots.id });
-    await audit(p.user.id, "bot.create", botId, { name: input.name, from: "hermes-app" });
-  }
+  const result = await db.transaction(async (tx) => {
+    const [existing] = input.id ? await tx.select().from(aiApps).where(eq(aiApps.id, input.id)).for("update") : [];
+    if (input.id && !existing) throw new HttpError(404, "App not found");
+    if (existing?.providerConfig.managed !== undefined || existing?.providerConfig.local !== undefined || existing?.providerConfig.docker !== undefined) throw new HttpError(400, "Manage local and automatic Hermes runtimes in Admin → Hermes. Their bindings are immutable.");
+    assertCreatableProvider(input.provider, { chatgptEnabled: (await getSetting("chatgpt", tx)).enabled, existingProvider: existing?.provider });
+    const connectionId = input.providerConnectionId === undefined && input.provider === existing?.provider
+      ? existing.providerConnectionId : input.providerConnectionId;
+    const [connection] = connectionId ? await tx.select().from(providerConnections).where(eq(providerConnections.id, connectionId)).for("share") : [];
+    if (connectionId && !connection) throw new HttpError(404, "Provider connection not found");
+    if (connection) {
+      assertConnectionTarget(connection, input.provider, input.baseUrl, input.config);
+      if (Object.values(input.credentials).some(v => v?.trim())) throw new HttpError(400, "Rotate the credential on the saved provider connection instead.");
+      if (!connection.enabled && existing?.providerConnectionId !== connection.id) throw new HttpError(409, "This provider connection is disabled.");
+    }
+    const plan = connection ? { baseUrl: connection.baseUrl, providerConfig: connectionConfig(connection, input.config), secret: null }
+      : planAppWrite(input, existing);
+    const appId = input.id ?? newId();
+    // ChatGPT apps run on each person's own plan: no company credentials, no embeddings, no sampling settings.
+    const personal = input.provider === "chatgpt";
+    // Hermes profiles run their own model and tools: no sampling settings or embeddings, and they can always host a bot.
+    const hermes = input.provider === "hermes";
+    if (hermes) {
+      const problem = await checkHermesUrl(plan.baseUrl ?? "");
+      if (problem) throw new HttpError(400, problem);
+    }
+    const values = {
+      name: input.name,
+      description: input.description,
+      icon: input.icon,
+      kind: "model" as const,
+      provider: input.provider,
+      providerConnectionId: connection?.id ?? null,
+      providerConfig: plan.providerConfig,
+      credentialMode: personal ? ("user" as const) : ("org" as const),
+      baseUrl: plan.baseUrl,
+      model: input.model,
+      systemPrompt: input.systemPrompt,
+      temperature: personal || hermes ? null : input.temperature,
+      maxTokens: personal || hermes ? null : input.maxTokens,
+      supportsVision: hermes ? false : input.supportsVision,
+      supportsTools: hermes ? true : input.supportsTools,
+      embeddingModel: personal || hermes ? null : input.embeddingModel?.trim() || null,
+      isPublic: input.isPublic,
+      enabled: input.enabled,
+      sortOrder: input.sortOrder,
+      updatedAt: new Date(),
+      ...(plan.secret === undefined ? {} : { apiKeyEnc: plan.secret === null ? null : sealAppSecret(appId, plan.secret) }),
+    };
+    if (existing) await tx.update(aiApps).set(values).where(eq(aiApps.id, appId));
+    else await tx.insert(aiApps).values({ id: appId, ...values });
+    await tx.delete(appAccess).where(eq(appAccess.appId, appId));
+    if (!input.isPublic && input.groupIds.length) await tx.insert(appAccess).values(input.groupIds.map((g) => ({ appId, groupId: g })));
+    await tx.insert(auditLog).values({ actorId: p.user.id, action: existing ? "app.update" : "app.create", target: appId, details: { name: input.name, provider: input.provider, baseUrl: plan.baseUrl } });
+    // A new Hermes profile shows up under Bots straight away (edit or delete the bot like any other).
+    let botId: string | undefined;
+    if (hermes && !existing) {
+      const profile = (plan.providerConfig as { profile?: string }).profile || "default";
+      [{ id: botId }] = await tx
+        .insert(bots)
+        .values({
+          ownerId: p.user.id,
+          name: input.name,
+          avatar: hermesAvatar(profile),
+          label: "Hermes",
+          description: input.description?.trim() || `Hermes profile "${profile}"`,
+          instructions: "",
+          appId,
+          visibility: input.isPublic ? "org" : "private",
+        })
+        .returning({ id: bots.id });
+      await tx.insert(auditLog).values({ actorId: p.user.id, action: "bot.create", target: botId, details: { name: input.name, from: "hermes-app" } });
+    }
+    return { id: appId, botId };
+  });
   done();
-  return { id: appId, botId };
+  return result;
 }
 
 /** A stable blob face per Hermes profile (Hermes' own Bot Mode also derives its default face from the name). */
@@ -140,6 +155,7 @@ export async function deleteApp(id: string) {
 }
 
 const ConnectionTestInput = z.object({
+  providerConnectionId: z.string().min(1).max(100).nullable().optional(),
   id: z.string().optional(),
   provider: z.string(),
   name: z.string().max(80).optional(),
@@ -157,12 +173,24 @@ export type ConnectionTestInput = z.input<typeof ConnectionTestInput>;
 export async function testAppConnection(raw: ConnectionTestInput) {
   const p = await requireAdmin();
   const input = ConnectionTestInput.parse(raw);
+  if (input.providerConnectionId && input.provider !== "openai") return { ok: false as const, error: "Saved provider connections support OpenAI API models only." };
   // ChatGPT apps: list what the admin's own connected plan offers (there are no app credentials to test).
   if (input.provider === "chatgpt") return testChatGPTConnection(p.user.id, await getSetting("chatgpt"));
   if (!isEnabledKind(input.provider)) return { ok: false as const, error: "Unknown provider" };
   const kind = input.provider;
   const [existing] = input.id ? await db.select().from(aiApps).where(eq(aiApps.id, input.id)) : [];
   try {
+    const connectionId = input.providerConnectionId === undefined && kind === existing?.provider ? existing.providerConnectionId : input.providerConnectionId;
+    if (connectionId) {
+      const connection = await activeProviderConnection(connectionId);
+      assertConnectionTarget(connection, kind, input.baseUrl, input.config);
+      if (Object.values(input.credentials).some(v => v?.trim())) throw new HttpError(400, "Rotate the credential on the saved provider connection instead.");
+      const config = connectionConfig(connection, input.config);
+      let plaintext: string;
+      try { plaintext = openProviderCredential(connection); } catch { throw new HttpError(400, "The saved credential could not be decrypted."); }
+      return await testConnection({ kind, name: input.name || CATALOG[kind].label, model: input.model || undefined, baseUrl: connection.baseUrl, config,
+        secret: decodeSecret(kind, config, plaintext) });
+    }
     const plan = planConnectionTest(kind, input.config, input.baseUrl, input.credentials, existing);
     return await testConnection({ kind, name: input.name || CATALOG[kind].label, model: input.model || undefined, ...plan });
   } catch (err) {
