@@ -38,6 +38,8 @@ COPY . .
 RUN groupadd -r app && useradd -r -g app app && mkdir -p /data/uploads && chown -R app:app /data
 USER app
 ENV STORAGE_DIR=/data/uploads
+# The explicit legacy-enrollment import is an operator command in the worker image.
+COPY --chmod=0644 scripts/migrate-docker-hermes-enrollment.ts ./scripts/migrate-docker-hermes-enrollment.ts
 # exec: node replaces the shell, so SIGTERM (docker stop) reaches the worker, which then saves running replies as
 # interrupted before it exits (see src/worker/index.ts). `npx tsx` would put a CLI process in between.
 CMD ["sh", "-c", "npx tsx src/db/migrate.ts && exec node --import tsx src/worker/index.ts"]

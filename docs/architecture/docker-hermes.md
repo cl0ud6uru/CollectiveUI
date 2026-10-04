@@ -65,6 +65,12 @@ Do this during an operator-planned application upgrade: keep the previous web/wo
    npm run hermes:import-enrollment -- --preview ADMIN_USER_ID
    npm run hermes:import-enrollment -- --apply ADMIN_USER_ID
    ```
+   These commands run from the release checkout with its locked dependencies or from that release's **worker** image, which includes the importer. For Docker Compose, pass the reviewed allowlist from the operator shell into a one-off worker container (after applying the migration, while normal web/worker services remain stopped):
+   ```sh
+   docker compose run --rm --no-deps -e DOCKER_HERMES_ALLOWED_USER_IDS worker npm run hermes:import-enrollment -- --preview ADMIN_USER_ID
+   docker compose run --rm --no-deps -e DOCKER_HERMES_ALLOWED_USER_IDS worker npm run hermes:import-enrollment -- --apply ADMIN_USER_ID
+   ```
+   The worker service supplies the intended `DATABASE_URL`; the import command replaces its normal startup command, so no worker, broker or runtime is started. Use the new release's worker image for both commands. The standalone web image does not include this operator script.
 3. Preview reports eligible count and SHA-256 prefixes for invalid, unknown, disabled, or already-recorded IDs; it never logs raw invalid input or credentials. Invalid/unknown/disabled IDs abort the entire apply transaction. Correct the input and preview again. Existing database records are always unchanged, including revoked users, so repeating this command cannot override an Admin UI revocation. No IDs means no enrollment; there is no grant-all mode.
 4. Verify the Admin → Hermes permissions and audit log before resuming user traffic, then remove the obsolete allowlist from both environments. Keep the broker socket configuration. If the old web and worker lists differed, reconcile the intended authorized users explicitly before importing; do not silently combine lists.
 
