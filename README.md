@@ -158,6 +158,7 @@ See the [development status and backlog](TODO.md), [service-bot restrictions](do
 | Manage pet artwork and identity permissions | [Pet avatars](docs/features/bot-companions.md) |
 | Understand the code or run tests | [Development guide](docs/development.md) |
 | Understand persistent bot conversations | [Conversation architecture](docs/architecture/agent-conversations.md) |
+| Use CollectiveUI on iPhone or iPad | [Native iOS app](docs/mobile.md) |
 
 **Before deploying:** use HTTPS, keep the database private, generate unique secrets, and back up Postgres, uploaded files and the required encryption/session secrets together. Never use demo passwords or `db:seed` in production. Apply migrations before the new app starts. Compose pins uploads to `/data/uploads`; existing custom storage needs an explicit override or a planned file move in **both web and worker**. Files are not migrated automatically. Read [deployment and custom-storage upgrades](docs/operations.md#production-deployment) before recreating containers.
 

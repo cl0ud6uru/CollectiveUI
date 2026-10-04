@@ -183,6 +183,13 @@
       "when": 1791136080764,
       "tag": "0025_coordinator_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791155940918,
+      "tag": "0026_mobile_sessions",
+      "breakpoints": true
     }
   ]
 }

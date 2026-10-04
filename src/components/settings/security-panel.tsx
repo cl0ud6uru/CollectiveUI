@@ -2,6 +2,7 @@ import { auth } from "@/auth";
 import { SecurityForm } from "@/app/account/security/security-form";
 import { signOutAction } from "@/components/sidebar/sign-out";
 import { securitySummary } from "@/lib/auth/security";
+import { MobileDevices } from "@/components/settings/mobile-devices";
 import { requirePagePrincipal, requireSecurityActor } from "@/lib/session";
 
 /** Server-rendered account facts; factor secrets never enter the Settings payload. */
@@ -20,5 +21,6 @@ export async function SecurityPanel() {
       <p>Sign out and sign in again to manage passkeys, your authenticator app and password.</p>
       <form action={signOutAction}><button className="min-h-11 underline">Sign out</button></form>
     </div> : <SecurityForm initial={await securitySummary(await requireSecurityActor())} />}
+    <MobileDevices />
   </section>;
 }

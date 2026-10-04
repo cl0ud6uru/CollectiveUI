@@ -140,6 +140,35 @@ export const authThrottle = pgTable("auth_throttle", {
   attempts: integer("attempts").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 }, (t) => [index("auth_throttle_expiry_idx").on(t.expiresAt)]);
+/**
+ * Native app sign-ins (src/lib/auth/mobile.ts). Only token hashes are stored. A token is bound to the account's
+ * sessionVersion at issue, so anything that revokes web sessions (password reset, new factor, disable) revokes it too.
+ */
+export const mobileSessions = pgTable("mobile_sessions", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  deviceName: text("device_name").notNull(),
+  sessionVersion: integer("session_version").notNull(),
+  authProvider: text("auth_provider"),
+  createdAt: createdAt(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+}, (t) => [index("mobile_sessions_user_idx").on(t.userId)]);
+
+/** One-time, PKCE-bound codes handed to the app's callback URL after the person approves a sign-in in the browser. */
+export const mobileAuthCodes = pgTable("mobile_auth_codes", {
+  hash: text("hash").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionVersion: integer("session_version").notNull(),
+  authProvider: text("auth_provider"),
+  codeChallenge: text("code_challenge").notNull(),
+  deviceName: text("device_name").notNull(),
+  createdAt: createdAt(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (t) => [index("mobile_auth_codes_expiry_idx").on(t.expiresAt)]);
+
 export const localAuthBootstrap = pgTable("local_auth_bootstrap", {
   id: integer("id").primaryKey(),
   createdAt: createdAt(),
