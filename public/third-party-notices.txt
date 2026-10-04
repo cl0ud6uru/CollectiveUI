@@ -2,6 +2,16 @@ CollectiveUI bundled browser assets — third-party notices
 
 These upstream notices are retained verbatim from the installed versions locked in package-lock.json. Other dependencies retain their own licenses.
 
+========================================================================
+Hermes companion artwork
+========================================================================
+
+A black-and-green animated companion celebrating Hermes Agent and its integration with CollectiveUI.
+
+Pet adaptation for CollectiveUI by @cl0ud6uru. Inspired by Hermes Agent from Nous Research. Unofficial community artwork; not affiliated with or endorsed by Nous Research.
+
+Generated from the user-selected green concept, an edit of earlier reference-inspired artwork. Complete provenance and third-party licensing permissions for the underlying reference have not been established. Hermes artwork and its reproductions in previews/screenshots are excluded from CollectiveUI's application MIT license. Attribution does not grant rights in the underlying reference; no ownership or official endorsement is asserted. The supplied source notice is preserved at assets/pets/hermes/SOURCE-README.txt in the source distribution.
+
 
 ========================================================================
 @fontsource-variable/inter 5.3.0
@@ -420,3 +430,45 @@ This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license available with a FAQ at:
 http://scripts.sil.org/OFL
 http://scripts.sil.org/OFL
+
+========================================================================
+Hermes Assimilated artwork
+========================================================================
+
+A cybernetic Hermes companion with emerald accents and Borg-inspired implants.
+
+Pet adaptation for CollectiveUI by @cl0ud6uru. Inspired by Hermes Agent from Nous Research. Unofficial community artwork; not affiliated with or endorsed by Nous Research.
+
+Separate, unofficial Star Trek Borg-inspired fan artwork, not affiliated with or endorsed by Star Trek's owners. Complete reference/character provenance and third-party licensing permissions have not been established. Artwork and preview/screenshot reproductions are excluded from CollectiveUI's application MIT license. Attribution does not grant underlying rights. The supplied source notice is preserved at assets/pets/hermes-assimilated/SOURCE-README.txt.
+
+========================================================================
+The Queen artwork
+========================================================================
+
+An original crowned seedling robot: a calm, friendly coordinator in CollectiveUI’s Moss and Ember visual family.
+
+AI-assisted design; vector production artwork adapted from CollectiveUI's original MIT-licensed Moss/Ember visual family.
+
+The supplied source notice and original atlas are retained under assets/pets/the-queen. The runtime atlas clears only the 15 unused cells; all 73 required frames retain their exact decoded pixels. Supplied license follows:
+
+MIT License
+
+Copyright (c) 2026 cl0ud6uru
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

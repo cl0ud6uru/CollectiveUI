@@ -1,0 +1,10 @@
+{
+  "id": "the-queen",
+  "displayName": "The Queen",
+  "description": "An original crowned seedling robot: a calm, friendly coordinator in CollectiveUI’s Moss and Ember visual family.",
+  "spritesheetPath": "spritesheet.png",
+  "spriteVersionNumber": 2,
+  "frameWidth": 192,
+  "frameHeight": 208,
+  "columns": 8
+}

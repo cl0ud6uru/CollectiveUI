@@ -1,0 +1,10 @@
+{
+  "displayName": "Hermes",
+  "description": "A black-and-green animated companion celebrating Hermes Agent and its integration with CollectiveUI.",
+  "spriteVersionNumber": 2,
+  "spritesheetPath": "spritesheet.webp",
+  "frameWidth": 192,
+  "frameHeight": 208,
+  "columns": 8,
+  "credit": "Pet adaptation for CollectiveUI by @cl0ud6uru. Inspired by Hermes Agent from Nous Research. Unofficial community artwork; not affiliated with or endorsed by Nous Research."
+}
