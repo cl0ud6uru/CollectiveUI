@@ -6,6 +6,8 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Loader2, Plug, Plus, Trash2 } from "lucide-react";
 import { deleteApp, saveApp, testAppConnection, type AppInput } from "@/app/admin/actions";
+import { migrateAppProviderConnection } from "@/app/admin/provider-actions";
+import type { ProviderConnectionView } from "@/lib/llm/catalog";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
@@ -26,6 +28,7 @@ export type AppRow = {
   config: Record<string, unknown>;
   baseUrl: string | null;
   hasKey: boolean;
+  providerConnectionId?: string | null;
   model: string;
   systemPrompt: string | null;
   temperature: number | null;
@@ -49,6 +52,7 @@ const EMPTY: FormState = {
   config: {},
   baseUrl: "https://",
   hasKey: false,
+  providerConnectionId: null,
   model: "",
   systemPrompt: null,
   temperature: null,
@@ -74,11 +78,13 @@ const secretProps = {
 
 function AppDialog({
   app,
+  connections,
   groups,
   chatgptEnabled,
   onClose,
 }: {
   app: FormState | null;
+  connections: ProviderConnectionView[];
   groups: { id: string; name: string }[];
   chatgptEnabled: boolean;
   onClose: () => void;
@@ -103,6 +109,7 @@ function AppDialog({
     setF((x) => ({
       ...x,
       provider: kind,
+      providerConnectionId: null,
       config: { ...next.defaultConfig },
       baseUrl: next.baseUrl.mode === "required" && kind === "openai-compatible" ? "https://" : null,
       maxTokens: x.maxTokens ?? next.defaultMaxTokens ?? null,
@@ -112,7 +119,8 @@ function AppDialog({
     setModels([]);
   }
 
-  const visibleSecrets = entry.secrets.filter((s) => !s.when || String(f.config[s.when.key] ?? "") === s.when.value);
+  const linked = !!f.providerConnectionId;
+  const visibleSecrets = (linked ? [] : entry.secrets).filter((s) => !s.when || String(f.config[s.when.key] ?? "") === s.when.value);
   const baseUrlOk = entry.baseUrl.mode !== "required" || (!!f.baseUrl && f.baseUrl !== "https://");
   const canTest = baseUrlOk && (entry.test !== "probe" || !!f.model);
 
@@ -136,6 +144,7 @@ function AppDialog({
       enabled: f.enabled,
       sortOrder: f.sortOrder,
       groupIds: f.groupIds,
+      providerConnectionId: f.providerConnectionId ?? null,
       credentials,
     }) as AppInput;
 
@@ -149,6 +158,7 @@ function AppDialog({
         baseUrl: entry.baseUrl.mode === "none" ? null : f.baseUrl,
         model: f.model,
         config: f.config,
+        providerConnectionId: f.providerConnectionId ?? null,
         credentials,
       });
       if (r.ok) {
@@ -190,9 +200,26 @@ function AppDialog({
           </Field>
 
           {agent && <p className="rounded-xl border border-border p-3 text-sm text-muted">Bot-only. This connection never appears in New Chat or default model settings. Saving a new manual backend also creates its bot. For isolated per-user runtimes, use Admin → Managed Hermes.</p>}
+          {f.provider === "openai" && <Field label="Saved provider connection" hint="Select a named credential. Endpoint and billing destination are managed on that connection.">
+            <Select aria-label="Saved provider connection" value={f.providerConnectionId ?? ""} onChange={e => {
+              const c = connections.find(c => c.id === e.target.value);
+              setF(x => ({ ...x, providerConnectionId: c?.id ?? null, baseUrl: c?.baseUrl ?? null,
+                config: { ...x.config, organization: c?.organization ?? undefined, project: c?.project ?? undefined } }));
+              setCredentials({}); setModels([]);
+            }}>
+              <option value="">Model-specific credential (legacy)</option>
+              {connections.map(c => <option key={c.id} value={c.id} disabled={!c.enabled && c.id !== f.providerConnectionId}>{c.name}{!c.enabled ? " (disabled)" : ""}</option>)}
+            </Select>
+            {linked && <Button variant="outline" onClick={test} disabled={testing}>Test saved connection</Button>}
+            {!linked && f.id && f.hasKey && <Button variant="outline" disabled={pending} onClick={() => {
+              const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its endpoint, project and audience are preserved. Service bots whose publication is current stay published; bots that already need review still do.", `${f.name} provider`);
+              if (!name?.trim()) return;
+              start(async () => { try { await migrateAppProviderConnection(f.id!, name); onClose(); router.refresh(); toast.success("Credential migrated; select it on other models to reuse it"); } catch { toast.error("Could not migrate this credential. Check the stored model and administrator access."); } });
+            }}>Migrate stored credential to a named connection</Button>}
+          </Field>}
           {entry.baseUrl.mode !== "none" && (
             <Field label="Base URL" hint={entry.baseUrl.hint}>
-              <Input aria-label="Base URL" value={f.baseUrl ?? ""} onChange={(e) => set("baseUrl", e.target.value || null)} placeholder={entry.baseUrl.placeholder} />
+              <Input disabled={linked} aria-label="Base URL" value={f.baseUrl ?? ""} onChange={(e) => set("baseUrl", e.target.value || null)} placeholder={entry.baseUrl.placeholder} />
             </Field>
           )}
 
@@ -217,6 +244,7 @@ function AppDialog({
                 ) : (
                   <Field key={c.key} label={c.label} hint={c.hint}>
                     <Input
+                      disabled={linked && (c.key === "organization" || c.key === "project")}
                       aria-label={c.label}
                       value={String(f.config[c.key] ?? "")}
                       onChange={(e) => setConfig(c.key, e.target.value || undefined)}
@@ -372,7 +400,7 @@ function AppDialog({
   );
 }
 
-export function AppsAdmin({ apps, groups, chatgptEnabled }: { apps: AppRow[]; groups: { id: string; name: string }[]; chatgptEnabled: boolean }) {
+export function AppsAdmin({ apps, groups, chatgptEnabled, connections = [] }: { connections?: ProviderConnectionView[]; apps: AppRow[]; groups: { id: string; name: string }[]; chatgptEnabled: boolean }) {
   const router = useRouter();
   const [edit, setEdit] = useState<FormState | null>(null);
   return (
@@ -423,7 +451,7 @@ export function AppsAdmin({ apps, groups, chatgptEnabled }: { apps: AppRow[]; gr
           </Table>
         </section>;
       })}
-      <AppDialog key={edit?.id ?? (edit ? `new-${edit.provider}` : "none")} app={edit} groups={groups} chatgptEnabled={chatgptEnabled} onClose={() => setEdit(null)} />
+      <AppDialog key={edit?.id ?? (edit ? `new-${edit.provider}` : "none")} app={edit} connections={connections} groups={groups} chatgptEnabled={chatgptEnabled} onClose={() => setEdit(null)} />
     </div>
   );
 }

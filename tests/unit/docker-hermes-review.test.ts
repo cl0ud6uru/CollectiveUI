@@ -248,7 +248,7 @@ describe('Docker Hermes security review regressions', () => {
     pageFixture.requireAdmin.mockResolvedValue({ user: { id: 'review-admin' }, isAdmin: true });
     const { default: AdminAppsPage } = await import('@/app/admin/apps/page');
     const page = await AdminAppsPage();
-    const panel = page.props.children[1];
+    const panel = page.props.children.find((child: unknown) => isValidElement<{ apps?: unknown }>(child) && Array.isArray(child.props.apps));
     expect(isValidElement<{ apps: { id: string }[] }>(panel)).toBe(true);
     if (!isValidElement<{ apps: { id: string }[] }>(panel)) throw new Error('Missing company connection component');
     expect(panel.props.apps.map(app => app.id)).toEqual(['company-app']);

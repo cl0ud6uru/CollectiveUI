@@ -21,6 +21,7 @@ import type { BillingSource, ModelPurpose, ProviderKind } from "./kinds";
 import { defaultsMiddleware, usageMiddleware } from "./middleware";
 import { chatgpt, PROVIDERS, type ChatModel, type EmbedModel, type ProviderContext } from "./providers";
 import { checkHermesUrl, HermesLanguageModel, hermesTarget, stopRun as stopHermesRunOn, type HermesTarget } from "./providers/hermes";
+import { activeProviderConnection, connectionConfig, openProviderCredential } from "./provider-connections";
 import { decodeSecret, openAppSecret, SecretError, type AppSecret } from "./secrets";
 import { allowedHermesModels, hermesTargetKey } from "./providers/hermes/scope";
 import type { UsageContext, UsageScope } from "./usage";
@@ -69,7 +70,7 @@ export type ResolvedModel = {
   replayKey: string | null;
 };
 
-type AppRow = Pick<AiApp, "id" | "name" | "provider" | "providerConfig" | "baseUrl" | "apiKeyEnc" | "credentialMode" | "model" | "embeddingModel">;
+type AppRow = Pick<AiApp, "id" | "name" | "provider" | "providerConfig" | "baseUrl" | "apiKeyEnc" | "credentialMode" | "model" | "embeddingModel"> & { providerConnectionId?: string | null };
 
 function enabledKindOf(app: AppRow): EnabledKind {
   if (!isEnabledKind(app.provider)) throw new ProviderUnavailableError(`${app.name} isn't available with company credentials.`);
@@ -79,14 +80,16 @@ function enabledKindOf(app: AppRow): EnabledKind {
 }
 
 /** Builds the provider context from an app row: parsed config and decoded credentials, never the environment. */
-export function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}): ProviderContext {
+export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}): Promise<ProviderContext> {
   const kind = enabledKindOf(app);
-  const config = readProviderConfig(kind, app.providerConfig);
+  const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId) : undefined;
+  if (connection && kind !== connection.provider) throw new ProviderConfigError(app.name, "saved provider connection kind mismatch");
+  const config = connection ? connectionConfig(connection, app.providerConfig) : readProviderConfig(kind, app.providerConfig);
   if (!config) throw new ProviderConfigError(app.name, `${kind}: invalid provider_config`);
   let secret: AppSecret | undefined;
   let plaintext: string | undefined;
   try {
-    plaintext = openAppSecret(app);
+    plaintext = connection ? openProviderCredential(connection) : openAppSecret(app);
   } catch {
     throw new ProviderConfigError(app.name, `${kind}: stored credentials can't be decrypted (check ENCRYPTION_KEYS)`);
   }
@@ -99,7 +102,7 @@ export function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fe
   } else if (kind !== "openai-compatible") {
     throw new ProviderConfigError(app.name, `${kind}: no credentials stored`);
   }
-  return { appId: app.id, appName: app.name, kind, baseUrl: app.baseUrl, config, secret, ...extra };
+  return { appId: app.id, appName: app.name, kind, baseUrl: connection ? connection.baseUrl : app.baseUrl, config, secret, ...extra };
 }
 
 export function capabilitiesFor(app: AppRow): ModelCapabilities {
@@ -142,7 +145,7 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
   if (opts.run?.hermes && app.provider !== "hermes") throw new ProviderUnavailableError("This run's backend changed. Start a new chat with the updated bot.");
   if (app.provider === "chatgpt") return resolveChatGPT(app, opts);
   if (app.provider === "hermes") return resolveHermes(app, opts);
-  const ctx = providerContextFor(app);
+  const ctx = await providerContextFor(app);
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   const middleware = [usageMiddleware(usageContext(app, opts, app.model))];
   if (ctx.kind !== "openai-compatible") middleware.unshift(defaultsMiddleware(ctx.kind, ctx.config, app.model, opts.purpose));
@@ -156,7 +159,7 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
 
 /** Embedding model for an app that has one configured. Usage is recorded by the caller (src/lib/llm/embeddings.ts). */
 export async function resolveEmbeddingModel(app: AiApp): Promise<EmbedModel> {
-  const ctx = providerContextFor(app);
+  const ctx = await providerContextFor(app);
   if (!app.embeddingModel || !supportsEmbeddings(ctx.kind)) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   if (!instance.embedding) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
@@ -194,7 +197,7 @@ export async function hermesTargetFor(app: AiApp, scope?: { userId: string; botI
     if (!scope) throw new ProviderUnavailableError("Choose a bot to use an automatic Hermes profile. An owned user and bot binding is required.");
     return managedTarget(scope.userId, scope.botId, app.id, scope.provisionId, scope.verify);
   }
-  const ctx = providerContextFor(app);
+  const ctx = await providerContextFor(app);
   const target = hermesTarget(ctx);
   const problem = await checkHermesUrl(target.baseUrl);
   if (problem) throw new ProviderUnavailableError(`${app.name} can't be reached safely: ${problem}.`);

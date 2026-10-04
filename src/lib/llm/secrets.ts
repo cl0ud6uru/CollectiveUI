@@ -1,5 +1,6 @@
 /**
- * App credentials at rest. Everything lives in ai_apps.api_key_enc, encrypted and bound to the app row (AAD).
+ * Legacy model-specific credentials in ai_apps.api_key_enc, encrypted and bound to the app row (AAD).
+ * Reusable OpenAI API credentials live in provider_connections (see provider-connections.ts).
  * Plaintext formats:
  *  - API-key providers (and Bedrock in API-key mode): the key itself, exactly as before this module existed.
  *  - Bedrock with IAM access keys: {"v":1,"accessKeyId","secretAccessKey","sessionToken"?}
