@@ -45,6 +45,7 @@ CMD ["node", "server.js"]
 FROM runtime-deps AS worker
 ENV NODE_ENV=production
 COPY src ./src
+COPY assets/pets ./assets/pets
 COPY tsconfig.json ./
 # The documented offline local-account bootstrap/recovery command also runs in this image.
 COPY scripts/local-account.ts ./scripts/local-account.ts

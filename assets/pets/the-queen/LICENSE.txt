@@ -19,9 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Artwork exception: the Hermes and Hermes Assimilated artwork in assets/pets/hermes
-and assets/pets/hermes-assimilated, and their reproductions in previews/screenshots,
-are excluded from the MIT grant above.
-See THIRD_PARTY_NOTICES.md and the asset README files for provenance and
-artwork notices. No license to underlying third-party artwork is asserted.

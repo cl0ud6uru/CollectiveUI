@@ -1,44 +1,26 @@
-# Hermes v2 — green concept preparation
+# Hermes v2
 
 A black-and-green animated companion celebrating Hermes Agent and its integration with CollectiveUI.
 
 Pet adaptation for CollectiveUI by @cl0ud6uru. Inspired by Hermes Agent from Nous Research. Unofficial community artwork; not affiliated with or endorsed by Nous Research.
 
-## Status
-
-The user selected `hermes-green-concept.png`, an image-generated edit of the
-earlier reference-inspired Hermes pet, as the design for this adaptation. The
-concept could not yet be transferred into the development workspace. No pixels
-have been inspected, no animation frames have been generated, and no runtime
-sprite is included here. The manifest and installer are preparation only; startup
-does not call the installer. The previous black-and-gold artwork is not included.
-
-## Artwork notice
+The user supplied `hermes-green-v2.zip`. Its manifest and lossless WebP are preserved
+byte for byte in `v2/`. The [supplied source notice](SOURCE-README.txt) records image
+generation from the selected green concept and mechanical atlas assembly. The nine
+animations are portrait/bust performances. All 73 occupied frames are distinct;
+all 16 clockwise gaze poses and 15 empty cells are retained.
 
 Complete provenance and third-party licensing permissions for the underlying
-reference artwork have not been established. The credit above is attribution,
-not a license grant. CollectiveUI's MIT license applies to the application code;
-it does not license Hermes artwork or grant rights in the underlying reference.
-No original ownership of the reference or official endorsement is claimed.
-Preserve any source notices supplied with the finished artwork.
+reference artwork have not been established. This artwork and its reproductions
+in previews/screenshots are excluded from CollectiveUI's application MIT license.
+Attribution is not a license grant. No original ownership of the reference or
+additional third-party license or official endorsement is asserted.
 
-## Integration contract
+| Supplied file | SHA-256 |
+| --- | --- |
+| Delivery ZIP | `0bbdd8ca4e09901e8b1b15ff566a827c8feb3794e5ef0106ca59e781d5008d2f` |
+| `v2/pet.json` | `27803aacdcd4bcf4be1ab4f7bdb96cf04a39461c5d9a91df841618a9fa5d1a3f` |
+| `v2/spritesheet.webp` | `80e08093c5cdaa390c6176fca447acf3cacb122e08927573f0f7256622c2c646` |
 
-The planned stable catalog ID is `builtin-hermes-v2`. The installer validates
-the manifest, decodes and normalizes the static raster through the app's importer,
-and checks all required v2 cells before inserting a published catalog entry.
-Insertion is idempotent and concurrency-safe. Existing catalog rows, administrator
-unpublication, bot defaults, personal choices, Off, and private imports are retained.
-
-The finished atlas must contain the nine canonical animation rows (6, 8, 8, 4, 5,
-8, 6, 6, 6 frames) and sixteen clockwise gaze poses in rows 9 and 10. Its dimensions
-must be 1536 × 2288, with 192 × 208 cells and eight columns. All unused cells must
-remain transparent. Structural validation does not establish distinct motion,
-gaze semantics, faithful character identity, or visual quality; those require
-inspection of the actual artwork and browser rendering.
-
-Before publishing: finish and visually inspect the selected green artwork, record
-its source and atlas hashes, test actual file/ZIP import and rendering, wire the
-installer after migrations, include this asset directory in the worker image,
-update the root and served artwork notices, and verify a clean installation.
-Synthetic fixture tests exercise only the installer mechanics, not Hermes pixels.
+The 2,753,718-byte WebP normalizes to a 3,904,456-byte PNG through the app importer,
+below its unchanged 4 MiB limit. See [installation and validation](../README.md).
