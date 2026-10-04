@@ -1,0 +1,170 @@
+/*
+ * Borg theme: "We are the Collective." Near-black hull plating, drone green light, laser-red ocular implants.
+ * Applied as the `borg` class on <html> (next-themes); it also counts as dark for `dark:` utilities (see globals.css).
+ * `:root.borg` outranks the `:root` defaults that globals.css declares after importing this file.
+ * Everything here is scoped to `.borg`, so light and dark are untouched.
+ */
+:root.borg {
+  color-scheme: dark;
+  --bg: #050a07;
+  --sidebar: #020503;
+  --surface: #0a130d;
+  --surface-2: #0e1a12;
+  --hover: rgba(57, 255, 128, 0.08);
+  --fg: #c8f7d6;
+  --muted: #7fbf94;
+  --subtle: #5a8c69;
+  --border: rgba(57, 255, 128, 0.16);
+  --accent: #39ff80; /* drone green */
+  --accent-fg: #021108;
+  --success: #39ff80;
+  --working: #5cf2ff; /* a drone at work: cyan, so it stays distinct from green "done" */
+  --warn: #ffb020;
+  --danger: #ff3b3b;
+  --bubble-bot: #0c1810;
+  --popover: #0b150e;
+  --dialog: #08100a;
+  --code-bg: #030805;
+  --shadow: 0 0 0 1px rgba(57, 255, 128, 0.22), 0 0 24px rgba(57, 255, 128, 0.07), 0 8px 24px rgba(0, 0, 0, 0.6);
+  --laser: #ff2b2b;
+  --borg-glow: rgba(57, 255, 128, 0.35);
+
+  /* Cubes, not pebbles: square the corners Tailwind rounds. `rounded-full` (pills, dots, avatars) is left alone. */
+  --radius-xs: 1px;
+  --radius-sm: 1px;
+  --radius-md: 2px;
+  --radius-lg: 2px;
+  --radius-xl: 3px;
+  --radius-2xl: 4px;
+  --radius-3xl: 6px;
+}
+
+.borg ::selection {
+  background: rgba(57, 255, 128, 0.3);
+  color: #eafff0;
+}
+
+.borg * {
+  scrollbar-color: rgba(57, 255, 128, 0.28) transparent;
+}
+
+.borg :focus-visible {
+  outline-color: var(--accent);
+}
+
+/* Hull plating: a faint circuit grid, CRT scanlines and a slow scanning beam over the whole interface. */
+.borg body::before,
+.borg body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483647;
+}
+.borg body::before {
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 3px),
+    linear-gradient(rgba(57, 255, 128, 0.028) 1px, transparent 1px) 0 0 / 48px 48px,
+    linear-gradient(90deg, rgba(57, 255, 128, 0.028) 1px, transparent 1px) 0 0 / 48px 48px,
+    radial-gradient(ellipse 120% 90% at 50% 50%, transparent 60%, rgba(0, 0, 0, 0.45) 100%);
+}
+.borg body::after {
+  height: 120px;
+  bottom: auto;
+  background: linear-gradient(to bottom, transparent, rgba(57, 255, 128, 0.045) 85%, rgba(57, 255, 128, 0.12) 99%, transparent);
+  animation: borg-scan 9s linear infinite;
+}
+@keyframes borg-scan {
+  from { transform: translateY(-120px); }
+  to { transform: translateY(100vh); }
+}
+
+/* Primary actions glow like a regeneration alcove. */
+.borg .bg-accent {
+  box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--borg-glow);
+}
+.borg .text-success,
+.borg .text-working {
+  text-shadow: 0 0 10px currentColor;
+}
+
+/* Ocular implant: every bot (and the portal mark) gets one laser-red eye. */
+.borg .ocular {
+  fill: var(--laser);
+  filter: drop-shadow(0 0 2px var(--laser)) drop-shadow(0 0 6px rgba(255, 43, 43, 0.6));
+  animation: borg-ocular 3.2s ease-in-out infinite;
+}
+@keyframes borg-ocular {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Streaming caret: a tiny cube transmitting. */
+.borg .streaming-dot::after {
+  border-radius: 1px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+/* Assistant answers read like Collective transmissions. */
+.borg .markdown h1,
+.borg .markdown h2,
+.borg .markdown h3 {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  text-shadow: 0 0 14px var(--borg-glow);
+}
+.borg .markdown a {
+  color: var(--accent);
+}
+.borg .markdown blockquote {
+  border-left-color: var(--accent);
+}
+.borg .markdown th {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.85em;
+  color: var(--accent);
+  border-bottom-color: rgba(57, 255, 128, 0.4);
+}
+
+/* Sign-in: the brand panel becomes the inside of a cube. */
+.borg .login-page {
+  --login-accent: var(--accent);
+}
+.borg .login-story {
+  --fg: #c8f7d6;
+  --bg: #020503;
+  color: #c8f7d6;
+  background: radial-gradient(ellipse at 10% 0%, #0c2614 0%, transparent 55%), #020503;
+}
+.borg .login-story::before {
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(57, 255, 128, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(57, 255, 128, 0.5) 1px, transparent 1px);
+}
+.borg .login-word {
+  background: linear-gradient(180deg, #eafff0 15%, #39ff80 100%);
+  background-clip: text;
+}
+.borg .login-eyebrow {
+  border-color: rgba(57, 255, 128, 0.3);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.borg .login-description {
+  color: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .borg body::after {
+    display: none;
+  }
+  .borg .ocular {
+    animation: none;
+  }
+}

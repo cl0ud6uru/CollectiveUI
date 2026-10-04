@@ -71,7 +71,7 @@ export function BlobSvg({ shape, color, className, state }: { shape: BlobShape; 
         <Shape shape={shape} fill={BLOB_COLORS[color]} />
         <g className="blob-eyes">
           <rect x="38" y={eyeY} width="7" height="15" rx="3.5" fill="white" transform={`rotate(-14 41 ${eyeY + 7})`} />
-          <rect x="55" y={eyeY} width="7" height="15" rx="3.5" fill="white" transform={`rotate(-14 58 ${eyeY + 7})`} />
+          <rect className="ocular" x="55" y={eyeY} width="7" height="15" rx="3.5" fill="white" transform={`rotate(-14 58 ${eyeY + 7})`} />
         </g>
       </g>
     </svg>

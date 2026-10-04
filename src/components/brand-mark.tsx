@@ -13,7 +13,7 @@ export function PortalMark({ className }: { className?: string }) {
     <svg viewBox="0 0 100 100" className={className} aria-hidden>
       <circle cx="50" cy="50" r="44" fill="var(--fg)" />
       <rect x="37" y="36" width="9" height="20" rx="4.5" fill="var(--bg)" transform="rotate(-14 41.5 46)" />
-      <rect x="55" y="36" width="9" height="20" rx="4.5" fill="var(--bg)" transform="rotate(-14 59.5 46)" />
+      <rect className="ocular" x="55" y="36" width="9" height="20" rx="4.5" fill="var(--bg)" transform="rotate(-14 59.5 46)" />
     </svg>
   );
 }

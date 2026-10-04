@@ -28,7 +28,7 @@ function PortalBot({ state }: { state: PetArtState }) {
       {state === "greeting" ? <g stroke="#0d0d0d" strokeWidth="5" strokeLinecap="round" fill="none"><path d="M35 50Q41 39 47 50" /><path d="M54 50Q60 39 66 50" /></g>
         : <g className="blob-eyes">
           <rect x="37" y="36" width="9" height="20" rx="4.5" fill="#0d0d0d" transform="rotate(-14 41.5 46)" />
-          <rect x="55" y="36" width="9" height="20" rx="4.5" fill="#0d0d0d" transform="rotate(-14 59.5 46)" />
+          <rect className="ocular" x="55" y="36" width="9" height="20" rx="4.5" fill="#0d0d0d" transform="rotate(-14 59.5 46)" />
         </g>}
     </g>
   </svg>;

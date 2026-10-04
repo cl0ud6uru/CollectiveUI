@@ -1,7 +1,9 @@
 @import "tailwindcss";
 @import "katex/dist/katex.min.css";
+@import "./borg.css";
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* Borg is a dark theme with its own palette (borg.css), so `dark:` utilities apply to it too. */
+@custom-variant dark (&:where(.dark, .dark *, .borg, .borg *));
 
 /*
  * ChatGPT desktop x Grok Bot palette: neutral ink and greys everywhere; colour comes from bot avatars and status only.
@@ -201,7 +203,9 @@ body {
   background-color: transparent !important;
 }
 .dark .shiki,
-.dark .shiki span {
+.dark .shiki span,
+.borg .shiki,
+.borg .shiki span {
   color: var(--shiki-dark) !important;
 }
 

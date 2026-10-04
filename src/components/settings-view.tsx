@@ -101,6 +101,7 @@ export function SettingsView({
                 <option value="system">System</option>
                 <option value="light">Light</option>
                 <option value="dark">Dark</option>
+                <option value="borg">Borg</option>
               </Select>
             </Field>
             <Field label="Start new chats with" hint="Your choice overrides the organization default. Otherwise, use the coordinator when enabled, then the organization’s model or bot. A chosen bot starts a fresh chat; selecting it in the sidebar opens its home.">
