@@ -26,8 +26,8 @@ async function login(page: Page, role: string) {
 const avatar = (page: Page) => page.locator(`header [data-bot-avatar="${bot}"]`).first();
 async function openSettings(page: Page, botName = name) {
   const button = page.getByRole("button", { name: `Pet avatar settings for ${botName}`, exact: true });
-  await expect.poll(async () => await button.isVisible() || await page.getByRole("button", { name: "Show bot panel" }).isVisible()).toBe(true);
-  if (!await button.isVisible()) await page.getByRole("button", { name: "Show bot panel" }).click();
+  await expect.poll(async () => await button.isVisible() || await page.getByRole("button", { name: "Show bot details" }).isVisible()).toBe(true);
+  if (!await button.isVisible()) await page.getByRole("button", { name: "Show bot details" }).click();
   await button.click();
   await expect(page.getByRole("combobox", { name: "Animation", exact: true })).toBeEnabled();
 }
@@ -152,6 +152,7 @@ test("admin catalog publication and two-user inherited avatars, privacy, revocat
   });
   await test.step("shared identity is consistent everywhere; owner controls and viewer-only motion work by keyboard", async () => {
     await member.goto(`/?bot=${bot}`); await member.waitForURL(/\/c\//);
+    await member.getByRole("button", { name: "Show bot details" }).click();
     for (const location of [avatar(member), member.locator(`nav [data-bot-avatar="${bot}"]`), member.locator(`aside [data-bot-avatar="${bot}"]`).last()]) {
       await expect(location).toHaveAttribute("data-pet-appearance", "catalog");
       await expect(location.locator("img")).toHaveJSProperty("naturalWidth", 1536);

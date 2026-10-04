@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import { toast } from "sonner";
-import { ArrowDown, ChevronsLeft, Menu as MenuIcon, Monitor, SquarePen } from "lucide-react";
+import { ArrowDown, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, SquarePen } from "lucide-react";
 import { grantToolForBot, setConversationLeaf, setMessageFeedback } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { newId } from "@/lib/ids";
@@ -26,6 +26,7 @@ import { parseHermesInput, type CommandResult, type HermesCommandCatalog } from 
 import { composerCommands } from "@/lib/chat/composer-commands";
 import { CommandResultCard } from "./command-result";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Tip } from "@/components/ui/tooltip";
 import { PetChatActivity } from "@/components/pets/pet-context";
 import { hasPendingAsyncTasks } from "@/lib/delegation/policy";
 import type { ConversationSnapshot } from "@/lib/chat/snapshot";
@@ -96,8 +97,36 @@ export function Chat({
   const { user, branding, upsertConversation, setMobileOpen, apps, bots, setBotLive, setChatStatus, serverBots } = useShell();
   const [target, setTarget] = useState<TargetOption | null>(initialTarget);
   const [started, setStarted] = useState(!isNew);
-  const [panelOpen, setPanelOpen] = useState(true);
-  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  // Deliberately visit-local: every chat mount/reload starts collapsed. Opening
+  // details never writes a preference or remounts the conversation/composer.
+  const [detailsView, setDetailsView] = useState<"desktop" | "mobile" | null>(null);
+  const detailsId = useId();
+  const detailsToggleRef = useRef<HTMLButtonElement>(null);
+  const detailsFocusRef = useRef<HTMLElement | null>(null);
+  const detailsLabel = detailsView ? "Hide bot details" : "Show bot details";
+  const controlledDetailsId = detailsView === "mobile" ? `${detailsId}-mobile` : detailsId;
+  const openDetails = () => setDetailsView(window.matchMedia("(min-width: 1024px)").matches ? "desktop" : "mobile");
+  const closeDetails = () => {
+    setDetailsView(null);
+    detailsToggleRef.current?.focus();
+  };
+  useEffect(() => {
+    const layout = window.matchMedia("(min-width: 1024px)");
+    const closeOnLayoutChange = () => {
+      // A CSS-hidden panel must never retain keyboard focus. Close the old view
+      // instead of opening an unsolicited modal when the screen gets smaller.
+      const focusedDetails = detailsFocusRef.current;
+      const restoreFocus = focusedDetails === document.activeElement;
+      setDetailsView(null);
+      // React focus events include portaled dialogs (pet settings, routines).
+      // Wait until they unmount so their focus trap cannot intercept restoration.
+      if (restoreFocus) requestAnimationFrame(() => {
+        if (!focusedDetails?.isConnected) detailsToggleRef.current?.focus();
+      });
+    };
+    layout.addEventListener("change", closeOnLayoutChange);
+    return () => layout.removeEventListener("change", closeOnLayoutChange);
+  }, []);
   const composerRef = useRef<ComposerHandle>(null);
   const commandScope = `${conversationId}:${target?.kind}:${target?.id}`;
   const [commandOutput, setCommandOutput] = useState<{ scope: string; result: CommandResult } | null>(null);
@@ -540,7 +569,7 @@ export function Chat({
             {target?.kind === "bot" && !embedded && <BotChatNavigation botId={target.id} isHome={isBotHome} conversationId={conversationId} onNewHome={() => void executeCommand("/new", [])} />}
             {target?.kind === "bot" && !embedded && (usesWorkspace || workspaceRunning) && (
               <button
-                onClick={() => { if (window.matchMedia("(min-width: 1024px)").matches) setPanelOpen(true); else setMobilePanelOpen(true); }}
+                onClick={openDetails}
                 className={cn("rounded-lg p-2 hover:bg-hover", workspaceRunning ? "text-working" : "text-muted")}
                 aria-label={workspaceRunning ? `${target.name}'s workspace is busy` : `${target.name}'s workspace`}
                 title={workspaceRunning ? "Working in the workspace" : "Workspace"}
@@ -550,9 +579,18 @@ export function Chat({
             )}
             {started && !embedded && <ShareButton conversationId={conversationId} />}
             {target?.kind === "bot" && !embedded && (
-              <button onClick={() => { if (window.matchMedia("(min-width: 1024px)").matches) setPanelOpen(true); else setMobilePanelOpen(true); }} className={`rounded-lg p-2 text-muted hover:bg-hover ${panelOpen ? "lg:hidden" : ""}`} aria-label="Show bot panel">
-                <ChevronsLeft className="h-5 w-5" />
-              </button>
+              <Tip label={detailsLabel}>
+                <button
+                  ref={detailsToggleRef}
+                  onClick={detailsView ? closeDetails : openDetails}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
+                  aria-label={detailsLabel}
+                  aria-expanded={detailsView !== null}
+                  aria-controls={controlledDetailsId}
+                >
+                  {detailsView ? <PanelRightClose aria-hidden className="h-5 w-5" /> : <PanelRightOpen aria-hidden className="h-5 w-5" />}
+                </button>
+              </Tip>
             )}
             <button onClick={() => router.push("/")} className={`rounded-lg p-2 text-muted hover:bg-hover md:hidden ${target?.kind === "bot" ? "hidden" : ""}`} aria-label="New chat">
               <SquarePen className="h-5 w-5" />
@@ -730,14 +768,14 @@ export function Chat({
           </>
         )}
       </div>
-      {target?.kind === "bot" && !embedded && panelOpen && (
-        <div className="hidden lg:block">
-          <BotSidePanel bot={target} onClose={() => setPanelOpen(false)} />
+      {target?.kind === "bot" && !embedded && (
+        <div id={detailsId} onFocusCapture={(event) => { detailsFocusRef.current = event.target; }} hidden={detailsView !== "desktop"}>
+          {detailsView === "desktop" && <BotSidePanel bot={target} onClose={closeDetails} panelId={detailsId} />}
         </div>
       )}
-      {target?.kind === "bot" && !embedded && <Dialog open={mobilePanelOpen} onOpenChange={setMobilePanelOpen}>
-        <DialogContent title={`${target.name} activity`} description="Recent activity, outputs and routines" className="p-2" hideClose>
-          <div className="h-[70vh]"><BotSidePanel mobile bot={target} onClose={() => setMobilePanelOpen(false)} /></div>
+      {target?.kind === "bot" && !embedded && <Dialog open={detailsView === "mobile"} onOpenChange={(open) => { if (!open) setDetailsView(null); }}>
+        <DialogContent title={`${target.name} activity`} description="Recent activity, outputs and routines" className="p-2" hideClose onCloseAutoFocus={(event) => { event.preventDefault(); detailsToggleRef.current?.focus(); }}>
+          <div id={`${detailsId}-mobile`} onFocusCapture={(event) => { detailsFocusRef.current = event.target; }} className="h-[70vh]"><BotSidePanel mobile bot={target} onClose={closeDetails} panelId={`${detailsId}-mobile`} /></div>
         </DialogContent>
       </Dialog>}
     </div>
