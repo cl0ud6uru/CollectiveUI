@@ -98,3 +98,58 @@ test('revocation is reload-safe, retains bots and re-enrollment reuses private m
   await expect(personal.getByText('Runtime ready', { exact: true })).toBeVisible({ timeout: 30000 });
   expect((await pool.query("SELECT id,app_id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') ORDER BY id")).rows).toEqual(before);
 });
+
+test('profile onboarding persists, tests explicitly, rejects stale saves and clears keys', async ({ page, browser }) => {
+  await login(page, 'alice');
+  const [bot] = (await pool.query("SELECT id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') AND name='Hermes'")).rows;
+  const url = `/bots/${bot.id}/settings`;
+  await page.goto(`/bots/${bot.id}`); await page.getByRole('link', { name: 'Hermes settings', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Your native profile' })).toBeVisible();
+  await expect(page.getByText('Setup needed', { exact: true })).toBeVisible();
+  await page.getByLabel('Model provider', { exact: true }).click(); await page.getByRole('option', { name: 'OpenAI API', exact: true }).click();
+  await page.getByLabel('Model ID', { exact: true }).fill('denied-model');
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Add API key', exact: true }).click();
+  const secret = 'sk-browser-synthetic-not-real'; await page.getByLabel('New API key', { exact: true }).fill(secret);
+  await page.getByText('Advanced profile settings', { exact: true }).click();
+  await page.getByLabel('Maximum agent turns', { exact: true }).fill('12');
+  await page.getByLabel('Reasoning effort', { exact: true }).click(); await page.getByRole('option', { name: 'low', exact: true }).click();
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('Saved in this native profile.', { exact: false })).toBeVisible();
+  await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Test saved connection', exact: true })).toBeDisabled();
+  await page.getByLabel('I understand this test may incur inference charges.').check();
+  await page.getByRole('button', { name: 'Test saved connection', exact: true }).click();
+  await expect(page.getByText('The provider rejected the API key.', { exact: false })).toBeVisible();
+  await page.getByLabel('Model ID', { exact: true }).fill('fixture-model');
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('Not tested', { exact: true })).toBeVisible();
+  await page.getByLabel('I understand this test may incur inference charges.').check();
+  await page.getByRole('button', { name: 'Test saved connection', exact: true }).click();
+  await expect(page.getByText('Connection verified for this saved model and API key.', { exact: false })).toBeVisible();
+  const response = await page.request.get(`/api/bots/${bot.id}/native/settings`); expect(await response.text()).not.toContain(secret);
+  await page.reload(); await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-model');
+  await expect(page.getByText('Verified', { exact: true })).toBeVisible();
+  await page.screenshot({ path: '/tmp/hermes-profile-settings-desktop.png', fullPage: true });
+
+  // Two tabs: the second must reload rather than overwrite a newer native revision.
+  const other = await page.context().newPage(); await other.goto(url); await expect(other.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-model');
+  await page.getByLabel('Model ID', { exact: true }).fill('fixture-newer'); await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('Saved in this native profile.', { exact: false })).toBeVisible();
+  await other.getByLabel('Model ID', { exact: true }).fill('fixture-stale'); await other.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(other.getByRole('alert')).toContainText('changed');
+  await other.getByRole('button', { name: 'Reload saved settings', exact: true }).click(); await expect(other.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-newer'); await other.close();
+
+  // Leaving an unsubmitted setup never persists a key or model.
+  await page.getByLabel('Model ID', { exact: true }).fill('discard-this-model');
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Replace API key', exact: true }).click();
+  await page.getByLabel('New API key', { exact: true }).fill('sk-discard-this-fixture'); await page.getByRole('link', { name: 'Done for now', exact: true }).click();
+  await page.goto(url); await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-newer'); await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: '/tmp/hermes-profile-settings-mobile.png', fullPage: true });
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Clear profile key and disable selected provider', exact: true }).click();
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click(); await expect(page.getByText('Setup needed', { exact: true })).toBeVisible();
+
+  const context = await browser.newContext(); const denied = await context.newPage();
+  try { await login(denied, 'bob'); expect([403, 404]).toContain((await denied.request.get(`/api/bots/${bot.id}/native/settings`)).status); }
+  finally { await context.close(); }
+});

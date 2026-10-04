@@ -1,0 +1,135 @@
+'use client';
+import Link from 'next/link';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Check, KeyRound, Settings2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input, Label, Select } from '@/components/ui/input';
+import { profileProviders, profileUpdate, reasoningLevels, testMessages, type ProfileSettings, type ProfileTestResult, type ProfileValues } from '@/docker-hermes/settings';
+import type { DockerStatus } from '@/docker-hermes/types';
+
+type State = { settings: ProfileSettings | null; runtime: Pick<DockerStatus, 'phase' | 'network'> };
+export function HermesProfileSettings({ botId }: { botId: string }) {
+  const [state, setState] = useState<State | null>(null);
+  const [provider, setProvider] = useState<ProfileValues['provider'] | ''>('');
+  const [model, setModel] = useState('');
+  const [effort, setEffort] = useState<ProfileValues['reasoningEffort']>('');
+  const [turns, setTurns] = useState('');
+  const [credentialAction, setCredentialAction] = useState<'keep' | 'replace' | 'clear'>('keep');
+  const [secret, setSecret] = useState('');
+  const [consent, setConsent] = useState(false);
+  const [pending, setPending] = useState<'load' | 'save' | 'test' | null>('load');
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [mustReload, setMustReload] = useState(false);
+  const request = useRef(0), controller = useRef<AbortController | null>(null);
+  const api = `/api/bots/${encodeURIComponent(botId)}/native/settings`;
+  const apply = useCallback((s: ProfileSettings) => {
+    setProvider(s.provider ?? ''); setModel(s.model); setEffort(s.reasoningEffort); setTurns(s.maxTurns === null ? '' : String(s.maxTurns));
+    setSecret(''); setCredentialAction('keep'); setConsent(false);
+  }, []);
+  const reload = useCallback(async () => {
+    const serial = ++request.current; controller.current?.abort(); const abort = new AbortController(); controller.current = abort;
+    setPending('load'); setError(''); setNotice(''); setSecret(''); setConsent(false);
+    try {
+      const res = await fetch(api, { cache: 'no-store', signal: abort.signal }); const data = await res.json();
+      if (serial !== request.current) return;
+      if (!res.ok) throw new Error(data.error || 'Settings could not be loaded.');
+      setState(data); if (data.settings) apply(data.settings); setMustReload(false);
+    } catch (e) { if (serial === request.current) { setError(e instanceof Error ? e.message : 'Settings unavailable.'); setMustReload(true); } }
+    finally { if (serial === request.current) setPending(null); }
+  }, [api, apply]);
+  useEffect(() => {
+    let mounted = true; const sequence = request, abort = controller;
+    queueMicrotask(() => { if (mounted) void reload(); });
+    return () => { mounted = false; ++sequence.current; abort.current?.abort(); };
+  }, [reload]);
+  const saved = state?.settings;
+  const dirty = !!saved && (provider !== (saved.provider ?? '') || model !== saved.model || effort !== saved.reasoningEffort || turns !== (saved.maxTurns === null ? '' : String(saved.maxTurns)) || credentialAction !== 'keep');
+  const lastTest = saved?.lastTest;
+  const hasKey = !!provider && !!saved?.credentials[provider];
+  async function submit(operation: 'save' | 'test') {
+    if (!saved || pending || mustReload) return;
+    let payload: unknown;
+    if (operation === 'save') {
+      const parsed = profileUpdate.safeParse({ revision: saved.revision, provider, model, reasoningEffort: effort, maxTurns: turns === '' ? null : Number(turns),
+        credential: credentialAction === 'replace' ? { action: 'replace', value: secret } : { action: credentialAction } });
+      if (!parsed.success) { setError('Choose a provider and model ID, enter a valid API key when replacing, and use 1–1000 turns or leave it blank.'); return; }
+      payload = { operation, settings: parsed.data };
+    } else {
+      if (!consent || dirty) return;
+      payload = { operation, test: { revision: saved.revision, requestId: crypto.randomUUID(), consent: true } };
+    }
+    const serial = ++request.current; controller.current?.abort(); const abort = new AbortController(); controller.current = abort;
+    setPending(operation); setError(''); setNotice(''); setConsent(false);
+    try {
+      const res = await fetch(api, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: abort.signal });
+      const data = await res.json(); if (serial !== request.current) return;
+      setSecret('');
+      if (!res.ok) throw new Error(data.error || 'The operation could not be confirmed.');
+      if (operation === 'save') {
+        apply(data); setState(s => s ? { ...s, settings: data } : s);
+        setNotice('Saved in this native profile. Start a new chat to use these defaults. Next, test the connection.');
+      } else {
+        setState(s => s?.settings ? { ...s, settings: { ...s.settings, lastTest: data as ProfileTestResult } } : s);
+      }
+    } catch (e) {
+      if (serial === request.current) { setError(e instanceof Error ? e.message : 'The operation could not be confirmed.'); setMustReload(true); setSecret(''); }
+    } finally { if (serial === request.current) setPending(null); }
+  }
+  return <div className="space-y-5">
+    <div className="rounded-2xl border border-border bg-surface p-5 space-y-3">
+      <div className="flex items-center gap-2"><Settings2 size={18} /><h2 className="font-semibold">Your native profile</h2></div>
+      <p className="text-sm text-muted">Choose the provider and model for this bot. Settings and API keys stay in its native Hermes profile.</p>
+      <ol className="grid gap-2 text-sm sm:grid-cols-3" aria-label="Hermes setup steps">
+        <li className="rounded-lg bg-surface-2 p-3">1. Runtime <strong className="block">{state?.runtime.phase === 'ready' ? 'Ready' : state?.runtime.phase ?? 'Checking…'}</strong></li>
+        <li className="rounded-lg bg-surface-2 p-3">2. Provider <strong className="block">{saved?.provider && saved.credentials[saved.provider] ? 'API key saved' : 'Setup needed'}</strong></li>
+        <li className="rounded-lg bg-surface-2 p-3">3. Connection <strong className="block">{lastTest?.code === 'verified' ? 'Verified' : lastTest ? 'Needs attention' : 'Not tested'}</strong></li>
+      </ol>
+      {state?.runtime.network === 'none' && <p role="status" className="text-sm text-muted">Runtime ready does not mean online. This runtime has no external network access. An operator must configure reviewed provider egress; these settings cannot change that policy.</p>}
+      <p className="text-xs text-muted">Container resources, network access and runtime controls apply to all your profiles. <Link className="underline" href="/settings?tab=connected-accounts">Manage your runtime</Link></p>
+    </div>
+    {error && <p role="alert" className="rounded-xl border border-danger/30 p-4 text-sm text-danger">{error} Reload to reconcile the saved state before trying again.</p>}
+    {notice && <p role="status" className="text-sm flex gap-2"><Check size={18} className="shrink-0" />{notice}</p>}
+    {pending === 'load' && <p role="status" className="text-sm text-muted">Loading native settings…</p>}
+    {state && state.runtime.phase !== 'ready' && <p className="text-sm">Start your runtime in <Link href="/settings?tab=connected-accounts" className="underline">Personal Hermes</Link>, then reload this page. Saved profile data is retained.</p>}
+    {saved && <>
+      <form className="rounded-2xl border border-border p-5 space-y-5" onSubmit={e => { e.preventDefault(); void submit('save'); }}>
+        <fieldset disabled={!!pending || mustReload} className="min-w-0 space-y-5">
+          <legend className="mb-4 flex items-center gap-2 font-semibold"><KeyRound size={18} />Provider and model</legend>
+          <div><Label htmlFor="hermes-provider">Model provider</Label><Select id="hermes-provider" value={provider} onChange={e => { setProvider(e.target.value as typeof provider); setSecret(''); setCredentialAction('keep'); setConsent(false); }}>
+            <option value="">Choose an API-key provider</option>{profileProviders.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </Select><p className="mt-2 text-xs text-muted">This first version supports API keys. Native OAuth, custom endpoints and other providers require native maintenance; existing settings are preserved until you save.</p></div>
+          {provider && !saved.editableProviders[provider] && <p role="alert" className="text-sm text-danger">Native routing or authentication for this provider requires native maintenance before editing here.</p>}
+          <div><Label htmlFor="hermes-model">Model ID</Label><Input id="hermes-model" value={model} onChange={e => setModel(e.target.value)} autoComplete="off" placeholder={profileProviders.find(p => p.id === provider)?.example ?? 'Exact model ID from your provider'} maxLength={200} /><p className="mt-2 text-xs text-muted">Use a model available to your account. Models are not fetched automatically.</p></div>
+          <div><Label htmlFor="hermes-key-action">API key</Label><Select id="hermes-key-action" value={credentialAction} onChange={e => { setCredentialAction(e.target.value as typeof credentialAction); setSecret(''); }}>
+            <option value="keep">{hasKey ? 'Keep saved key ••••••••' : 'Keep current state (no profile key saved)'}</option>
+            <option value="replace">{hasKey ? 'Replace API key' : 'Add API key'}</option><option value="clear">Clear profile key and disable selected provider</option>
+          </Select>
+          {credentialAction === 'replace' && <div className="mt-3"><Label htmlFor="hermes-api-key">New API key</Label><Input id="hermes-api-key" type="password" autoComplete="new-password" value={secret} onChange={e => setSecret(e.target.value)} maxLength={4096} spellCheck={false} /><p className="mt-2 text-xs text-muted">Write-only. The saved value is never sent back to your browser.</p></div>}
+          {credentialAction === 'clear' && <p className="mt-2 text-sm text-muted">Saving removes this provider’s profile API key and disables that provider here, preventing fallback to an inherited key. Other providers and native sign-ins are unchanged.</p>}
+          </div>
+          <details className="rounded-xl border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Advanced profile settings</summary>
+            <div className="mt-4 space-y-4">
+              {!saved.advancedSupported && <p role="alert" className="text-sm text-danger">Native advanced values are outside this editor’s supported range. Reconcile them in native maintenance before saving.</p>}
+              <div><Label htmlFor="hermes-effort">Reasoning effort</Label><Select id="hermes-effort" value={effort} onChange={e => setEffort(e.target.value as typeof effort)}>{reasoningLevels.map(level => <option key={level} value={level}>{level || 'Native default'}</option>)}</Select><p className="mt-2 text-xs text-muted">Hermes applies the levels supported by the model. Native per-model overrides can take precedence.</p></div>
+              <div><Label htmlFor="hermes-turns">Maximum agent turns</Label><Input id="hermes-turns" type="number" min={1} max={1000} value={turns} onChange={e => setTurns(e.target.value)} placeholder="Native default · unlimited" /><p className="mt-2 text-xs text-muted">An agent turn is a model/tool iteration, not a chat message. Leave blank for native unlimited; runtime time limits still apply.</p></div>
+            </div>
+          </details>
+          <p className="text-xs text-muted">A changed save safely restarts your runtime to reload native credentials and settings. All your profiles must be idle first. Existing conversations may retain native session overrides; start a new chat for these defaults. Skills and memory remain read-only here.</p>
+          <div className="flex flex-wrap items-center gap-2"><Button type="submit" disabled={!dirty || !saved.advancedSupported || (!!provider && !saved.editableProviders[provider])}>{pending === 'save' ? 'Saving safely…' : 'Save profile settings'}</Button><Button variant="ghost" disabled={!dirty} onClick={() => { apply(saved); setNotice('Unsaved changes discarded.'); }}>Discard changes</Button></div>
+        </fieldset>
+      </form>
+      <section className="rounded-2xl border border-border p-5 space-y-3" aria-labelledby="hermes-test-title">
+        <h2 id="hermes-test-title" className="font-semibold">Test the connection</h2>
+        <p className="text-sm text-muted">Sends one short inference request using the saved API key and model, with no tools or chat history. Your provider may charge for it. Saving alone sends no inference request.</p>
+        {lastTest && <p role="status" className="text-sm">{testMessages[lastTest.code]} <span className="block text-xs text-muted">Last explicit test: {new Date(lastTest.checkedAt).toLocaleString()}</span></p>}
+        {dirty && <p className="text-xs text-muted">Save or discard your changes before testing.</p>}
+        <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent} disabled={!!pending || dirty || mustReload} onChange={e => setConsent(e.target.checked)} />I understand this test may incur inference charges.</label>
+        <Button disabled={!consent || !!pending || dirty || mustReload} onClick={() => void submit('test')}>{pending === 'test' ? 'Testing once…' : 'Test saved connection'}</Button>
+      </section>
+      <p className="text-xs text-muted">You can leave setup and return from this bot’s Hermes settings. Unsaved keys are discarded. A save or test already submitted may finish after you leave; reload to see its outcome.</p>
+      <Link className="inline-block text-sm underline" href={`/bots/${botId}`}>Done for now</Link>
+    </>}
+    <Button variant="outline" disabled={!!pending} onClick={() => void reload()}>Reload saved settings</Button>
+  </div>;
+}

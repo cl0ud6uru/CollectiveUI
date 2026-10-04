@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { NativeResources } from '../../src/docker-hermes/types';
+import type { ProfileSettings, ProfileUpdate } from '../../src/docker-hermes/settings';
+import { createHash } from 'node:crypto';
 import { DockerBroker } from '../../src/docker-hermes/broker';
 import { BrokerConfig, type RuntimeDriver, type Profile } from '../../src/docker-hermes/docker';
 import { stopOwnedGroup } from '../../src/local-hermes/process-group';
@@ -11,6 +13,7 @@ import { listenBroker } from '../../src/docker-hermes/main';
 import { createLocalUser } from '../../src/lib/auth/local';
 import { pool } from '../../src/db';
 class FixtureDriver implements RuntimeDriver {
+  saved = new Map<string, ProfileSettings>();
   active = new Set<string>(); profilesByOwner = new Map<string, Profile[]>(); children = new Map<string, Set<ChildProcessWithoutNullStreams>>();
   ensureCount = 0; createCount = 0; stopFailure = false; gate?: Promise<void>;
   constructor(readonly root: string) {}
@@ -38,6 +41,22 @@ class FixtureDriver implements RuntimeDriver {
     if (!(await this.profiles(owner)).some(p => p.name === name && p.identity === identity)) throw new Error('Changed identity');
     return { skills: [{ id: 'test', name: owner, content: name }], memories: [] };
   }
+  async reopen(owner: string) { this.active.add(owner); }
+  async settings(owner: string, name: string, identity: string, update?: ProfileUpdate) {
+    if (!(await this.profiles(owner)).some(p => p.name === name && p.identity === identity)) throw new Error('Changed identity');
+    const key = `${owner}:${name}`;
+    const saved = this.saved.get(key) ?? { revision: 'a'.repeat(64), provider: null, model: '', reasoningEffort: '', maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false } };
+    if (!update) return saved;
+    if (update.revision !== saved.revision) throw new Error('Stale fixture update');
+    const next: ProfileSettings = { ...saved, provider: update.provider, model: update.model, reasoningEffort: update.reasoningEffort, maxTurns: update.maxTurns,
+      revision: createHash('sha256').update(saved.revision + JSON.stringify({ provider: update.provider, model: update.model, action: update.credential.action })).digest('hex'),
+      credentials: { ...saved.credentials, [update.provider]: update.credential.action === 'keep' ? saved.credentials[update.provider] : update.credential.action === 'replace' } };
+    this.saved.set(key, next); return next;
+  }
+  async testSettings(owner: string, name: string, identity: string) {
+    const s = await this.settings(owner, name, identity);
+    return { code: !s.provider || !s.credentials[s.provider] ? 'not_configured' as const : s.model === 'denied-model' ? 'authentication_failed' as const : 'verified' as const };
+  }
   transport(owner: string, profile: string) {
     return { spawn: () => {
       const child = spawn('/usr/bin/python3', ['-u', '-m', 'tui_gateway.entry'], { cwd: path.resolve('tests/fixtures/hermes-native'), detached: true,
@@ -60,7 +79,7 @@ async function main() {
   const root = await mkdtemp(path.join(tmpdir(),'dh-browser-'));
   for (const owner of [alice.id,bob.id]) await mkdir(path.join(root,owner,'default'),{ recursive:true,mode:0o700 });
   for (const dir of ['state','ipc']) await mkdir(path.join(root,dir),{mode:0o700});
-  const config=BrokerConfig.parse({ stateDir:path.join(root,'state'),socketPath:path.join(root,'ipc/b.sock'),bridgePath:path.resolve('src/docker-hermes/bridge.py'),namespace:'cui-browser',image:`nousresearch/hermes-agent@sha256:${'a'.repeat(64)}` });
+  const config=BrokerConfig.parse({ stateDir:path.join(root,'state'),socketPath:path.join(root,'ipc/b.sock'),bridgePath:path.resolve('src/docker-hermes/bridge.py'),namespace:'cui-browser',image:`nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`, network: process.env.DOCKER_HERMES_BROWSER_ONLINE === '1' ? 'proxy' : 'none' });
   const driver=new FixtureDriver(root);
   const create=driver.create.bind(driver);driver.create=async(owner,name)=>{await mkdir(path.join(root,owner,name),{recursive:true});return create(owner,name);};
   driver.resources=async()=>({skills:[{id:'native-skill',name:'Native example skill',content:'Safe native skill content'}],memories:[{id:'MEMORY.md',content:'Native remembered fact'}]});
