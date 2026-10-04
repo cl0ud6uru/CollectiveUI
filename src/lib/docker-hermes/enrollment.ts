@@ -6,8 +6,15 @@ import { HttpError } from '@/lib/authz';
 import { ownerId } from '@/docker-hermes/types';
 import { dockerControl } from './client';
 
-export async function lockDockerOwner(tx: Tx, id: string) {
+/** Worker passes `waitMs` so one owner's long-held lock (e.g. a slow native setup) cannot stall other owners' leases. */
+export async function lockDockerOwner(tx: Tx, id: string, waitMs?: number) {
+  if (waitMs !== undefined) await tx.execute(sql`select set_config('lock_timeout', ${`${waitMs}ms`}, true)`);
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`docker-hermes:${id}`}))`);
+}
+/** PostgreSQL lock_not_available: the owner is busy elsewhere; nothing was decided or changed. */
+export function isOwnerLockBusy(e: unknown): boolean {
+  for (let c = e; c && typeof c === 'object'; c = (c as { cause?: unknown }).cause) if ((c as { code?: unknown }).code === '55P03') return true;
+  return false;
 }
 export async function freshEnrollmentAdmin(p: Principal, tx: Tx) {
   const fresh = await loadPrincipal(p.user.id, tx);
@@ -33,9 +40,9 @@ export async function setDockerEnrollment(p: Principal, id: string, enabled: boo
   if (!enabled) await cleanupDockerEnrollment(id);
 }
 /** Worker/admin retry path. Serializes with leases and re-enrollment, retaining all ownership/data. */
-export async function cleanupDockerEnrollment(id: string) {
+export async function cleanupDockerEnrollment(id: string, waitMs?: number) {
   return db.transaction(async tx => {
-    await lockDockerOwner(tx, id);
+    await lockDockerOwner(tx, id, waitMs);
     const [row] = await tx.select().from(dockerHermesEnrollments).where(eq(dockerHermesEnrollments.userId, id));
     if (row?.enabled || row?.cleanup === 'stopped') return;
     if (row) await tx.update(dockerHermesEnrollments).set({ cleanup: 'stopping', error: null }).where(eq(dockerHermesEnrollments.userId, id));

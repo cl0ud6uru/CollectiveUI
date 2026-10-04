@@ -133,6 +133,37 @@ suite('database personal Hermes enrollment (mock broker, real PostgreSQL)', () =
     expect(f.calls).toEqual([]); expect(await dockerAllowed(alice)).toBe(true);
     await setDockerEnrollment(admin, alice.user.id, false);
   });
+  it('a long-held owner lock delays only that owner, never other leases, and is not treated as revocation', async () => {
+    await setDockerEnrollment(admin, alice.user.id, true); await setDockerEnrollment(admin, bob.user.id, true);
+    // Simulates a slow setup/profile action holding Bob's owner lock across a broker call.
+    const holder = await pool.connect();
+    try {
+      await holder.query('begin'); await holder.query('select pg_advisory_xact_lock(hashtext($1))', [`docker-hermes:${bob.user.id}`]);
+      f.owners = [bob.user.id, alice.user.id]; f.calls = [];
+      const started = Date.now(); await reconcileDockerRuntimes();
+      expect(Date.now() - started).toBeLessThan(10000);
+      expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/lease' });
+      expect(f.calls.filter(c => c.owner === bob.user.id)).toEqual([]);
+    } finally { await holder.query('rollback'); holder.release(); }
+    f.calls = []; await reconcileDockerRuntimes();
+    expect(f.calls).toContainEqual({ owner: bob.user.id, action: '/control/lease' });
+    await setDockerEnrollment(admin, alice.user.id, false); await setDockerEnrollment(admin, bob.user.id, false);
+    await db.delete(dockerHermesEnrollments).where(eq(dockerHermesEnrollments.userId, bob.user.id));
+  });
+  it('a worker cleanup retry skips an owner lock held elsewhere and retries on a later tick', async () => {
+    await setDockerEnrollment(admin, bob.user.id, true);
+    f.stopping = true; await setDockerEnrollment(admin, bob.user.id, false); f.stopping = false;
+    const holder = await pool.connect();
+    try {
+      await holder.query('begin'); await holder.query('select pg_advisory_xact_lock(hashtext($1))', [`docker-hermes:${bob.user.id}`]);
+      f.owners = []; f.calls = [];
+      const started = Date.now(); await reconcileDockerRuntimes();
+      expect(Date.now() - started).toBeLessThan(10000);
+      expect(f.calls.filter(c => c.owner === bob.user.id)).toEqual([]); expect(await row(bob.user.id)).toMatchObject({ cleanup: 'pending' });
+    } finally { await holder.query('rollback'); holder.release(); }
+    await reconcileDockerRuntimes(); expect(await row(bob.user.id)).toMatchObject({ cleanup: 'stopped' });
+    await db.delete(dockerHermesEnrollments).where(eq(dockerHermesEnrollments.userId, bob.user.id));
+  });
   it('legacy migration is previewed, explicit, atomic on invalid IDs, audited and cannot override revocation', async () => {
     const raw = `${alice.user.id}, ${bob.user.id};bad/id;unknown-user`;
     expect(legacyEnrollmentIds(raw).invalid).toHaveLength(1);

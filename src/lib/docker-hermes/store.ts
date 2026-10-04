@@ -16,11 +16,11 @@ export async function freshDocker(p: Principal, create = false, q: DbOrTx = db) 
   if (create) await assertDockerCreate(fresh, await getSetting('tools', q), q); else await assertDockerAllowed(fresh, q);
   return fresh;
 }
-export async function pairDockerBot(p: Principal, raw: DockerBinding) {
+export async function pairDockerBot(p: Principal, raw: DockerBinding, lockWaitMs?: number) {
   const b = bindingSchema.parse(raw);
   if (b.ownerId !== p.user.id) throw new HttpError(403, 'Runtime owner mismatch.');
   return db.transaction(async tx => {
-    await lockDockerOwner(tx, p.user.id);
+    await lockDockerOwner(tx, p.user.id, lockWaitMs);
     // Serialize account revocation with final app publication.
     await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
     const fresh = await freshDocker(p, true, tx);
