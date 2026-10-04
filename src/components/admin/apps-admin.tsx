@@ -212,7 +212,7 @@ function AppDialog({
             </Select>
             {linked && <Button variant="outline" onClick={test} disabled={testing}>Test saved connection</Button>}
             {!linked && f.id && f.hasKey && <Button variant="outline" disabled={pending} onClick={() => {
-              const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its endpoint, project and audience are preserved. Published service bots using this model must be reviewed and published again.", `${f.name} provider`);
+              const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its endpoint, project and audience are preserved. Service bots whose publication is current stay published; bots that already need review still do.", `${f.name} provider`);
               if (!name?.trim()) return;
               start(async () => { try { await migrateAppProviderConnection(f.id!, name); onClose(); router.refresh(); toast.success("Credential migrated; select it on other models to reuse it"); } catch { toast.error("Could not migrate this credential. Check the stored model and administrator access."); } });
             }}>Migrate stored credential to a named connection</Button>}
