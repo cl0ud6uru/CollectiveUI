@@ -1,0 +1,50 @@
+name: Docker validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Docker unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: git rev-parse HEAD
+      - run: docker build --target test -t collectiveui-test:ci .
+      - run: docker run --rm --init --network none collectiveui-test:ci
+
+  worker:
+    name: Production worker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: git rev-parse HEAD
+      - run: docker build --target worker -t collectiveui-worker:test .
+      - name: Record and audit installed runtime dependencies
+        run: |
+          mkdir -p test-results/docker
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm query '*' --json > test-results/docker/worker-dependencies.json
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm ls --omit=dev --all --json > test-results/docker/worker-tree.json
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm audit --omit=dev --json > test-results/docker/worker-audit.json
+      - name: Non-root runtime, migrations, queued reply and graceful shutdown
+        run: bash tests/docker/worker-smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: worker-dependency-audit
+          path: test-results/docker/*.json
