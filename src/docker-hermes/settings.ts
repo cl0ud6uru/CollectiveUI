@@ -36,7 +36,7 @@ const providerBlockerMessages = {
   custom_provider: 'A custom native provider overrides this provider. An operator must reconcile that override first.',
   credential_pool: 'This provider has imported or mixed native credentials. An operator must reconcile its credential pool first.',
   provider_authentication: 'This provider uses native authentication outside this editor. An operator must reconcile it first.',
-  codex_runtime: 'This profile selects a separate native Codex runtime. An operator must reconcile that runtime choice before using device sign-in here.',
+  codex_runtime: 'This profile selects a native runtime mode outside this editor. An operator must reconcile that runtime choice before editing here.',
 } as const;
 export type ProfileSettings = {
   revision: string;
@@ -46,7 +46,7 @@ export type ProfileSettings = {
   maxTurns: number | null;
   credentials: Record<ProfileValues['provider'], boolean>;
   advancedSupported: boolean;
-  editableProviders: Record<ProfileValues['provider'], boolean>;
+  editableProviders: Partial<Record<ProfileValues['provider'], boolean>>;
   providerBlockers?: Partial<Record<ProfileValues['provider'], keyof typeof providerBlockerMessages | null>>;
   codexModels?: string[];
   lastTest?: ProfileTestResult | null;

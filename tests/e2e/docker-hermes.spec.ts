@@ -71,6 +71,11 @@ test('native creation stays compact and an existing profile keeps editable bot d
   await expect(page.getByPlaceholder('Name your bot',{exact:true})).toBeEnabled();
   const [bot]=(await pool.query("SELECT id FROM bots WHERE name='Browser Coder' AND owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice')")).rows;
   expect(bot).toBeDefined();await page.goto(`/bots/${bot.id}/edit`);
+  // Confirm the client controls are interactive before typing into the server-rendered form.
+  await page.getByRole('button', { name: 'Pet avatar settings for Browser Coder', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Pet avatar', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Pet avatar', exact: true })).toHaveCount(0);
   await page.getByPlaceholder('Name your bot',{exact:true}).fill('Browser Coder Updated');await page.getByRole('button',{name:'Update',exact:true}).click();
   await expect.poll(async()=>(await pool.query('SELECT name FROM bots WHERE id=$1',[bot.id])).rows[0].name).toBe('Browser Coder Updated');
   await page.goto('/settings?tab=connected-accounts');const personal=page.locator('details').filter({has:page.locator('summary').filter({hasText:'Personal Hermes'})}).first();await personal.locator('summary').first().click();
@@ -119,7 +124,11 @@ test('starter setup explains blocked routes, clears incompatible models and open
 
   // Only mutate response fixtures: no sign-in, profile save, or inference request.
   let scenario: 'old-bridge' | 'custom-route' | 'offline' = 'old-bridge';
-  let mutations = 0;
+  let mutations = 0, unsupportedCodexRequests = 0;
+  await page.route(`**/api/bots/${bot.id}/native/codex`, async route => {
+    if (scenario !== 'offline') { unsupportedCodexRequests++; await route.fulfill({ status: 404, json: { error: 'Synthetic older bridge: subscription command unavailable.' } }); }
+    else await route.continue();
+  });
   await page.route(api, async route => {
     if (route.request().method() !== 'GET') { mutations++; await route.abort(); return; }
     const response = await route.fetch(), data = await response.json();
@@ -133,9 +142,15 @@ test('starter setup explains blocked routes, clears incompatible models and open
     await route.fulfill({ response, json: data });
   });
   await page.reload();
-  await expect(page.getByRole('alert')).toContainText('update the Hermes bridge');
+  await expect(page.locator('#hermes-save-blocker')).toContainText('update the Hermes bridge');
+  await expect(page.getByRole('button', { name: 'Sign in with OpenAI', exact: true })).toHaveCount(0);
+  await page.setViewportSize({ width: 1360, height: 1700 });
+  await page.screenshot({ path: '/tmp/hermes-pr22-missing-capability.png', fullPage: true });
   scenario = 'custom-route'; await page.reload();
-  await expect(page.getByRole('alert')).toContainText('custom provider endpoint');
+  await expect(page.locator('#hermes-save-blocker')).toContainText('custom provider endpoint');
+  await page.screenshot({ path: '/tmp/hermes-pr22-protected-config.png', fullPage: true });
+  await page.setViewportSize({ width: 1360, height: 900 });
+  expect(unsupportedCodexRequests).toBe(0);
   scenario = 'offline'; await page.reload();
   await expect(page.getByText('Offline · access blocked', { exact: true })).toBeVisible();
   await expect(page.getByText('Not tested', { exact: true })).toBeVisible();
@@ -143,6 +158,8 @@ test('starter setup explains blocked routes, clears incompatible models and open
   await expect(page.locator('#codex-start-blocker')).toContainText('runtime is offline');
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 390, height: 2300 });
+  await page.screenshot({ path: '/tmp/hermes-pr22-offline-mobile.png', fullPage: true });
   expect(mutations).toBe(0);
   await page.getByRole('link', { name: 'Manage your runtime', exact: true }).click();
   const personal = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'Personal Hermes' }) }).first();
@@ -294,11 +311,41 @@ test('lost subscription mutation response reloads the native revision before ret
     } else await route.continue();
   });
   await page.getByRole('button', { name: 'Disconnect this profile', exact: true }).click();
-  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'ChatGPT / Codex subscription', exact: true }).getByRole('alert')).toBeVisible();
   await page.getByRole('button', { name: 'Reload sign-in status', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sign in with OpenAI', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Sign in with OpenAI', exact: true }).click();
   await expect(page.getByLabel('OpenAI verification code')).toHaveText('DEMO-CODE');
   await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
   await expect(page.getByText('Sign-in cancelled. This profile is disconnected.', { exact: true })).toBeVisible();
+});
+
+test('changing providers clears unsaved credentials and restores the saved model when switching back', async ({ page }) => {
+  await login(page, 'alice');
+  const [bot] = (await pool.query("SELECT id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') AND name='Hermes'")).rows;
+  await page.goto(`/bots/${bot.id}/settings`);
+  const model = page.getByLabel('Model ID', { exact: true });
+  await expect(model).toHaveValue('fixture-codex-model');
+  const select = async (name: string) => {
+    await page.getByLabel('Model provider', { exact: true }).click();
+    await page.getByRole('option', { name, exact: true }).click();
+  };
+  await select('Anthropic'); await expect(model).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Save profile settings', exact: true })).toBeDisabled();
+  await model.fill('unsaved-anthropic');
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Add API key', exact: true }).click();
+  await page.getByLabel('New API key', { exact: true }).fill('sk-unsaved-provider-fixture');
+  await select('ChatGPT / Codex subscription'); await expect(model).toHaveValue('fixture-codex-model');
+  await select('Anthropic'); await expect(model).toHaveValue('');
+  await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(model).toHaveValue('fixture-codex-model');
+  await select('Anthropic'); await model.fill('fixture-anthropic-model');
+  await page.screenshot({ path: '/tmp/hermes-pr22-provider-switch.png', fullPage: true });
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('Saved in this native profile.', { exact: false })).toBeVisible();
+  await page.reload(); await expect(model).toHaveValue('fixture-anthropic-model');
+  const saved = await (await page.request.get(`/api/bots/${bot.id}/native/settings`)).json();
+  expect(saved.settings.provider).toBe('anthropic');
+  expect(JSON.stringify(saved)).not.toContain('sk-unsaved-provider-fixture');
 });
