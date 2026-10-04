@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, type DbOrTx } from '@/db';
 import { aiApps, bots, users } from '@/db/schema';
 import { loadPrincipal, type Principal } from '@/lib/auth/groups';
@@ -9,17 +9,18 @@ import { initializeBotPet } from '@/lib/pets/store';
 import { bindingSchema, type DockerBinding, type DockerStatus, type NativeResources } from '@/docker-hermes/types';
 import { assertDockerAllowed, assertDockerCreate, isDockerHermes } from './policy';
 import { dockerControl } from './client';
+import { lockDockerOwner } from './enrollment';
 export async function freshDocker(p: Principal, create = false, q: DbOrTx = db) {
   const fresh = await loadPrincipal(p.user.id, q);
   if (!fresh || fresh.user.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, 'Your access changed. Sign in again.');
-  if (create) assertDockerCreate(fresh, await getSetting('tools', q)); else assertDockerAllowed(fresh);
+  if (create) await assertDockerCreate(fresh, await getSetting('tools', q), q); else await assertDockerAllowed(fresh, q);
   return fresh;
 }
 export async function pairDockerBot(p: Principal, raw: DockerBinding) {
   const b = bindingSchema.parse(raw);
   if (b.ownerId !== p.user.id) throw new HttpError(403, 'Runtime owner mismatch.');
   return db.transaction(async tx => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`docker-hermes:${p.user.id}`}))`);
+    await lockDockerOwner(tx, p.user.id);
     // Serialize account revocation with final app publication.
     await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
     const fresh = await freshDocker(p, true, tx);
@@ -69,4 +70,13 @@ export async function isPersonalHermesConversation(conv: { botId: string | null;
   }
   const [app] = conv.appId ? await db.select().from(aiApps).where(eq(aiApps.id, conv.appId)) : [];
   return !!app && isDockerHermes(app);
+}
+
+/** Serialize setup/lease dispatch with revocation. A queued stale action must recheck after taking the lock. */
+export async function withDockerAccess<T>(p: Principal, create: boolean, fn: (fresh: Principal) => Promise<T>) {
+  return db.transaction(async tx => {
+    await lockDockerOwner(tx, p.user.id);
+    const fresh = await freshDocker(p, create, tx);
+    return fn(fresh);
+  });
 }

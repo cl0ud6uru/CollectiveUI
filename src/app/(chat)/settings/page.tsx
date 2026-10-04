@@ -24,9 +24,9 @@ export default async function SettingsPage() {
     getPendingChatGPTLogin(p.user.id),
   ]);
   let hermes = null;
-  if (dockerAllowed(p)) {
+  if (await dockerAllowed(p)) {
     let canCreate = true;
-    try { assertDockerCreate(p, await getSetting("tools")); } catch { canCreate = false; }
+    try { await assertDockerCreate(p, await getSetting("tools")); } catch { canCreate = false; }
     hermes = <PersonalHermes canCreate={canCreate} />;
   }
   const allowed = userMayUseChatGPT(p, chatgptSettings);

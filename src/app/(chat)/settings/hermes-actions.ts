@@ -5,7 +5,7 @@ import { bots } from '@/db/schema';
 import { revalidatePath } from 'next/cache';
 import { requirePrincipal } from '@/lib/session';
 import { dockerControl } from '@/lib/docker-hermes/client';
-import { dockerStatus, freshDocker, pairDockerBot } from '@/lib/docker-hermes/store';
+import { dockerStatus, freshDocker, pairDockerBot, withDockerAccess } from '@/lib/docker-hermes/store';
 import type { DockerBinding } from '@/docker-hermes/types';
 export async function personalHermesStatus() {
   const p = await requirePrincipal(); const state = await dockerStatus(p);
@@ -15,9 +15,11 @@ export async function personalHermesStatus() {
   return { ...state, bindings, phase: bindings.length === state.bindings.length ? state.phase : 'pairing' as const };
 }
 export async function enablePersonalHermes() {
-  const p = await requirePrincipal(); await freshDocker(p, true);
-  await dockerControl(p.user.id, '/control/lease', { canCreate: true });
-  return dockerControl(p.user.id, '/control/enable', {});
+  const p = await requirePrincipal();
+  return withDockerAccess(p, true, async () => {
+    await dockerControl(p.user.id, '/control/lease', { canCreate: true });
+    return dockerControl(p.user.id, '/control/enable', {});
+  });
 }
 export async function stopPersonalHermes() {
   const p = await requirePrincipal(); await freshDocker(p);
@@ -33,11 +35,11 @@ export async function finishPersonalHermes() {
 }
 export async function createPersonalHermesBot(input: { name: string; requestId: string }) {
   const p = await requirePrincipal(); await freshDocker(p, true);
-  const b = await dockerControl<DockerBinding>(p.user.id, '/control/create', input);
+  const b = await withDockerAccess(p, true, () => dockerControl<DockerBinding>(p.user.id, '/control/create', input));
   const id = await pairDockerBot(p, b); revalidatePath('/', 'layout'); return { id };
 }
 export async function linkPersonalHermesBot(input: { name: string; profile: string; identity: string }) {
   const p = await requirePrincipal(); await freshDocker(p, true);
-  const b = await dockerControl<DockerBinding>(p.user.id, '/control/link', input);
+  const b = await withDockerAccess(p, true, () => dockerControl<DockerBinding>(p.user.id, '/control/link', input));
   const id = await pairDockerBot(p, b); revalidatePath('/', 'layout'); return { id };
 }

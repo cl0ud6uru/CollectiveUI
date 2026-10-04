@@ -76,7 +76,7 @@ export async function lockEditableBot(p: Principal, botId: string, q: Tx, assert
   if (!fresh || fresh.user.sessionVersion !== p.user.sessionVersion || !bot || !canEditBot(fresh, bot))
     throw new HttpError(403, "Only an authorized bot editor can change this bot.");
   const [app] = bot.appId ? await q.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
-  if (app && isDockerHermes(app)) assertLocalBot(fresh, app, bot);
+  if (app && isDockerHermes(app)) await assertLocalBot(fresh, app, bot);
   await assertAdditional?.(fresh, bot);
   return bot;
 }

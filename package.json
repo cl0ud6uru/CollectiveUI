@@ -12,6 +12,7 @@
     "worker": "tsx src/worker/index.ts",
     "worker:dev": "tsx watch --env-file=.env.local src/worker/index.ts",
     "hermes:docker": "tsx src/docker-hermes/main.ts",
+    "hermes:import-enrollment": "tsx scripts/migrate-docker-hermes-enrollment.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx --env-file=.env.local dev/seed.ts",

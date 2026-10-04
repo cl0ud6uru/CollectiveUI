@@ -129,6 +129,11 @@ export class DockerBroker {
     this.jobs.set(owner, task);
     void task.finally(() => { this.jobs.delete(owner); }).catch(() => {});
   }
+  async revoke(owner: string) {
+    // Invalidate before awaiting cleanup, including when Docker cannot confirm stop.
+    this.leases.delete(owner);
+    await this.stop(owner);
+  }
   async stop(owner: string) {
     const s = this.state(owner); if (!s) return;
     ++s.generation; s.cleanupRequired = true; s.phase = 'stopping'; s.error = null; this.save(s);

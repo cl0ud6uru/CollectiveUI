@@ -15,6 +15,8 @@ export async function listenBroker(broker: DockerBroker) {
     if (req.headers.origin || req.headers.upgrade) throw new LocalError(403, 'Browser connections are not supported.');
     const owner = ownerId.parse(req.headers['x-collective-owner']);
     const url = req.url ?? '';
+    if (req.method === 'GET' && url === '/admin/ready') return json(res, 200, { ready: true });
+    if (req.method === 'POST' && url === '/control/revoke') { await broker.revoke(owner); return json(res, 200, { stopped: true }); }
     if (req.method === 'GET' && url === '/admin/owners') return json(res, 200, broker.owners());
     if (req.method === 'POST' && url === '/control/lease') {
       const lease = z.object({ canCreate: z.boolean() }).strict().parse(await body(req));
