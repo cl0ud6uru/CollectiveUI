@@ -32,7 +32,7 @@ export async function reconcileDockerRuntimes() {
           const p = await loadPrincipal(owner, tx);
           if (!p || !await dockerAllowed(p, tx)) { await dockerControl(owner, '/control/revoke', {}, 3000); return null; }
           const assigned = await tx.select({ bot: bots, app: aiApps }).from(bots).innerJoin(aiApps, eq(aiApps.id, bots.appId)).where(eq(bots.ownerId, owner));
-          if (assigned.some(({ bot, app }) => isDockerHermes(app) && (!bot.enabled || !app.enabled || bot.visibility !== 'private' || bot.executionMode !== 'caller' || bot.coordinatorEligible))) {
+          if (assigned.some(({ bot, app }) => isDockerHermes(app) && (!bot.enabled || !app.enabled || bot.visibility !== 'private' || bot.executionMode !== 'caller' || bot.coordinatorEligible || bot.isCoordinator))) {
             await dockerControl(owner, '/control/revoke', {}, 3000); return null;
           }
           let canCreate = true;

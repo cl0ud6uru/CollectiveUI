@@ -115,6 +115,7 @@ export function BotBuilder({
   groups,
   tools,
   delegates,
+  delegators = [],
   knowledge,
   previewTarget,
   newChatId,
@@ -131,6 +132,7 @@ export function BotBuilder({
   groups: Option[];
   tools: ToolOption[];
   delegates: (Option & { avatar: string | null })[];
+  delegators?: (Option & { avatar: string | null })[];
   knowledge: { attachmentId: string; filename: string; chunks: number }[];
   previewTarget?: TargetOption;
   newChatId: string;
@@ -345,6 +347,8 @@ export function BotBuilder({
                   // Changing engines requires an explicit connection choice before saving.
                   set("appId", "");
                   set("coordinatorEligible", false);
+                  set("isCoordinator", false);
+                  if (!botId) set("delegatorIds", []);
                 }}>
                   <option value="native">Native · CollectiveUI</option>
                   <option value="hermes">{local ? "Local Hermes" : "Hermes"}</option>
@@ -407,7 +411,8 @@ export function BotBuilder({
                   <Select aria-label="Connector permissions" value={form.executionMode ?? "caller"} onChange={(e) => {
                     const mode = e.target.value as "caller" | "service";
                     setForm((f) => ({ ...f, executionMode: mode, ...(mode === "service" ? {
-                      tools: f.tools.filter((t) => t.key.startsWith("mcp:")), delegateIds: [], coordinatorEligible: false,
+                      tools: f.tools.filter((t) => t.key.startsWith("mcp:")), delegateIds: [], coordinatorEligible: false, isCoordinator: false,
+                      ...(!botId ? { delegatorIds: [] } : {}),
                     } : {}) }));
                   }}>
                     <option value="caller">Use each caller&apos;s connector access</option>
@@ -469,6 +474,29 @@ export function BotBuilder({
 
               {!service && engine === "native" && (
                 <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" aria-label="Coordinator" className="mt-1 h-4 w-4 accent-[var(--accent)]" checked={form.isCoordinator ?? false}
+                    onChange={e => set("isCoordinator", e.target.checked)} />
+                  <span>Coordinator<span className="mt-1 block text-xs text-muted">Preselect this bot as a delegator when its editors create new bots. They can change that selection. Existing teams and the organization start bot stay unchanged.</span></span>
+                </label>
+              )}
+              {!botId && !service && engine === "native" && (
+                <Field label="Delegators" hint="These coordinators will be able to hand work to this bot. Only coordinators you can edit and use are offered; each caller still needs access to both bots and their models. Change this later in the coordinator's Team.">
+                  <div className="flex flex-wrap gap-2">
+                    {delegators.map(d => {
+                      const on = form.delegatorIds?.includes(d.id) ?? false;
+                      return <button type="button" key={d.id} aria-pressed={on} aria-label={`Delegator: ${d.name}`}
+                        onClick={() => setForm(f => ({ ...f, delegatorIds: f.delegatorIds?.includes(d.id)
+                          ? f.delegatorIds.filter(id => id !== d.id) : [...(f.delegatorIds ?? []), d.id] }))}
+                        className={cn("flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm", on ? "border-fg bg-fg text-bg" : "border-border")}>
+                        <BotAvatar botId={d.id} value={d.avatar} className="h-4 w-4" /> {d.name}
+                      </button>;
+                    })}
+                  </div>
+                  {!delegators.length && <p className="text-xs text-muted">No eligible coordinators. Enable Coordinator on a native bot you can edit and configure its model first.</p>}
+                </Field>
+              )}
+              {!service && engine === "native" && (
+                <label className="flex items-start gap-2 text-sm">
                   <input type="checkbox" className="mt-1" checked={form.coordinatorEligible ?? false}
                     onChange={e => set("coordinatorEligible", e.target.checked)} />
                   <span>Allow coordinator delegation<span className="mt-1 block text-xs text-muted">The installation coordinator can discover this bot for people who already have access. Its tools and approval rules still apply. Manual team links work independently.</span></span>
@@ -482,6 +510,8 @@ export function BotBuilder({
                       return (
                         <button
                           key={d.id}
+                          type="button"
+                          aria-pressed={on}
                           onClick={() => set("delegateIds", on ? form.delegateIds.filter((x) => x !== d.id) : [...form.delegateIds, d.id])}
                           className={cn("flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm", on ? "border-fg bg-fg text-bg" : "border-border")}
                         >

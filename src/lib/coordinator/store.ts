@@ -8,7 +8,7 @@ import { getSetting, type CoordinatorSettings } from "@/lib/settings";
 
 const empty: CoordinatorSettings = { enabled: false, defaultBotId: null, starterBotId: null };
 export const coordinatorInput = z.object({ enabled: z.boolean(), defaultBotId: z.string().min(1).max(128).nullable() }).strict();
-export const starterInput = z.object({ name: z.string().trim().min(1).max(80).default("Queen"), appId: z.string().min(1).max(128).nullable() }).strict();
+export const starterInput = z.object({ name: z.string().trim().min(1).max(80).default("The Queen"), appId: z.string().min(1).max(128).nullable() }).strict();
 
 async function currentAdmin(p: Principal, tx: Tx) {
   await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for("share");
@@ -69,7 +69,7 @@ export async function createCoordinatorStarter(p: Principal, raw: unknown) {
       instructions: "Be a calm, clear and resourceful teammate. Help the user define their goal, break it into focused assignments, and use the available specialist tools when useful. Give each specialist a self-contained task with only the context it needs. Synthesize returned evidence, name uncertainties, and explain what remains. Respect the user's decisions and keep private work private.",
       boundaries: "Only use the tools actually offered for this turn. Do not claim to have assigned work without a successful tool call. Synchronous assignments wait within this reply; accepted asynchronous assignments run in linked task conversations and return here before this reply continues. Report the actual task status; do not promise scheduled followups or unsupported background work. If a specialist needs approval, ask the user to open its direct chat. Never imply access to another person's conversations or accounts.",
       starters: ["Help me plan a project", "Which specialists can help with this?", "Break this goal into focused assignments"],
-      appId: input.appId, visibility: "org", maxSteps: 10, executionMode: "caller",
+      appId: input.appId, visibility: "org", maxSteps: 10, executionMode: "caller", isCoordinator: true,
     }).returning({ id: bots.id });
     await save(tx, { enabled: true, defaultBotId: bot.id, starterBotId: bot.id });
     return bot;

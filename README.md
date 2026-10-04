@@ -32,7 +32,7 @@ These are captures of the running app with synthetic demo data and the included 
 
 - **Chat and come back later.** Stream answers, attach documents or images, search your history and organize chats into projects. Answers support tables, code and math. Available features depend on the connected model.
 - **Make assistants for recurring work.** A bot has a name, instructions, conversation starters and selected tools. Opening a bot returns to your ongoing home chat; start a side chat for a separate topic. `/new` or `/reset` starts a fresh home while retaining the old history and memory. Finish or stop pending work first.
-- **Start with a coordinator.** An admin can choose an existing native bot or create the editable **Queen** starter to welcome users and bring together answers from permitted specialists. It is optional and off by default; a model must be configured before the starter can answer. [Coordinator setup](docs/features/default-coordinator.md).
+- **Start with a coordinator.** An admin can choose an existing native bot or create the editable **The Queen** starter to welcome users and bring together answers from permitted specialists. It is optional and off by default; a model must be configured before the starter can answer. Bots with the **Coordinator** role are suggested, deselectably, as delegators when their editors create new bots. [Coordinator setup](docs/features/default-coordinator.md).
 - **Use tools with clear permissions.** Native bots can use enabled web, knowledge, memory and workspace tools. Admins can connect other systems through MCP, a standard way to expose tools to an AI assistant. Tool approvals let you review actions before they run; sensitive actions require approval.
 - **Save procedures and schedule work.** Native bots can use skills (saved instructions for a task) and routines (scheduled or webhook-triggered work). Routine results and approval requests arrive in the Inbox. Availability varies by bot engine and mode.
 - **Share useful assistants.** Share bots with your organization or selected directory groups, and share chat snapshots or bot templates with signed-in colleagues. Administrators manage model access, users, tools and usage.
@@ -153,7 +153,7 @@ See the [development status and backlog](TODO.md), [service-bot restrictions](do
 | Run the demo or troubleshoot startup | [Local setup](docs/getting-started.md) |
 | Deploy, update, back up or recover an installation | [Operator guide](docs/operations.md) |
 | Connect models, MCP tools or Hermes | [Connection guide](docs/connections.md) |
-| Set up an optional coordinator or Queen starter | [Default coordinator](docs/features/default-coordinator.md) |
+| Set up an optional coordinator or The Queen starter | [Default coordinator](docs/features/default-coordinator.md) |
 | Configure narrowly scoped shared capabilities | [Service bots](docs/service-bots.md) |
 | Manage pet artwork and identity permissions | [Pet avatars](docs/features/bot-companions.md) |
 | Understand the code or run tests | [Development guide](docs/development.md) |

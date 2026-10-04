@@ -15,6 +15,7 @@ import { offeredTools } from "@/lib/mcp/servers";
 import { getSetting } from "@/lib/settings";
 import { truncate } from "@/lib/utils";
 import { listCatalog } from "@/lib/pets/catalog";
+import { listEditableCoordinators } from "@/lib/coordinator/roles";
 
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { isLocalHermes } from "@/lib/local-hermes/config";
@@ -75,6 +76,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
         .groupBy(attachments.id, attachments.filename)
     : [];
   return {
+    delegators: botId ? [] : (await listEditableCoordinators(p)).map(b => ({ id: b.id, name: b.name, avatar: b.avatar })),
     petCatalog,
     personalHermesAvailable: await dockerAllowed(p),
     isAdmin: p.isAdmin,
