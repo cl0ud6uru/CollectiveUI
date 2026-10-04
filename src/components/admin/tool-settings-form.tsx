@@ -1,5 +1,6 @@
 "use client";
 
+import { NATIVE_SEARCH_DEFAULTS, SEARCH_COST_NOTICE, type NativeSearchSettings } from "@/lib/native-search-policy";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -13,6 +14,7 @@ type Initial = {
   enforcedApproval: string[];
   fetchAllowlist: string[];
   webSearch: { provider: "none" | "searxng" | "brave" | "bing"; url?: string; hasKey: boolean };
+  nativeSearch?: NativeSearchSettings;
   maxStepsCap: number;
   botCreation: "everyone" | "groups" | "admins";
   utilityAppId?: string;
@@ -33,6 +35,8 @@ export function ToolSettingsForm({
 }) {
   const router = useRouter();
   const [s, setS] = useState(initial);
+  const native = s.nativeSearch ?? NATIVE_SEARCH_DEFAULTS;
+  const [domains, setDomains] = useState(native.allowedDomains.join("\n"));
   const [apiKey, setApiKey] = useState("");
   const [enforced, setEnforced] = useState(initial.enforcedApproval.join("\n"));
   const [allow, setAllow] = useState(initial.fetchAllowlist.join("\n"));
@@ -108,6 +112,19 @@ export function ToolSettingsForm({
       </Card>
 
       <Card className="space-y-4">
+        <h2 className="font-medium">OpenAI native search</h2>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={native.enabled} onChange={e => setS({ ...s, nativeSearch: { ...native, enabled: e.target.checked } })} /> Allow OpenAI native search</label>
+        <p className="text-xs text-muted">{SEARCH_COST_NOTICE}</p>
+        <p className="text-xs text-muted">Runs remotely on OpenAI. Local fetch rules and approval cards cannot intercept it. Required approval or a local web-page allowlist disables native search. Existing search providers and MCP choices remain independent; there is no automatic fallback.</p>
+        <Field label="Maximum hosted search calls per reply" hint="Shared across model steps and group speakers. Interrupted requests retain their reserved allowance.">
+          <Input aria-label="Maximum hosted search calls per reply" type="number" min={1} max={10} value={native.maxCalls} onChange={e => setS({ ...s, nativeSearch: { ...native, maxCalls: Number(e.target.value) } })} />
+        </Field>
+        <Field label="Hosted search allowed domains" hint="Optional OpenAI domain filter, including subdomains. Up to 100 domains; no scheme, path or wildcard. Empty allows any domain. This is separate from local fetch enforcement.">
+          <Textarea aria-label="Hosted search allowed domains" value={domains} onChange={e => setDomains(e.target.value)} rows={3} />
+        </Field>
+      </Card>
+
+      <Card className="space-y-4">
         <h2 className="font-medium">Background models</h2>
         <Field label="Utility model" hint="Used for chat titles, memory extraction and drafting bots/skills. With no selection, uses the chat’s model when it supports background work with organization credentials. Hermes is not eligible.">
           <Select aria-label="Utility model" value={s.utilityAppId ?? ""} onChange={(e) => setS({ ...s, utilityAppId: e.target.value || undefined })}>
@@ -145,6 +162,7 @@ export function ToolSettingsForm({
                 enforcedApproval: lines(enforced),
                 fetchAllowlist: lines(allow),
                 webSearch: { provider: s.webSearch.provider, url: s.webSearch.url, apiKey: apiKey || undefined },
+                nativeSearch: { ...native, allowedDomains: lines(domains) },
                 maxStepsCap: s.maxStepsCap,
                 botCreation: s.botCreation,
                 utilityAppId: s.utilityAppId,

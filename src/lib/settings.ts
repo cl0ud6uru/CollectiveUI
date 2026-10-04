@@ -40,6 +40,7 @@ export type ToolSettings = {
   enforcedApproval: string[];
   fetchAllowlist: string[]; // domains; empty = allow all public hosts
   webSearch: { provider: "none" | "searxng" | "brave" | "bing"; url?: string; apiKeyEnc?: string };
+  nativeSearch?: import("./native-search-policy").NativeSearchSettings;
   maxStepsCap: number;
   botCreation: "everyone" | "groups" | "admins";
   /** app used for background tasks (titles, memory extraction) and embeddings */
@@ -103,6 +104,7 @@ const defaults = {
     enforcedApproval: [],
     fetchAllowlist: [],
     webSearch: { provider: "none" },
+    nativeSearch: { enabled: false, maxCalls: 2, allowedDomains: [] },
     maxStepsCap: 25,
     botCreation: "everyone",
   } as ToolSettings,

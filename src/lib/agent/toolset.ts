@@ -25,6 +25,7 @@ import { m365Tools } from "./tools/m365";
 import { connectedMcpTools, mcpTools, modelToolName } from "./tools/mcp";
 import { memoryTools } from "./tools/memory";
 import { skillsForBot, skillTool } from "./tools/skills";
+import { nativeSearchFor } from "./native-search";
 import { webTools } from "./tools/web";
 import { workspaceTools } from "./tools/workspace";
 import type { AgentCtx, ToolEntry } from "./types";
@@ -34,6 +35,7 @@ import { assertDelegationPath, delegatedAuthorityBinding, discoverDelegates, typ
 export { MAX_DELEGATION_DEPTH };
 
 export type Toolset = {
+  nativeSearch?: import("@/lib/llm/native-search").NativeSearchOptions;
   tools: ToolSet;
   entries: ToolEntry[];
   skills: Skill[];
@@ -93,7 +95,7 @@ async function workspaceFor(ctx: AgentCtx, settings: SandboxSettings, warnings: 
 
 export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   const bot = ctx.bot;
-  if (!bot) return EMPTY;
+  if (!bot) return { ...EMPTY, ...await nativeSearchFor(ctx) };
   await assertDirectServiceContext(ctx);
   // Agent servers (Hermes) bring their own tools, memory and skills; portal tools don't apply.
   if (isAgentServer(ctx.app.provider)) return EMPTY;
@@ -105,10 +107,11 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   const configured = (await db.select().from(botTools).where(eq(botTools.botId, bot.id))).filter(
     (t) => !disabled.has(t.toolKey) && !(t.toolKey.startsWith("mcp:") && disabled.has("mcp")),
   );
+  const hosted = await nativeSearchFor(ctx, configured);
   const modes = new Map(configured.map((t) => [t.toolKey, t.approval]));
   const entries: ToolEntry[] = [];
   const closers: (() => Promise<void>)[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = [...hosted.warnings];
   let skills: Skill[] = [];
   const mcpServerIds: string[] = [];
   let workspace: PortalWorkspace | null = null;
@@ -269,7 +272,8 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   };
 
   return {
-    tools: Object.fromEntries(entries.map((e) => [e.name, e.tool])),
+    nativeSearch: hosted.nativeSearch,
+    tools: { ...Object.fromEntries(entries.map((e) => [e.name, e.tool])), ...hosted.tools },
     entries,
     skills,
     delegates,

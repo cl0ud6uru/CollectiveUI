@@ -35,6 +35,7 @@ export default async function AdminToolsPage() {
           enforcedApproval: t.enforcedApproval,
           fetchAllowlist: t.fetchAllowlist,
           webSearch: { provider: t.webSearch.provider, url: t.webSearch.url, hasKey: !!t.webSearch.apiKeyEnc },
+          nativeSearch: t.nativeSearch,
           maxStepsCap: t.maxStepsCap,
           botCreation: t.botCreation,
           utilityAppId: t.utilityAppId,

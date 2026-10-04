@@ -85,7 +85,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   } : undefined;
   if (native && (native.deadlineAt <= Date.now() || native.stepsUsed >= native.maxSteps))
     throw new HttpError(409, "This reply exhausted its deadline or model-step budget. Start a new request to continue.");
-  const ctx: AgentCtx = { principal, conversationId: conversation.id, bot, app, depth: delegated?.task.depth ?? 0, background, toolSettings, usage,
+  const ctx: AgentCtx = { principal, conversationId: conversation.id, bot, app, depth: delegated?.task.depth ?? 0, background, toolSettings, usage, nativeSearchMode: conversation.nativeSearchMode,
     ...(opts.run?.holder && opts.run.deadlineAt ? { execution: { holder: opts.run.holder, deadlineAt: opts.run.deadlineAt, segment: opts.run.segment } } : {}),
     ...(native ? { awaitTask: (taskId: string) => { if (!native.taskIds.includes(taskId)) native.taskIds.push(taskId); } } : {}),
     ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace } : {}) };
@@ -153,6 +153,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       conversationId: conversation.id,
       botId: bot?.id ?? null,
       usage,
+      nativeSearch: toolset.nativeSearch,
       background,
       interactive: opts.interactive,
       run: opts.run,
@@ -175,6 +176,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       maxOutputTokens: app.maxTokens ?? undefined,
       timeout: toolset.timeout,
       abortSignal: opts.abortSignal,
+      ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
       ...(delegated ? { maxRetries: 0, prepareStep: async () => { await authorizeDispatch(); return {}; } } : {}),
     });
     return { result, userText, billing, replayKey };

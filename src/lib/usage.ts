@@ -23,7 +23,9 @@ function tokenRows(since: SQL) {
            e.purpose as purpose, e.billing_source as billing_source, 0 as replies,
            coalesce(e.input_tokens, 0)::bigint as input_tokens, coalesce(e.output_tokens, 0)::bigint as output_tokens,
            coalesce(e.cache_read_tokens, 0)::bigint as cache_read_tokens, coalesce(e.cache_write_tokens, 0)::bigint as cache_write_tokens,
-           coalesce(e.reasoning_tokens, 0)::bigint as reasoning_tokens
+           coalesce(e.reasoning_tokens, 0)::bigint as reasoning_tokens,
+           coalesce(e.hosted_search_calls, 0)::bigint as hosted_search_calls,
+           coalesce(e.search_tool_cost_estimate_micros, 0)::bigint as search_tool_cost_estimate_micros
     from usage_events e
     left join conversations c on c.id = e.conversation_id
     left join ai_apps ca on ca.id = c.app_id
@@ -37,7 +39,7 @@ function tokenRows(since: SQL) {
            'chat', coalesce(m.billing_source, 'org'), 1,
            case when m.billing_source is null then coalesce(m.input_tokens, 0) else 0 end::bigint,
            case when m.billing_source is null then coalesce(m.output_tokens, 0) else 0 end::bigint,
-           0::bigint, 0::bigint, 0::bigint
+           0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint
     from messages m
     join conversations c on c.id = m.conversation_id
     left join ai_apps a on a.id = c.app_id
@@ -60,6 +62,8 @@ export async function usageSummary(days = 30) {
       thumbs_down: number;
       bots: number;
       tool_calls: number;
+      hosted_search_calls: number;
+      search_tool_cost_estimate_micros: number;
     }>(sql`
       with t as (${tokenRows(since)})
       select
@@ -73,7 +77,9 @@ export async function usageSummary(days = 30) {
         (select count(*)::int from messages where feedback = 1 and created_at > ${since}) as thumbs_up,
         (select count(*)::int from messages where feedback = -1 and created_at > ${since}) as thumbs_down,
         (select count(*)::int from bots) as bots,
-        (select count(*)::int from tool_calls where created_at > ${since}) as tool_calls
+        (select count(*)::int from tool_calls where created_at > ${since}) as tool_calls,
+        (select coalesce(sum(hosted_search_calls), 0)::bigint from t) as hosted_search_calls,
+        (select coalesce(sum(search_tool_cost_estimate_micros), 0)::bigint from t) as search_tool_cost_estimate_micros
     `)
   ).rows;
 
@@ -121,6 +127,8 @@ export const USAGE_EXPORT_COLUMNS = [
   "cache_write_tokens",
   "reasoning_tokens",
   "billing_source",
+  "hosted_search_calls",
+  "search_tool_cost_estimate_micros",
 ] as const;
 
 /** Rows for the admin CSV export (last `days` days), grouped by day, user, target, purpose and who paid. */
@@ -131,7 +139,9 @@ export async function usageExportRows(days = 90) {
     select to_char(date_trunc('day', t.at), 'YYYY-MM-DD') as day, u.upn, t.target, t.purpose, t.billing_source,
            sum(t.replies)::int as replies, sum(t.input_tokens)::bigint as input_tokens, sum(t.output_tokens)::bigint as output_tokens,
            sum(t.cache_read_tokens)::bigint as cache_read_tokens, sum(t.cache_write_tokens)::bigint as cache_write_tokens,
-           sum(t.reasoning_tokens)::bigint as reasoning_tokens
+           sum(t.reasoning_tokens)::bigint as reasoning_tokens,
+           sum(t.hosted_search_calls)::bigint as hosted_search_calls,
+           sum(t.search_tool_cost_estimate_micros)::bigint as search_tool_cost_estimate_micros
     from t left join users u on u.id = t.user_id
     group by 1, 2, 3, 4, 5 order by 1 desc, 2, 3, 4, 5
   `);

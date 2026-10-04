@@ -1,3 +1,4 @@
+import { openai as sdkOpenAI } from "@ai-sdk/openai";
 import type { ProviderConfigMap } from "../catalog";
 import { apiKeyOf } from "./shared";
 import type { ProviderImpl } from "./types";
@@ -19,3 +20,6 @@ export const openai: ProviderImpl = {
     return { chat: (id) => provider.responses(id), embedding: (id) => provider.embeddingModel(id) };
   },
 };
+
+/** Factory only: credentials and model requests still go through resolveModel. */
+export const hostedSearchTool = (domains: string[]) => sdkOpenAI.tools.webSearch({ ...(domains.length ? { filters: { allowedDomains: domains } } : {}) });
