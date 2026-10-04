@@ -77,6 +77,16 @@ export const users = pgTable("users", {
 }, (t) => [uniqueIndex("users_realm_upn_idx").on(t.identityRealm, t.upn),
   check("users_identity_realm_check", sql`(${t.identityRealm} = 'local' and ${t.authSource} = 'local') or (${t.identityRealm} = 'directory' and ${t.authSource} in ('entra', 'ldap'))`)]);
 
+/** Application permission only; absence is denial. Runtime data remains in broker-owned storage. */
+export const dockerHermesEnrollments = pgTable("docker_hermes_enrollments", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  cleanup: text("cleanup").$type<"none" | "pending" | "stopping" | "failed" | "stopped">().notNull().default("none"),
+  error: text("error"),
+  changedBy: text("changed_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: updatedAt(),
+}, (t) => [check("docker_hermes_cleanup_check", sql`${t.cleanup} in ('none', 'pending', 'stopping', 'failed', 'stopped')`)]);
+
 /** Password material is deliberately separate from user records sent to UI components. */
 export const localCredentials = pgTable("local_credentials", {
   userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
@@ -136,6 +146,8 @@ export const localAuthBootstrap = pgTable("local_auth_bootstrap", {
 }, (t) => [check("local_auth_bootstrap_singleton", sql`${t.id} = 1`)]);
 
 export type UserPrefs = {
+  /** Personal bot navigation only; inaccessible/deleted IDs are ignored on reads. */
+  botOrder?: string[];
   customInstructions?: string;
   memoryEnabled?: boolean;
   /** Where new chats start: at most one of a model or a bot. Unset follows the organization default. */
@@ -254,6 +266,21 @@ export const groupMappings = pgTable(
 // AI apps (OpenAI-compatible endpoints)
 // ---------------------------------------------------------------------------
 
+/** Company API credentials. Model audience is deliberately kept on ai_apps/app_access. */
+export const providerConnections = pgTable("provider_connections", {
+  id: id(),
+  name: text("name").notNull(),
+  provider: text("provider").$type<"openai">().notNull().default("openai"),
+  baseUrl: text("base_url"),
+  organization: text("organization"),
+  project: text("project"),
+  credentialEnc: text("secret_enc").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [check("provider_connections_provider_check", sql`${t.provider} = 'openai'`)]);
+
 export const aiApps = pgTable(
   "ai_apps",
   {
@@ -280,6 +307,7 @@ export const aiApps = pgTable(
     baseUrl: text("base_url"),
     /** Encrypted secret: an API key, or JSON for multi-part credentials (AWS keys, service accounts). */
     apiKeyEnc: text("api_key_enc"),
+    providerConnectionId: text("provider_connection_id").references(() => providerConnections.id, { onDelete: "restrict" }),
     model: text("model").notNull(),
     systemPrompt: text("system_prompt"),
     temperature: real("temperature"),
@@ -294,6 +322,8 @@ export const aiApps = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
+    index("ai_apps_provider_connection_idx").on(t.providerConnectionId),
+    check("ai_apps_provider_connection_check", sql`${t.providerConnectionId} is null or (${t.provider} = 'openai' and ${t.credentialMode} = 'org' and ${t.apiKeyEnc} is null)`),
     check("ai_apps_kind_check", sql`${t.kind} in ('model', 'runtime')`),
     check(
       "ai_apps_provider_check",

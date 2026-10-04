@@ -68,6 +68,7 @@ function app(provider: AiApp["provider"], over: Partial<AiApp> & { secret?: stri
     providerConfig: {},
     credentialMode: "org",
     baseUrl: null,
+    providerConnectionId: null,
     apiKeyEnc: secret ? sealAppSecret(id, secret) : null,
     model: "m",
     systemPrompt: null,

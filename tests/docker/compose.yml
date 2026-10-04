@@ -1,0 +1,48 @@
+# Disposable worker smoke test only. No host ports, host credentials, or external runtime network.
+x-worker: &worker
+  image: ${WORKER_IMAGE:-collectiveui-worker:test}
+  init: true
+  environment:
+    DATABASE_URL: postgres://fixture:fixture@db:5432/collective_worker_test
+    # Public synthetic keys, valid only for this disposable fixture database.
+    ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    AUTH_SECRET: worker-image-smoke-fixture-only
+  networks: [fixture]
+
+services:
+  db:
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    environment:
+      POSTGRES_USER: fixture
+      POSTGRES_PASSWORD: fixture
+      POSTGRES_DB: collective_worker_test
+    tmpfs: /var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U fixture -d collective_worker_test"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+    networks: [fixture]
+  mock:
+    image: ${WORKER_IMAGE:-collectiveui-worker:test}
+    command: [node, /fixture/server.mjs]
+    volumes:
+      - ../../dev/mock-llm:/fixture:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:4010/v1/models').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+    networks: [fixture]
+  worker:
+    <<: *worker
+    stop_grace_period: 45s
+  check:
+    <<: *worker
+    command: [node, --import, tsx, worker-smoke.ts]
+    volumes:
+      - ./worker-smoke.ts:/app/worker-smoke.ts:ro
+
+networks:
+  fixture:
+    internal: true

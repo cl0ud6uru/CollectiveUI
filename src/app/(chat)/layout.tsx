@@ -14,6 +14,7 @@ import { getPublicBranding } from "@/lib/branding/store";
 import { loadBotRoster } from "@/lib/chat/roster";
 import { loadRecentTasks } from "@/lib/chat/recent-tasks";
 import { mergeRecentTasks } from "@/lib/chat/recent-task-state";
+import { orderBots } from "@/lib/bots/navigation";
 
 export default async function ChatLayout({ children }: LayoutProps<"/">) {
   const p = await requirePagePrincipal();
@@ -66,9 +67,9 @@ export default async function ChatLayout({ children }: LayoutProps<"/">) {
     hermes: a.provider === "hermes",
     ...(a.provider === "chatgpt" && planStatus ? { personalPlan: { provider: "chatgpt" as const, status: planStatus } } : {}),
   }));
-  // Keep the roster order stable (alphabetical within pinned/hidden); rows only show a preview line and busy status.
-  const botOptions: TargetOption[] = bots.map((b) => ({
-    kind: "bot",
+  // Activity changes only row content; personal navigation order survives every layout refresh.
+  const botOptions: TargetOption[] = orderBots(bots.map((b) => ({
+    kind: "bot" as const,
     coordinator: b.id === coordinator?.bot.id,
     id: b.id,
     name: b.name,
@@ -82,10 +83,11 @@ export default async function ChatLayout({ children }: LayoutProps<"/">) {
     preview: roster.get(b.id)?.preview ?? null,
     lastAt: roster.get(b.id)?.lastAt ?? null,
     status: roster.get(b.id)?.status ?? null,
-  }));
+  })), p.user.prefs.botOrder);
 
   return (
     <ShellProvider
+      key={p.user.id}
       user={{ id: p.user.id, name: p.user.name, email: p.user.email, isAdmin: p.isAdmin, canCreateBots: p.canCreateBots }}
       branding={branding}
       conversations={mergeRecentTasks(convs.map((c) => ({ ...c, updatedAt: c.updatedAt.toISOString() })), tasks)}

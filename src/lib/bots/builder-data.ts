@@ -78,7 +78,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
   return {
     delegators: botId ? [] : (await listEditableCoordinators(p)).map(b => ({ id: b.id, name: b.name, avatar: b.avatar })),
     petCatalog,
-    personalHermesAvailable: dockerAllowed(p),
+    personalHermesAvailable: await dockerAllowed(p),
     isAdmin: p.isAdmin,
     revision: currentBot?.revision,
     publishedRevision: currentBot?.publishedRevision,

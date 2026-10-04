@@ -1,6 +1,9 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useOptimistic, useRef, useState, useSyncExternalStore, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { changeBotNavigation, type BotNavigationChange } from "@/lib/bots/navigation";
 import type { Branding, ConversationSummary, CurrentUser, FolderSummary, TargetOption } from "./types";
 import { mergeRecentTasks } from "@/lib/chat/recent-task-state";
 
@@ -13,6 +16,9 @@ type ShellState = {
   folders: FolderSummary[];
   apps: TargetOption[];
   bots: TargetOption[];
+  navigationPending: boolean;
+  navigationMessage: string;
+  changeNavigation: (change: BotNavigationChange, message: string) => void;
   inboxUnread: number;
   sidebarOpen: boolean;
   setSidebarOpen: (v: boolean) => void;
@@ -96,6 +102,30 @@ export function ShellProvider({
   bots: TargetOption[];
   inboxUnread: number;
 }) {
+  const router = useRouter();
+  const [navigationBots, optimisticNavigation] = useOptimistic(initial.bots, changeBotNavigation<TargetOption>);
+  const [navigationPending, startNavigation] = useTransition();
+  const navigationLocked = useRef(false);
+  const [navigationMessage, setNavigationMessage] = useState("");
+  const changeNavigation = useCallback((change: BotNavigationChange, message: string) => {
+    if (navigationLocked.current) return;
+    navigationLocked.current = true;
+    setNavigationMessage("Saving bot navigation…");
+    startNavigation(async () => {
+      optimisticNavigation(change);
+      try {
+        const { updateBotNavigation } = await import("@/app/(chat)/bots/navigation-actions");
+        const result = await updateBotNavigation(change);
+        if (result.error) throw new Error(result.error);
+        setNavigationMessage(message);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not save bot navigation. Please try again.";
+        setNavigationMessage(message);
+        toast.error(message);
+        router.refresh();
+      } finally { navigationLocked.current = false; }
+    });
+  }, [optimisticNavigation, router]);
   const [workStatuses, setWorkStatuses] = useState<Record<string, RosterStatus | null> | null>(null);
   useEffect(() => {
     let alive = true, pending = false;
@@ -186,12 +216,12 @@ export function ShellProvider({
   const bots = useMemo(() => {
     const live = botLive.source === initial.bots ? botLive : { byBot: {} as Record<string, BotLive>, chats: {} as typeof botLive.chats };
     const chats = Object.values(live.chats);
-    if (!workStatuses && !Object.keys(live.byBot).length && !chats.length) return initial.bots;
-    return initial.bots.map((b) => {
+    if (!workStatuses && !Object.keys(live.byBot).length && !chats.length) return navigationBots;
+    return navigationBots.map((b) => {
       const status = mostUrgent([workStatuses ? workStatuses[b.id] : b.status, ...chats.filter((c) => c.botId === b.id).map((c) => c.status)]);
       return { ...b, ...live.byBot[b.id], status };
     });
-  }, [initial.bots, botLive, workStatuses]);
+  }, [initial.bots, navigationBots, botLive, workStatuses]);
 
   const sidebarOpen = useSyncExternalStore(subscribeSidebar, readSidebar, () => true);
   const setSidebarOpen = useCallback((v: boolean) => writeSidebar(v), []);
@@ -233,6 +263,9 @@ export function ShellProvider({
     () => ({
       ...initial,
       bots,
+      navigationPending,
+      navigationMessage,
+      changeNavigation,
       setBotLive,
       setChatStatus,
       serverBots: initial.bots,
@@ -248,7 +281,7 @@ export function ShellProvider({
       upsertConversation,
       removeConversation,
     }),
-    [initial, bots, setBotLive, setChatStatus, conversations, currentConversation, setCurrentConversation, sidebarOpen, setSidebarOpen, mobileOpen, searchOpen, upsertConversation, removeConversation],
+    [initial, bots, navigationPending, navigationMessage, changeNavigation, setBotLive, setChatStatus, conversations, currentConversation, setCurrentConversation, sidebarOpen, setSidebarOpen, mobileOpen, searchOpen, upsertConversation, removeConversation],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

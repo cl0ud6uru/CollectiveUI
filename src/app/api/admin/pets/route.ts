@@ -11,6 +11,7 @@ export async function POST(request: Request) {
     const p = await requireAdmin();
     assertPetOrigin(request);
     const { manifest, sprite, rights } = await parsePetUpload(request);
+    if (new URL(request.url).searchParams.get("validate") === "1") return petJson({ manifest, sprite: sprite.toString("base64") });
     return petJson(await createCatalogPet(p, manifest, sprite, rights));
   } catch (err) { return petError(err); }
 }

@@ -3,10 +3,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AdminHeader } from "./ui";
 import { Select } from "@/components/ui/select";
+import { SavedPetPreview } from "@/components/pets/saved-pet-preview";
 import { PetArt } from "@/components/pets/pet-art";
 import { PetUpload, petControl } from "@/components/pets/pet-upload";
 import { BotDefaultEditor, defaultKey } from "@/components/pets/bot-default-editor";
-import { catalogPreview, type BotPetDefault, type CatalogPet } from "@/lib/pets/shared";
+import { catalogPreview, catalogSpriteUrl, type BotPetDefault, type CatalogPet } from "@/lib/pets/shared";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
 
 type AdminCatalogPet = CatalogPet & { defaultCount: number; personalCount: number; preferenceCount: number; builtIn: boolean };
@@ -49,6 +50,7 @@ function CatalogCard({ pet, onSaved, onDeleted, onStale }: { pet: AdminCatalogPe
   return <article id={pet.id} className="min-w-0 scroll-mt-4 rounded-xl border border-border p-4">
     <div className="flex items-center gap-4"><PetArt pet={catalogPreview(pet)} state="idle" botId="catalog-preview" size={80} fallback={<span className="text-xs text-danger">Preview unavailable</span>} /><div className="min-w-0"><h3 className="break-words font-medium">{pet.manifest.displayName}</h3><p className="mt-1 text-xs text-muted">{pet.builtIn ? "built-in · " : ""}{pet.status} · {pet.defaultCount} bot defaults · {pet.personalCount} personal selections</p></div></div>
     <p className="mt-3 break-words text-sm text-muted">{pet.manifest.description}</p><p className="mt-2 break-words text-xs">Credit: {pet.manifest.credit || "Not supplied"}</p>
+    <SavedPetPreview manifest={pet.manifest} src={catalogSpriteUrl(pet.id, pet.revision)} />
     <form className="mt-3 space-y-3" onSubmit={async (event) => {
       event.preventDefault(); setPending(true); setError("");
       const rights = new FormData(event.currentTarget).get("rights");

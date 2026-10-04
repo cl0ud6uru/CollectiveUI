@@ -1,4 +1,4 @@
-import { isDockerHermes, dockerAllowed } from "@/lib/docker-hermes/policy";
+import { isDockerHermes, dockerAllowed, dockerAllowedSql } from "@/lib/docker-hermes/policy";
 import { bindingSchema } from "@/docker-hermes/types";
 import { and, asc, eq, exists, inArray, or, sql } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
@@ -41,7 +41,7 @@ export function assertAdmin(p: Principal) {
 
 function appVisibleTo(p: Principal) {
   const personal = sql`${aiApps.providerConfig}->'docker' is not null`;
-  const mine = and(personal, sql`${aiApps.providerConfig}->'docker'->>'ownerId' = ${p.user.id}`, sql`${dockerAllowed(p)}`);
+  const mine = and(personal, sql`${aiApps.providerConfig}->'docker'->>'ownerId' = ${p.user.id}`, dockerAllowedSql(p));
   if (p.isAdmin) return and(eq(aiApps.enabled, true), or(sql`not (${personal})`, mine));
   return and(
     eq(aiApps.enabled, true),
@@ -62,7 +62,8 @@ function appVisibleTo(p: Principal) {
 
 /** ChatGPT plan apps are only offered to people the admin lets connect a plan (and only while the feature is on). */
 async function withoutUnavailablePlans(p: Principal, apps: AiApp[], q: DbOrTx = db): Promise<AiApp[]> {
-  apps = apps.filter(a => !isDockerHermes(a) || (dockerAllowed(p) && bindingSchema.safeParse(a.providerConfig.docker).success && bindingSchema.parse(a.providerConfig.docker).ownerId === p.user.id));
+  const enrolled = apps.some(isDockerHermes) && await dockerAllowed(p, q);
+  apps = apps.filter(a => !isDockerHermes(a) || (enrolled && bindingSchema.safeParse(a.providerConfig.docker).success && bindingSchema.parse(a.providerConfig.docker).ownerId === p.user.id));
   if (!apps.some((a) => a.provider === "chatgpt")) return apps;
   return userMayUseChatGPT(p, await getSetting("chatgpt", q)) ? apps : apps.filter((a) => a.provider !== "chatgpt");
 }
@@ -99,7 +100,7 @@ export async function getAccessibleModel(p: Principal, appId: string, q: DbOrTx 
 /** `adminSeesAll`: admins can open any bot (oversight), but their own lists show only what they'd normally see. */
 function botVisibleTo(p: Principal, adminSeesAll = true) {
   const privateNative = sql`not exists (select 1 from ai_apps a where a.id = ${bots.appId} and a.provider_config->'docker' is not null and
-    (not ${dockerAllowed(p)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible} or ${bots.isCoordinator}
+    (not ${dockerAllowedSql(p)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible} or ${bots.isCoordinator}
      or a.provider_config->'docker'->>'ownerId' is distinct from ${p.user.id} or a.provider_config->'docker'->>'botId' is distinct from ${bots.id}))`;
   if (p.isAdmin && adminSeesAll) return privateNative;
   return and(privateNative, or(

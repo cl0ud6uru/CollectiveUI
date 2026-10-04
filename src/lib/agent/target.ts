@@ -23,6 +23,6 @@ export async function resolveTurnTarget(p: Principal, conv: { appId: string | nu
   } else {
     throw new HttpError(400, "Choose a model or bot to chat with");
   }
-  assertLocalBot(p, app, bot);
+  await assertLocalBot(p, app, bot);
   return { bot, app };
 }

@@ -9,8 +9,6 @@ import { BrokerConfig, runtimeKey, type RuntimeDriver, type Profile } from '@/do
 import { stopOwnedGroup } from '@/local-hermes/process-group';
 import { listenBroker } from '@/docker-hermes/main';
 import { socketFetch, LOCAL_ORIGIN } from '@/lib/local-hermes/client';
-import { assertDockerCreate, dockerAllowed } from '@/lib/docker-hermes/policy';
-import type { Principal } from '@/lib/auth/groups';
 
 const until = async (fn: () => Promise<boolean>) => { const end = Date.now() + 8000; while (!await fn()) { if (Date.now() > end) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 10)); } };
 /** Explicitly synthetic driver. Python protocol, persistence and Unix HTTP transport are real. */
@@ -166,12 +164,37 @@ describe('personal Docker Hermes durable broker', () => {
     expect(() => BrokerConfig.parse({ ...config, image: 'nousresearch/hermes-agent:latest' })).toThrow();
     expect(() => BrokerConfig.parse({ ...config, dockerSocket: '/run/docker.sock' })).toThrow();
   });
-  it('requires explicit enrollment and bot creation separately from chat and admin roles', () => {
-    vi.stubEnv('DOCKER_HERMES_SOCKET', '/tmp/test.sock'); vi.stubEnv('DOCKER_HERMES_ALLOWED_USER_IDS', 'alice');
-    const p = { user: { id: 'alice', disabled: false }, isAdmin: false, canCreateBots: false } as Principal;
-    expect(dockerAllowed(p)).toBe(true);
-    expect(() => assertDockerCreate(p, { botCreation: 'groups' })).toThrow('Bot-creation');
-    expect(() => assertDockerCreate({ ...p, canCreateBots: true }, { botCreation: 'groups' })).not.toThrow();
-    expect(dockerAllowed({ ...p, user: { ...p.user, id: 'bob' }, isAdmin: true })).toBe(false);
+
+  it('invalidates leases before failed revocation cleanup and retains bindings across re-enrollment', async () => {
+    await enable('alice'); const binding = (await broker.status('alice')).bindings[0];
+    driver.stopFailure = true;
+    await expect(broker.revoke('alice')).rejects.toThrow('cleanup');
+    expect(() => broker.enable('alice')).toThrow('authorization');
+    await expect(broker.resources('alice', binding.bindingId)).rejects.toThrow('authorization');
+    driver.stopFailure = false; await broker.expireLeases();
+    expect((await broker.status('alice')).phase).toBe('stopped');
+    await enable('alice'); expect((await broker.status('alice')).bindings[0]).toEqual(binding);
   });
+  it('revocation cancels an in-flight enable without discarding its retained runtime journal', async () => {
+    let release!: () => void; driver.gate = new Promise<void>(resolve => { release = resolve; });
+    broker.authorize('alice', true); broker.enable('alice');
+    await until(async () => driver.ensureCount === 1);
+    const stop = broker.revoke('alice'); release(); await stop;
+    expect((await broker.status('alice')).phase).toBe('stopped'); expect(driver.active.has('alice')).toBe(false);
+    expect(() => broker.enable('alice')).toThrow('authorization');
+  });
+
+  it('requests revocation promptly while native cleanup is slow, without duplicating queued stops', async () => {
+    await enable('alice'); const stop = driver.stop.bind(driver);
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    driver.stop = async owner => { await gate; return stop(owner); };
+    const requestedStops = vi.spyOn(broker, 'stop');
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: false, failed: false });
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: false, failed: false });
+    expect(() => broker.enable('alice')).toThrow('authorization');
+    release(); await until(async () => (await broker.status('alice')).phase === 'stopped');
+    expect(requestedStops).toHaveBeenCalledTimes(1);
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: true, failed: false });
+  });
+
 });

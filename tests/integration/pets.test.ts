@@ -35,6 +35,11 @@ run("private bot companions (real Postgres)", () => {
     await replacePet(alice, privateBot, custom, Buffer.from("normalized pixel fixture"));
     expect(await readPet(alice, privateBot)).toMatchObject({ enabled: true, motion: "still", appearance: "custom", custom });
     expect((await readPetSprite(alice, privateBot)).toString()).toBe("normalized pixel fixture");
+    const before = await readPet(alice, privateBot);
+    expect((await readPetSprite(alice, privateBot, before.revision)).toString()).toBe("normalized pixel fixture");
+    const after = await replacePet(alice, privateBot, custom, Buffer.from("replacement pixel fixture"));
+    await expect(readPetSprite(alice, privateBot, before.revision)).rejects.toThrow(/not found/);
+    expect((await readPetSprite(alice, privateBot, after.revision)).toString()).toBe("replacement pixel fixture");
     await expect(readPet(bob, privateBot)).rejects.toThrow(/access/);
     expect(await readPet(alice, orgBot)).toMatchObject({ enabled: false, sharedIdentity: true, canManageDefault: true });
     await expect(readPetSprite(bob, privateBot)).rejects.toThrow(/access/);

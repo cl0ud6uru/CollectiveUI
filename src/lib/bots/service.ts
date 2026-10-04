@@ -1,8 +1,8 @@
 import { assertLocalBot } from "@/lib/local-hermes/policy";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
-import { and, eq, isNull, inArray } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, inArray } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
-import { aiApps, botAccess, botDelegates, botMcpGrants, bots, botTools, mcpServers, type Bot } from "@/db/schema";
+import { aiApps, botAccess, botDelegates, botMcpGrants, bots, botTools, mcpServers, type AiApp, type Bot } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { HttpError } from "@/lib/authz";
 import { sha256Hex } from "@/lib/crypto";
@@ -13,15 +13,23 @@ import { canonicalJson, toolHash } from "@/lib/mcp/snapshot";
 export const canEditBot = (p: Principal, bot: Pick<Bot, "ownerId" | "executionMode">) =>
   p.isAdmin || (bot.executionMode !== "service" && bot.ownerId === p.user.id);
 
-/** Publication includes model/platform guidance and all audience/tool/delegation state, not just the prompt. */
-export async function serviceConfigHash(bot: Bot, q: DbOrTx = db) {
-  const [apps, access, tools, delegates] = await Promise.all([
-    q.select().from(aiApps).where(eq(aiApps.id, bot.appId ?? "")),
+type ServiceInputs = {
+  app: AiApp | undefined;
+  access: (typeof botAccess.$inferSelect)[];
+  tools: (typeof botTools.$inferSelect)[];
+  delegates: (typeof botDelegates.$inferSelect)[];
+};
+
+async function serviceBotInputs(bot: Bot, q: DbOrTx) {
+  const [access, tools, delegates] = await Promise.all([
     q.select().from(botAccess).where(eq(botAccess.botId, bot.id)),
     q.select().from(botTools).where(eq(botTools.botId, bot.id)),
     q.select().from(botDelegates).where(eq(botDelegates.botId, bot.id)),
   ]);
-  const app = apps[0];
+  return { access, tools, delegates };
+}
+
+function serviceConfigDigest(bot: Bot, { app, access, tools, delegates }: ServiceInputs) {
   if (!app?.enabled || app.provider === "hermes" || app.credentialMode !== "org" || !app.supportsTools)
     throw new HttpError(400, "Service bots require an enabled native company model with tools.");
   if (tools.some((t) => !t.toolKey.startsWith("mcp:")) || delegates.length)
@@ -31,11 +39,44 @@ export async function serviceConfigHash(bot: Bot, q: DbOrTx = db) {
       instructions: bot.instructions, boundaries: bot.boundaries, description: bot.description,
       appId: bot.appId, visibility: bot.visibility, maxSteps: bot.maxSteps, enabled: bot.enabled },
     app: { id: app.id, provider: app.provider, providerConfig: app.providerConfig, baseUrl: app.baseUrl,
-      apiKeyEnc: app.apiKeyEnc, model: app.model, systemPrompt: app.systemPrompt,
+      apiKeyEnc: app.apiKeyEnc, ...(app.providerConnectionId ? { providerConnectionId: app.providerConnectionId } : {}), model: app.model, systemPrompt: app.systemPrompt,
       credentialMode: app.credentialMode, supportsTools: app.supportsTools, enabled: app.enabled },
     groups: access.map((a) => a.groupId).sort(),
-    tools: tools.sort((a, b) => a.toolKey.localeCompare(b.toolKey)),
+    tools: [...tools].sort((a, b) => a.toolKey.localeCompare(b.toolKey)),
   }));
+}
+
+/** Publication includes model/platform guidance and all audience/tool/delegation state, not just the prompt. */
+export async function serviceConfigHash(bot: Bot, q: DbOrTx = db) {
+  const [[app], inputs] = await Promise.all([q.select().from(aiApps).where(eq(aiApps.id, bot.appId ?? "")), serviceBotInputs(bot, q)]);
+  return serviceConfigDigest(bot, { app, ...inputs });
+}
+
+/**
+ * Keeps service publications valid across a credential move that changes nothing else (the same key moved from a
+ * model to a saved provider connection). Only a publication that was current against `before` is re-stamped for
+ * `after`; a stale one stays stale. Both digests come from one read of each bot's dependencies, under a lock on
+ * the bot row (and the caller's lock on the model row), so a concurrent edit can never be blessed: it either
+ * lands before the read (the old digest no longer matches) or after it (the new digest no longer matches).
+ */
+export async function carryServicePublications(tx: Tx, before: AiApp, after: AiApp): Promise<string[]> {
+  if (before.id !== after.id) throw new Error("A publication can only be carried for the same model.");
+  const published = await tx.select().from(bots)
+    .where(and(eq(bots.appId, before.id), eq(bots.executionMode, "service"), isNotNull(bots.publishedConfigHash)))
+    .orderBy(bots.id).for("update");
+  const carried: string[] = [];
+  for (const bot of published) {
+    if (bot.publishedRevision !== bot.revision) continue;
+    const inputs = await serviceBotInputs(bot, tx);
+    let current: string;
+    try { current = serviceConfigDigest(bot, { app: before, ...inputs }); } catch { continue; }
+    if (current !== bot.publishedConfigHash) continue;
+    const next = serviceConfigDigest(bot, { app: after, ...inputs });
+    const updated = await tx.update(bots).set({ publishedConfigHash: next })
+      .where(and(eq(bots.id, bot.id), eq(bots.revision, bot.revision), eq(bots.publishedConfigHash, current))).returning({ id: bots.id });
+    if (updated.length) carried.push(bot.id);
+  }
+  return carried;
 }
 
 export async function assertServicePublished(bot: Bot, q: DbOrTx = db) {
@@ -76,7 +117,7 @@ export async function lockEditableBot(p: Principal, botId: string, q: Tx, assert
   if (!fresh || fresh.user.sessionVersion !== p.user.sessionVersion || !bot || !canEditBot(fresh, bot))
     throw new HttpError(403, "Only an authorized bot editor can change this bot.");
   const [app] = bot.appId ? await q.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
-  if (app && isDockerHermes(app)) assertLocalBot(fresh, app, bot);
+  if (app && isDockerHermes(app)) await assertLocalBot(fresh, app, bot);
   await assertAdditional?.(fresh, bot);
   return bot;
 }

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db, pool } from '@/db';
-import { aiApps, bots, users, botPets, conversations, sharedLinks } from '@/db/schema';
+import { aiApps, bots, users, botPets, conversations, sharedLinks, dockerHermesEnrollments } from '@/db/schema';
 import { loadPrincipal, type Principal } from '@/lib/auth/groups';
 import { newId } from '@/lib/ids';
 import { pairDockerBot, nativeResources, authorizeDockerStream, isPersonalHermesConversation } from '@/lib/docker-hermes/store';
@@ -31,6 +31,7 @@ suite('personal Docker Hermes app authorization and recovery (disposable Postgre
     for (const name of ['alice', 'bob']) {
       const id = newId(); ids.push(id); await db.insert(users).values({ id, upn: `${id}@example.invalid`, name, authSource: 'ldap', isAdmin: true });
     }
+    await db.insert(dockerHermesEnrollments).values(ids.map(userId => ({ userId, enabled: true })));
     [alice, bob] = await Promise.all(ids.map(async id => (await loadPrincipal(id))!)); f.principal = alice;
     vi.stubEnv('DOCKER_HERMES_SOCKET', '/tmp/mock-personal.sock'); vi.stubEnv('DOCKER_HERMES_ALLOWED_USER_IDS', ids.join(','));
     binding = { ownerId: alice.user.id, bindingId: 'b'.repeat(32), runtimeId: 'a'.repeat(64), botId: newId(), appId: newId(), name: 'Hermes', profile: 'default', identity: '1:100' };
@@ -98,11 +99,11 @@ suite('personal Docker Hermes app authorization and recovery (disposable Postgre
     await expect(nativeResources(alice, bot.id)).rejects.toThrow();
     await expect(pairDockerBot(alice, binding)).rejects.toThrow();
     f.calls = []; await reconcileDockerRuntimes();
-    expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/stop' });
+    expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/revoke' });
     expect(f.calls).not.toContainEqual({ owner: alice.user.id, action: '/control/lease' });
     await db.update(users).set({ disabled: false }).where(eq(users.id, alice.user.id));
-    vi.stubEnv('DOCKER_HERMES_ALLOWED_USER_IDS', bob.user.id);
+    await db.update(dockerHermesEnrollments).set({ enabled: false }).where(eq(dockerHermesEnrollments.userId, alice.user.id));
     await expect(authorizeDockerStream(alice, bot.id)).rejects.toThrow();
-    f.calls = []; await reconcileDockerRuntimes(); expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/stop' });
+    f.calls = []; await reconcileDockerRuntimes(); expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/revoke' });
   });
 });

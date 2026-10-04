@@ -10,7 +10,7 @@ const run = process.env.DATABASE_URL ? describe : describe.skip;
 run("shared pet identity and creation boundaries on synthetic data", () => {
   let admin: Principal, owner: Principal, viewer: Principal, appId: string, groupId: string, botId: string, catalogId: string;
   const userIds: string[] = [];
-  const manifest = { displayName: "Identity fixture", description: "Synthetic pixels", spriteVersionNumber: 1 as const, credit: "Test · MIT" };
+  const manifest = { displayName: "Identity fixture", description: "Synthetic pixels", spriteVersionNumber: 2 as const, credit: "Test · MIT" };
   beforeAll(async () => {
     const { db, schema: s } = await import("@/db"); const { loadPrincipal } = await import("@/lib/auth/groups");
     const { newId } = await import("@/lib/ids"); const id = newId();

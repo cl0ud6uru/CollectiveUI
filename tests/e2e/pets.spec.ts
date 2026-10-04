@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { Pool } from "pg";
-import sharp from "sharp";
+import { petV2Fixture } from "../fixtures/pet-v2";
 import { choose, login, openBot, send } from "./helpers";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -34,8 +34,8 @@ const activity = (page: Page) => page.getByRole("status", { name: "Bot avatar ac
 const settings = (page: Page) => page.getByRole("button", { name: `Pet avatar settings for ${botName}`, exact: true });
 const toggle = (page: Page) => page.getByRole("radio", { name: "Personal pet", exact: true });
 async function preferences(page: Page) {
-  await expect.poll(async () => await settings(page).isVisible() || await page.getByRole("button", { name: "Show bot panel" }).isVisible()).toBe(true);
-  if (!await settings(page).isVisible()) await page.getByRole("button", { name: "Show bot panel" }).click();
+  await expect.poll(async () => await settings(page).isVisible() || await page.getByRole("button", { name: "Show bot details" }).isVisible()).toBe(true);
+  if (!await settings(page).isVisible()) await page.getByRole("button", { name: "Show bot details" }).click();
   await settings(page).click();
   await expect(toggle(page)).toBeEnabled();
 }
@@ -49,6 +49,7 @@ async function enable(page: Page) {
 
 test("private avatar replaces existing icons; keyboard preferences persist and restore original icons", async ({ page }) => {
   await login(page, "alice"); await openBot(page, botName);
+  await page.getByRole("button", { name: "Show bot details" }).click();
   const header = avatar(page);
   await expect(header).toHaveAttribute("data-pet-enabled", "false");
   const original = await header.innerHTML();
@@ -206,7 +207,7 @@ test("mobile header, reduced motion, nested dialog focus and unobscured composer
   expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await page.keyboard.press("Escape");
   await expect(settings(page)).toBeFocused();
-  await page.getByRole("button", { name: "Hide bot panel" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Hide bot details" }).click();
   const pet = avatar(page);
   await expect(pet.locator(".pet-body")).toHaveCSS("animation-name", "none");
   await send(page, "A tiny mobile hello.");
@@ -225,7 +226,7 @@ test("mobile header, reduced motion, nested dialog focus and unobscured composer
 
 test("private import, normalized bytes, bad assets, CSRF and revoked access", async ({ page, browser }) => {
   await login(page, "alice"); await openBot(page, botName);
-  const png = await sharp({ create: { width: 1536, height: 2288, channels: 4, background: "#6a805c88" } }).png().toBuffer();
+  const png = await petV2Fixture();
   const manifest = { displayName: "My private sample", description: "Original geometric test fixture", spritesheetPath: "spritesheet.png", spriteVersionNumber: 2 };
   const multipart = { manifest: { name: "pet.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(manifest)) }, sprite: { name: "spritesheet.png", mimeType: "image/png", buffer: png }, credit: "CollectiveUI test fixture · MIT", rights: "confirmed" };
   expect((await page.request.post(endpoint, { headers: { origin }, multipart })).status()).toBe(200);
@@ -271,6 +272,8 @@ test("private import, normalized bytes, bad assets, CSRF and revoked access", as
   await page.getByLabel("pet.json", { exact: true }).setInputFiles({ name: "pet.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ ...manifest, displayName: "Updated private sample" })) });
   await page.getByLabel("Sprite sheet", { exact: true }).setInputFiles(multipart.sprite);
   await page.getByLabel("I have permission to use this artwork", { exact: false }).check();
+  await page.getByRole("button", { name: "Validate and preview", exact: true }).click();
+  await page.getByRole("checkbox", { name: "I reviewed all animation states", exact: false }).check();
   await page.getByRole("button", { name: "Import pet", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "Pet imported" })).toBeVisible();
   await page.getByRole("button", { name: "Remove imported pet" }).click();

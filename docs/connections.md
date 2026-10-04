@@ -2,6 +2,18 @@
 
 [Back to the overview](../README.md) · [Models vs agent backends](features/models-and-agent-backends.md)
 
+## Reusable OpenAI API credentials
+
+In **Admin → Connections → Saved provider credentials**, add a named connection with an API key and optional endpoint, organization and project. Then add or edit an OpenAI model and choose its **Saved provider connection**. Different projects or billing accounts can have separate named connections. Model names, capabilities, sampling and audience groups remain on each model. Only administrators can create, rotate, disable or delete the provider credential; using an accessible model grants no credential-management permission.
+
+The endpoint, organization and project are fixed after creation so a model edit cannot redirect a saved secret or change its billing destination. Create a separate connection to change these. **Replace API key** rotates one encrypted, row-bound secret for all listed dependent models. A blank key field preserves the credential; no key is returned to forms, bot configuration, exports or audit details. Worker encryption-key rewrapping covers these credentials too.
+
+Rotation and disabling apply when a new turn or job resolves its provider (including embeddings and background work). Turns/jobs already in progress may finish with the previous credential. Disabling does not alter any model audience. Deletion is blocked until all dependent models, including disabled ones, have been reassigned or deleted. Changing a published service bot's model to a different saved connection requires an administrator to review and publish that bot again; rotating the same connection does not.
+
+Apply migration **0023_saved_provider_connections** before running the new web and worker code. The schema upgrade preserves all existing credentials and models exactly: it creates no connections and does not group keys by provider name. To migrate, edit an existing OpenAI model and choose **Migrate stored credential to a named connection**. This atomically creates one named connection for that model, re-encrypts its current credential, preserves its endpoint/project/audience and removes the old per-model ciphertext. Retrying the operation reuses its completed result. Because the credential and billing destination stay the same, service bots on that model whose publication was current immediately before the migration stay published (the migration re-stamps their publication in the same transaction and records them in the audit entry). A service bot that already needed review still needs an administrator to review and publish it, and a concurrent change to the model or bot is never carried into a publication. Migrate models separately, then explicitly select which named connection each model should use. Legacy per-model credentials continue working until migrated; unreadable credentials leave the migration unchanged.
+
+Saved connections currently support OpenAI API models. Personal ChatGPT subscription/OAuth connections and Hermes runtime credentials retain their separate ownership and authentication flows.
+
 ## Connecting models and agent backends
 
 Add a model connection in **Admin → Connections → Models**: pick a provider, enter its endpoint and company credentials, select its model/deployment, and use **Test** to check it. Existing `/admin/apps` links and saved connection IDs remain compatible. No database migration is required for this terminology change.

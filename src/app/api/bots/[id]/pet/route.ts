@@ -31,6 +31,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/bots/[id]/p
     const { id } = await ctx.params;
     assertPersonalPetAllowed(await getUsableBot(p, id)); // deny shared identity before reading/decoding
     const { manifest, sprite } = await parsePetUpload(request);
+    if (new URL(request.url).searchParams.get("validate") === "1") return petJson({ manifest, sprite: sprite.toString("base64") });
     return petJson(await replacePet(p, id, manifest, sprite));
   } catch (err) { return petError(err); }
 }
