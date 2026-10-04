@@ -1,6 +1,6 @@
 {
-  "id": "2856e6da-6a66-465e-a33b-e34353f9fb98",
-  "prevId": "a5ad640a-aef7-4dec-ad97-91fda97f263f",
+  "id": "16e7d5f9-6dcb-4e5a-afdf-f046c7251d7e",
+  "prevId": "2856e6da-6a66-465e-a33b-e34353f9fb98",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2642,6 +2642,90 @@
         "delegated_tasks_depth_check": {
           "name": "delegated_tasks_depth_check",
           "value": "\"delegated_tasks\".\"depth\" between 1 and 2"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.docker_hermes_enrollments": {
+      "name": "docker_hermes_enrollments",
+      "schema": "",
+      "columns": {
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "cleanup": {
+          "name": "cleanup",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'none'"
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "changed_by": {
+          "name": "changed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "docker_hermes_enrollments_user_id_users_id_fk": {
+          "name": "docker_hermes_enrollments_user_id_users_id_fk",
+          "tableFrom": "docker_hermes_enrollments",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "docker_hermes_enrollments_changed_by_users_id_fk": {
+          "name": "docker_hermes_enrollments_changed_by_users_id_fk",
+          "tableFrom": "docker_hermes_enrollments",
+          "tableTo": "users",
+          "columnsFrom": [
+            "changed_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "docker_hermes_cleanup_check": {
+          "name": "docker_hermes_cleanup_check",
+          "value": "\"docker_hermes_enrollments\".\"cleanup\" in ('none', 'pending', 'stopping', 'failed', 'stopped')"
         }
       },
       "isRLSEnabled": false

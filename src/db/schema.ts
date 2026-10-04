@@ -264,6 +264,21 @@ export const groupMappings = pgTable(
 // AI apps (OpenAI-compatible endpoints)
 // ---------------------------------------------------------------------------
 
+/** Company API credentials. Model audience is deliberately kept on ai_apps/app_access. */
+export const providerConnections = pgTable("provider_connections", {
+  id: id(),
+  name: text("name").notNull(),
+  provider: text("provider").$type<"openai">().notNull().default("openai"),
+  baseUrl: text("base_url"),
+  organization: text("organization"),
+  project: text("project"),
+  credentialEnc: text("secret_enc").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [check("provider_connections_provider_check", sql`${t.provider} = 'openai'`)]);
+
 export const aiApps = pgTable(
   "ai_apps",
   {
@@ -290,6 +305,7 @@ export const aiApps = pgTable(
     baseUrl: text("base_url"),
     /** Encrypted secret: an API key, or JSON for multi-part credentials (AWS keys, service accounts). */
     apiKeyEnc: text("api_key_enc"),
+    providerConnectionId: text("provider_connection_id").references(() => providerConnections.id, { onDelete: "restrict" }),
     model: text("model").notNull(),
     systemPrompt: text("system_prompt"),
     temperature: real("temperature"),
@@ -304,6 +320,8 @@ export const aiApps = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
+    index("ai_apps_provider_connection_idx").on(t.providerConnectionId),
+    check("ai_apps_provider_connection_check", sql`${t.providerConnectionId} is null or (${t.provider} = 'openai' and ${t.credentialMode} = 'org' and ${t.apiKeyEnc} is null)`),
     check("ai_apps_kind_check", sql`${t.kind} in ('model', 'runtime')`),
     check(
       "ai_apps_provider_check",
