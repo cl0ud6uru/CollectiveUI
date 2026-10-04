@@ -11,3 +11,5 @@
   assembled per bot in `toolset.ts`; approval policy is the pure `approvals.ts`.
 - Worker: `src/worker/index.ts` (pg-boss). Schema: `src/db/schema.ts` → `npm run db:generate` → `npm run db:migrate`.
 - Checks: `npm run typecheck`, `npm run lint`, `npm test`, `npm run test:e2e` (needs the dev stack, see README).
+- Attribution: never add `Co-Authored-By`, `Claude-Session`, "Generated with Claude Code", session links or any other
+  Claude/AI attribution to commits, branches, PRs, issues or comments. Everything should read as written by the repo owner.
