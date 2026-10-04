@@ -37,7 +37,17 @@ export function changeBotNavigation<T extends NavigationBot>(bots: T[], change: 
   return bots.map(b => b.id === bot.id ? next : b);
 }
 
-export function visibleNavigationBots<T extends NavigationBot>(bots: T[], activeBotId?: string): T[] {
-  // The parent sidebar scrolls. Never truncate while moving: doing so can unmount the focused row.
-  return bots.filter(b => !b.hidden || b.id === activeBotId);
+/** Unpinned bots shown in the sidebar before "See all"; pinned bots are always shown. */
+export const MAX_UNPINNED = 5;
+
+/**
+ * Sidebar rows in saved order: every pinned bot and the first MAX_UNPINNED unpinned ones. The active bot (even if
+ * hidden) and the bot just moved stay mounted beyond the limit, so a keyboard or touch move never drops the focused row.
+ */
+export function visibleNavigationBots<T extends NavigationBot>(bots: T[], activeBotId?: string, movedBotId?: string | null): T[] {
+  let unpinned = 0;
+  return bots.filter(b => {
+    const withinLimit = !b.hidden && (!!b.pinned || unpinned++ < MAX_UNPINNED);
+    return withinLimit || b.id === activeBotId || (b.id === movedBotId && !b.hidden);
+  });
 }

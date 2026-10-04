@@ -2,7 +2,9 @@
 
 The Bots directory has a Pin/Unpin button for each bot you can use. Pins belong to your account, including for shared bots. A new pin appears after your existing pins; pinning a hidden bot also unhides it. Unpinning preserves its position. Pinning never changes a bot's audience or configuration.
 
-Drag a sidebar bot by its grip and drop at the insertion line to move it. On a keyboard or touch screen, activate the grip or the bot's options button and choose **Move up** or **Move down**. Moves can cross pinned entries and retain each bot's pinned state. The full visible roster stays in the scrollable sidebar so a move cannot remove the focused bot. A successful move is announced and focus returns to the moved bot's options button. Cancelling a drag leaves the arrangement unchanged.
+Drag a sidebar bot by its grip and drop at the insertion line to move it. On a keyboard or touch screen, activate the grip or the bot's options button and choose **Move up** or **Move down**. Moves can cross pinned entries and retain each bot's pinned state. **Move up**/**Move down** step through your full saved order, including bots beyond the sidebar limit. A successful move is announced and focus returns to the moved bot's options button. Cancelling a drag leaves the arrangement unchanged.
+
+The sidebar shows, in your saved order, every pinned bot plus the first five unpinned ones; **See all** opens the Bots directory when there are more. The bot you are chatting with is always shown, even when it is hidden or past the limit. The bot you just moved also stays in the sidebar until your next move or a page reload, even when the move takes it past the limit, so keyboard focus is never lost.
 
 Order, pins and hidden state are saved to your account across refreshes, navigation, and later sessions. Incoming messages, activity and renamed bots do not reorder the list. Newly accessible bots follow the existing saved arrangement. Recent Chats keeps its own chronology.
 

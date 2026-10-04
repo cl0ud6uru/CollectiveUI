@@ -14,7 +14,7 @@ import { StartSideChat } from "@/components/chat/start-side-chat";
 import { cn } from "@/lib/utils";
 import { shortTime } from "./group-by-date";
 import { useShell } from "@/components/chat/shell-context";
-import { visibleNavigationBots } from "@/lib/bots/navigation";
+import { MAX_UNPINNED, visibleNavigationBots } from "@/lib/bots/navigation";
 
 /** Spread idle blinks so the roster doesn't blink in unison. */
 function blinkDelay(id: string) {
@@ -23,12 +23,13 @@ function blinkDelay(id: string) {
   return `${-(Math.abs(h) % 6000)}ms`;
 }
 
-function BotRow({ b, active, onNavigate, previous, next, onDragStart, onDragEnd }: { b: TargetOption; active: boolean; onNavigate: () => void; previous?: TargetOption; next?: TargetOption; onDragStart: (event: React.DragEvent) => void; onDragEnd: () => void }) {
+function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, onDragEnd }: { b: TargetOption; active: boolean; onNavigate: () => void; previous?: TargetOption; next?: TargetOption; onMove: () => void; onDragStart: (event: React.DragEvent) => void; onDragEnd: () => void }) {
   const router = useRouter();
   const options = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const { navigationPending, changeNavigation } = useShell();
   const move = (target: TargetOption, placement: "before" | "after") => {
+    onMove();
     changeNavigation({ kind: "move", botId: b.id, targetId: target.id, placement }, `Moved ${b.name} ${placement} ${target.name}`);
     requestAnimationFrame(() => options.current?.focus());
   };
@@ -129,8 +130,11 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
   const pinned = bots.filter((b) => b.pinned && !b.hidden);
   const others = bots.filter((b) => !b.pinned && !b.hidden);
   const hidden = bots.filter((b) => b.hidden);
-  const visible = visibleNavigationBots(bots, activeBotId);
-  const movable = visible.filter(b => !b.hidden);
+  // The last moved bot stays mounted past the limit until another move, so its focused row is never removed.
+  const [moved, setMoved] = useState<string | null>(null);
+  const visible = visibleNavigationBots(bots, activeBotId, moved);
+  // Move up/down steps through the full saved order, including bots beyond the sidebar limit.
+  const movable = bots.filter(b => !b.hidden);
   const cancelDrag = () => { setDragging(null); setDrop(null); };
   if (!bots.length) return null;
   return (
@@ -138,7 +142,7 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
       <p role="status" className={navigationPending ? "px-2.5 text-xs text-muted" : "sr-only"}>{navigationPending ? "Saving bot navigation…" : navigationMessage}</p>
       <div className="flex items-center gap-2 px-2.5 pb-1">
         <h3 className="flex-1 text-xs font-medium text-subtle">Bots</h3>
-        {others.length > 5 && (
+        {others.length > MAX_UNPINNED && (
           <Link href="/bots" onClick={onNavigate} className="text-xs text-subtle hover:text-fg">
             See all
           </Link>
@@ -168,11 +172,11 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
             event.preventDefault();
             if (dragging && drop?.id === b.id && !navigationPending) {
               const source = bots.find(bot => bot.id === dragging);
-              if (source) changeNavigation({ kind: "move", botId: dragging, targetId: b.id, placement: drop.placement }, `Moved ${source.name} ${drop.placement} ${b.name}`);
+              if (source) { setMoved(source.id); changeNavigation({ kind: "move", botId: dragging, targetId: b.id, placement: drop.placement }, `Moved ${source.name} ${drop.placement} ${b.name}`); }
             }
             cancelDrag();
           }}>
-          <BotRow b={b} active={b.id === activeBotId} onNavigate={onNavigate}
+          <BotRow b={b} active={b.id === activeBotId} onNavigate={onNavigate} onMove={() => setMoved(b.id)}
             previous={movable[movable.findIndex(bot => bot.id === b.id) - 1]} next={movable[movable.findIndex(bot => bot.id === b.id) + 1]}
             onDragStart={event => { setDragging(b.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", b.id); }} onDragEnd={cancelDrag} />
         </div>

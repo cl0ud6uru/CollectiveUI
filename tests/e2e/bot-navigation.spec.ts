@@ -132,22 +132,39 @@ test("ordinary users own their pins; revoked or deleted shared bots disappear de
   await context.close();
 });
 
-test("large rosters keep the moved row and keyboard focus when crossing pinned entries", async ({ page }) => {
+test("large rosters show pins plus five others, keep the moved and active rows, and link to all bots", async ({ page }) => {
   for (const [id, name] of [["navD", "Delta"], ["navE", "Echo"], ["navF", "Foxtrot"], ["navG", "Golf"]])
     await pool.query("INSERT INTO bots(id,owner_id,name,visibility) VALUES($1,'navigation-admin',$2,'org')", [id, name]);
   try {
     await pool.query("UPDATE users SET prefs=$1 WHERE id='navigation-admin'", [JSON.stringify({ botOrder: ["navA", "navB", "navC", "navD", "navE", "navF", "navG"] })]);
     await pool.query("INSERT INTO user_bot_prefs(user_id,bot_id,pinned) VALUES('navigation-admin','navG',true)");
     await login(page);
-    await expect(nav(page).locator("[data-navigation-bot]")).toHaveCount(7);
-    await nav(page).getByRole("button", { name: "Reorder Foxtrot", exact: true }).focus();
+    // Six unpinned bots: the sixth (Foxtrot) waits behind "See all"; the pinned Golf is always shown.
+    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navE", "navG"]);
+    await expect(nav(page).getByRole("link", { name: "See all", exact: true })).toHaveAttribute("href", "/bots");
+    // Moving the fifth row down crosses the limit; the moved row stays mounted and keeps focus.
+    await nav(page).getByRole("button", { name: "Reorder Echo", exact: true }).focus();
     await page.keyboard.press("Enter");
     const down = page.getByRole("menuitem", { name: "Move down", exact: true });
     await down.focus(); await page.keyboard.press("Enter");
-    await expect(nav(page).getByRole("button", { name: "Foxtrot options", exact: true })).toBeFocused();
-    await expect(nav(page).getByRole("status")).toHaveText("Moved Foxtrot after Golf");
-    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navE", "navG", "navF"]);
+    await expect(nav(page).getByRole("button", { name: "Echo options", exact: true })).toBeFocused();
+    await expect(nav(page).getByRole("status")).toHaveText("Moved Echo after Foxtrot");
+    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navE", "navG"]);
+    // Moves continue to cross pinned entries without losing focus.
+    await nav(page).getByRole("button", { name: "Echo options", exact: true }).press("Enter");
+    await down.focus(); await page.keyboard.press("Enter");
+    await expect(nav(page).getByRole("button", { name: "Echo options", exact: true })).toBeFocused();
+    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navG", "navE"]);
+    await expect(nav(page).locator('[data-navigation-bot="navG"] [aria-label="Pinned"]')).toHaveCount(1);
+    // After reload the limit applies again; opening Echo keeps it visible as the active bot.
     await page.reload();
-    await expect(nav(page).locator("[data-navigation-bot]")).toHaveCount(7);
-  } finally { await pool.query("DELETE FROM bots WHERE id IN ('navD','navE','navF','navG')"); }
+    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navG"]);
+    await page.goto("/?bot=navE");
+    await page.waitForURL(/\/c\//);
+    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navG", "navE"]);
+    await expect(nav(page).locator('[data-navigation-bot="navE"] a[aria-current="page"]')).toHaveCount(1);
+  } finally {
+    await pool.query("DELETE FROM conversations WHERE bot_id IN ('navD','navE','navF','navG')");
+    await pool.query("DELETE FROM bots WHERE id IN ('navD','navE','navF','navG')");
+  }
 });

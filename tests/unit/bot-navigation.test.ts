@@ -31,7 +31,21 @@ describe("personal bot navigation", () => {
     expect(changeBotNavigation(roster, { kind: "preference", botId: "inaccessible", pinned: true })).toBe(roster);
     expect(changeBotNavigation([{ ...roster[0], hidden: true }, roster[1]], { kind: "move", botId: "0", targetId: "1", placement: "before" })[0].hidden).toBe(true);
   });
-  it("keeps the full ordered roster mounted during moves; hides only explicit hidden bots", () => {
+  it("limits unpinned rows but keeps every pin, the active bot and the just-moved bot", () => {
+    const many = ["A", "B", "C", "D", "E", "F", "G", "H"].map((name, i) => ({ id: `m${i}`, name, pinned: i === 7, hidden: i === 0 }));
+    // m0 is hidden, so the five unpinned rows are m1..m5; pinned m7 stays visible after them in saved order.
+    expect(ids(visibleNavigationBots(many))).toEqual(["m1", "m2", "m3", "m4", "m5", "m7"]);
+    expect(ids(visibleNavigationBots(many, "m6"))).toEqual(["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
+    expect(ids(visibleNavigationBots(many, "m0"))).toEqual(["m0", "m1", "m2", "m3", "m4", "m5", "m7"]);
+    expect(ids(visibleNavigationBots(many, "m1"))).toEqual(["m1", "m2", "m3", "m4", "m5", "m7"]);
+    // Moving the fifth unpinned row down pushes it past the limit; it stays mounted so focus can return to it.
+    const moved = changeBotNavigation(many, { kind: "move", botId: "m5", targetId: "m6", placement: "after" });
+    expect(ids(visibleNavigationBots(moved, undefined, "m5"))).toEqual(["m1", "m2", "m3", "m4", "m6", "m5", "m7"]);
+    expect(ids(visibleNavigationBots(moved))).toEqual(["m1", "m2", "m3", "m4", "m6", "m7"]);
+    // A just-moved bot that was then hidden is not kept.
+    expect(ids(visibleNavigationBots(many, undefined, "m0"))).not.toContain("m0");
+  });
+  it("hides only explicit hidden bots in a short roster", () => {
     const bots = [...roster, { id: "3", name: "Delta", pinned: true, hidden: false }];
     expect(ids(visibleNavigationBots(bots))).toEqual(["0", "1", "2", "3"]);
     const hidden = changeBotNavigation(bots, { kind: "preference", botId: "3", hidden: true });
