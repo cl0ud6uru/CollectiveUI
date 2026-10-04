@@ -10,6 +10,8 @@ const password = "Synthetic-header!42";
 const bot = "headerHermes";
 const longName = "A very long bot name for a thoughtful research and planning companion ".repeat(3);
 const avatar = (page: Page, id = bot) => page.locator(`header [data-bot-avatar="${id}"]`);
+const detailsToggle = (page: Page) => page.locator("main header").getByRole("button", { name: /^(Show|Hide) bot details$/ });
+const detailsPanel = (page: Page) => page.getByRole("complementary", { name: "Hermes activity and outputs" });
 
 test.beforeAll(async () => {
   const url = new URL(process.env.DATABASE_URL!);
@@ -49,7 +51,8 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole("button", { name: "Sign in with local account" }).click();
   await page.waitForURL("/");
   await page.goto(`/?bot=${bot}`);
-  await expect(avatar(page).locator("img")).toHaveJSProperty("naturalHeight", 2288);
+  // The saved-chat snapshot and sprite routes may compile on first entry in dev.
+  await expect(avatar(page).locator("img")).toHaveJSProperty("naturalHeight", 2288, { timeout: 30_000 });
 });
 
 async function geometry(page: Page, id = bot) {
@@ -67,7 +70,8 @@ async function geometry(page: Page, id = bot) {
   expect(pet.width).toBeCloseTo(pane.width >= 576 ? 84 : 64);
   // A normal desktop pane puts the pet at the top, alongside the controls.
   if (pane.width >= 800) expect(pet.y - pane.y).toBeCloseTo(8);
-  expect(pane.height).toBeLessThan(190);
+  // Narrow panes stack controls above the pet; allow the 44px details touch target.
+  expect(pane.height).toBeLessThan(200);
   expect(name.y).toBeGreaterThanOrEqual(pet.y + pet.height);
   for (const control of await header.locator("button:visible, a:visible").all()) {
     await expect(control).toBeInViewport();
@@ -88,16 +92,17 @@ test("centered in the pane across themes, sidebars, viewport widths and empty ch
     await page.evaluate(theme => { localStorage.setItem("theme", theme); }, theme);
     await page.reload();
     await expect(page.locator("html")).toHaveClass(new RegExp(theme));
+    await detailsToggle(page).click();
     await geometry(page);
     await page.screenshot({ path: info.outputPath(`desktop-${theme}.png`) });
-    await page.getByRole("button", { name: "Hide bot panel" }).click();
+    await detailsToggle(page).click();
     await geometry(page);
     await page.getByRole("button", { name: "Close sidebar", exact: true }).click();
     await expect.poll(async () => (await page.locator("main").boundingBox())?.x).toBe(52);
     await geometry(page);
     await page.screenshot({ path: info.outputPath(`desktop-collapsed-${theme}.png`) });
     await page.getByRole("button", { name: "Open sidebar", exact: true }).click();
-    await page.getByRole("button", { name: "Show bot panel" }).click();
+    await detailsToggle(page).click();
     for (const width of [1024, 900, 768, 390, 320]) {
       await page.setViewportSize({ width, height: width < 400 ? 568 : 900 });
       await geometry(page);
@@ -161,6 +166,10 @@ test("actions, keyboard access, activity and home history retain their behavior"
   await expect(page).toHaveURL(side);
   await send(page, "[slow] Keep working on this thought for a moment.");
   await expect(avatar(page)).toHaveAttribute("data-activity", "working");
+  await detailsToggle(page).click();
+  await detailsToggle(page).click();
+  await expect(page).toHaveURL(side);
+  await expect(avatar(page)).toHaveAttribute("data-activity", "working");
   await page.getByLabel("Stop generating").click();
   await expect(avatar(page)).not.toHaveAttribute("data-activity", "working");
   await expect.poll(async () => (await pool.query("SELECT count(*)::int AS n FROM agent_runs WHERE status IN ('queued','running')")).rows[0].n).toBe(0);
@@ -176,7 +185,7 @@ test("actions, keyboard access, activity and home history retain their behavior"
   await pool.query("INSERT INTO messages(id,conversation_id,parent_id,role,parts) VALUES ('headerWorkspace',$1,$2,'assistant',$3)", [cid, leaf, JSON.stringify([{ type: "tool-workspace_list", toolCallId: "header-tool", state: "output-available", input: {}, output: { files: [] } }])]);
   await pool.query("UPDATE conversations SET current_leaf_id='headerWorkspace' WHERE id=$1", [cid]);
   await page.reload();
-  await page.getByRole("button", { name: "Hide bot panel" }).click();
+  await expect(detailsToggle(page)).toHaveAttribute("aria-expanded", "false");
   for (const width of [1360, 1092, 1060, 1028, 1024, 800, 390, 320]) {
     await page.setViewportSize({ width, height: width < 400 ? 568 : 900 });
     await geometry(page);
@@ -184,6 +193,7 @@ test("actions, keyboard access, activity and home history retain their behavior"
   await page.getByRole("button", { name: "Hermes's workspace", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Hermes activity" })).toBeVisible();
   await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Hermes activity" })).toHaveCount(0);
   await page.getByRole("button", { name: "Open sidebar", exact: true }).click();
   await page.locator(`nav a[href="/?bot=${bot}"]:visible`).click();
   await expect(page).toHaveURL(home);
@@ -191,6 +201,135 @@ test("actions, keyboard access, activity and home history retain their behavior"
   await geometry(page);
   await page.screenshot({ path: info.outputPath("mobile-home-restored.png") });
   expect((await pool.query("SELECT count(*)::int AS n FROM conversations WHERE bot_id=$1 AND is_bot_home", [bot])).rows[0].n).toBe(1);
+});
+
+test("bot details start collapsed and stay visit-local across navigation and reload", async ({ page }) => {
+  const toggle = detailsToggle(page);
+  const composer = page.getByLabel("Message", { exact: true });
+  const draft = "Keep this unsent thought while I inspect the bot.";
+  const home = page.url();
+  await expect(toggle).toHaveAccessibleName("Show bot details");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(detailsPanel(page)).toHaveCount(0);
+  expect(await toggle.evaluate(el => document.getElementById(el.getAttribute("aria-controls")!)?.hidden)).toBe(true);
+  await composer.fill(draft);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await toggle.focus();
+    await expect(toggle).toHaveCSS("outline-style", "solid");
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAccessibleName("Hide bot details");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(detailsPanel(page)).toBeVisible();
+    expect(await toggle.evaluate(el => !!document.getElementById(el.getAttribute("aria-controls")!)?.querySelector("aside"))).toBe(true);
+    // Radix dismisses a tooltip on activation until the pointer leaves/re-enters.
+    await page.mouse.move(0, 0);
+    await toggle.hover();
+    await expect(page.getByRole("tooltip", { name: "Hide bot details" })).toBeVisible();
+    await page.keyboard.press("Space");
+    await expect(toggle).toHaveAccessibleName("Show bot details");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toBeFocused();
+    await expect(detailsPanel(page)).toHaveCount(0);
+    await expect(composer).toHaveValue(draft);
+    await expect(page.getByText("Help me plan a focused morning.", { exact: true })).toBeVisible();
+  }
+  await toggle.click();
+  await detailsPanel(page).getByRole("button", { name: "Hide bot details" }).click();
+  await expect(toggle).toBeFocused();
+  await expect(composer).toHaveValue(draft);
+  await toggle.click();
+  await page.reload();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(detailsPanel(page)).toHaveCount(0);
+  await toggle.click();
+  await page.getByRole("button", { name: "Start side chat", exact: true }).click();
+  await expect(page).not.toHaveURL(home);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await toggle.click();
+  await page.getByRole("link", { name: "Open home chat", exact: true }).click();
+  await expect(page).toHaveURL(home);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(detailsPanel(page)).toHaveCount(0);
+  await page.goBack();
+  await expect(page).not.toHaveURL(home);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+});
+
+test("bot details support mobile dismissal, touch targets and safe focus on layout changes", async ({ page }) => {
+  const toggle = detailsToggle(page);
+  const composer = page.getByLabel("Message", { exact: true });
+  const draft = "My mobile draft stays here.";
+  await composer.fill(draft);
+  for (const width of [768, 390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(toggle).toBeInViewport();
+    const box = (await toggle.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Hermes activity" });
+    await expect(dialog).toBeVisible();
+    // The background is inert while the dialog is open; inspect its persistent control directly.
+    const headerToggle = page.locator("main header button[aria-controls]");
+    await expect(headerToggle).toHaveAttribute("aria-expanded", "true");
+    expect(await headerToggle.evaluate(el => !!document.getElementById(el.getAttribute("aria-controls")!)?.closest('[role="dialog"]'))).toBe(true);
+    const close = dialog.getByRole("button", { name: "Hide bot details" });
+    await expect(close).toBeInViewport();
+    const closeBox = (await close.boundingBox())!;
+    expect(closeBox.width).toBeGreaterThanOrEqual(44);
+    expect(closeBox.height).toBeGreaterThanOrEqual(44);
+    await page.keyboard.press("Tab");
+    expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(composer).toHaveValue(draft);
+    await toggle.click();
+    await expect(dialog).toBeVisible();
+    // Escape must dismiss immediately, even before moving focus off the close control.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+    await toggle.click();
+    await dialog.getByRole("button", { name: "Hide bot details" }).click();
+    await expect(toggle).toBeFocused();
+    await expect(composer).toHaveValue(draft);
+    await geometry(page);
+  }
+  await page.setViewportSize({ width: 1360, height: 900 });
+  await toggle.click();
+  await detailsPanel(page).getByRole("button", { name: "Hide bot details" }).focus();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toBeFocused();
+  await expect(detailsPanel(page)).toHaveCount(0);
+  await toggle.click();
+  await expect(page.getByRole("dialog", { name: "Hermes activity" })).toBeVisible();
+  await page.setViewportSize({ width: 1360, height: 900 });
+  await expect(page.getByRole("dialog", { name: "Hermes activity" })).toHaveCount(0);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toBeFocused();
+  await expect(composer).toHaveValue(draft);
+  // Nested dialogs render in portals but still belong to the closing details panel.
+  await toggle.click();
+  await detailsPanel(page).getByRole("button", { name: "New routine" }).click();
+  await page.getByPlaceholder("Morning inbox triage").fill("Unsent routine");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(toggle).toBeFocused();
+  await expect(composer).toHaveValue(draft);
+  // Resizing must not steal focus from a user who has returned to the composer.
+  await page.setViewportSize({ width: 1360, height: 900 });
+  await toggle.click();
+  await detailsPanel(page).getByRole("button", { name: "Hide bot details" }).focus();
+  await composer.focus();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(composer).toBeFocused();
+  await expect(composer).toHaveValue(draft);
 });
 
 test("long transcripts scroll beneath the header without losing first messages or hit targets", async ({ page }) => {
@@ -203,7 +342,7 @@ test("long transcripts scroll beneath the header without losing first messages o
       const first = page.getByText("Keep the first message clear of the header.", { exact: true });
       const scroll = page.locator("main .overflow-y-auto").filter({ has: first });
       const header = page.locator("main header");
-      await expect(first).toBeAttached();
+      await expect(first).toBeAttached({ timeout: 30_000 });
       await scroll.evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event("scroll")); });
       await geometry(page);
       const headerBox = (await header.boundingBox())!;

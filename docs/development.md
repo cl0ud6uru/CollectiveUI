@@ -25,6 +25,25 @@ Worker (pg-boss on the same Postgres) ── every chat reply: runTurn() = AI SD
 
 ## Running the tests
 
+For a reproducible unit-test environment, use the dedicated Docker `test` target:
+
+```bash
+docker build --target test -t collectiveui-test .
+docker run --rm --init --network none collectiveui-test
+```
+
+It runs `npm test -- --project unit` with `NODE_ENV=test` as the non-root `node` user, with a writable `/app`
+and all locked development dependencies. The digest-pinned full Debian Node image includes `/usr/bin/python3`,
+git and process tools for the checked-in synthetic native Hermes fixtures. No pip packages, live Hermes
+installation, credentials, database or external runtime network are needed. `--init` reaps fixture descendants.
+At the initial public snapshot this suite contains 658 tests; run the complete current suite as it grows.
+Do not bind-mount a checkout over `/app`, which would hide its installed dependencies and ownership.
+
+The production `worker` image is **not a test harness**: it runs with `NODE_ENV=production`, root-owned application
+files and a non-root `app` user, and intentionally omits Vitest, Python fixtures and development tooling. Do not
+switch it to root or change its permissions to run tests. See [worker image validation](testing/worker-image.md)
+for the shipped dependency audit and a disposable migration/reply smoke test.
+
 ```bash
 npm run typecheck && npm run lint
 npm test                      # unit tests + integration tests (integration suites skip themselves without DATABASE_URL)
@@ -35,7 +54,7 @@ SANDBOX_DOCKER=1 npm run test:sandbox   # sandboxd against a real Docker daemon:
 HERMES_TEST_URL=http://127.0.0.1:8642 HERMES_TEST_PROFILE=coder HERMES_TEST_KEY=… npx vitest run --project integration hermes-live
 ```
 
-CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm run lint` and `npm test` on every pull request and push to `main`. It has no database, Docker or Hermes, so the integration, sandbox and e2e suites don't run there; run the ones your change touches locally.
+CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm run lint` and `npm test` on every pull request and push to `main`. That job has no database or Hermes, so integration, sandbox and e2e suites don't run there; run the ones your change touches locally. `.github/workflows/docker.yml` also checks the exact PR head using the Docker unit target and production worker audit/migration/reply smoke test. It uses only synthetic local fixtures and does not deploy anything.
 
 `test:sandbox` needs Docker and the workspace image (`npm run sandbox:image`). It runs under gVisor when Docker has `runsc`, and `SANDBOX_TEST_RUNTIME=runc` runs it under standard isolation. The workspace e2e test runs only when `SANDBOXD_URL` is set (start `npm run sandboxd:dev` first). The Hermes tests (`hermes-live`, and `tests/e2e/hermes.spec.ts` with `HERMES_E2E_URL`/`HERMES_E2E_PROFILE`/`HERMES_E2E_KEY`) need a Hermes gateway whose profile runs on the mock LLM (`model.provider: custom`, `base_url: http://127.0.0.1:4010/v1`), so scripted tool calls work; offline, `tests/unit/hermes-provider.test.ts` replays events recorded from a real gateway.
 

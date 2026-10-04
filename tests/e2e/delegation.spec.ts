@@ -68,6 +68,7 @@ test("parent links to receiving task, history/activity include it, and home stay
   await expect(page).toHaveURL(new RegExp(`/c/${homeId}$`));
   await expect(page.getByRole("main").getByText('You said: "This is my receiver home greeting"', { exact: true })).toBeVisible();
   expect((await pool.query("SELECT current_leaf_id FROM conversations WHERE id=$1", [homeId])).rows[0]).toEqual(before);
+  await page.getByRole("button", { name: "Show bot details" }).click();
   const activity = page.getByRole("complementary", { name: "Receiver activity and outputs" });
   await expect(activity.getByRole("link", { name: /explain cats.*Delegated task/ })).toBeVisible();
   await page.goto(`/bots/${receiver}/chats`);

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ChevronsRight, Clock, FileText, Monitor, Plus, Settings2, Webhook } from "lucide-react";
+import { Clock, FileText, Monitor, PanelRightClose, Plus, Settings2, Webhook } from "lucide-react";
 import { getBotPanelData } from "@/app/(chat)/bots/actions";
 import type { TargetOption } from "@/components/chat/types";
 import { Tip } from "@/components/ui/tooltip";
@@ -15,7 +15,7 @@ import { UseAsTemplateButton } from "./template-button";
 type PanelData = Awaited<ReturnType<typeof getBotPanelData>>;
 
 /** Right-hand panel next to a bot chat, modelled on Grok Bot's layout (bot card + Routines). */
-export function BotSidePanel({ bot, onClose, mobile = false }: { bot: TargetOption; onClose: () => void; mobile?: boolean }) {
+export function BotSidePanel({ bot, onClose, panelId, mobile = false }: { bot: TargetOption; onClose: () => void; panelId: string; mobile?: boolean }) {
   const [data, setData] = useState<PanelData | null>(null);
   const [failed, setFailed] = useState(false);
   const [edit, setEdit] = useState<RoutineRow | "new" | null>(null);
@@ -55,8 +55,8 @@ export function BotSidePanel({ bot, onClose, mobile = false }: { bot: TargetOpti
             </Link>
           </Tip>
         )}
-        <button onClick={onClose} title="Hide panel" className="rounded-lg p-2 text-muted hover:bg-hover hover:text-fg" aria-label="Hide bot panel">
-          <ChevronsRight className="h-5 w-5" />
+        <button onClick={onClose} title="Hide bot details" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg" aria-label="Hide bot details" aria-expanded="true" aria-controls={panelId}>
+          <PanelRightClose aria-hidden className="h-5 w-5" />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto px-4 pb-6">

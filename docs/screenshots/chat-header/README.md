@@ -20,9 +20,16 @@ CHAT_HEADER_BROWSER=1 PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium \
 
 The suite creates synthetic accounts and messages and writes test screenshots to the Playwright output directory.
 
-The five browser scenarios cover themes, 320–1920 px widths, open/collapsed side
+Bot details are collapsed on every new chat visit and reload. The open/closed
+choice is held only in the mounted chat view, with no browser or account
+preference. Crossing the desktop/mobile breakpoint closes details; focus returns
+to the header control if it was inside the panel. Toggling details preserves the
+conversation and unsent draft. The left navigation has a separate preference.
+
+The seven browser scenarios cover themes, 320–1920 px widths, open/collapsed side
 panels, empty and short chats, long scrolling, first/last-message reachability,
 wheel and link hit-testing under the fade, keyboard focus clearance, menus and
 dialogs, long names, pet variants and sizing, activity/approval state, font-size
-changes, and reduced motion. Browser coverage used Chromium; Firefox and Safari
+changes, reduced motion, collapsed defaults, navigation/reload, repeated keyboard
+toggles, mobile dismissal, 44 px touch targets and focus recovery. Browser coverage used Chromium; Firefox and Safari
 were not run.

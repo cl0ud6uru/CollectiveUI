@@ -12,6 +12,7 @@ import { newId } from "@/lib/ids";
 import { CONFIG_SCHEMAS, normalizeBaseUrl } from "@/lib/llm/catalog";
 import { encodeSecretInput, openAppSecret } from "@/lib/llm/secrets";
 import { providerConnectionView, sealProviderCredential } from "@/lib/llm/provider-connections";
+import { carryServicePublications } from "@/lib/bots/service";
 
 const nameSchema = z.string().trim().min(1).max(80);
 const Input = z.object({
@@ -77,10 +78,12 @@ export async function migrateAppProviderConnection(appId: string, name: string) 
     const id = newId();
     await tx.insert(providerConnections).values({ id, name: label, baseUrl: app.baseUrl, organization: config.organization || null, project: config.project || null,
       credentialEnc: sealProviderCredential(id, plaintext), createdBy: p.user.id });
-    await tx.update(aiApps).set({ providerConnectionId: id, apiKeyEnc: null, updatedAt: new Date() }).where(eq(aiApps.id, appId));
-    return { id };
+    const [after] = await tx.update(aiApps).set({ providerConnectionId: id, apiKeyEnc: null, updatedAt: new Date() }).where(eq(aiApps.id, appId)).returning();
+    // The same credential and billing target: service bots that were validly published stay published.
+    const servicePublications = await carryServicePublications(tx, app, after);
+    return { id, servicePublications };
   });
-  await audit(p.user.id, "provider_connection.migrate", result.id, { appId });
+  await audit(p.user.id, "provider_connection.migrate", result.id, { appId, ...(result.servicePublications?.length ? { servicePublications: result.servicePublications } : {}) });
   revalidatePath("/", "layout");
-  return result;
+  return { id: result.id };
 }

@@ -1,7 +1,8 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
+import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { db, pool } from "@/db";
-import { aiApps, appAccess, auditLog, bots, groups, providerConnections, users } from "@/db/schema";
+import { aiApps, appAccess, auditLog, botAccess, bots, groups, providerConnections, users } from "@/db/schema";
 import { HttpError, getAccessibleModel } from "@/lib/authz";
 import { saveApp, testAppConnection } from "@/app/admin/actions";
 import { saveProviderConnection, deleteProviderConnection, migrateAppProviderConnection } from "@/app/admin/provider-actions";
@@ -9,6 +10,8 @@ import { openProviderCredential } from "@/lib/llm/provider-connections";
 import { providerContextFor, resolveEmbeddingModel, resolveModel } from "@/lib/llm/resolve";
 import { sealAppSecret } from "@/lib/llm/secrets";
 import { AAD, encrypt } from "@/lib/crypto";
+import { userFacingMessage } from "@/lib/llm";
+import { serviceConfigHash } from "@/lib/bots/service";
 
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 const actor = vi.hoisted(() => ({ id: "", allowed: true }));
@@ -75,6 +78,8 @@ run("saved OpenAI provider credentials", () => {
     for (const app of [a, b]) expect((await providerContextFor(app)).secret).toEqual({ type: "api-key", apiKey: "fixture-key-rotated" });
     await saveProviderConnection({ ...c, enabled: false });
     await expect(resolveModel(a, { purpose: "chat" })).rejects.toThrow(/disabled/);
+    // Shown to the person in chat/background runs instead of a generic error.
+    expect(userFacingMessage(await resolveModel(a, { purpose: "chat" }).catch(e => e))).toMatch(/disabled/);
     await expect(resolveModel(b, { purpose: "title", background: true })).rejects.toThrow(/disabled/);
     await expect(resolveEmbeddingModel({ ...a, embeddingModel: "fixture-embed" })).rejects.toThrow(/disabled/);
     await expect(model({ providerConnectionId: c.id })).rejects.toThrow(/disabled/);
@@ -147,6 +152,83 @@ run("saved OpenAI provider credentials", () => {
       appIds.push(app.id);
       await expect(migrateAppProviderConnection(app.id, "Denied")).rejects.toThrow(/Only an OpenAI/);
     }
+  });
+
+  async function publishedBot(appId: string, name = "Fixture published service") {
+    const [bot] = await db.insert(bots).values({ ownerId: userId, name, appId, executionMode: "service" }).returning();
+    const [published] = await db.update(bots).set({ publishedRevision: bot.revision, publishedConfigHash: await serviceConfigHash(bot) }).where(eq(bots.id, bot.id)).returning();
+    return published;
+  }
+  const botRow = async (id: string) => (await db.select().from(bots).where(eq(bots.id, id)))[0];
+  /** A second, independent session, so the action under test really has to wait for its locks. */
+  async function session() { const c = new Client({ connectionString: process.env.DATABASE_URL }); await c.connect(); return c; }
+  async function untilWaitingOnLock(watcher: Client) {
+    for (let i = 0; i < 200; i++) {
+      const { rows } = await watcher.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'");
+      if (rows[0].n > 0) return;
+      await new Promise(r => setTimeout(r, 25));
+    }
+    throw new Error("The migration never waited for the concurrent edit's lock");
+  }
+
+  it("keeps a current service publication valid when its model's credential is migrated", async () => {
+    const app = await model({ credentials: { apiKey: "fixture-publication-key" } });
+    const bot = await publishedBot(app.id);
+    const { id } = await migrateAppProviderConnection(app.id, "Publication carry"); connectionIds.push(id);
+    const after = await botRow(bot.id);
+    expect(after.publishedConfigHash).not.toBe(bot.publishedConfigHash);
+    expect(await serviceConfigHash(after)).toBe(after.publishedConfigHash);
+    expect(after).toMatchObject({ revision: bot.revision, publishedRevision: bot.publishedRevision });
+    const [entry] = await db.select().from(auditLog).where(and(eq(auditLog.action, "provider_connection.migrate"), eq(auditLog.target, id)));
+    expect(entry.details).toEqual({ appId: app.id, servicePublications: [bot.id] });
+  });
+
+  it("leaves stale service publications stale when the credential is migrated", async () => {
+    const app = await model({ credentials: { apiKey: "fixture-stale-key" } });
+    const edited = await publishedBot(app.id, "Edited after publication");
+    await db.update(bots).set({ instructions: "Changed without review" }).where(eq(bots.id, edited.id));
+    const newer = await publishedBot(app.id, "Newer unpublished revision");
+    await db.update(bots).set({ revision: newer.revision + 1 }).where(eq(bots.id, newer.id));
+    const current = await publishedBot(app.id, "Still current");
+    const { id } = await migrateAppProviderConnection(app.id, "Stale publications"); connectionIds.push(id);
+    for (const stale of [edited, newer]) {
+      const after = await botRow(stale.id);
+      expect(after.publishedConfigHash).toBe(stale.publishedConfigHash);
+      expect(after.publishedRevision === after.revision && await serviceConfigHash(after) === after.publishedConfigHash).toBe(false);
+    }
+    const after = await botRow(current.id);
+    expect(await serviceConfigHash(after)).toBe(after.publishedConfigHash);
+  });
+
+  it("never blesses a concurrent model or bot edit into a migrated publication", async () => {
+    const watcher = await session();
+    try {
+      for (const edit of ["model", "bot"] as const) {
+        const app = await model({ credentials: { apiKey: `fixture-concurrent-${edit}` } });
+        const bot = await publishedBot(app.id);
+        const other = await session();
+        let migrating: Promise<{ id: string }> | undefined;
+        try {
+          await other.query("BEGIN");
+          if (edit === "model") {
+            await other.query("SELECT id FROM ai_apps WHERE id = $1 FOR UPDATE", [app.id]);
+            await other.query("UPDATE ai_apps SET system_prompt = 'Concurrent unreviewed prompt' WHERE id = $1", [app.id]);
+          } else {
+            await other.query("SELECT id FROM bots WHERE id = $1 FOR UPDATE", [bot.id]);
+            await other.query("INSERT INTO bot_access(bot_id, group_id) VALUES ($1, $2)", [bot.id, groupId]);
+          }
+          migrating = migrateAppProviderConnection(app.id, `Concurrent ${edit} edit`);
+          await untilWaitingOnLock(watcher);
+          await other.query("COMMIT");
+        } finally { await other.end(); }
+        const { id } = await migrating!; connectionIds.push(id);
+        const after = await botRow(bot.id);
+        expect(after.publishedConfigHash).toBe(bot.publishedConfigHash);
+        expect(await serviceConfigHash(after)).not.toBe(after.publishedConfigHash);
+        if (edit === "bot") expect(await db.select().from(botAccess).where(eq(botAccess.botId, bot.id))).toHaveLength(1);
+        expect((await row(app.id)).providerConnectionId).toBe(id);
+      }
+    } finally { await watcher.end(); }
   });
 
   it("invalidates service publication when its model changes saved accounts, but not on key rotation", async () => {
