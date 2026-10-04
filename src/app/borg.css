@@ -1,33 +1,39 @@
 /*
- * Borg theme: "We are the Collective." Near-black hull plating, drone green light, laser-red ocular implants.
+ * Borg theme: the inside of a cube. Gunmetal hull plating, the yellow-green light that leaks through the cube's
+ * lattice, Borg alphanumerics (broken circles) and laser-red ocular implants.
  * Applied as the `borg` class on <html> (next-themes); it also counts as dark for `dark:` utilities (see globals.css).
  * `:root.borg` outranks the `:root` defaults that globals.css declares after importing this file.
  * Everything here is scoped to `.borg`, so light and dark are untouched.
  */
 :root.borg {
   color-scheme: dark;
-  --bg: #050a07;
-  --sidebar: #020503;
-  --surface: #0a130d;
-  --surface-2: #0e1a12;
-  --hover: rgba(57, 255, 128, 0.08);
-  --fg: #c8f7d6;
-  --muted: #7fbf94;
-  --subtle: #5a8c69;
-  --border: rgba(57, 255, 128, 0.16);
-  --accent: #39ff80; /* drone green */
-  --accent-fg: #021108;
-  --success: #39ff80;
-  --working: #5cf2ff; /* a drone at work: cyan, so it stays distinct from green "done" */
+  --bg: #07090a; /* hull: gunmetal, not green — the light is green, the metal isn't */
+  --sidebar: #040506;
+  --surface: #0d1112;
+  --surface-2: #131a1b;
+  --hover: rgba(166, 255, 77, 0.07);
+  --fg: #d4e6cc;
+  --muted: #8fa88a;
+  --subtle: #687c63;
+  --border: rgba(166, 255, 77, 0.13);
+  --accent: #a6ff4d; /* cube light: the chartreuse that glows out of the lattice */
+  --accent-fg: #0a1200;
+  --success: #a6ff4d;
+  --working: #5cf2ff; /* a drone at work: cyan, so it stays distinct from "done" */
   --warn: #ffb020;
   --danger: #ff3b3b;
-  --bubble-bot: #0c1810;
-  --popover: #0b150e;
-  --dialog: #08100a;
-  --code-bg: #030805;
-  --shadow: 0 0 0 1px rgba(57, 255, 128, 0.22), 0 0 24px rgba(57, 255, 128, 0.07), 0 8px 24px rgba(0, 0, 0, 0.6);
+  --bubble-bot: #0f1516;
+  --popover: #0d1213;
+  --dialog: #0a0e0f;
+  --code-bg: #040607;
+  --shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 0 1px rgba(166, 255, 77, 0.2), 0 0 28px rgba(166, 255, 77, 0.06),
+    0 10px 30px rgba(0, 0, 0, 0.7);
   --laser: #ff2b2b;
-  --borg-glow: rgba(57, 255, 128, 0.35);
+  --borg-glow: rgba(166, 255, 77, 0.35);
+  /* Irregular plating with diagonal struts ("assembled, not sculpted") and Borg alphanumerics, as SVG tiles. */
+  --borg-plating: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' fill='none' stroke='%23a6ff4d' stroke-opacity='.045'%3E %3Cpath d='M0 .5h240M.5 0v240'/%3E %3Cpath d='M0 60.5h96M96.5 0v150M96 150.5h144M168.5 0v150M168 90.5h72M30.5 60v180M0 200.5h30M128.5 150v90M200.5 150v90'/%3E %3Cpath d='M96 0l72 90M168 150l72 90M30 60l66 90' stroke-opacity='.03'/%3E %3Cpath d='M104 9h56M104 15h38M8 214h16' stroke-opacity='.07' stroke-width='2'/%3E %3Cg fill='%23a6ff4d' fill-opacity='.07' stroke='none'%3E%3Crect x='176' y='100' width='6' height='6'/%3E%3Crect x='186' y='100' width='6' height='6'/%3E%3Crect x='208' y='160' width='3' height='12'/%3E%3Crect x='214' y='160' width='3' height='12'/%3E%3Crect x='220' y='160' width='3' height='12'/%3E%3Crect x='40' y='68' width='10' height='2'/%3E%3C/g%3E %3C/svg%3E");
+  --borg-glyphs-v: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='160' fill='none' stroke='%23a6ff4d' stroke-opacity='.4' stroke-width='1.6'%3E%3Ccircle cx='7' cy='10' r='4.5' stroke-dasharray='21 7.3' transform='rotate(0 7 10)'/%3E%3Ccircle cx='7' cy='30' r='4.5' stroke-dasharray='9 5.15' transform='rotate(45 7 30)'/%3E%3Ccircle cx='7' cy='50' r='4.5' stroke-dasharray='14 14.3' transform='rotate(120 7 50)'/%3E%3Ccircle cx='7' cy='50' r='1.3' fill='%23a6ff4d' fill-opacity='.4' stroke='none'/%3E%3Ccircle cx='7' cy='70' r='4.5' stroke-dasharray='24 4.3' transform='rotate(200 7 70)'/%3E%3Cpath d='M7 67.5v5'/%3E%3Ccircle cx='7' cy='90' r='4.5' stroke-dasharray='5 2.07' transform='rotate(0 7 90)'/%3E%3Ccircle cx='7' cy='110' r='4.5' stroke-dasharray='18 10.3' transform='rotate(300 7 110)'/%3E%3Ccircle cx='7' cy='110' r='1.3' fill='%23a6ff4d' fill-opacity='.4' stroke='none'/%3E%3Ccircle cx='7' cy='130' r='4.5' stroke-dasharray='11 3 11 3.3' transform='rotate(80 7 130)'/%3E%3Ccircle cx='7' cy='150' r='4.5' stroke-dasharray='26 2.3' transform='rotate(150 7 150)'/%3E%3Cpath d='M7 147.5v5'/%3E%3C/svg%3E");
+  --borg-glyphs-h: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='14' fill='none' stroke='%23a6ff4d' stroke-opacity='.4' stroke-width='1.6'%3E%3Ccircle cx='10' cy='7' r='4.5' stroke-dasharray='21 7.3' transform='rotate(0 10 7)'/%3E%3Ccircle cx='30' cy='7' r='4.5' stroke-dasharray='9 5.15' transform='rotate(45 30 7)'/%3E%3Ccircle cx='50' cy='7' r='4.5' stroke-dasharray='14 14.3' transform='rotate(120 50 7)'/%3E%3Ccircle cx='50' cy='7' r='1.3' fill='%23a6ff4d' fill-opacity='.4' stroke='none'/%3E%3Ccircle cx='70' cy='7' r='4.5' stroke-dasharray='24 4.3' transform='rotate(200 70 7)'/%3E%3Cpath d='M70 4.5v5'/%3E%3Ccircle cx='90' cy='7' r='4.5' stroke-dasharray='5 2.07' transform='rotate(0 90 7)'/%3E%3Ccircle cx='110' cy='7' r='4.5' stroke-dasharray='18 10.3' transform='rotate(300 110 7)'/%3E%3Ccircle cx='110' cy='7' r='1.3' fill='%23a6ff4d' fill-opacity='.4' stroke='none'/%3E%3Ccircle cx='130' cy='7' r='4.5' stroke-dasharray='11 3 11 3.3' transform='rotate(80 130 7)'/%3E%3Ccircle cx='150' cy='7' r='4.5' stroke-dasharray='26 2.3' transform='rotate(150 150 7)'/%3E%3Cpath d='M150 4.5v5'/%3E%3C/svg%3E");
 
   /* Cubes, not pebbles: square the corners Tailwind rounds. `rounded-full` (pills, dots, avatars) is left alone. */
   --radius-xs: 1px;
@@ -35,24 +41,39 @@
   --radius-md: 2px;
   --radius-lg: 2px;
   --radius-xl: 3px;
-  --radius-2xl: 4px;
-  --radius-3xl: 6px;
+  --radius-2xl: 3px;
+  --radius-3xl: 4px;
 }
 
 .borg ::selection {
-  background: rgba(57, 255, 128, 0.3);
-  color: #eafff0;
+  background: rgba(166, 255, 77, 0.28);
+  color: #f2ffe8;
 }
 
 .borg * {
-  scrollbar-color: rgba(57, 255, 128, 0.28) transparent;
+  scrollbar-color: rgba(166, 255, 77, 0.25) transparent;
 }
 
 .borg :focus-visible {
   outline-color: var(--accent);
 }
 
-/* Hull plating: a faint circuit grid, CRT scanlines and a slow scanning beam over the whole interface. */
+/*
+ * Hull plating sits behind the content, pinned to the viewport so it lines up across panels; a second, larger pass of
+ * the same tile breaks up the repeat. Raised panels (composer, menus, dialogs) cover it.
+ */
+.borg body,
+.borg .bg-bg {
+  background-image: var(--borg-plating), var(--borg-plating);
+  background-size: 240px 240px, 420px 420px;
+  background-position: 0 0, 97px 61px;
+  background-attachment: fixed;
+}
+
+/*
+ * Laid over the whole interface (never blocks clicks): light rising from the cube's core below, a vignette into the
+ * dark, faint scanlines, and a slow scanning beam.
+ */
 .borg body::before,
 .borg body::after {
   content: "";
@@ -63,20 +84,43 @@
 }
 .borg body::before {
   background:
-    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.16) 0 1px, transparent 1px 3px),
-    linear-gradient(rgba(57, 255, 128, 0.028) 1px, transparent 1px) 0 0 / 48px 48px,
-    linear-gradient(90deg, rgba(57, 255, 128, 0.028) 1px, transparent 1px) 0 0 / 48px 48px,
-    radial-gradient(ellipse 120% 90% at 50% 50%, transparent 60%, rgba(0, 0, 0, 0.45) 100%);
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.14) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse 70% 45% at 50% 115%, rgba(166, 255, 77, 0.09), transparent 70%),
+    radial-gradient(ellipse 120% 90% at 50% 45%, transparent 55%, rgba(0, 0, 0, 0.5) 100%);
 }
 .borg body::after {
-  height: 120px;
+  height: 140px;
   bottom: auto;
-  background: linear-gradient(to bottom, transparent, rgba(57, 255, 128, 0.045) 85%, rgba(57, 255, 128, 0.12) 99%, transparent);
-  animation: borg-scan 9s linear infinite;
+  background: linear-gradient(to bottom, transparent, rgba(166, 255, 77, 0.025) 85%, rgba(166, 255, 77, 0.07) 99%, transparent);
+  animation: borg-scan 11s linear infinite;
 }
 @keyframes borg-scan {
-  from { transform: translateY(-120px); }
+  from { transform: translateY(-140px); }
   to { transform: translateY(100vh); }
+}
+
+/* The sidebar is an alcove wall: a column of Borg alphanumerics runs down its inner edge. */
+.borg .bg-sidebar {
+  background-image: var(--borg-glyphs-v), var(--borg-plating);
+  background-repeat: repeat-y, repeat;
+  background-size: auto, 420px 420px;
+  background-position: right 3px top 12px, 97px 61px;
+  background-attachment: scroll, fixed;
+  box-shadow: inset -1px 0 0 var(--border);
+}
+
+/* Panels look bolted in: square corners with targeting brackets in cube light. */
+.borg .shadow-composer,
+.borg [role="dialog"] {
+  border-radius: var(--radius-xl);
+  background-image:
+    linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent)),
+    linear-gradient(var(--accent), var(--accent)), linear-gradient(var(--accent), var(--accent));
+  background-repeat: no-repeat;
+  background-size: 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px, 12px 1px, 1px 12px;
+  background-position: left top, left top, right top, right top, left bottom, left bottom, right bottom, right bottom;
 }
 
 /* Primary actions glow like a regeneration alcove. */
@@ -116,6 +160,17 @@
   color: var(--accent);
   text-shadow: 0 0 14px var(--borg-glow);
 }
+.borg .markdown h1::before,
+.borg .markdown h2::before {
+  content: "";
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-right: 0.45em;
+  vertical-align: 0.02em;
+  /* One glyph from the strip: tile is 160x14 with glyphs every 20px; at 0.05em/px the dotted one sits at 5.5em. */
+  background: var(--borg-glyphs-h) -5.15em 0 / 8em 0.7em no-repeat;
+}
 .borg .markdown a {
   color: var(--accent);
 }
@@ -128,31 +183,33 @@
   letter-spacing: 0.06em;
   font-size: 0.85em;
   color: var(--accent);
-  border-bottom-color: rgba(57, 255, 128, 0.4);
+  border-bottom-color: rgba(166, 255, 77, 0.4);
 }
 
-/* Sign-in: the brand panel becomes the inside of a cube. */
+/* Sign-in: the brand panel becomes a cube's interior, lit from within. */
 .borg .login-page {
   --login-accent: var(--accent);
 }
 .borg .login-story {
-  --fg: #c8f7d6;
-  --bg: #020503;
-  color: #c8f7d6;
-  background: radial-gradient(ellipse at 10% 0%, #0c2614 0%, transparent 55%), #020503;
+  --fg: #d4e6cc;
+  --bg: #040506;
+  color: #d4e6cc;
+  background:
+    radial-gradient(ellipse 80% 55% at 50% 100%, rgba(166, 255, 77, 0.16), transparent 70%),
+    radial-gradient(ellipse at 10% 0%, #142010 0%, transparent 55%),
+    #040506;
 }
 .borg .login-story::before {
-  opacity: 0.22;
-  background-image:
-    linear-gradient(rgba(57, 255, 128, 0.5) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(57, 255, 128, 0.5) 1px, transparent 1px);
+  opacity: 1;
+  background-image: var(--borg-plating);
+  background-size: 240px 240px;
 }
 .borg .login-word {
-  background: linear-gradient(180deg, #eafff0 15%, #39ff80 100%);
+  background: linear-gradient(180deg, #f2ffe8 15%, #a6ff4d 100%);
   background-clip: text;
 }
 .borg .login-eyebrow {
-  border-color: rgba(57, 255, 128, 0.3);
+  border-color: rgba(166, 255, 77, 0.3);
   color: var(--muted);
   font-family: var(--font-mono);
 }
