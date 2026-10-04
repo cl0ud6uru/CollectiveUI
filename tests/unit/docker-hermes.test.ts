@@ -198,3 +198,104 @@ describe('personal Docker Hermes durable broker', () => {
   });
 
 });
+
+describe('personal native profile settings transactions', () => {
+  const revision = 'a'.repeat(64);
+  const initial = () => ({ revision, provider: 'openai-api' as const, model: 'fixture-model', reasoningEffort: '' as const, maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false } });
+  async function fixture() {
+    await enable('alice'); const b = (await broker.status('alice')).bindings[0];
+    let saved: import('@/docker-hermes/settings').ProfileSettings = initial();
+    const d: RuntimeDriver = driver;
+    d.settings = vi.fn(async (_owner, _profile, _identity, update) => {
+      if (update) saved = { ...saved, revision: 'b'.repeat(64), model: update.model, credentials: { ...saved.credentials, [update.provider]: update.credential.action !== 'clear' } };
+      return saved;
+    });
+    d.reopen = vi.fn(async owner => { driver.active.add(owner); });
+    d.testSettings = vi.fn(async () => ({ code: 'verified' as const }));
+    const input = { revision, provider: 'openai-api', model: 'fixture-changed', reasoningEffort: '', maxTurns: null, credential: { action: 'replace', value: 'sk-synthetic-never-persist-in-broker' } };
+    return { b, d, input };
+  }
+  it('uses owner binding, rejects stale edits, and never journals plaintext credentials', async () => {
+    const { b, d, input } = await fixture(); await enable('bob');
+    await expect(broker.profileSettings('bob', b.bindingId)).rejects.toThrow('belong');
+    await expect(broker.updateProfile('bob', b.bindingId, input)).rejects.toThrow('belong');
+    await expect(broker.updateProfile('alice', b.bindingId, { ...input, revision: 'c'.repeat(64) })).rejects.toThrow('changed');
+    expect(d.reopen).not.toHaveBeenCalled();
+    expect(await broker.updateProfile('alice', b.bindingId, input)).toMatchObject({ model: 'fixture-changed' });
+    expect(d.reopen).toHaveBeenCalledTimes(1);
+    const journal = await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8');
+    expect(journal).not.toContain(input.credential.value);
+    await expect(broker.updateProfile('alice', b.bindingId, input)).rejects.toThrow('changed');
+  });
+  it('does not restart on unchanged defaults and refuses unknown settings', async () => {
+    const { b, d, input } = await fixture();
+    await broker.updateProfile('alice', b.bindingId, { ...input, model: 'fixture-model', credential: { action: 'keep' } });
+    expect(d.reopen).not.toHaveBeenCalled();
+    await expect(broker.updateProfile('alice', b.bindingId, { ...input, network: 'host' })).rejects.toThrow();
+    await expect(broker.updateProfile('alice', b.bindingId, { ...input, credential: { action: 'keep', value: 'secret' } })).rejects.toThrow();
+  });
+  it('rejects active and approval-waiting work before stopping any profile', async () => {
+    const { b, d, input } = await fixture();
+    const pair = await broker.forRequest('alice', b.bindingId);
+    const run = pair.controller.begin(pair.nativeBindingId, { input: 'approve', session_id: 'settings-busy' }, 'settings-busy-receipt');
+    await until(async () => pair.controller.getRun(run).status === 'waiting_for_approval');
+    await expect(broker.updateProfile('alice', b.bindingId, input)).rejects.toThrow('unfinished');
+    expect(driver.active.has('alice')).toBe(true); expect(d.reopen).not.toHaveBeenCalled();
+    expect(pair.controller.getRun(run).status).toBe('waiting_for_approval');
+  });
+  it('fences already-dispatched begin calls and serializes concurrent edits/readers', async () => {
+    const { b, d, input } = await fixture();
+    const pair = await broker.forRequest('alice', b.bindingId);
+    let release!: () => void, entered = false;
+    const reopen = d.reopen!;
+    d.reopen = async owner => { entered = true; await new Promise<void>(r => { release = r; }); await reopen(owner); };
+    const first = broker.updateProfile('alice', b.bindingId, input);
+    await until(async () => entered);
+    expect(() => pair.controller.begin(pair.nativeBindingId, { input: 'do not admit', session_id: 'blocked' }, 'blocked')).toThrow('settings');
+    let readFinished = false; const read = broker.profileSettings('alice', b.bindingId).then(v => { readFinished = true; return v; });
+    const second = broker.updateProfile('alice', b.bindingId, input).catch(e => e);
+    expect(readFinished).toBe(false); release(); await first;
+    expect((await read).revision).toBe('b'.repeat(64)); expect(await second).toBeInstanceOf(Error);
+  });
+  it('retains a stopped error when native update cannot be confirmed', async () => {
+    const { b, d, input } = await fixture();
+    const read = d.settings!; d.settings = async (owner, name, identity, update) => { if (update) throw new Error('Synthetic failed native transaction'); return read(owner, name, identity); };
+    await expect(broker.updateProfile('alice', b.bindingId, input)).rejects.toThrow('Synthetic');
+    expect(driver.active.has('alice')).toBe(false);
+    expect(await broker.status('alice')).toMatchObject({ phase: 'error' });
+    await expect(broker.forRequest('alice', b.bindingId)).rejects.toThrow('Enable');
+  });
+  it('revocation during reopen prevents the settings write and new native admission', async () => {
+    const { b, d, input } = await fixture();
+    let release!: () => void, entered = false;
+    const reopen = d.reopen!;
+    d.reopen = async owner => { entered = true; await new Promise<void>(r => { release = r; }); await reopen(owner); };
+    const save = broker.updateProfile('alice', b.bindingId, input).catch(e => e);
+    await until(async () => entered);
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: false, failed: false });
+    release(); expect(await save).toBeInstanceOf(Error);
+    await until(async () => (await broker.status('alice')).phase === 'stopped');
+    expect(vi.mocked(d.settings!).mock.calls.every(call => call[3] === undefined)).toBe(true);
+    await expect(broker.forRequest('alice', b.bindingId)).rejects.toThrow('authorization');
+    expect(driver.active.has('alice')).toBe(false);
+  });
+  it('offline explicit tests send no inference and receipt retries never dispatch again', async () => {
+    const { b, d } = await fixture(); const input = { revision, requestId: randomUUID(), consent: true };
+    const [a, again] = await Promise.all([broker.testProfile('alice', b.bindingId, input), broker.testProfile('alice', b.bindingId, input)]);
+    expect(a).toEqual(again); expect(a.code).toBe('network_blocked'); expect(d.testSettings).not.toHaveBeenCalled();
+    expect((await broker.profileSettings('alice', b.bindingId)).lastTest).toMatchObject({ code: 'network_blocked' });
+    await expect(broker.testProfile('alice', b.bindingId, { ...input, consent: false })).rejects.toThrow();
+    await expect(broker.testProfile('alice', b.bindingId, { ...input, revision: 'b'.repeat(64) })).rejects.toThrow('another');
+  });
+  it('proxy test failures are uncertain, durably recorded and not automatically replayed', async () => {
+    const { b, d } = await fixture();
+    // Fixture-only policy: no Docker networking or external requests are involved.
+    broker.config.network = 'proxy';
+    d.testSettings = vi.fn(async () => { throw new Error('Timeout after possible inference'); });
+    const input = { revision, requestId: randomUUID(), consent: true };
+    expect((await broker.testProfile('alice', b.bindingId, input)).code).toBe('uncertain');
+    await broker.testProfile('alice', b.bindingId, input);
+    expect(d.testSettings).toHaveBeenCalledTimes(1);
+    expect(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8')).toContain('uncertain');
+  });
+});

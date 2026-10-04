@@ -69,6 +69,7 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           </Link>
           <StartSideChat botId={bot.id} className="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover" />
           <Link href={`/bots/${bot.id}/chats`} className="rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover">Chat history</Link>
+          {docker && <Link href={`/bots/${bot.id}/settings`} className="rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover">Hermes settings</Link>}
           <BotPetSettings botId={bot.id} botName={bot.name} botAvatar={bot.avatar} />
           {!local && <UseAsTemplateButton botId={bot.id} />}
           {canEdit && !local && <ShareTemplateButton botId={bot.id} />}

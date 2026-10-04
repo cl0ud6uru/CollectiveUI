@@ -161,7 +161,16 @@ export class LocalController {
     for (const r of this.runs.values()) if (active(r)) this.finish(r, "interrupted", "Native Hermes stopped. Its native session is retained; this turn was not retried.");
     // The explicit Stop/Start error path releases ownership. Unexpected exits retain a fail-closed lock.
   }
+  private settingsHold = false;
+  /** Close admission synchronously before checking active work, including pending approvals. */
+  holdForSettings() {
+    if (this.settingsHold || this.starting || this.stopping || [...this.runs.values()].some(active))
+      throw new LocalError(409, 'A profile in your runtime has unfinished work. Finish or stop its turn before changing settings.');
+    this.settingsHold = true;
+    return () => { this.settingsHold = false; };
+  }
   begin(bindingId: string, raw: unknown, receipt: string) {
+    if (this.settingsHold) throw new LocalError(409, 'Profile settings are being updated or tested. Try again after they settle.');
     this.assertStorage();
     const binding = this.assertBinding(bindingId);
     const input = z.object({ input: z.string().min(1).max(64000), session_id: id, instructions: z.string().max(128000).optional(), model: z.never().optional() }).strict().parse(raw);

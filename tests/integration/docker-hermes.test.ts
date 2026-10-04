@@ -91,6 +91,33 @@ suite('personal Docker Hermes app authorization and recovery (disposable Postgre
       await expect(actions.continueSharedConversation(token)).rejects.toThrow('Link not found');
     } finally { f.principal = alice; await db.delete(conversations).where(eq(conversations.id, conversationId)); }
   });
+  it('settings routes enforce owner, current enrollment, origin, strict fields and write-only errors', async () => {
+    const { GET, POST } = await import('@/app/api/bots/[id]/native/settings/route');
+    const ctx = { params: Promise.resolve({ id: binding.botId }) };
+    const url = `http://localhost/api/bots/${binding.botId}/native/settings`;
+    const input = { operation: 'save', settings: { revision: 'a'.repeat(64), provider: 'openai-api', model: 'fixture-model', reasoningEffort: '', maxTurns: null, credential: { action: 'replace', value: 'sk-synthetic-secret-never-log' } } };
+    const request = (body: unknown, origin = 'http://localhost') => new Request(url, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    vi.stubEnv('AUTH_URL', 'http://localhost'); f.principal = bob; f.calls = [];
+    expect([403, 404]).toContain((await GET(new Request(url), ctx)).status);
+    expect([403, 404]).toContain((await POST(request(input), ctx)).status);
+    expect(f.calls).toHaveLength(0);
+    f.principal = alice;
+    expect((await POST(request(input, 'https://cross-site.invalid'), ctx)).status).toBe(403);
+    expect(f.calls).toHaveLength(0);
+    const log = vi.spyOn(console, 'error');
+    try {
+      const denied = await POST(request({ ...input, settings: { ...input.settings, shell: input.settings.credential.value } }), ctx);
+      expect(denied.status).toBe(400); expect(await denied.text()).not.toContain(input.settings.credential.value); expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+    expect((await POST(request(input), ctx)).status).toBe(200);
+    expect(f.calls).toContainEqual({ owner: alice.user.id, action: `/settings/${binding.bindingId}` });
+    expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/lease' });
+    // More concurrent submissions than pool connections must reuse each lock transaction's client.
+    expect((await Promise.all(Array.from({ length: 12 }, () => POST(request(input), ctx)))).every(r => r.status === 200)).toBe(true);
+    await db.update(dockerHermesEnrollments).set({ enabled: false }).where(eq(dockerHermesEnrollments.userId, alice.user.id)); f.calls = [];
+    expect((await POST(request(input), ctx)).status).toBe(403); expect(f.calls).toHaveLength(0);
+    await db.update(dockerHermesEnrollments).set({ enabled: true }).where(eq(dockerHermesEnrollments.userId, alice.user.id));
+  });
   it('allows editable name/avatar while refusing access after revocation and stopping via trusted reconciliation', async () => {
     const [bot] = await db.select().from(bots).where(eq(bots.id, binding.botId));
     await expect(db.transaction(tx => guardManagedBotMutation(tx, alice, bot.id, { ...bot, name: 'My Hermes', avatar: 'H' }))).resolves.toBeUndefined();

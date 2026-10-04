@@ -7,6 +7,7 @@ import type { RpcTransport } from '../local-hermes/rpc';
 import { HERMES_COMMIT } from '../local-hermes/config';
 import { LocalError } from '../local-hermes/controller';
 import { ownerId, type NativeResources } from './types';
+import type { ProfileSettings, ProfileUpdate, ProfileTestResult } from './settings';
 
 const absolute = z.string().refine(v => path.isAbsolute(v) && !/[\x00-\x1f,]/.test(v));
 export const BrokerConfig = z.object({
@@ -32,6 +33,9 @@ export interface RuntimeDriver {
   profiles(owner: string): Promise<Profile[]>;
   create(owner: string, name: string): Promise<Profile>;
   resources(owner: string, name: string, identity: string): Promise<NativeResources>;
+  settings?(owner: string, name: string, identity: string, update?: ProfileUpdate): Promise<ProfileSettings>;
+  testSettings?(owner: string, name: string, identity: string, revision: string): Promise<Pick<ProfileTestResult, 'code'>>;
+  reopen?(owner: string): Promise<void>;
   transport(owner: string, profile: string, identity: string): RpcTransport;
 }
 
@@ -82,12 +86,13 @@ export class DockerDriver implements RuntimeDriver {
       throw new LocalError(409, 'Runtime ownership or configuration changed. Operator reconciliation required.');
     return info;
   }
-  async ensure(owner: string, stage: Parameters<RuntimeDriver['ensure']>[1]) {
+  async ensure(owner: string, stage: Parameters<RuntimeDriver['ensure']>[1], retained = false) {
     stage('checking_image');
     await this.checkNetwork(owner);
     // Pulling never builds from remote code or changes a moving tag.
-    await this.command(['pull', this.config.image], 600000);
+    if (!retained) await this.command(['pull', this.config.image], 600000);
     let info = await this.inspect(owner);
+    if (retained && !info) throw new LocalError(409, 'Retained runtime is missing. No replacement was created.');
     if (!info) {
       stage('creating_storage');
       const name = this.name(owner), volume = `${name}-data`;
@@ -148,6 +153,36 @@ export class DockerDriver implements RuntimeDriver {
   profiles(owner: string) { return this.native<Profile[]>(owner, ['profiles']); }
   create(owner: string, name: string) { return this.native<Profile>(owner, ['create', name]); }
   resources(owner: string, name: string, identity: string) { return this.native<NativeResources>(owner, ['resources', name, identity]); }
+  reopen(owner: string) { return this.ensure(owner, () => {}, true); }
+  /** Secrets travel over stdin only, never argv, Docker environment, logs or broker journals. */
+  private async settingsCommand<T>(owner: string, args: string[], data?: unknown): Promise<T> {
+    if (!await this.running(owner)) throw new LocalError(409, 'Your Hermes runtime is stopped.');
+    return new Promise((resolve, reject) => {
+      const child = spawn('/usr/local/bin/docker', this.argv(owner, args), { env: ENV, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      let output = '', settled = false;
+      const fail = () => { if (settled) return; settled = true; clearTimeout(timer); child.kill(); reject(new LocalError(503, 'Native settings operation could not be confirmed. Reload the profile before retrying.')); };
+      const timer = setTimeout(fail, 25000);
+      child.stderr.resume(); child.stdin.on('error', () => {}); child.on('error', fail);
+      child.stdout.setEncoding('utf8'); child.stdout.on('data', (s: string) => { output += s; if (Buffer.byteLength(output) > 32768) fail(); });
+      child.on('close', code => {
+        if (settled) return;
+        if (code !== 0) { fail(); return; }
+        clearTimeout(timer); settled = true;
+        try {
+          const value = JSON.parse(output);
+          if (value.error) return reject(new LocalError(409, value.error === 'conflict' ? 'Profile settings changed. Reload before saving or testing.' : 'Native routing or credentials need maintenance outside this API-key editor. No settings were changed.'));
+          resolve(value as T);
+        } catch { reject(new LocalError(503, 'Native settings returned an invalid response.')); }
+      });
+      child.stdin.end(data === undefined ? '' : JSON.stringify(data));
+    });
+  }
+  settings(owner: string, name: string, identity: string, update?: ProfileUpdate) {
+    return this.settingsCommand<ProfileSettings>(owner, [update ? 'settings-save' : 'settings-read', name, identity], update);
+  }
+  testSettings(owner: string, name: string, identity: string, revision: string) {
+    return this.settingsCommand<Pick<ProfileTestResult, 'code'>>(owner, ['settings-test', name, identity], { revision });
+  }
   transport(owner: string, profile: string, identity: string): RpcTransport {
     return { spawn: () => spawn('/usr/local/bin/docker', this.argv(owner, ['gateway', profile, identity]), { env: ENV, stdio: ['pipe', 'pipe', 'pipe'], shell: false }),
       // Killing docker exec alone doesn't stop descendants. Stop the user's entire owned container;
