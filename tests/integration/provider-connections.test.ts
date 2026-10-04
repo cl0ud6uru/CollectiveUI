@@ -9,6 +9,7 @@ import { openProviderCredential } from "@/lib/llm/provider-connections";
 import { providerContextFor, resolveEmbeddingModel, resolveModel } from "@/lib/llm/resolve";
 import { sealAppSecret } from "@/lib/llm/secrets";
 import { AAD, encrypt } from "@/lib/crypto";
+import { userFacingMessage } from "@/lib/llm";
 
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 const actor = vi.hoisted(() => ({ id: "", allowed: true }));
@@ -75,6 +76,8 @@ run("saved OpenAI provider credentials", () => {
     for (const app of [a, b]) expect((await providerContextFor(app)).secret).toEqual({ type: "api-key", apiKey: "fixture-key-rotated" });
     await saveProviderConnection({ ...c, enabled: false });
     await expect(resolveModel(a, { purpose: "chat" })).rejects.toThrow(/disabled/);
+    // Shown to the person in chat/background runs instead of a generic error.
+    expect(userFacingMessage(await resolveModel(a, { purpose: "chat" }).catch(e => e))).toMatch(/disabled/);
     await expect(resolveModel(b, { purpose: "title", background: true })).rejects.toThrow(/disabled/);
     await expect(resolveEmbeddingModel({ ...a, embeddingModel: "fixture-embed" })).rejects.toThrow(/disabled/);
     await expect(model({ providerConnectionId: c.id })).rejects.toThrow(/disabled/);
