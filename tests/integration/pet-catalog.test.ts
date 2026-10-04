@@ -2,12 +2,13 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Principal } from "@/lib/auth/groups";
 import { DEFAULT_PREFERENCES } from "@/lib/pets/shared";
+import { petV2Fixture } from "../fixtures/pet-v2";
 const run = process.env.DATABASE_URL ? describe : describe.skip;
 run("shared catalog and private avatar boundaries", () => {
   let admin: Principal, owner: Principal, outsider: Principal;
   let shared: string, restricted: string, service: string, personalBot: string;
   const users: string[] = [], assets: string[] = [];
-  const manifest = { displayName: "Synthetic catalog fixture", description: "", spriteVersionNumber: 1 as const, credit: "Test · MIT" };
+  const manifest = { displayName: "Synthetic catalog fixture", description: "", spriteVersionNumber: 2 as const, credit: "Test · MIT" };
   beforeAll(async () => {
     const { db, schema } = await import("@/db");
     const { loadPrincipal } = await import("@/lib/auth/groups");
@@ -133,13 +134,39 @@ run("shared catalog and private avatar boundaries", () => {
   });
   it("copies only the admin's own selected import to a draft, retains bytes and credit privately", async () => {
     const c = await import("@/lib/pets/catalog"); const s = await import("@/lib/pets/store");
-    const own = await s.replacePet(admin, restricted, manifest, Buffer.from("admin-private"));
+    const legacy = await s.replacePet(admin, restricted, { ...manifest, spriteVersionNumber: 1 }, Buffer.from("admin-private"));
+    await expect(c.copyOwnImport(admin, restricted, legacy.revision!, "confirmed")).rejects.toThrow(/Legacy v1/);
+    const v2 = manifest, unchecked = await s.replacePet(admin, restricted, v2, Buffer.from("unvalidated-v2"));
+    await expect(c.copyOwnImport(admin, restricted, unchecked.revision!, "confirmed")).rejects.toThrow(/undamaged/);
+    const pixels = await petV2Fixture(), own = await s.replacePet(admin, restricted, v2, pixels);
     const draft = await c.copyOwnImport(admin, restricted, own.revision!, "confirmed"); assets.push(draft.id);
-    expect(draft).toMatchObject({ manifest, status: "draft" });
-    expect((await s.readPetSprite(admin, restricted)).toString()).toBe("admin-private");
+    expect(draft).toMatchObject({ manifest: v2, status: "draft" });
+    expect(await s.readPetSprite(admin, restricted)).toEqual(pixels);
     await expect(c.copyOwnImport(admin, restricted, "stale", "confirmed")).rejects.toThrow();
     await s.savePet(admin, restricted, { ...DEFAULT_PREFERENCES, mode: "personal", appearance: "moss" });
     await expect(c.copyOwnImport(admin, restricted, own.revision!, "confirmed")).rejects.toThrow();
+  });
+  it("publishes v1 pets only when they were published before; v2 publication is unaffected", async () => {
+    const c = await import("@/lib/pets/catalog"); const { db, schema } = await import("@/db");
+    const legacy = { ...manifest, spriteVersionNumber: 1 as const };
+    const draft = await c.createCatalogPet(admin, legacy, Buffer.from("legacy-draft"), "confirmed"); assets.push(draft.id);
+    await expect(c.setCatalogStatus(admin, draft.id, "published", "confirmed")).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/Legacy v1/) });
+    const [stillDraft] = await db.select({ status: schema.petCatalog.status }).from(schema.petCatalog).where(eq(schema.petCatalog.id, draft.id));
+    expect(stillDraft.status).toBe("draft");
+    // A draft moved straight to unpublished was still never published.
+    await c.setCatalogStatus(admin, draft.id, "unpublished");
+    await expect(c.setCatalogStatus(admin, draft.id, "published", "confirmed")).rejects.toThrow(/Legacy v1/);
+    // A v1 pet published before this rule (its publication audit exists) can be republished after unpublishing.
+    const [earlier] = await db.insert(schema.petCatalog).values({ createdBy: admin.user.id, manifest: legacy, sprite: Buffer.from("legacy-published"), status: "published" }).returning(); assets.push(earlier.id);
+    await db.insert(schema.auditLog).values({ actorId: admin.user.id, action: "pet.catalog_published", target: earlier.id, details: { rights: "confirmed" } });
+    await c.setCatalogStatus(admin, earlier.id, "unpublished");
+    expect(await c.setCatalogStatus(admin, earlier.id, "published", "confirmed")).toMatchObject({ status: "published" });
+    // Legacy built-ins were installed already published, without a publication audit.
+    const builtIn = `builtin-republish-${admin.user.id}`; assets.push(builtIn);
+    await db.insert(schema.petCatalog).values({ id: builtIn, manifest: legacy, sprite: Buffer.from("legacy-built-in"), status: "unpublished" });
+    expect(await c.setCatalogStatus(admin, builtIn, "published", "confirmed")).toMatchObject({ status: "published" });
+    const v2 = await c.createCatalogPet(admin, manifest, Buffer.from("v2-draft"), "confirmed"); assets.push(v2.id);
+    expect(await c.setCatalogStatus(admin, v2.id, "published", "confirmed")).toMatchObject({ status: "published" });
   });
   it("rejects a stale group-admin principal even when the demoted user owns the caller bot", async () => {
     const { db, schema } = await import("@/db");

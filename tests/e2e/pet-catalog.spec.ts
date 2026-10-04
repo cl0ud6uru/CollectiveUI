@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { Pool } from "pg";
-import sharp from "sharp";
+import { petV2Fixture } from "../fixtures/pet-v2";
+import { readFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { hashPassword } from "../../src/lib/auth/password";
 import { choose } from "./helpers";
@@ -40,6 +41,8 @@ async function upload(page: Page, personal = false) {
   await page.getByLabel("Sprite sheet", { exact: true }).setInputFiles({ name: "spritesheet.png", mimeType: "image/png", buffer: png });
   await page.getByLabel("Artist and license credit").fill("CollectiveUI synthetic fixture · MIT");
   await page.getByRole("checkbox", { name: personal ? "I have permission to use this artwork and have included any required credit." : "I have permission to use and share this artwork with all signed-in users and have included any required credit.", exact: true }).check();
+  await page.getByRole("button", { name: "Validate and preview", exact: true }).click();
+  await page.getByRole("checkbox", { name: "I reviewed all animation states", exact: false }).check();
   await page.getByRole("button", { name: personal ? "Import pet" : "Upload draft", exact: true }).click();
 }
 
@@ -61,8 +64,7 @@ test.beforeAll(async () => {
   await pool.query("UPDATE bots SET avatar='🛰️' WHERE id=$1", [bot]);
   await pool.query("INSERT INTO user_bot_prefs(user_id,bot_id,pinned) VALUES ('pet-member',$1,true),('pet-admin',$1,true)", [bot]);
   // Generated test artwork only. No private or gallery files are checked into source control.
-  const cells = Array.from({ length: 88 }, (_, i) => `<g transform="translate(${i % 8 * 192},${Math.floor(i / 8) * 208})"><ellipse cx="96" cy="180" rx="54" ry="8" fill="#31504b" opacity=".14"/><rect x="42" y="${48 + i % 3 * 2}" width="108" height="116" rx="38" fill="#71b0a1"/><ellipse cx="83" cy="37" rx="24" ry="12" fill="#91c279" transform="rotate(28 83 37)"/><rect x="59" y="83" width="74" height="45" rx="20" fill="#284b49"/><circle cx="79" cy="102" r="6" fill="#e5eee4"/><circle cx="114" cy="102" r="6" fill="#e5eee4"/><path d="M88 116 Q96 123 104 116" stroke="#e5eee4" fill="none" stroke-width="3"/></g>`).join("");
-  png = await sharp(Buffer.from(`<svg width="1536" height="2288" xmlns="http://www.w3.org/2000/svg">${cells}</svg>`)).png().toBuffer();
+  png = await petV2Fixture();
 });
 test.afterAll(async () => { await pool.end(); });
 
@@ -73,7 +75,7 @@ test("admin catalog publication and two-user inherited avatars, privacy, revocat
   let id: string, revision: string;
   await test.step("admin uploads and reviews a private draft", async () => {
     await admin.goto("/admin/pets"); await upload(admin);
-    await expect(admin.getByRole("status")).toContainText("Draft uploaded");
+    await expect(admin.getByRole("status").filter({ hasText: "Draft uploaded" })).toBeVisible();
     const items = await (await admin.request.get("/api/admin/pets")).json();
     ({ id, revision } = items.find((p: { manifest: { displayName: string } }) => p.manifest.displayName === manifest.displayName));
     await expect(admin.locator(`article[id="${id}"] img`)).toHaveJSProperty("naturalWidth", 1536);
@@ -417,4 +419,57 @@ test("admin catalog publication and two-user inherited avatars, privacy, revocat
     expect([401, 307]).toContain(response.status()); await anonymous.close();
   });
   await memberContext.close(); await viewerContext.close();
+});
+
+test("v2 builder validates without saving, cancels stale previews, inspects all cells and reimports its export", async ({ page }) => {
+  await login(page, "admin"); await page.goto("/admin/pets");
+  const count = (await pool.query("SELECT count(*)::int n FROM pet_catalog")).rows[0].n;
+  async function selectFiles() {
+    await page.getByLabel("pet.json", { exact: true }).setInputFiles({ name: "pet.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(manifest)) });
+    await page.getByLabel("Sprite sheet", { exact: true }).setInputFiles({ name: "spritesheet.png", mimeType: "image/png", buffer: png });
+    await page.getByLabel("Artist and license credit").fill("Roundtrip credit · MIT");
+    await page.getByRole("checkbox", { name: "I have permission to use and share", exact: false }).check();
+  }
+  await selectFiles();
+  // Delay the response until after Cancel. The stale validation must not reopen the preview.
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/admin/pets?validate=1", async route => { await gate; try { await route.continue(); } catch { /* browser aborted on cancel */ } });
+  await page.getByRole("button", { name: "Validate and preview", exact: true }).click();
+  await page.getByRole("button", { name: "Cancel and start over" }).click(); release();
+  await page.unroute("**/api/admin/pets?validate=1");
+  await expect(page.getByRole("region", { name: "Codex Pet v2 preview" })).toHaveCount(0);
+  await selectFiles(); await page.getByRole("button", { name: "Validate and preview", exact: true }).click();
+  const preview = page.getByRole("region", { name: "Codex Pet v2 preview" });
+  await expect(preview).toBeVisible();
+  expect((await pool.query("SELECT count(*)::int n FROM pet_catalog")).rows[0].n).toBe(count);
+  await expect(page.getByRole("button", { name: "Upload draft", exact: true })).toBeDisabled();
+  await expect(preview.getByRole("group", { name: "Nine animation states" }).getByRole("button")).toHaveCount(9);
+  await expect(preview.getByRole("group", { name: "Sixteen look directions", exact: false }).getByRole("button")).toHaveCount(16);
+  await preview.getByRole("button", { name: "Jumping", exact: true }).click();
+  await expect(preview.getByLabel("Animation frame")).toHaveAttribute("max", "4");
+  await preview.getByLabel("Animation frame").fill("4"); await expect(preview).toContainText("Jumping, frame 5");
+  await preview.getByRole("button", { name: "270° · Screen left", exact: true }).click(); await expect(preview).toContainText("Selected: 270° · Screen left");
+  for (const theme of ["Light", "Dark"]) await expect(preview.getByText(`${theme} · actual avatar sizes`)).toBeVisible();
+  for (const size of [20, 24, 28, 32, 48, 56, 64, 80, 84, 112]) await expect(preview.getByText(`${size} px`, { exact: true })).toHaveCount(2);
+  await page.emulateMedia({ reducedMotion: "reduce" }); await preview.getByRole("button", { name: "Idle", exact: true }).click();
+  await expect(preview.getByRole("button", { name: "Play animation" })).toBeDisabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await preview.getByText("Light · actual avatar sizes").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${screens}/06-v2-builder-preview.png` });
+  const downloaded = page.waitForEvent("download"); await page.getByRole("button", { name: "Export v2 ZIP", exact: true }).click();
+  const download = await downloaded; expect(download.suggestedFilename()).toBe("codex-pet-v2.zip");
+  const zip = await readFile((await download.path())!);
+  await page.getByRole("button", { name: "Cancel and start over" }).click();
+  await page.getByLabel("Import format", { exact: true }).selectOption("zip");
+  await page.getByLabel("Pet ZIP", { exact: true }).setInputFiles({ name: "pet.zip", mimeType: "application/zip", buffer: zip });
+  await page.getByRole("checkbox", { name: "I have permission to use and share", exact: false }).check();
+  await page.getByRole("button", { name: "Validate and preview", exact: true }).click();
+  await expect(preview).toContainText("Roundtrip credit · MIT");
+  await page.getByRole("checkbox", { name: "I reviewed all animation states", exact: false }).check();
+  await page.getByRole("button", { name: "Upload draft", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Draft uploaded" })).toBeVisible();
+  expect((await pool.query("SELECT count(*)::int n FROM pet_catalog")).rows[0].n).toBe(count + 1);
+  await expect(page.getByRole("button", { name: "Validate and preview", exact: true })).toBeEnabled();
 });

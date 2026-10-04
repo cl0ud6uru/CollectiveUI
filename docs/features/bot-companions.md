@@ -42,17 +42,30 @@ Supported `pet.json` example:
   "displayName": "My original pet",
   "description": "An original companion",
   "spritesheetPath": "spritesheet.png",
-  "spriteVersionNumber": 1
+  "spriteVersionNumber": 2
 }
 ```
 
 - JSON file named `pet.json`, at most 16 KiB. `displayName` is required (1–80 characters); `description` is optional (up to 1,000 characters). Text control characters are rejected.
 - `spritesheetPath` must be exactly `spritesheet.png` or `spritesheet.webp`, matching the chosen file. It is a filename check, never a filesystem/URL lookup.
-- `spriteVersionNumber` may be omitted for v1, or explicitly be the number `1` or `2`. V1 is exactly 1536 × 1872; v2 is exactly 1536 × 2288. Both use eight columns and 192 × 208 cells.
-- Only static PNG or WebP files, at most 4 MiB before and after normalization. Animation containers (APNG/animated WebP), damaged files, SVG, HTML, other image formats and archives are rejected.
+- New imports must explicitly set `spriteVersionNumber: 2` and use exactly 1536 × 2288 pixels: eight columns and eleven rows of 192 × 208 cells. Existing v1 pets keep their stored bytes and remain usable; the builder does not fabricate missing look directions or upgrade v1 by padding.
+- Only static PNG or WebP files, at most 4 MiB before and after normalization. Animation containers (APNG/animated WebP), damaged files, SVG, HTML, and other image formats are rejected. A ZIP may contain exactly `pet.json` and its matching sprite at the root. Only stored or deflated, non-streaming entries are supported; paths, extra files, links, encryption, ZIP64 and duplicate entries are rejected. Actual archive and inflated sizes are bounded, CRCs are checked, and nothing is extracted to disk.
 - Optional `frameWidth`, `frameHeight`, and `columns` must match 192, 208 and 8. `states` and `animations` maps are rejected: custom layouts are not supported. Other metadata is discarded rather than interpreted. Gallery-wide API manifests are not individual pet manifests.
-- The renderer uses canonical idle (row 0, six frames), working (row 7, six frames), waiting (row 6, six frames), and attention (row 5, still first frame). The sign-in companion alone also plays waving (row 3, four frames) when clicked. V2 directional-look cells, locomotion, jumping, custom timing, sound, and scripts are not supported. It is a bounded format subset, not full Codex/Petdex runtime compatibility.
+- The chat renderer uses canonical idle (row 0, six frames), working (row 7, six frames), waiting (row 6, six frames), and attention (row 5, still first frame). The sign-in companion alone also plays waving (row 3, four frames) when clicked. The builder inspector additionally exposes all nine animation states (with canonical per-frame durations and manual frame stepping) and all sixteen clockwise look directions, starting up at 0°. Light and dark previews use actual avatar slot sizes from 20 through 112 px with the same 192/208 fit as `BotAvatar`. Playback respects reduced motion and hidden pages. This does not add roaming, pointer-following, sound, scripts or custom timing to chat avatars.
 - The user confirms permission to use the art and can retain up to 240 characters of artist/license credit, displayed in the import panel. Text is rendered through React, never as HTML. This confirmation does not grant rights; users must follow the asset's actual terms.
+
+
+### Native v2 builder (Phase 1)
+
+**Import your own pet** and **Admin → Pets** now validate before saving. Validation has no database writes. It checks canonical dimensions, static image encoding, nonempty required cells and fully transparent unused cells. Every row and direction can then be inspected; the user confirms visual review before saving. Structural validation cannot determine gaze semantics, identity consistency or pleasing motion, so visual review remains necessary. Export produces a canonical `codex-pet-v2.zip` with normalized PNG bytes, v2 manifest and attribution; importing that ZIP follows the same checks. Saved private imports and catalog cards also offer inspection and export. Private export reads stay scoped to the authenticated owner and requested revision; catalog reads retain publication/admin checks.
+
+Cancel discards unsaved data and aborts validation; stale responses cannot reopen the preview. Save revalidates the exact reviewed normalized bytes and rechecks existing storage permissions. Failed requests retain the draft for retry. A save already sent may finish if the view closes; reopen settings to reconcile. Copying a private import to the catalog requires a v2 sheet that passes the same cell checks. A v1 catalog pet can be published only if it was published before (a `pet.catalog_published` audit entry, or a legacy `builtin-*` pet), so existing pets can be unpublished and restored; a never-published v1 draft is refused with 409. Shared-bot private imports remain disallowed, admin publication stays explicit, and selection in the bot creation picker continues to update the header immediately.
+
+### AI creation (Phase 2, not implemented)
+
+The app currently resolves chat and embedding providers only; `src/lib/llm/index.ts` rejects implicit image-model calls. No image-generation provider, image usage/pricing ledger, or generation job workflow exists. The builder clearly states that description/reference generation is unavailable and makes no generation calls.
+
+Before implementing Phase 2, choose a supported image provider/model, its user/admin credential and billing ownership, pricing estimate and explicit cost-consent policy, and where reference images and generation jobs are retained. The intended flow remains reference/description → approved appearance → per-state generation/retries → the same v2 validation and review. Approval, paid generation, and per-state retries are intentionally not represented as completed acceptance criteria for issue #5.
 
 ## Storage and access
 

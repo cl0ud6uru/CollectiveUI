@@ -4,6 +4,7 @@ import { auditLog, botPetDefaults, botPets, petCatalog } from "@/db/schema";
 import { assertAdmin, getUsableBot, HttpError } from "@/lib/authz";
 import type { Principal } from "@/lib/auth/groups";
 import { assertFreshPetAdmin } from "./authorization";
+import { validateV2Cells } from "./import";
 import { isBundledPet } from "./policy";
 import type { CatalogPet, PetManifest } from "./shared";
 
@@ -41,6 +42,9 @@ export async function copyOwnImport(p: Principal, botId: string, revision: strin
   await getUsableBot(p, botId);
   const [row] = await db.select({ custom: botPets.custom, sprite: botPets.sprite }).from(botPets).where(and(eq(botPets.userId, p.user.id), eq(botPets.botId, botId), eq(botPets.revision, revision), eq(botPets.appearance, "custom"), eq(botPets.mode, "personal")));
   if (!row?.custom || !row.sprite) throw new HttpError(409, "Select your own imported pet first, then try again.");
+  // Legacy or pre-builder private rows never passed v2 cell validation; new catalog assets must.
+  if (row.custom.spriteVersionNumber !== 2) throw new HttpError(409, "Legacy v1 imports can't be added to the catalog. Import a complete Codex Pet v2 sheet first.");
+  await validateV2Cells(row.sprite);
   return createCatalogPet(p, row.custom, row.sprite, rights);
 }
 export async function setCatalogStatus(p: Principal, id: string, status: "published" | "unpublished", rights?: "confirmed") {
@@ -50,6 +54,13 @@ export async function setCatalogStatus(p: Principal, id: string, status: "publis
     const [row] = await tx.update(petCatalog).set({ status, updatedAt: new Date() }).where(eq(petCatalog.id, id)).returning(columns);
     if (!row) throw new HttpError(404, "Catalog pet not found.");
     await assertFreshPetAdmin(p, tx); // The UPDATE above acquired the asset lock; a denial rolls it back.
+    if (status === "published" && row.manifest.spriteVersionNumber !== 2 && !isBundledPet(id)) {
+      // Publication is only possible here, and it always writes this audit row in the same transaction. Legacy
+      // built-ins were installed already published. Either proves an earlier publication; a v1 draft never had one.
+      const [earlier] = await tx.select({ id: auditLog.id }).from(auditLog)
+        .where(and(eq(auditLog.action, "pet.catalog_published"), eq(auditLog.target, id))).limit(1);
+      if (!earlier) throw new HttpError(409, "Legacy v1 pets can't be published for the first time. Import a complete Codex Pet v2 sheet instead; v1 pets that were published before can still be republished.");
+    }
     await tx.insert(auditLog).values({ actorId: p.user.id, action: `pet.catalog_${status}`, target: id,
       details: status === "published" ? confirmation(row.revision) : null });
     // References stay intact so republishing restores deliberate selections. Deletion is a separate, explicit route.
