@@ -54,6 +54,13 @@ export async function setCatalogStatus(p: Principal, id: string, status: "publis
     const [row] = await tx.update(petCatalog).set({ status, updatedAt: new Date() }).where(eq(petCatalog.id, id)).returning(columns);
     if (!row) throw new HttpError(404, "Catalog pet not found.");
     await assertFreshPetAdmin(p, tx); // The UPDATE above acquired the asset lock; a denial rolls it back.
+    if (status === "published" && row.manifest.spriteVersionNumber !== 2 && !isBundledPet(id)) {
+      // Publication is only possible here, and it always writes this audit row in the same transaction. Legacy
+      // built-ins were installed already published. Either proves an earlier publication; a v1 draft never had one.
+      const [earlier] = await tx.select({ id: auditLog.id }).from(auditLog)
+        .where(and(eq(auditLog.action, "pet.catalog_published"), eq(auditLog.target, id))).limit(1);
+      if (!earlier) throw new HttpError(409, "Legacy v1 pets can't be published for the first time. Import a complete Codex Pet v2 sheet instead; v1 pets that were published before can still be republished.");
+    }
     await tx.insert(auditLog).values({ actorId: p.user.id, action: `pet.catalog_${status}`, target: id,
       details: status === "published" ? confirmation(row.revision) : null });
     // References stay intact so republishing restores deliberate selections. Deletion is a separate, explicit route.
