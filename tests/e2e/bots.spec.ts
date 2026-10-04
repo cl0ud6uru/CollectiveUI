@@ -4,7 +4,7 @@ import { login, openBot, send, choose } from "./helpers";
 test("bot tool approval: deny, then allow", async ({ page }) => {
   await login(page, "alice");
   await openBot(page, "Research Assistant");
-  await expect(page.getByText("Researches topics").first()).toBeVisible();
+  await expect(page.locator("main header").getByRole("heading", { name: "Research Assistant", exact: true })).toBeVisible();
   // A bot now reopens its persistent home; isolate this test from earlier approval cards.
   await page.getByRole("button", { name: "Start side chat", exact: true }).click();
   await expect(page.getByRole("link", { name: "Open home chat", exact: true })).toBeVisible();
@@ -22,7 +22,7 @@ test("bot tool approval: deny, then allow", async ({ page }) => {
 test("memory tool saves a fact that later appears in settings", async ({ page }) => {
   await login(page, "alice");
   await openBot(page, "Research Assistant");
-  await expect(page.getByText("Researches topics").first()).toBeVisible();
+  await expect(page.locator("main header").getByRole("heading", { name: "Research Assistant", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Start side chat", exact: true }).click();
   await expect(page.getByRole("link", { name: "Open home chat", exact: true })).toBeVisible();
   await send(page, '[tool:remember {"fact":"Prefers bullet-point summaries"}]');
@@ -35,9 +35,10 @@ test("memory tool saves a fact that later appears in settings", async ({ page })
 test("routine run pauses for approval and resumes from the inbox", async ({ page }) => {
   await login(page, "alice");
   await openBot(page, "Research Assistant");
-  await expect(page.getByText("Researches topics").first()).toBeVisible();
+  await expect(page.locator("main header").getByRole("heading", { name: "Research Assistant", exact: true })).toBeVisible();
 
   // Grok-style side panel: create a routine with the friendly schedule picker, then "Test run".
+  await page.getByRole("button", { name: "Show bot details" }).click();
   await page.getByLabel("New routine").click();
   const name = `E2E routine ${Date.now()}`;
   await page.getByPlaceholder("Morning inbox triage").fill(name);

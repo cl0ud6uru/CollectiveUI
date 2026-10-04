@@ -92,6 +92,7 @@ test("admin publishes scoped bot; user can discover/use but cannot edit or take 
     await member.getByRole("link", { name: "Open home chat", exact: true }).click();
     await expect(member.getByLabel("Message", { exact: true })).toBeVisible();
     await expect(member.locator(`header [data-bot-avatar="${botId}"]`)).toHaveAttribute("data-pet-appearance", "ember");
+    await member.getByRole("button", { name: "Show bot details" }).click();
     await member.getByRole("button", { name: "Pet avatar settings for Scoped IT tickets", exact: true }).click();
     await expect(member.getByRole("combobox", { name: "Animation", exact: true })).toBeEnabled();
     await expect(member.getByRole("radio")).toHaveCount(0);
@@ -106,6 +107,7 @@ test("admin publishes scoped bot; user can discover/use but cannot edit or take 
     await member.goto("/c/fixtureapprovalchat");
     await expect(member.getByRole("button", { name: "Allow once", exact: true })).toBeVisible();
     await expect(member.getByRole("button", { name: "Always allow", exact: true })).toHaveCount(0);
+    await member.getByRole("button", { name: "Show bot details" }).click();
     await expect(member.getByText("Admin-managed service bot. Direct chats only; routines are unavailable.", { exact: true })).toBeVisible();
     await expect(member.getByRole("button", { name: "New routine", exact: true })).toHaveCount(0);
     await member.screenshot({ path: `${screenshots}/member-forced-approval.png`, fullPage: true });

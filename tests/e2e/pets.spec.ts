@@ -34,8 +34,8 @@ const activity = (page: Page) => page.getByRole("status", { name: "Bot avatar ac
 const settings = (page: Page) => page.getByRole("button", { name: `Pet avatar settings for ${botName}`, exact: true });
 const toggle = (page: Page) => page.getByRole("radio", { name: "Personal pet", exact: true });
 async function preferences(page: Page) {
-  await expect.poll(async () => await settings(page).isVisible() || await page.getByRole("button", { name: "Show bot panel" }).isVisible()).toBe(true);
-  if (!await settings(page).isVisible()) await page.getByRole("button", { name: "Show bot panel" }).click();
+  await expect.poll(async () => await settings(page).isVisible() || await page.getByRole("button", { name: "Show bot details" }).isVisible()).toBe(true);
+  if (!await settings(page).isVisible()) await page.getByRole("button", { name: "Show bot details" }).click();
   await settings(page).click();
   await expect(toggle(page)).toBeEnabled();
 }
@@ -49,6 +49,7 @@ async function enable(page: Page) {
 
 test("private avatar replaces existing icons; keyboard preferences persist and restore original icons", async ({ page }) => {
   await login(page, "alice"); await openBot(page, botName);
+  await page.getByRole("button", { name: "Show bot details" }).click();
   const header = avatar(page);
   await expect(header).toHaveAttribute("data-pet-enabled", "false");
   const original = await header.innerHTML();
@@ -206,7 +207,7 @@ test("mobile header, reduced motion, nested dialog focus and unobscured composer
   expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   await page.keyboard.press("Escape");
   await expect(settings(page)).toBeFocused();
-  await page.getByRole("button", { name: "Hide bot panel" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Hide bot details" }).click();
   const pet = avatar(page);
   await expect(pet.locator(".pet-body")).toHaveCSS("animation-name", "none");
   await send(page, "A tiny mobile hello.");
