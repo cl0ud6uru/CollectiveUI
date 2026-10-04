@@ -12,16 +12,26 @@ is a schema-generation development tool; applying checked-in migrations uses `dr
 The image retains the application's shared production dependency set (including Next/React and provider SDKs).
 This change removes development tooling; it does not claim a fully minimal worker-specific import bundle.
 
+Next's optional `@playwright/test` peer is classified `devOptional` in the lockfile. npm installs it even with
+`--omit=dev`, so the runtime install explicitly removes `@playwright/test`, `playwright`, `playwright-core` and
+their executable links. The worker does not use Next's experimental browser-test integration. Four optional
+declaration peers are retained: `@types/node`, `@types/pg`, `@types/react-dom` and `undici-types`. These satisfy
+production libraries' optional type dependencies and contain declarations rather than development executables;
+the filesystem check allowlists them explicitly rather than accepting every `devOptional` package.
+
 ## Build, inventory and audit the shipped install
 
 ```bash
 docker build --target worker -t collectiveui-worker:test .
-docker run --rm collectiveui-worker:test npm ls --omit=dev --all --json > worker-dependencies.json
+docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm query '*' --json > worker-dependencies.json
+docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm ls --omit=dev --all --json > worker-tree.json
 docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm audit --omit=dev --json > worker-audit.json
 ```
 
-The inventory records installed versions; the audit consults the npm registry and may change as advisories are
-published. The smoke test below additionally checks the filesystem against **every dev-only lockfile entry**
+`npm query '*'` records all physically installed packages, including optional peers that `npm ls --omit=dev` can
+hide. The tree check also verifies runtime dependency resolution; the audit consults the npm registry and may
+change as advisories are published. The smoke test below additionally checks the filesystem against **every
+dev-only and devOptional lockfile entry**, allowing only the four declaration peers above,
 and verifies that ESLint, drizzle-kit, Vitest, TypeScript and Playwright cannot be resolved. Reading only the
 production portion of a lockfile would not prove that development packages were absent from an image.
 These npm reports cover application packages, not Debian packages or the Node image's globally installed npm.

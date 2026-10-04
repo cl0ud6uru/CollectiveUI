@@ -15,7 +15,12 @@ RUN npm ci
 
 FROM base AS runtime-deps
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+# Next's optional Playwright peer is marked devOptional, so npm still installs it with --omit=dev.
+# The worker never uses Next's experimental browser-test integration; remove its tools and bin links.
+RUN npm ci --omit=dev \
+    && rm -rf node_modules/@playwright/test node_modules/playwright node_modules/playwright-core \
+              node_modules/.bin/playwright node_modules/.bin/playwright-core \
+    && npm cache clean --force
 
 FROM deps AS build
 COPY . .

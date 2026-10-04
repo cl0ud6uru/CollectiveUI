@@ -38,7 +38,8 @@ jobs:
       - name: Record and audit installed runtime dependencies
         run: |
           mkdir -p test-results/docker
-          docker run --rm collectiveui-worker:test npm ls --omit=dev --all --json > test-results/docker/worker-dependencies.json
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm query '*' --json > test-results/docker/worker-dependencies.json
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm ls --omit=dev --all --json > test-results/docker/worker-tree.json
           docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm audit --omit=dev --json > test-results/docker/worker-audit.json
       - name: Non-root runtime, migrations, queued reply and graceful shutdown
         run: bash tests/docker/worker-smoke.sh

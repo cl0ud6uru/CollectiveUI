@@ -24,9 +24,12 @@ async function main() {
     await assert.rejects(access(file, constants.W_OK), `${file} must not be writable`);
   }
   await access(process.env.STORAGE_DIR!, constants.W_OK);
-  const lock = runtimeRequire("./package-lock.json") as { packages: Record<string, { dev?: boolean }> };
-  const shippedDev = Object.entries(lock.packages).filter(([file, pkg]) => pkg.dev && existsSync(file));
-  assert.deepEqual(shippedDev, [], "no lockfile dev-only package may be shipped");
+  const lock = runtimeRequire("./package-lock.json") as { packages: Record<string, { dev?: boolean; devOptional?: boolean }> };
+  // Production libraries retain these optional declaration peers, which contain no development executables.
+  const declarationPeers = new Set(["@types/node", "@types/pg", "@types/react-dom", "undici-types"].map(name => `node_modules/${name}`));
+  const shippedDev = Object.entries(lock.packages).filter(([file, pkg]) =>
+    (pkg.dev || (pkg.devOptional && !declarationPeers.has(file))) && existsSync(file));
+  assert.deepEqual(shippedDev, [], "no dev-only/optional development tooling may be shipped");
   for (const name of ["vitest", "eslint", "drizzle-kit", "typescript", "@playwright/test"]) {
     assert.throws(() => runtimeRequire.resolve(`${name}/package.json`), { code: "MODULE_NOT_FOUND" });
   }
