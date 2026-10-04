@@ -23,14 +23,14 @@ suite("published coordinator plus linked and async task migration lineage", () =
         if (i > 0) expect(entry.when).toBeGreaterThan(journal.entries[i - 1].when);
       }
       expect(journal.entries[18]).toMatchObject({ idx: 18, tag: "0018_default_coordinator", when: 1790985940212 });
-      expect(journal.entries.at(-1)).toMatchObject({ idx: 23, tag: "0023_coordinator_roles" });
+      expect(journal.entries.at(-1)).toMatchObject({ idx: 25, tag: "0025_coordinator_roles" });
       const previous = JSON.parse(await readFile(path.join(original, "meta/0017_snapshot.json"), "utf8"));
       const current = JSON.parse(await readFile(path.join(original, "meta/0018_snapshot.json"), "utf8"));
       expect(current.prevId).toBe(previous.id);
       expect(current.tables["public.bots"].columns.coordinator_eligible).toMatchObject({ type: "boolean", notNull: true, default: false });
       delete current.tables["public.bots"].columns.coordinator_eligible;
       expect(current.tables).toEqual(previous.tables); // no unpublished task schema in this migration
-      for (const i of [19, 20, 21, 22, 23]) {
+      for (const i of [19, 20, 21, 22, 23, 24, 25]) {
         const a = JSON.parse(await readFile(path.join(original, `meta/${String(i - 1).padStart(4, "0")}_snapshot.json`), "utf8"));
         const b = JSON.parse(await readFile(path.join(original, `meta/${String(i).padStart(4, "0")}_snapshot.json`), "utf8"));
         expect(b.prevId).toBe(a.id);

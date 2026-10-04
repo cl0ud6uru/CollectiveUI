@@ -176,6 +176,13 @@
       "when": 1791129709231,
       "tag": "0024_docker_hermes_enrollment",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791136080764,
+      "tag": "0025_coordinator_roles",
+      "breakpoints": true
     }
   ]
 }

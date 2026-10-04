@@ -18,7 +18,7 @@ The `/` entry honors an explicit personal bot/model start choice first. People f
 
 A suggested delegator must be enabled, native, caller-mode, editable by the creator, visible in that person's ordinary audience and configured with a usable tool-capable model. Owners can use their personal coordinators; admins can use shared coordinators within their audience. Visibility alone never permits a non-owner to edit a shared coordinator's Team, and admin oversight does not expose another person's private coordinator in these defaults. Each actual dispatch still applies existing caller, bot, model and tool authorization. Selecting a delegator does not share a private specialist, opt it into automatic discovery or grant connector access. Service and Hermes bots cannot use this role or the new incoming-link defaults.
 
-Migration `0023_coordinator_roles` adds `bots.is_coordinator NOT NULL DEFAULT false`. It changes no existing bot settings or relationships, including existing starters. Enable the role explicitly on an existing starter if desired.
+Migration `0025_coordinator_roles` adds `bots.is_coordinator NOT NULL DEFAULT false`. It changes no existing bot settings or relationships, including existing starters. Enable the role explicitly on an existing starter if desired.
 
 ## Specialist access and execution
 
@@ -67,4 +67,3 @@ Use synthetic fixtures and disposable loopback Postgres databases only. No live 
 
 Coordinator-role validation extends the coordinator integration suite with role/default editing, personal/shared eligibility, rejected forged and revoked selections, atomic incoming links, explicit empty selections, Team capacity, rename/retry preservation and caller isolation. The migration suite covers the public 0022 baseline as well as fresh, 0017 and 0018 upgrades and replay. The browser suite also checks canceled creation, repeated selection, tab changes and desktop/mobile personal defaults. For local HTTP development, use `AUTH_URL=http://localhost:3066` and `BASE_URL=http://localhost:3066` with the disposable browser database and synthetic secrets.
 
-Actual UI evidence: [desktop delegators](../testing/evidence/coordinator-role/desktop.png), [mobile personal coordinator](../testing/evidence/coordinator-role/mobile.png). These screenshots show synthetic local accounts and the existing avatar.
