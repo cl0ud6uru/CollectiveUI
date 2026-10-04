@@ -43,7 +43,7 @@ export function mapUsage(u: ProviderUsage | undefined) {
 }
 
 export type UsageWriter = (row: UsageEvent) => Promise<unknown>;
-const dbWriter: UsageWriter = (row) => db.insert(usageEvents).values(row);
+const dbWriter: UsageWriter = (row) => db.insert(usageEvents).values(row).onConflictDoNothing();
 let writer: UsageWriter = dbWriter;
 
 /** Test hook: capture ledger rows instead of writing them. */
@@ -52,7 +52,7 @@ export function setUsageWriter(w: UsageWriter | null) {
 }
 
 /** Writes one ledger row. Never throws: accounting must not break a chat. */
-export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsage>): Promise<void> {
+export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsage>, search: Pick<UsageEvent, "id" | "toolCallId" | "hostedSearchCalls" | "searchToolCostEstimateMicros"> = {}): Promise<void> {
   const row: UsageEvent = {
     userId: ctx.userId ?? null,
     conversationId: ctx.conversationId ?? null,
@@ -67,6 +67,7 @@ export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsag
     billingSource: ctx.billingSource,
     credentialId: ctx.credentialId ?? null,
     ...tokens,
+    ...search,
   };
   const p = Promise.resolve()
     .then(() => writer(row))

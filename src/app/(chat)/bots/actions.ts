@@ -40,6 +40,7 @@ import { offeredTools } from "@/lib/mcp/servers";
 import { toolHash } from "@/lib/mcp/snapshot";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { slugify } from "@/lib/utils";
+import { nativeSearchAvailability } from "@/lib/agent/native-search";
 import { BUILTIN_TOOLS } from "@/lib/agent/types";
 import { availableBuiltinKeys } from "@/lib/bots/available-tools";
 import { botDraftInstructions, botDraftSchema, describeDraftFailure, DRAFT_DESCRIPTION_MAX_LENGTH, finalizeDraft, INCOMPLETE_DRAFT, NO_UTILITY_MODEL, type BotDraftResult } from "@/lib/bots/draft";
@@ -106,6 +107,11 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
   if (!isManagedHermes(app) && (input.name.length > 80 || (input.instructions?.length ?? 0) > 20000))
     throw new HttpError(400, "Use at most 80 characters for the name and 20,000 for instructions.");
   const toolSettings = await getSetting("tools");
+  const search = input.tools.find(t => t.key === "openai_web_search");
+  if (search) {
+    const reason = await nativeSearchAvailability(app, toolSettings, search.approval);
+    if (reason) throw new HttpError(400, reason);
+  }
   const builtin = await availableBuiltinKeys(p);
   const accessibleServers = await listAccessibleMcpServers(p);
   const mcpIds = new Set(accessibleServers.map((s) => `mcp:${s.id}`));

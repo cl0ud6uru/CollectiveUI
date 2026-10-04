@@ -128,7 +128,7 @@ export function BotBuilder({
 }: {
   botId?: string;
   initial: BotInput;
-  apps: (Option & { supportsTools: boolean; agentServer?: boolean; managed?: boolean; local?: boolean; docker?: boolean; model?: string })[];
+  apps: (Option & { supportsTools: boolean; agentServer?: boolean; managed?: boolean; local?: boolean; docker?: boolean; model?: string; nativeSearchReason?: string | null })[];
   groups: Option[];
   tools: ToolOption[];
   delegates: (Option & { avatar: string | null })[];
@@ -428,12 +428,13 @@ export function BotBuilder({
                 <>
               <div>
                 <div className="mb-1.5 text-sm font-medium">Tools</div>
-                <p className="mb-2 text-xs text-muted">MCP connectors appear after an admin saves, tests and enables them, and grants you direct access. Admins can select any enabled connector. Plain model chats do not use these tools.</p>
+                <p className="mb-2 text-xs text-muted">MCP connectors appear after an admin saves, tests and enables them, and grants you direct access. Admins can select any enabled connector. Plain model chats offer OpenAI native search separately.</p>
                 {service && <p className="mb-2 text-xs text-muted">Only reviewed MCP tools are supported. Built-in tools, delegation, groups and routines are unavailable in service mode.</p>}
                 {!app?.supportsTools && <p className="mb-2 text-xs text-danger">The selected model doesn&apos;t support tools.</p>}
                 <div className="divide-y divide-border rounded-xl border border-border">
                   {tools.filter((t) => !service || t.key.startsWith("mcp:")).map((t) => {
                     const on = toolOn(t.key);
+                    const searchReason = t.key === "openai_web_search" ? app?.nativeSearchReason : null;
                     const isMcp = t.key.startsWith("mcp:");
                     const replace = (c: ToolChoice) => set("tools", form.tools.map((x) => (x.key === t.key ? c : x)));
                     return (
@@ -443,14 +444,15 @@ export function BotBuilder({
                             type="checkbox"
                             aria-label={t.label}
                             checked={!!on}
+                            disabled={!on && !!searchReason}
                             onChange={(e) => toggleTool(t, e.target.checked)}
                             className="h-4 w-4 accent-[var(--accent)]"
                           />
                           <div className="min-w-0 flex-1">
                             <div className="text-sm font-medium">{t.label}</div>
-                            <div className="text-xs text-muted">{t.description}</div>
+                            <div className="text-xs text-muted">{searchReason ?? t.description}</div>
                           </div>
-                          {on && !service && (
+                          {on && !service && t.key !== "openai_web_search" && (
                             <Select
                               value={on.approval}
                               onChange={(e) => replace({ ...on, approval: e.target.value as ApprovalMode })}

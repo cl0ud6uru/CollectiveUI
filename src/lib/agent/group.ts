@@ -165,9 +165,10 @@ export async function runGroupTurn(opts: {
         writer.write({ type: "data-speaker", data: { botId: bot.id, name: bot.name, avatar: bot.avatar } satisfies SpeakerData });
 
         const toolCallPrefix = `${newId()}:`;
-        const ctx = { principal, conversationId: conversation.id, bot, app, depth: 0, background: false, inGroup: true, toolSettings, usage: usageScope, execution, toolCallPrefix };
+        const ctx = { principal, conversationId: conversation.id, bot, app, depth: 0, background: false, inGroup: true, toolSettings, usage: usageScope, execution, toolCallPrefix, nativeSearchMode: conversation.nativeSearchMode };
         const toolset = await buildToolset(ctx);
         try {
+          for (const warning of toolset.warnings) writer.write({ type: "data-notice", data: { message: warning }, transient: true });
           const memories = useMemory
             ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id }).catch(
                 () => [],
@@ -208,6 +209,7 @@ export async function runGroupTurn(opts: {
             conversationId: conversation.id,
             botId: bot.id,
             usage: usageScope,
+            nativeSearch: toolset.nativeSearch,
           });
           const result = streamText({
             model,
@@ -221,11 +223,13 @@ export async function runGroupTurn(opts: {
             maxOutputTokens: app.maxTokens ?? undefined,
             timeout: toolset.timeout,
             abortSignal: opts.abortSignal,
+            ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
           });
           // Pipe chunks in order so each bot's reply stays grouped under its speaker marker.
           const reader = toUIMessageStream({
             stream: result.stream,
             tools: toolset.tools,
+            sendSources: true,
             sendStart: false,
             sendFinish: false,
             onError: (err) => userFacingMessage(err) ?? "An error occurred.",

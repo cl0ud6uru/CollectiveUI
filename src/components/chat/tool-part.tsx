@@ -38,6 +38,7 @@ type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 type Label = { icon: React.ComponentType<{ className?: string }>; running: string; done: string; ask: string };
 
 const LABELS: Record<string, Label> = {
+  openai_web_search: { icon: Globe, running: "Searching the web with OpenAI", done: "Searched the web with OpenAI", ask: "search the web with OpenAI" },
   web_search: { icon: Globe, running: "Searching the web", done: "Searched the web", ask: "search the web" },
   fetch_url: { icon: Globe, running: "Reading page", done: "Read page", ask: "read a web page" },
   search_knowledge: { icon: BookOpen, running: "Searching knowledge", done: "Searched knowledge", ask: "search its knowledge files" },

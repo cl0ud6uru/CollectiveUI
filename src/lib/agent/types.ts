@@ -27,6 +27,7 @@ export type AgentCtx = {
   /** running inside a group chat (approval requests can't pause a multi-bot turn) */
   inGroup?: boolean;
   toolSettings: ToolSettings;
+  nativeSearchMode?: import("@/lib/native-search-policy").NativeSearchMode | null;
   /** Usage ledger scope of the turn; each child task has its own assistant message and run. */
   usage?: UsageScope;
   /** The acting person's workspace for this turn, shared with delegates (created by the first toolset that needs it). */
@@ -61,6 +62,7 @@ export type ToolEntry = {
 
 /** Built-in tool groups a bot can enable (MCP servers and delegates are added dynamically). */
 export const BUILTIN_TOOLS: { key: string; label: string; description: string; defaultApproval: ApprovalMode }[] = [
+  { key: "openai_web_search", label: "OpenAI native search", description: "Let a supported OpenAI API model search automatically. Billed by OpenAI; no automatic fallback. Chats may switch it off.", defaultApproval: "auto" },
   { key: "web_search", label: "Web search", description: "Search the public web for current information.", defaultApproval: "auto" },
   { key: "fetch_url", label: "Read web pages", description: "Fetch and read the text of a URL.", defaultApproval: "auto" },
   { key: "knowledge", label: "Knowledge files", description: "Search the files attached to this bot.", defaultApproval: "auto" },
