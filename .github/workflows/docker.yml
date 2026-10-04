@@ -19,8 +19,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: git rev-parse HEAD
       - run: docker build --target test -t collectiveui-test:ci .
       - run: docker run --rm --init --network none collectiveui-test:ci
@@ -31,8 +29,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - run: git rev-parse HEAD
       - run: docker build --target worker -t collectiveui-worker:test .
       - name: Record and audit installed runtime dependencies

@@ -20,7 +20,7 @@ run("public sign-in companion", () => {
   let admin: Principal;
   let original: unknown;
   const assets: string[] = [];
-  const manifest = { displayName: "Synthetic sign-in pet", description: "", spriteVersionNumber: 1 as const, credit: "Test · MIT" };
+  const manifest = { displayName: "Synthetic sign-in pet", description: "", spriteVersionNumber: 2 as const, credit: "Test · MIT" };
   beforeAll(async () => {
     const { db, schema } = await import("@/db");
     const { loadPrincipal } = await import("@/lib/auth/groups");
@@ -69,7 +69,7 @@ run("public sign-in companion", () => {
     expect((await getPublicLoginPet()).appearance).toBe("moss");
 
     await saveLoginPet({ appearance: "catalog", catalogId: draft.id }, "confirmed");
-    expect(await getPublicLoginPet()).toEqual({ appearance: "catalog", name: manifest.displayName, credit: manifest.credit, spriteVersionNumber: 1, spriteUrl: `/api/branding/login-pet?v=${draft.revision}` });
+    expect(await getPublicLoginPet()).toEqual({ appearance: "catalog", name: manifest.displayName, credit: manifest.credit, spriteVersionNumber: 2, spriteUrl: `/api/branding/login-pet?v=${draft.revision}` });
     const response = await GET();
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");

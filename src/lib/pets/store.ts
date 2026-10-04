@@ -102,9 +102,9 @@ export async function savePetMotion(p: Principal, botId: string, motion: PetPref
 }
 
 /** Private import endpoint stays owner scoped even for administrators. */
-export async function readPetSprite(p: Principal, botId: string): Promise<Buffer> {
+export async function readPetSprite(p: Principal, botId: string, revision: string | null = null): Promise<Buffer> {
   await getUsableBot(p, botId);
-  const [row] = await db.select({ sprite: botPets.sprite }).from(botPets).where(scope(p, botId));
+  const [row] = await db.select({ sprite: botPets.sprite }).from(botPets).where(and(scope(p, botId), revision ? eq(botPets.revision, revision) : undefined));
   if (!row?.sprite) throw new HttpError(404, "Pet image not found.");
   return row.sprite;
 }
