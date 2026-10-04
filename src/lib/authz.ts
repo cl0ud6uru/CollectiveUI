@@ -1,4 +1,4 @@
-import { isDockerHermes, dockerAllowed } from "@/lib/docker-hermes/policy";
+import { isDockerHermes, dockerAllowed, dockerAllowedSql } from "@/lib/docker-hermes/policy";
 import { bindingSchema } from "@/docker-hermes/types";
 import { and, asc, eq, exists, inArray, or, sql } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
@@ -39,9 +39,9 @@ export function assertAdmin(p: Principal) {
 // Apps
 // ---------------------------------------------------------------------------
 
-async function appVisibleTo(p: Principal, q: DbOrTx = db) {
+function appVisibleTo(p: Principal) {
   const personal = sql`${aiApps.providerConfig}->'docker' is not null`;
-  const mine = and(personal, sql`${aiApps.providerConfig}->'docker'->>'ownerId' = ${p.user.id}`, sql`${await dockerAllowed(p, q)}`);
+  const mine = and(personal, sql`${aiApps.providerConfig}->'docker'->>'ownerId' = ${p.user.id}`, dockerAllowedSql(p));
   if (p.isAdmin) return and(eq(aiApps.enabled, true), or(sql`not (${personal})`, mine));
   return and(
     eq(aiApps.enabled, true),
@@ -69,14 +69,14 @@ async function withoutUnavailablePlans(p: Principal, apps: AiApp[], q: DbOrTx = 
 }
 
 export async function listAccessibleApps(p: Principal): Promise<AiApp[]> {
-  return withoutUnavailablePlans(p, await db.select().from(aiApps).where(await appVisibleTo(p)).orderBy(asc(aiApps.sortOrder), asc(aiApps.name)));
+  return withoutUnavailablePlans(p, await db.select().from(aiApps).where(appVisibleTo(p)).orderBy(asc(aiApps.sortOrder), asc(aiApps.name)));
 }
 
 export async function getAccessibleApp(p: Principal, appId: string, q: DbOrTx = db): Promise<AiApp> {
   const rows = await q
     .select()
     .from(aiApps)
-    .where(and(eq(aiApps.id, appId), await appVisibleTo(p, q)));
+    .where(and(eq(aiApps.id, appId), appVisibleTo(p)));
   const [app] = await withoutUnavailablePlans(p, rows, q);
   if (!app) throw forbidden("You don't have access to this connection");
   return app;
@@ -98,9 +98,9 @@ export async function getAccessibleModel(p: Principal, appId: string, q: DbOrTx 
 // ---------------------------------------------------------------------------
 
 /** `adminSeesAll`: admins can open any bot (oversight), but their own lists show only what they'd normally see. */
-async function botVisibleTo(p: Principal, adminSeesAll = true, q: DbOrTx = db) {
+function botVisibleTo(p: Principal, adminSeesAll = true) {
   const privateNative = sql`not exists (select 1 from ai_apps a where a.id = ${bots.appId} and a.provider_config->'docker' is not null and
-    (not ${await dockerAllowed(p, q)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible}
+    (not ${dockerAllowedSql(p)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible}
      or a.provider_config->'docker'->>'ownerId' is distinct from ${p.user.id} or a.provider_config->'docker'->>'botId' is distinct from ${bots.id}))`;
   if (p.isAdmin && adminSeesAll) return privateNative;
   return and(privateNative, or(
@@ -124,7 +124,7 @@ export async function listAccessibleBots(p: Principal, q: DbOrTx = db): Promise<
   const rows = await q
     .select()
     .from(bots)
-    .where(and(eq(bots.enabled, true), await botVisibleTo(p, false, q)))
+    .where(and(eq(bots.enabled, true), botVisibleTo(p, false)))
     .orderBy(asc(bots.name));
   return withoutUnavailablePlanBots(p, rows, q);
 }
@@ -149,7 +149,7 @@ export async function getAccessibleBot(p: Principal, botId: string, q: DbOrTx = 
   const [bot] = await q
     .select()
     .from(bots)
-    .where(and(eq(bots.id, botId), await botVisibleTo(p, true, q)));
+    .where(and(eq(bots.id, botId), botVisibleTo(p)));
   if (!bot) throw forbidden("You don't have access to this bot");
   return bot;
 }

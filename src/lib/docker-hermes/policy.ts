@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { db, type DbOrTx } from '@/db';
 import { dockerHermesEnrollments, users } from '@/db/schema';
 import type { Principal } from '@/lib/auth/groups';
@@ -11,6 +11,12 @@ export async function dockerAllowed(p: Principal, q: DbOrTx = db) {
     .innerJoin(users, eq(users.id, dockerHermesEnrollments.userId))
     .where(and(eq(users.id, p.user.id), eq(users.disabled, false), eq(users.sessionVersion, p.user.sessionVersion), eq(dockerHermesEnrollments.enabled, true)));
   return !!row?.enabled;
+}
+/** The same fresh enrollment check as `dockerAllowed`, as a predicate evaluated inside the caller's query. */
+export function dockerAllowedSql(p: Principal): SQL {
+  if (p.user.disabled) return sql`false`;
+  return sql`exists (select 1 from docker_hermes_enrollments dhe inner join users dhu on dhu.id = dhe.user_id
+    where dhe.user_id = ${p.user.id} and dhe.enabled and not dhu.disabled and dhu.session_version = ${p.user.sessionVersion})`;
 }
 export async function assertDockerAllowed(p: Principal, q: DbOrTx = db) {
   if (!await dockerAllowed(p, q)) throw new HttpError(403, 'You are not authorized to use a personal Hermes runtime.');
