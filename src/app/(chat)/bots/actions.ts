@@ -23,7 +23,6 @@ import {
   conversations,
   routines,
   skills,
-  userBotPrefs,
   type BotTemplateSnapshot,
 } from "@/db/schema";
 import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers } from "@/lib/authz";
@@ -53,6 +52,7 @@ import { initializeBotPet } from "@/lib/pets/store";
 import { assertApprovedBot, guardManagedBotMutation } from "@/lib/hermes-provisioning/bot-policy";
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { isLocalHermes } from "@/lib/local-hermes/config";
+import { saveBotNavigation } from "@/lib/bots/navigation-store";
 
 async function localEngine(appId: string | null) {
   if (!appId) return false;
@@ -763,13 +763,7 @@ export async function getBotPanelData(botId: string) {
 /** Pin a bot to the top of the sidebar or hide it (hiding never pauses the bot or its routines). */
 export async function setBotSidebarPref(botId: string, pref: { pinned?: boolean; hidden?: boolean }) {
   const p = await requirePrincipal();
-  await getAccessibleBot(p, botId);
-  const values = { userId: p.user.id, botId, pinned: pref.pinned ?? false, hidden: pref.hidden ?? false, updatedAt: new Date() };
-  const set: Partial<typeof values> = { updatedAt: new Date() };
-  if (pref.pinned !== undefined) set.pinned = pref.pinned;
-  if (pref.hidden !== undefined) set.hidden = pref.hidden;
-  if (pref.hidden) set.pinned = false;
-  await db.insert(userBotPrefs).values(values).onConflictDoUpdate({ target: [userBotPrefs.userId, userBotPrefs.botId], set });
+  await saveBotNavigation(p, { kind: "preference", botId, ...pref });
   revalidatePath("/", "layout");
 }
 

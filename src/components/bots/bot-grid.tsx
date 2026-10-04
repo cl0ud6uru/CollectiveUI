@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Search } from "lucide-react";
+import { Pin, PinOff, Search } from "lucide-react";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import { useShell } from "@/components/chat/shell-context";
 
 type Card = { id: string; name: string; avatar: string | null; label: string | null; description: string | null; visibility: string };
 
 function BotCard({ b, mine }: { b: Card; mine?: boolean }) {
+  const { bots, navigationPending, changeNavigation } = useShell();
+  const bot = bots.find(bot => bot.id === b.id);
   return (
     <div className="group flex gap-4 rounded-2xl p-4 hover:bg-surface-2">
       <Link prefetch={false} href={`/?bot=${b.id}`} aria-label={`Chat with ${b.name}`} className="flex h-14 w-14 shrink-0 items-center justify-center">
@@ -30,6 +33,17 @@ function BotCard({ b, mine }: { b: Card; mine?: boolean }) {
             </Link>
           )}
         </div>
+        {bot && <button
+          type="button"
+          aria-label={`${bot.pinned ? "Unpin" : "Pin"} ${b.name}`}
+          aria-pressed={!!bot.pinned}
+          disabled={navigationPending}
+          onClick={() => changeNavigation({ kind: "preference", botId: b.id, pinned: !bot.pinned }, `${b.name} ${bot.pinned ? "unpinned" : "pinned"}`)}
+          className="mt-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50"
+        >
+          {bot.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+          {bot.pinned ? "Unpin" : "Pin"}
+        </button>}
       </div>
     </div>
   );
@@ -37,9 +51,11 @@ function BotCard({ b, mine }: { b: Card; mine?: boolean }) {
 
 export function BotGrid({ mine, others }: { mine: Card[]; others: Card[] }) {
   const [q, setQ] = useState("");
+  const { navigationPending, navigationMessage } = useShell();
   const f = (l: Card[]) => l.filter((b) => (b.name + " " + (b.description ?? "")).toLowerCase().includes(q.toLowerCase()));
   return (
     <div>
+      <p role="status" className="mb-2 text-xs text-muted">{navigationPending ? "Saving bot navigation…" : navigationMessage}</p>
       <div className="mb-8 flex max-w-xl items-center gap-3 rounded-full bg-surface-2 px-4">
         <Search className="h-5 w-5 text-subtle" />
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search bots" aria-label="Search bots" className="h-11 flex-1 bg-transparent text-sm outline-none placeholder:text-subtle" />

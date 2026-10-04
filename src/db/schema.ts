@@ -136,6 +136,8 @@ export const localAuthBootstrap = pgTable("local_auth_bootstrap", {
 }, (t) => [check("local_auth_bootstrap_singleton", sql`${t.id} = 1`)]);
 
 export type UserPrefs = {
+  /** Personal bot navigation only; inaccessible/deleted IDs are ignored on reads. */
+  botOrder?: string[];
   customInstructions?: string;
   memoryEnabled?: boolean;
   /** Where new chats start: at most one of a model or a bot. Unset follows the organization default. */
