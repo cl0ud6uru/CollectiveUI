@@ -36,13 +36,13 @@ def directory(parts):
         os.close(fd)
 
 
-def read_at(fd, name, limit=32768):
+def read_at(fd, name, limit=32768, strict=False):
     f = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
     try:
         s = os.fstat(f)
         if not stat.S_ISREG(s.st_mode) or s.st_size > limit or s.st_nlink != 1:
             raise ValueError('unsafe or oversized native file')
-        return os.read(f, limit + 1).decode('utf-8', errors='replace')[:limit]
+        return os.read(f, limit + 1).decode('utf-8', errors='strict' if strict else 'replace')[:limit]
     finally:
         os.close(f)
 
@@ -139,6 +139,7 @@ PROVIDERS = {
 SETTINGS_FILES = ('config.yaml', '.env', 'auth.json', 'provider_models_cache.json')
 JOURNAL = '.collectiveui-settings-transaction.json'
 STAGE = '.collectiveui-settings-stage'
+SETTINGS_TEMP = '.collectiveui-settings-write'
 EFFORTS = ('', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 
 
@@ -146,7 +147,7 @@ def snapshot(fd):
     result = {}
     for name in SETTINGS_FILES:
         try:
-            result[name] = read_at(fd, name, 1048576)
+            result[name] = read_at(fd, name, 1048576, strict=True)
         except FileNotFoundError:
             result[name] = None
     return result
@@ -158,8 +159,7 @@ def settings_revision(files):
 
 
 def atomic_at(fd, name, value):
-    import secrets
-    temporary = '.collectiveui-' + secrets.token_hex(16)
+    temporary = SETTINGS_TEMP
     out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
     try:
         with os.fdopen(out, 'w') as stream:
@@ -214,7 +214,15 @@ def settings_stage(fd):
 def recover_settings(fd):
     cleanup_settings_stage(fd)
     try:
-        original = json.loads(read_at(fd, JOURNAL, 5 * 1048576))
+        info = os.stat(SETTINGS_TEMP, dir_fd=fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError('unsafe settings temporary file')
+        os.unlink(SETTINGS_TEMP, dir_fd=fd)
+        os.fsync(fd)
+    except FileNotFoundError:
+        pass
+    try:
+        original = json.loads(read_at(fd, JOURNAL, 32 * 1048576, strict=True))
     except FileNotFoundError:
         return
     restore_settings(fd, original)
@@ -529,9 +537,9 @@ def main():
         with directory(parts) as fd:
             lock = os.open('.collectiveui-native.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert_no_other_native(name, home)
         with directory(parts) as fd:
             recover_settings(fd)
-        assert_no_other_native(name, home)
         if profile(name)[1] != expected:
             raise ValueError('profile changed during process admission')
         os.environ.update(HERMES_HOME=str(home), HOME=str(home / 'home'))

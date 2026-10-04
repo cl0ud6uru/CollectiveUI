@@ -105,10 +105,10 @@ test('profile onboarding persists, tests explicitly, rejects stale saves and cle
   const url = `/bots/${bot.id}/settings`;
   await page.goto(`/bots/${bot.id}`); await page.getByRole('link', { name: 'Hermes settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Your native profile' })).toBeVisible();
-  await expect(page.getByText('Setup needed', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Model ID', { exact: true })).toBeVisible();
   await page.getByLabel('Model provider', { exact: true }).click(); await page.getByRole('option', { name: 'OpenAI API', exact: true }).click();
   await page.getByLabel('Model ID', { exact: true }).fill('denied-model');
-  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Add API key', exact: true }).click();
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: /^(Add|Replace) API key$/ }).click();
   const secret = 'sk-browser-synthetic-not-real'; await page.getByLabel('New API key', { exact: true }).fill(secret);
   await page.getByText('Advanced profile settings', { exact: true }).click();
   await page.getByLabel('Maximum agent turns', { exact: true }).fill('12');
@@ -136,7 +136,7 @@ test('profile onboarding persists, tests explicitly, rejects stale saves and cle
   await page.getByLabel('Model ID', { exact: true }).fill('fixture-newer'); await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
   await expect(page.getByText('Saved in this native profile.', { exact: false })).toBeVisible();
   await other.getByLabel('Model ID', { exact: true }).fill('fixture-stale'); await other.getByRole('button', { name: 'Save profile settings', exact: true }).click();
-  await expect(other.getByRole('alert')).toContainText('changed');
+  await expect(other.getByRole('alert').filter({ hasText: 'changed' })).toContainText('changed');
   await other.getByRole('button', { name: 'Reload saved settings', exact: true }).click(); await expect(other.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-newer'); await other.close();
 
   // Leaving an unsubmitted setup never persists a key or model.
@@ -150,6 +150,33 @@ test('profile onboarding persists, tests explicitly, rejects stale saves and cle
   await page.getByRole('button', { name: 'Save profile settings', exact: true }).click(); await expect(page.getByText('Setup needed', { exact: true })).toBeVisible();
 
   const context = await browser.newContext(); const denied = await context.newPage();
-  try { await login(denied, 'bob'); expect([403, 404]).toContain((await denied.request.get(`/api/bots/${bot.id}/native/settings`)).status); }
+  try { await login(denied, 'bob'); expect([403, 404]).toContain((await denied.request.get(`/api/bots/${bot.id}/native/settings`)).status()); }
   finally { await context.close(); }
+});
+
+test('interrupted save reloads committed state without resending credentials or testing', async ({ page }) => {
+  await login(page, 'alice');
+  const [bot] = (await pool.query("SELECT id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') AND name='Hermes'")).rows;
+  const url = `/bots/${bot.id}/settings`, api = `**/api/bots/${bot.id}/native/settings`;
+  await page.goto(url); await expect(page.getByLabel('Model ID', { exact: true })).toBeVisible();
+  await page.getByLabel('Model ID', { exact: true }).fill('interrupted-fixture-model');
+  let commit!: () => void, release!: () => void, saves = 0, tests = 0;
+  const committed = new Promise<void>(resolve => { commit = resolve; });
+  const resume = new Promise<void>(resolve => { release = resolve; });
+  await page.route(api, async route => {
+    if (route.request().method() !== 'POST') { await route.continue(); return; }
+    const operation = route.request().postDataJSON().operation;
+    if (operation === 'test') tests++;
+    if (operation !== 'save') { await route.continue(); return; }
+    saves++;
+    const response = await route.fetch(); expect(response.status()).toBe(200); commit();
+    await resume; await route.fulfill({ response }).catch(() => {});
+  });
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click(); await committed;
+  const reload = page.reload(); release(); await reload;
+  await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('interrupted-fixture-model');
+  await page.getByRole('button', { name: 'Reload saved settings', exact: true }).click();
+  await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('interrupted-fixture-model');
+  expect(saves).toBe(1); expect(tests).toBe(0);
+  await page.unroute(api);
 });

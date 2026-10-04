@@ -93,7 +93,8 @@ export class DockerBroker {
   async status(owner: string): Promise<DockerStatus> {
     const s = this.state(owner);
     if (!s) return { network: this.config.network, phase: 'disabled', error: null, generation: 0, bindings: [], unlinked: [] };
-    if (s.phase === 'ready' && !this.maintaining.has(owner) && !await this.driver.running(owner) && s.phase === 'ready' && !this.maintaining.has(owner)) {
+    const generation = s.generation;
+    if (s.phase === 'ready' && !this.maintaining.has(owner) && !await this.driver.running(owner) && s.phase === 'ready' && generation === s.generation && !this.maintaining.has(owner)) {
       s.phase = 'stopped'; s.error = 'Native runtime stopped. Retry to reopen retained profiles.'; this.save(s);
     }
     const unlinked = s.phase === 'ready' && !this.maintaining.has(owner) ? (await this.driver.profiles(owner)).filter(p => p.name !== 'default' &&
@@ -228,7 +229,7 @@ export class DockerBroker {
   }
   private async maintain<T>(owner: string, id: string, run: (s: Stored, b: DockerBinding, current: () => void) => Promise<T>) {
     return this.exclusive(owner, async () => {
-      const s = await this.ready(owner), b = this.binding(owner, id), generation = s.generation;
+      const s = await this.ready(owner), b = this.binding(owner, id), generation = ++s.generation;
       this.maintaining.add(owner);
       const release: (() => void)[] = [];
       const current = () => { this.authorized(owner); if (s.generation !== generation || s.phase !== 'ready') throw new LocalError(409, 'Runtime access changed. Reload before continuing.'); };

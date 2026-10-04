@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,8 @@ from unittest.mock import patch
 
 SOURCE = Path(os.environ['HERMES_SOURCE'])
 COMMIT = 'f97608f178d1ffeca59860195ab7da295f7c8e5f'
-if subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip() != COMMIT:
+source_revision = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip() if shutil.which('git') else (SOURCE / '.hermes_build_sha').read_text().strip()
+if source_revision != COMMIT:
     raise RuntimeError('Use the exact pinned Hermes source')
 sys.path.insert(0, str(SOURCE))
 spec = importlib.util.spec_from_file_location('bridge', Path(__file__).parents[2] / 'src/docker-hermes/bridge.py')
@@ -146,6 +148,15 @@ class NativeSettings(unittest.TestCase):
             bridge.recover_settings(fd)
         self.assertEqual(self.files(), before)
         self.assertFalse(stage.exists())
+
+    def test_orphan_atomic_write_is_removed_before_recovery_even_without_journal(self):
+        # A killed writer before its first rename may leave only the reserved temporary file.
+        before = self.files()
+        (self.root / bridge.SETTINGS_TEMP).write_text('synthetic-key-from-interrupted-rename')
+        with bridge.directory_fd(self.root) as fd:
+            bridge.recover_settings(fd)
+        self.assertEqual(self.files(), before)
+        self.assertFalse((self.root / bridge.SETTINGS_TEMP).exists())
 
     def test_rejects_mixed_native_auth_and_unsupported_inputs(self):
         before = self.files()
