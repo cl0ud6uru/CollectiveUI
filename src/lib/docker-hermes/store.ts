@@ -49,10 +49,10 @@ export async function nativeResources(p: Principal, botId: string): Promise<Nati
   return dockerControl(p.user.id, `/resources/${b.bindingId}`);
 }
 /** The browser supplies a bot id, never an owner/profile/path/broker binding. */
-export async function personalProfileBinding(p: Principal, botId: string) {
-  await freshDocker(p);
-  const bot = await getUsableBot(p, botId);
-  const [app] = bot.appId ? await db.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
+export async function personalProfileBinding(p: Principal, botId: string, q: DbOrTx = db) {
+  const fresh = await freshDocker(p, false, q);
+  const bot = await getUsableBot(fresh, botId, q);
+  const [app] = bot.appId ? await q.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
   if (!app?.enabled || !isDockerHermes(app)) throw new HttpError(400, 'This bot has no personal native profile.');
   const b = bindingSchema.parse(app.providerConfig.docker);
   if (b.botId !== bot.id || b.ownerId !== p.user.id || b.ownerId !== bot.ownerId) throw new HttpError(403, 'Native profile owner mismatch.');
@@ -79,10 +79,10 @@ export async function isPersonalHermesConversation(conv: { botId: string | null;
 }
 
 /** Serialize setup/lease dispatch with revocation. A queued stale action must recheck after taking the lock. */
-export async function withDockerAccess<T>(p: Principal, create: boolean, fn: (fresh: Principal) => Promise<T>) {
+export async function withDockerAccess<T>(p: Principal, create: boolean, fn: (fresh: Principal, tx: DbOrTx) => Promise<T>) {
   return db.transaction(async tx => {
     await lockDockerOwner(tx, p.user.id);
     const fresh = await freshDocker(p, create, tx);
-    return fn(fresh);
+    return fn(fresh, tx);
   });
 }

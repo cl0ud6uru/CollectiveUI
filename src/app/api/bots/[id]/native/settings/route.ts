@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { requirePrincipal } from '@/lib/session';
 import { HttpError } from '@/lib/authz';
-import { personalProfileBinding, dockerStatus } from '@/lib/docker-hermes/store';
+import { personalProfileBinding, dockerStatus, withDockerAccess } from '@/lib/docker-hermes/store';
 import { dockerControl } from '@/lib/docker-hermes/client';
+import { assertDockerCreate } from '@/lib/docker-hermes/policy';
+import { getSetting } from '@/lib/settings';
 import { profileUpdate, profileTest, type ProfileSettings, type ProfileTestResult } from '@/docker-hermes/settings';
 
 const response = (data: unknown, status = 200) => Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -20,7 +22,8 @@ export async function POST(request: Request, ctx: RouteContext<'/api/bots/[id]/n
   try {
     const p = await requirePrincipal();
     if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
-    const b = await personalProfileBinding(p, (await ctx.params).id);
+    const id = (await ctx.params).id;
+    await personalProfileBinding(p, id);
     if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
     if (Number(request.headers.get('content-length')) > 16384 || !request.body) throw new HttpError(413, 'Profile request is too large.');
     const reader = request.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
@@ -29,9 +32,18 @@ export async function POST(request: Request, ctx: RouteContext<'/api/bots/[id]/n
     } finally { reader.releaseLock(); }
     let raw: unknown; try { raw = JSON.parse(Buffer.concat(chunks).toString()); } catch { throw new HttpError(400, 'Invalid JSON.'); }
     const input = z.discriminatedUnion('operation', [z.object({ operation: z.literal('save'), settings: profileUpdate }).strict(), z.object({ operation: z.literal('test'), test: profileTest }).strict()]).parse(raw);
-    const result = input.operation === 'save'
-      ? await dockerControl<ProfileSettings>(p.user.id, `/settings/${b.bindingId}`, input.settings)
-      : await dockerControl<ProfileTestResult>(p.user.id, `/settings/${b.bindingId}/test`, input.test);
+    // Parse outside the owner lock; dispatch rechecks enrollment after any queued revocation.
+    const result = await withDockerAccess(p, false, async (fresh, tx) => {
+      const b = await personalProfileBinding(fresh, id, tx);
+      let canCreate = true;
+      try { await assertDockerCreate(fresh, await getSetting('tools', tx), tx); }
+      catch (e) { if (!(e instanceof HttpError) || e.status !== 403) throw e; canCreate = false; }
+      // The worker skips a busy owner lock. Refresh this authorized lease before bounded maintenance.
+      await dockerControl(fresh.user.id, '/control/lease', { canCreate }, 3000);
+      return input.operation === 'save'
+        ? dockerControl<ProfileSettings>(fresh.user.id, `/settings/${b.bindingId}`, input.settings)
+        : dockerControl<ProfileTestResult>(fresh.user.id, `/settings/${b.bindingId}/test`, input.test);
+    });
     return response(result);
   } catch (e) { return failure(e); }
 }

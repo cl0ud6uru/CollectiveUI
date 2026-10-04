@@ -129,7 +129,9 @@ test('profile onboarding persists, tests explicitly, rejects stale saves and cle
   const response = await page.request.get(`/api/bots/${bot.id}/native/settings`); expect(await response.text()).not.toContain(secret);
   await page.reload(); await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-model');
   await expect(page.getByText('Verified', { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1360, height: 1400 });
   await page.screenshot({ path: '/tmp/hermes-profile-settings-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 1360, height: 900 });
 
   // Two tabs: the second must reload rather than overwrite a newer native revision.
   const other = await page.context().newPage(); await other.goto(url); await expect(other.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-model');
@@ -146,6 +148,8 @@ test('profile onboarding persists, tests explicitly, rejects stale saves and cle
   await page.goto(url); await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('fixture-newer'); await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: '/tmp/hermes-profile-settings-mobile.png', fullPage: true });
+  await page.getByRole('heading', { name: 'Test the connection', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: '/tmp/hermes-profile-settings-mobile-test.png', fullPage: true });
   await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Clear profile key and disable selected provider', exact: true }).click();
   await page.getByRole('button', { name: 'Save profile settings', exact: true }).click(); await expect(page.getByText('Setup needed', { exact: true })).toBeVisible();
 

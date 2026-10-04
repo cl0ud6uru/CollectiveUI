@@ -111,9 +111,12 @@ suite('personal Docker Hermes app authorization and recovery (disposable Postgre
     } finally { log.mockRestore(); }
     expect((await POST(request(input), ctx)).status).toBe(200);
     expect(f.calls).toContainEqual({ owner: alice.user.id, action: `/settings/${binding.bindingId}` });
-    vi.stubEnv('DOCKER_HERMES_ALLOWED_USER_IDS', bob.user.id); f.calls = [];
+    expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/lease' });
+    // More concurrent submissions than pool connections must reuse each lock transaction's client.
+    expect((await Promise.all(Array.from({ length: 12 }, () => POST(request(input), ctx)))).every(r => r.status === 200)).toBe(true);
+    await db.update(dockerHermesEnrollments).set({ enabled: false }).where(eq(dockerHermesEnrollments.userId, alice.user.id)); f.calls = [];
     expect((await POST(request(input), ctx)).status).toBe(403); expect(f.calls).toHaveLength(0);
-    vi.stubEnv('DOCKER_HERMES_ALLOWED_USER_IDS', ids.join(','));
+    await db.update(dockerHermesEnrollments).set({ enabled: true }).where(eq(dockerHermesEnrollments.userId, alice.user.id));
   });
   it('allows editable name/avatar while refusing access after revocation and stopping via trusted reconciliation', async () => {
     const [bot] = await db.select().from(bots).where(eq(bots.id, binding.botId));

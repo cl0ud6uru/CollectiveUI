@@ -265,6 +265,20 @@ describe('personal native profile settings transactions', () => {
     expect(await broker.status('alice')).toMatchObject({ phase: 'error' });
     await expect(broker.forRequest('alice', b.bindingId)).rejects.toThrow('Enable');
   });
+  it('revocation during reopen prevents the settings write and new native admission', async () => {
+    const { b, d, input } = await fixture();
+    let release!: () => void, entered = false;
+    const reopen = d.reopen!;
+    d.reopen = async owner => { entered = true; await new Promise<void>(r => { release = r; }); await reopen(owner); };
+    const save = broker.updateProfile('alice', b.bindingId, input).catch(e => e);
+    await until(async () => entered);
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: false, failed: false });
+    release(); expect(await save).toBeInstanceOf(Error);
+    await until(async () => (await broker.status('alice')).phase === 'stopped');
+    expect(vi.mocked(d.settings!).mock.calls.every(call => call[3] === undefined)).toBe(true);
+    await expect(broker.forRequest('alice', b.bindingId)).rejects.toThrow('authorization');
+    expect(driver.active.has('alice')).toBe(false);
+  });
   it('offline explicit tests send no inference and receipt retries never dispatch again', async () => {
     const { b, d } = await fixture(); const input = { revision, requestId: randomUUID(), consent: true };
     const [a, again] = await Promise.all([broker.testProfile('alice', b.bindingId, input), broker.testProfile('alice', b.bindingId, input)]);
