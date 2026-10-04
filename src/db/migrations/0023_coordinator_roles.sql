@@ -1,1 +1,0 @@
-ALTER TABLE "bots" ADD COLUMN "is_coordinator" boolean DEFAULT false NOT NULL;
