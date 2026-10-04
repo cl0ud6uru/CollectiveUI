@@ -99,7 +99,7 @@ export async function getAccessibleModel(p: Principal, appId: string, q: DbOrTx 
 /** `adminSeesAll`: admins can open any bot (oversight), but their own lists show only what they'd normally see. */
 function botVisibleTo(p: Principal, adminSeesAll = true) {
   const privateNative = sql`not exists (select 1 from ai_apps a where a.id = ${bots.appId} and a.provider_config->'docker' is not null and
-    (not ${dockerAllowed(p)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible}
+    (not ${dockerAllowed(p)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible} or ${bots.isCoordinator}
      or a.provider_config->'docker'->>'ownerId' is distinct from ${p.user.id} or a.provider_config->'docker'->>'botId' is distinct from ${bots.id}))`;
   if (p.isAdmin && adminSeesAll) return privateNative;
   return and(privateNative, or(

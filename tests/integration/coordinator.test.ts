@@ -16,6 +16,8 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { configureCoordinator, createCoordinatorStarter, defaultCoordinator } from "@/lib/coordinator/store";
 import { assertDelegationPath, authorizeDelegation, discoverDelegates, MAX_DELEGATION_CALLS } from "@/lib/coordinator/delegation";
 import { buildToolset } from "@/lib/agent/toolset";
+import { createBot, updateBot, type BotInput } from "@/app/(chat)/bots/actions";
+import { listEditableCoordinators } from "@/lib/coordinator/roles";
 import { openBotHome } from "@/lib/chat/home";
 import { newUsageScope } from "@/lib/llm";
 import { runHost } from "@/lib/runs/host";
@@ -116,6 +118,118 @@ suite("coordinator on disposable Postgres and synthetic local model", () => {
     expect((await getSetting("coordinator")).enabled).toBe(false);
     await db.delete(s.bots).where(eq(s.bots.id, id));
     await expect(createCoordinatorStarter(admin, { name: "Again", appId: null })).rejects.toMatchObject({ status: 409 });
+  });
+
+  function botInput(extra: Partial<BotInput> = {}): BotInput {
+    return { name: "New specialist", appId: app.id, visibility: "private", groupIds: [], maxSteps: 10,
+      starters: [], tools: [], delegateIds: [], ...extra };
+  }
+
+  it("names new starters The Queen and enables the editable role without resetting retries", async () => {
+    const { id } = await createCoordinatorStarter(admin, { appId: null });
+    expect((await db.select().from(s.bots).where(eq(s.bots.id, id)))[0]).toMatchObject({ name: "The Queen", isCoordinator: true });
+    await updateBot(id, botInput({ name: "My renamed coordinator", isCoordinator: false }));
+    await createCoordinatorStarter(admin, { appId: app.id });
+    expect((await db.select().from(s.bots).where(eq(s.bots.id, id)))[0]).toMatchObject({ name: "My renamed coordinator", isCoordinator: false });
+    expect(await listEditableCoordinators(admin)).toEqual([]);
+    await updateBot(id, botInput({ name: "My renamed coordinator", isCoordinator: true }));
+    expect((await listEditableCoordinators(admin)).map(b => b.id)).toEqual([id]);
+  });
+
+  it("offers only editable, audience-accessible native coordinators with usable tool-capable models", async () => {
+    const org = await newBot({ isCoordinator: true });
+    const mine = await newBot({ isCoordinator: true, visibility: "private", ownerId: alice.user.id });
+    const foreign = await newBot({ isCoordinator: true, visibility: "private", ownerId: bob.user.id });
+    const grouped = await newBot({ isCoordinator: true, visibility: "groups", ownerId: bob.user.id });
+    await db.insert(s.botAccess).values({ botId: grouped.id, groupId });
+    await newBot({ isCoordinator: false });
+    await newBot({ isCoordinator: true, enabled: false });
+    await newBot({ isCoordinator: true, appId: null });
+    await newBot({ isCoordinator: true, executionMode: "service" });
+    expect((await listEditableCoordinators(alice)).map(b => b.id)).toEqual([mine.id]);
+    expect((await listEditableCoordinators(admin)).map(b => b.id)).toEqual([org.id]);
+    expect((await listEditableCoordinators(admin)).some(b => b.id === foreign.id)).toBe(false);
+    await db.insert(s.userExternalGroups).values({ userId: admin.user.id, source: "ldap", externalId: "coordinator-fixture" });
+    expect(new Set((await listEditableCoordinators((await loadPrincipal(admin.user.id))!)).map(b => b.id))).toEqual(new Set([org.id, grouped.id]));
+    for (const change of [{ supportsTools: false }, { provider: "hermes" as const }, { enabled: false }]) {
+      await db.update(s.aiApps).set({ enabled: true, supportsTools: true, provider: "openai-compatible", ...change }).where(eq(s.aiApps.id, app.id));
+      expect(await listEditableCoordinators(alice)).toEqual([]);
+    }
+    await db.update(s.aiApps).set({ enabled: true, supportsTools: true, provider: "openai-compatible", isPublic: false }).where(eq(s.aiApps.id, app.id));
+    expect(await listEditableCoordinators(alice)).toEqual([]);
+  });
+
+  it("creates only the submitted incoming links once and preserves existing teams and explicit empty selections", async () => {
+    const source = await newBot({ isCoordinator: true });
+    const existing = await newBot();
+    await db.insert(s.botDelegates).values({ botId: source.id, delegateBotId: existing.id });
+    const selected = await createBot(botInput({ delegatorIds: [source.id, source.id] }));
+    expect(new Set((await db.select().from(s.botDelegates).where(eq(s.botDelegates.botId, source.id))).map(e => e.delegateBotId)))
+      .toEqual(new Set([existing.id, selected.id]));
+    const cleared = await createBot(botInput({ delegatorIds: [] }));
+    const omitted = await createBot(botInput());
+    expect(await db.select().from(s.botDelegates).where(inArray(s.botDelegates.delegateBotId, [cleared.id, omitted.id]))).toEqual([]);
+    await updateBot(selected.id, botInput({ name: "Renamed specialist" }));
+    expect((await db.select().from(s.botDelegates).where(eq(s.botDelegates.delegateBotId, selected.id)))).toHaveLength(1);
+    await expect(updateBot(selected.id, botInput({ delegatorIds: [] }))).rejects.toMatchObject({ status: 400 });
+    await updateBot(source.id, botInput({ name: "Renamed Queen", isCoordinator: false, delegateIds: [existing.id, selected.id] }));
+    expect((await db.select().from(s.botDelegates).where(eq(s.botDelegates.botId, source.id)))).toHaveLength(2);
+  });
+
+  it("keeps the existing Team capacity and rolls back a selected coordinator that is full", async () => {
+    const source = await newBot({ isCoordinator: true });
+    const team = await Promise.all(Array.from({ length: 20 }, () => newBot()));
+    await db.insert(s.botDelegates).values(team.map(bot => ({ botId: source.id, delegateBotId: bot.id })));
+    const before = (await db.select().from(s.bots)).length;
+    await expect(createBot(botInput({ delegatorIds: [source.id] }))).rejects.toMatchObject({ status: 400 });
+    expect((await db.select().from(s.bots)).length).toBe(before);
+    expect(await db.select().from(s.botDelegates).where(eq(s.botDelegates.botId, source.id))).toHaveLength(20);
+  });
+
+  it("incoming manual links do not grant a shared coordinator's callers access to private specialists", async () => {
+    const ctx = await setup();
+    const child = await createBot(botInput({ delegatorIds: [ctx.bot!.id] }));
+    await expect(authorizeDelegation(ctx, child.id, "manual")).rejects.toMatchObject({ status: 403 });
+    expect((await discoverDelegates(ctx)).map(d => d.bot.id)).not.toContain(child.id);
+    await db.update(s.bots).set({ visibility: "org" }).where(eq(s.bots.id, child.id));
+    expect((await authorizeDelegation(ctx, child.id, "manual")).bot.id).toBe(child.id);
+  });
+
+  it("allows personal coordinators without changing ownership, audience, discovery opt-in or tool grants", async () => {
+    const source = await newBot({ isCoordinator: true, ownerId: alice.user.id, visibility: "private" });
+    session.principal = alice;
+    const child = await createBot(botInput({ delegatorIds: [source.id] }));
+    expect((await db.select().from(s.bots).where(eq(s.bots.id, child.id)))[0]).toMatchObject({ ownerId: alice.user.id, visibility: "private", coordinatorEligible: false, isCoordinator: false });
+    expect(await db.select().from(s.botAccess).where(eq(s.botAccess.botId, child.id))).toEqual([]);
+    expect(await db.select().from(s.botMcpGrants).where(eq(s.botMcpGrants.botId, child.id))).toEqual([]);
+    session.principal = bob;
+    await expect(createBot(botInput({ delegatorIds: [source.id] }))).rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(s.bots).where(eq(s.bots.ownerId, bob.user.id))).toEqual([]);
+  });
+
+  it("rejects forged or revoked selections atomically, including admin oversight of private coordinators", async () => {
+    const source = await newBot({ isCoordinator: true });
+    const foreign = await newBot({ isCoordinator: true, ownerId: bob.user.id, visibility: "private" });
+    const before = (await db.select().from(s.bots)).length;
+    session.principal = alice;
+    await expect(createBot(botInput({ delegatorIds: [source.id] }))).rejects.toMatchObject({ status: 403 });
+    session.principal = admin;
+    await expect(createBot(botInput({ delegatorIds: [foreign.id] }))).rejects.toMatchObject({ status: 403 });
+    await db.update(s.bots).set({ isCoordinator: false }).where(eq(s.bots.id, source.id));
+    await expect(createBot(botInput({ delegatorIds: [source.id] }))).rejects.toMatchObject({ status: 403 });
+    await expect(createBot(botInput({ delegatorIds: ["missing"] }))).rejects.toMatchObject({ status: 403 });
+    expect((await db.select().from(s.bots)).length).toBe(before);
+    expect(await db.select().from(s.botDelegates)).toEqual([]);
+  });
+
+  it("rejects coordinator roles and incoming links for service and Hermes bots", async () => {
+    const source = await newBot({ isCoordinator: true });
+    await expect(createBot(botInput({ executionMode: "service", isCoordinator: true }))).rejects.toMatchObject({ status: 400 });
+    await expect(createBot(botInput({ executionMode: "service", delegatorIds: [source.id] }))).rejects.toMatchObject({ status: 400 });
+    await db.update(s.aiApps).set({ provider: "hermes" }).where(eq(s.aiApps.id, app.id));
+    await expect(createBot(botInput({ isCoordinator: true }))).rejects.toMatchObject({ status: 400 });
+    await expect(createBot(botInput({ delegatorIds: [source.id] }))).rejects.toMatchObject({ status: 400 });
+    await expect(updateBot(source.id, botInput())).rejects.toMatchObject({ status: 400 });
   });
 
   it("requires a current admin even through server actions and rejects ineligible defaults", async () => {

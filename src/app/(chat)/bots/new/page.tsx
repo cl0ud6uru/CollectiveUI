@@ -27,6 +27,8 @@ export default async function NewBotPage() {
             starters: [],
             tools: [{ key: "memory", approval: "auto" }],
             delegateIds: [],
+            delegatorIds: data.delegators.map(b => b.id),
+            isCoordinator: false,
           }}
           newChatId={newId()}
           {...data}

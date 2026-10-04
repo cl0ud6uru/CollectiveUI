@@ -186,7 +186,7 @@ describe("Local Hermes native pilot", () => {
     const bot = { id: "bot", ownerId: "admin", appId: "app", visibility: "private", executionMode: "caller", coordinatorEligible: false } as Bot;
     const principal = { isAdmin: true, user: { id: "admin" } } as Principal;
     expect(() => assertLocalBot(principal, app, bot)).not.toThrow();
-    for (const change of [{ visibility: "org" }, { id: "copy" }, { executionMode: "service" }, { ownerId: "other" }, { coordinatorEligible: true }])
+    for (const change of [{ visibility: "org" }, { id: "copy" }, { executionMode: "service" }, { ownerId: "other" }, { coordinatorEligible: true }, { isCoordinator: true }])
       expect(() => assertLocalBot(principal, app, { ...bot, ...change } as Bot)).toThrow("private");
     expect(() => assertLocalBot({ ...principal, isAdmin: false }, app, bot)).toThrow();
     expect(() => guardLocalBotMutation(app, bot.id, { ...bot, appId: "other" })).toThrow();
