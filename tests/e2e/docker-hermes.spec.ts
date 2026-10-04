@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { Pool } from 'pg';
 test.skip(process.env.DOCKER_HERMES_BROWSER !== '1', 'Requires the explicit disposable browser broker/database fixture');
+test.describe.configure({ mode: 'serial' });
 const pool = new Pool({connectionString:process.env.DATABASE_URL});
 const login=async(page:Page,name:string)=>{
   await page.goto('/login');await page.getByLabel('Local username or email').fill(`docker-hermes-${name}`);
@@ -38,7 +39,7 @@ test('compact enable, reload-safe starter, readonly resources, new profile and o
   await page.reload();await personal.locator('summary').first().click();await expect(starter).toBeVisible();
   expect((await pool.query("SELECT count(*)::int AS n FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice')")).rows[0].n).toBe(1);
   await page.screenshot({path:'/tmp/docker-hermes-settings-desktop.png'});
-  await starter.click();await expect(page.getByText('Native Hermes skills · read only')).toBeVisible();
+  await starter.click();await page.waitForURL(`/bots/${id}`);await expect(page.getByText('Native Hermes skills · read only')).toBeVisible();
   await expect(page.getByText('Native example skill',{exact:true})).toBeVisible();
   await expect(page.getByRole('button',{name:'New skill',exact:true})).toHaveCount(0);
   await page.getByRole('button',{name:'Memory',exact:true}).click();await page.getByText('MEMORY.md',{exact:true}).click();
@@ -84,13 +85,13 @@ test('revocation is reload-safe, retains bots and re-enrollment reuses private m
   const before = (await pool.query("SELECT id,app_id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') ORDER BY id")).rows;
   await page.goto('/admin/hermes'); const enrollment = page.getByRole('region', { name: 'Personal Docker Hermes enrollment' });
   const allow = enrollment.getByRole('checkbox', { name: 'Allow personal Hermes for Docker Alice (local:docker-hermes-alice)', exact: true });
-  await allow.uncheck(); await expect(enrollment.getByRole('status')).toContainText('Permission revoked');
+  await allow.click(); await expect(enrollment.getByRole('status')).toContainText('Permission revoked'); await expect(allow).not.toBeChecked();
   await expect.poll(async () => (await pool.query("SELECT cleanup FROM docker_hermes_enrollments WHERE user_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice')")).rows[0]?.cleanup, { timeout: 30000 }).toBe('stopped');
   await enrollment.getByRole('button', { name: 'Refresh enrollment and broker status', exact: true }).click();
   await expect(enrollment.getByText('Permission: Disabled · Runtime cleanup: Stopped — data retained', { exact: true })).toBeVisible();
   await page.reload(); await expect(allow).not.toBeChecked();
   expect([403, 404]).toContain((await page.request.get(`/api/bots/${before[0].id}/native`)).status());
-  await allow.check(); await expect(enrollment.getByRole('status')).toContainText('Permission saved');
+  await allow.click(); await expect(enrollment.getByRole('status')).toContainText('Permission saved'); await expect(allow).toBeChecked();
   await page.goto('/settings?tab=connected-accounts');
   const personal = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'Personal Hermes' }) }).first();
   await personal.locator('summary').first().click(); await personal.getByRole('button', { name: 'Retry / start', exact: true }).click();
