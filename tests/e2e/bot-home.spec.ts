@@ -209,6 +209,7 @@ test("home rollover refuses a live run and a pending approval, and returning to 
   await expect(page.getByLabel('Stop generating')).toBeHidden({timeout:30_000});
   await send(page, '[tool:fetch_url {"url":"https://example.com/home-approval"}]');
   await expect(page.getByRole('button', {name:'Allow once'})).toBeVisible();
+  await page.getByRole('button', {name:'Show bot details'}).click();
   const panel = page.getByRole('complementary', {name:`${botName} activity and outputs`});
   await expect(panel.getByText('Needs approval',{exact:true}).first()).toBeVisible({timeout:20_000});
   await expect(panel.getByRole('region',{name:'Recent activity'}).getByText('Needs approval',{exact:false})).toBeVisible();
@@ -231,6 +232,7 @@ test("ordinary replies stay out of Activity and Outputs; returned files download
   const home=page.url();
   await send(page,"Prepare the project handoff");
   await expect(page.getByText('You said: "Prepare the project handoff"',{exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Show bot details'}).click();
   const panel=page.getByRole('complementary',{name:`${botName} activity and outputs`});
   // Empty sections stay out of the way: one quiet line instead of empty Activity/Outputs headings.
   await expect(panel.getByText('Nothing needs attention. Active work, routine results and files will show up here.')).toBeVisible({timeout:20_000});
@@ -248,11 +250,11 @@ test("ordinary replies stay out of Activity and Outputs; returned files download
   expect(download.status()).toBe(200); expect(await download.text()).toBe('Verified test report');
   const foreign = await browser.newContext();const bob = await foreign.newPage();
   await login(bob,'bob');expect((await bob.request.get(file.url)).status()).toBe(404);await foreign.close();
-  await page.getByRole('button',{name:'Hide bot panel'}).click();
+  await panel.getByRole('button',{name:'Hide bot details'}).click();
   await expect(panel).toBeHidden();await expect(page).toHaveURL(home);
-  await page.getByRole('button',{name:'Show bot panel'}).click();await expect(panel).toBeVisible();
+  await page.getByRole('button',{name:'Show bot details'}).click();await expect(panel).toBeVisible();
   await page.setViewportSize({width:390,height:844});
-  await page.getByRole('button',{name:'Show bot panel'}).click();
+  await page.getByRole('button',{name:'Show bot details'}).click();
   await expect(page.getByRole('dialog',{name:`${botName} activity`})).toBeVisible();
   await expect(output).toBeVisible();
   await page.keyboard.press('Escape');await expect(page.getByRole('dialog')).toBeHidden();
