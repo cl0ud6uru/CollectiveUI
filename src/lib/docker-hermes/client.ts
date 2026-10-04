@@ -11,10 +11,10 @@ export function dockerFetch(ownerId: string): typeof fetch {
     return fetchSocket(input, { ...init, headers });
   };
 }
-export async function dockerControl<T = DockerStatus>(ownerId: string, action: string, data?: unknown): Promise<T> {
+export async function dockerControl<T = DockerStatus>(ownerId: string, action: string, data?: unknown, timeoutMs = 45000): Promise<T> {
   try {
     const res = await dockerFetch(ownerId)(`${LOCAL_ORIGIN}${action}`, { method: data === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.timeout(45000) });
+      headers: { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.timeout(timeoutMs) });
     const result = await res.json();
     if (!res.ok) throw new HttpError(res.status, result.error ?? 'Personal Hermes operation failed.');
     return result as T;

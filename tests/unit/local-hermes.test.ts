@@ -180,15 +180,15 @@ describe("Local Hermes native pilot", () => {
     const again = streamText({ model: model(), messages: [{ role: "user", content: "approve" }] }); await again.consumeStream();
     expect((await readFile(path.join(config.profileHome, "fixture-prompts.jsonl"), "utf8")).trim().split("\n")).toHaveLength(1);
   });
-  it("fails closed for shared, nonowner, nonadmin, service, copied or rebound bots", () => {
+  it("fails closed for shared, nonowner, nonadmin, service, copied or rebound bots", async () => {
     const local = { runtimeId: controller.runtimeId, bindingId: binding.bindingId, ownerId: "admin", botId: "bot", model: "", provider: "" };
     const app = { id: "app", provider: "hermes" as const, providerConfig: { local }, isPublic: false };
     const bot = { id: "bot", ownerId: "admin", appId: "app", visibility: "private", executionMode: "caller", coordinatorEligible: false } as Bot;
     const principal = { isAdmin: true, user: { id: "admin" } } as Principal;
-    expect(() => assertLocalBot(principal, app, bot)).not.toThrow();
+    await expect(assertLocalBot(principal, app, bot)).resolves.toBeUndefined();
     for (const change of [{ visibility: "org" }, { id: "copy" }, { executionMode: "service" }, { ownerId: "other" }, { coordinatorEligible: true }])
-      expect(() => assertLocalBot(principal, app, { ...bot, ...change } as Bot)).toThrow("private");
-    expect(() => assertLocalBot({ ...principal, isAdmin: false }, app, bot)).toThrow();
+      await expect(assertLocalBot(principal, app, { ...bot, ...change } as Bot)).rejects.toThrow("private");
+    await expect(assertLocalBot({ ...principal, isAdmin: false }, app, bot)).rejects.toThrow();
     expect(() => guardLocalBotMutation(app, bot.id, { ...bot, appId: "other" })).toThrow();
     expect(() => guardLocalBotMutation(app, bot.id, null)).toThrow("retains");
   });

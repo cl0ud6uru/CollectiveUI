@@ -4,9 +4,11 @@ Personal Hermes is opt-in: first **Enable Hermes** creates one isolated Docker r
 
 Settings adds one collapsed Personal Hermes section under Connected accounts. The normal bot editor's existing Hermes connection selector offers **My Hermes runtime · new private profile**. Existing Skills and Memory panels display escaped, read-only native content and Refresh; there is no native installation/editor UI. Native chat can change its own resources under normal Hermes approval rules. Externally created native profiles appear only in **Unlinked profiles → Add as bot**. Backups, arbitrary marker-only directories, symlinks, default and already-bound identities are excluded. Renamed/replaced profiles require operator reconciliation; a binding is never silently reassigned.
 
-## Scope and dependencies
+## Migrations
 
-This change targets main directly. It extracts the pinned native RPC/controller foundation developed in PR30, but does not enable its host-process installer, host setup UI, or compose overlay. PR30 and PR35 remain parked; neither must be merged/deployed first. Remote/manual and advanced managed Hermes remain available. No database migrations are added or modified: private `ai_apps.provider_config.docker` and `bots` rows hold the immutable broker mapping, with a transaction/advisory lock and existing pet relations.
+Saved provider connections (`0023_saved_provider_connections`) are followed by `0024_docker_hermes_enrollment`, which adds default-denied enrollment permissions and durable cleanup status. Run the complete migration journal, not individual SQL files. Neither migration creates an enrollment.
+
+The native RPC/controller foundation was developed in PR30, but its host-process installer, host setup UI, and compose overlay are not enabled here. PR30 and PR35 remain parked; neither must be merged/deployed first. Remote/manual and advanced managed Hermes remain available. Private `ai_apps.provider_config.docker` and `bots` rows continue to hold immutable broker mappings, with a transaction/advisory lock and existing pet relations.
 
 Pinned upstream source: official Hermes **v2026.9.24**, commit `f97608f178d1ffeca59860195ab7da295f7c8e5f`. The bridge verifies this source marker and the native handshake checks ping, approval requests, and exclusive submit capabilities. The selected official Linux amd64 image is:
 
@@ -22,7 +24,7 @@ Official references: [Docker](https://hermes-agent.nousresearch.com/docs/user-gu
 
 This is hardened **trusted-user isolation**, not a claim that Docker is a perfect sandbox. A trusted host broker alone can invoke Docker. Neither web/worker nor native agent containers receive a Docker socket, host runtime credentials, other users' storage, privileged mode, published ports, or host PID/network namespaces. The broker's protected Unix socket is powerful: membership in its trusted group is equivalent to control of enrolled personal runtimes. Never expose it over TCP or mount it in an agent container.
 
-The server derives owner IDs from fresh principals. Enrollment requires `DOCKER_HERMES_ALLOWED_USER_IDS`; admins have no automatic access to other users' personal profiles. Bot creation permission is checked independently using the existing tools/bot-creation policy. Both app actions and broker leases distinguish creation from existing chat access. Private owner checks apply to bot/app lookup, profile discovery/link/read, native commands, runs, streaming batches and cleanup. Shared snapshots, templates, duplication, group chat, delegation, service execution and routines cannot use personal bindings. Company connection and bot lists omit others' personal metadata.
+The server derives owner IDs from fresh principals. Enrollment requires a database permission granted under Admin → Hermes; admins have no automatic enrollment or access to other users' personal profiles. Bot creation permission is checked independently using the existing tools/bot-creation policy. Both app actions and broker leases distinguish creation from existing chat access. Private owner checks apply to bot/app lookup, profile discovery/link/read, native commands, runs, streaming batches and cleanup. Shared snapshots, templates, duplication, group chat, delegation, service execution and routines cannot use personal bindings. Company connection and bot lists omit others' personal metadata.
 
 Each runtime has a deterministic hashed owner name and exactly one native Docker volume at `/opt/data`. SQLite/WAL data stays on a native volume, not a Docker Desktop host bind mount. The only other mount is the trusted read-only Python bridge. Inspection checks image, ownership labels, mount destinations, capability set, resource limits, restart policy and actual network attachments. Storage collisions are refused. Defaults are 2 GiB RAM (no extra swap), 2 CPUs, 256 PIDs, 25 enrolled runtimes and 16 profiles per runtime. Official s6 bootstrap runs with only CHOWN, DAC_OVERRIDE, SETUID and SETGID; all native operations run as UID/GID 10000 with no-new-privileges.
 
@@ -51,8 +53,34 @@ Credentials/configuration remain native. Root-profile OAuth inheritance stays in
 }
 ```
 
-4. Start `npm run hermes:docker -- /absolute/broker.json` under an operator-managed supervisor. The broker does not load the app `.env`. Configure BOTH web and worker with `DOCKER_HERMES_SOCKET` and the explicit comma-separated `DOCKER_HERMES_ALLOWED_USER_IDS`. The worker must be running; it renews authorization leases every 15 seconds and completes durable app pairing.
-5. Use Settings → Connected accounts → Personal Hermes → Enable. Progress reflects actual image, storage, container, native and pairing stages. Runtime-ready does not imply provider credentials or paid inference have been verified. Authenticate/configure the native profile only inside that user's runtime using the separate maintenance procedure and chosen provider. No credentials are copied from the host/app or another user.
+4. Start `npm run hermes:docker -- /absolute/broker.json` under an operator-managed supervisor. The broker does not load the app `.env`. Configure BOTH web and worker with `DOCKER_HERMES_SOCKET`. Enrollment is stored in the shared application database, never the environment. The worker must be running; it renews authorization leases every 15 seconds and completes durable app pairing.
+5. An administrator grants **Allow personal Hermes** to specific users under **Admin → Hermes**. New installations start with everyone disabled. The page separately reports broker **Not configured**, **Unavailable**, or **Ready**; ready means the web app can reach the protected broker, not that every user runtime, worker, image pull, provider or egress configuration has been verified. Permission changes are audited with actor, target and time and never provision automatically.
+6. The enrolled user chooses Settings → Connected accounts → Personal Hermes → Enable. Progress reflects actual image, storage, container, native and pairing stages. Runtime-ready does not imply provider credentials or paid inference have been verified. Authenticate/configure the native profile only inside that user's runtime using the separate maintenance procedure and chosen provider. No credentials are copied from the host/app or another user.
+
+### Explicit migration from the legacy allowlist
+
+Do this during an operator-planned application upgrade: keep the previous web/worker release stopped while applying the schema and importing its reviewed enrollment, then start the new web and worker together. Back up the database and retained broker journals/volumes first. The new release ignores `DOCKER_HERMES_ALLOWED_USER_IDS` during normal authorization; skipping the import leaves existing users denied, with retained data untouched. Do not run mixed old/new app workers because old workers still trust the environment.
+
+1. Run `npm run db:migrate` against the intended application database. This creates no enrollment records.
+2. In an operator shell, set an explicit `DATABASE_URL` and load the previous, reviewed `DOCKER_HERMES_ALLOWED_USER_IDS`. Supply an existing enabled application's admin user ID as the audit actor:
+   ```sh
+   npm run hermes:import-enrollment -- --preview ADMIN_USER_ID
+   npm run hermes:import-enrollment -- --apply ADMIN_USER_ID
+   ```
+   These commands run from the release checkout with its locked dependencies or from that release's **worker** image, which includes the importer. For Docker Compose, pass the reviewed allowlist from the operator shell into a one-off worker container (after applying the migration, while normal web/worker services remain stopped):
+   ```sh
+   docker compose run --rm --no-deps -e DOCKER_HERMES_ALLOWED_USER_IDS worker npm run hermes:import-enrollment -- --preview ADMIN_USER_ID
+   docker compose run --rm --no-deps -e DOCKER_HERMES_ALLOWED_USER_IDS worker npm run hermes:import-enrollment -- --apply ADMIN_USER_ID
+   ```
+   The worker service supplies the intended `DATABASE_URL`; the import command replaces its normal startup command, so no worker, broker or runtime is started. Use the new release's worker image for both commands. The standalone web image does not include this operator script.
+3. Preview reports eligible count and SHA-256 prefixes for invalid, unknown, disabled, or already-recorded IDs; it never logs raw invalid input or credentials. Invalid/unknown/disabled IDs abort the entire apply transaction. Correct the input and preview again. Existing database records are always unchanged, including revoked users, so repeating this command cannot override an Admin UI revocation. No IDs means no enrollment; there is no grant-all mode.
+4. Verify the Admin → Hermes permissions and audit log before resuming user traffic, then remove the obsolete allowlist from both environments. Keep the broker socket configuration. If the old web and worker lists differed, reconcile the intended authorized users explicitly before importing; do not silently combine lists.
+
+Grant/revoke takes effect without environment edits or restarts after this migration. The worker renews leases from fresh database permissions every 15 seconds. Web reads, setup/profile operations and streaming authorization also check fresh permissions, including disabled users/session versions, and database errors fail closed. Setup dispatch, worker lease renewal, final bot publication and enrollment changes use the same per-owner transaction lock, preventing stale queued setup from renewing after a committed denial.
+
+### Revoking and re-enrolling
+
+Turning permission off commits denial and an audit entry before cleanup. The broker's explicit revoke endpoint invalidates its lease and returns a prompt stop receipt; native cleanup runs asynchronously so another user's lease cannot be blocked by a slow Docker stop. The Admin page records **Stop pending**, **Stop failed — retry required**, or **Stopped — data retained** and offers a retry button; refresh also reloads status. The worker polls pending/failed stops even when broker configuration is missing, in rotating batches of at most two. Healthy owner checks run concurrently; worker control RPCs have a three-second timeout and no database connection waits for native stop completion. The worker waits at most two seconds for each owner's lock; an owner busy with a slow setup/profile action is skipped (no lease, no revoke) and retried on the next tick, so it cannot delay other owners' renewals. An unreachable broker cannot be confirmed stopped: application access is denied immediately, and the broker's existing lease expires within 60 seconds if it remains alive. Re-enrollment is blocked until stop is confirmed, then the user can explicitly Enable again; retained owner/profile IDs and volumes are reused. There is no data purge or credentials control on this page.
 
 ### Network choices
 
@@ -73,7 +101,8 @@ There is no purge/uninstall-data endpoint. Removing enrollment stops access but 
 ## Verification
 
 - `npm test -- --project unit` — broker receipts/races/cancellation/restart, native protocol mapping, owner policy and independent security regressions.
-- `DOCKER_HERMES_DB_TEST=1 DATABASE_URL=.../collective_docker_hermes_test npx vitest run --project integration tests/integration/docker-hermes.test.ts` — real disposable PostgreSQL, mocked broker; existing unmodified migrations required; no catalog artwork is needed.
+- `DOCKER_HERMES_DB_TEST=1 DATABASE_URL=.../collective_docker_hermes_test npx vitest run --project integration tests/integration/docker-hermes.test.ts` — real disposable PostgreSQL, mocked broker; all migrations through `0024_docker_hermes_enrollment` required; no catalog artwork is needed.
+- `ENROLLMENT_PROVIDER_UPGRADE_TEST=1 DATABASE_URL=postgres://...@127.0.0.1:55432/collective_enrollment_provider_upgrade_test npx vitest run --project integration tests/integration/enrollment-provider-upgrade.test.ts` — resets only that named disposable database; verifies fresh installation, main-through-0022 and provider-through-0023 upgrades, preserved provider/native data, snapshot lineage, default denial and idempotent replay with existing enrollment decisions.
 - `DOCKER_HERMES_NATIVE_TEST=1 npx vitest run --project sandbox tests/sandbox/docker-hermes-native.test.ts` — actual disposable containers/volumes, pinned official native code and local mock provider; no real credentials/inference. The fixture deletes only its exact disposable Docker objects. It does not purge production data.
 - `tests/fixtures/docker-hermes-browser.ts` plus `playwright.docker-hermes.config.ts` — guarded named disposable DB, synthetic native RPC/resources, real app/worker/Chromium. Set `DOCKER_HERMES_BROWSER=1`, local auth test environment and the generated `/tmp/docker-hermes-browser.env` in both app and worker. This is browser/application evidence, not actual Docker evidence.
 - `npm run typecheck`, `npm run lint`, `npm run build`.

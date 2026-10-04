@@ -169,6 +169,13 @@
       "when": 1791105367231,
       "tag": "0023_saved_provider_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791129709231,
+      "tag": "0024_docker_hermes_enrollment",
+      "breakpoints": true
     }
   ]
 }

@@ -5,10 +5,10 @@ import { HttpError } from "@/lib/authz";
 import { isLocalHermes, localBinding } from "./config";
 
 type LocalApp = Pick<AiApp, "id" | "provider" | "providerConfig" | "isPublic">;
-export function assertLocalBot(p: Principal, app: LocalApp, bot: Bot | null) {
+export async function assertLocalBot(p: Principal, app: LocalApp, bot: Bot | null) {
   if (!isLocalHermes(app)) return;
   const b = localBinding(app);
-  if ((isDockerHermes(app) ? !dockerAllowed(p) : !p.isAdmin) || p.user.id !== b.ownerId || !bot || bot.id !== b.botId || bot.ownerId !== b.ownerId ||
+  if ((isDockerHermes(app) ? !await dockerAllowed(p) : !p.isAdmin) || p.user.id !== b.ownerId || !bot || bot.id !== b.botId || bot.ownerId !== b.ownerId ||
       bot.visibility !== "private" || bot.executionMode !== "caller" || bot.coordinatorEligible || app.isPublic)
     throw new HttpError(403, "Local Hermes is a private, single-administrator pilot. Only its paired owner and bot may use this profile; shared, service and coordinator use are unsupported.");
 }

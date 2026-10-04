@@ -54,7 +54,9 @@ async function main() {
   if (!alice) { process.env.LOCAL_AUTH_OPERATOR = 'bootstrap'; alice = await createLocalUser({ username:'docker-hermes-alice', name:'Docker Alice', password, isAdmin:true }, 'bootstrap'); }
   let bob = (await pool.query("SELECT id FROM users WHERE upn='local:docker-hermes-bob'")).rows[0];
   if (!bob) bob = await createLocalUser({ username:'docker-hermes-bob', name:'Docker Bob', password, isAdmin:true }, { id:alice.id, sessionVersion:0 });
-  await pool.query('UPDATE local_credentials SET must_change_password=false,temporary_expires_at=null WHERE user_id = ANY($1)', [[alice.id,bob.id]]);
+  let charlie = (await pool.query("SELECT id FROM users WHERE upn='local:docker-hermes-charlie'")).rows[0];
+  if (!charlie) charlie = await createLocalUser({ username:'docker-hermes-charlie', name:'Docker Charlie', password, isAdmin:false }, { id:alice.id, sessionVersion:0 });
+  await pool.query('UPDATE local_credentials SET must_change_password=false,temporary_expires_at=null WHERE user_id = ANY($1)', [[alice.id,bob.id,charlie.id]]);
   const root = await mkdtemp(path.join(tmpdir(),'dh-browser-'));
   for (const owner of [alice.id,bob.id]) await mkdir(path.join(root,owner,'default'),{ recursive:true,mode:0o700 });
   for (const dir of ['state','ipc']) await mkdir(path.join(root,dir),{mode:0o700});
@@ -63,7 +65,7 @@ async function main() {
   const create=driver.create.bind(driver);driver.create=async(owner,name)=>{await mkdir(path.join(root,owner,name),{recursive:true});return create(owner,name);};
   driver.resources=async()=>({skills:[{id:'native-skill',name:'Native example skill',content:'Safe native skill content'}],memories:[{id:'MEMORY.md',content:'Native remembered fact'}]});
   const broker=new DockerBroker(config,driver);const server=await listenBroker(broker);
-  await writeFile('/tmp/docker-hermes-browser.env',`DOCKER_HERMES_SOCKET=${config.socketPath}\nDOCKER_HERMES_ALLOWED_USER_IDS=${alice.id},${bob.id}\n`,{mode:0o600});
+  await writeFile('/tmp/docker-hermes-browser.env',`DOCKER_HERMES_SOCKET=${config.socketPath}\n`,{mode:0o600});
   console.log('Disposable browser broker ready');
   const close=()=>void server.close().finally(()=>pool.end()).then(()=>process.exit(0));process.on('SIGTERM',close);process.on('SIGINT',close);
 }

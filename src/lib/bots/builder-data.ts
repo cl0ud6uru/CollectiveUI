@@ -76,7 +76,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
     : [];
   return {
     petCatalog,
-    personalHermesAvailable: dockerAllowed(p),
+    personalHermesAvailable: await dockerAllowed(p),
     isAdmin: p.isAdmin,
     revision: currentBot?.revision,
     publishedRevision: currentBot?.publishedRevision,

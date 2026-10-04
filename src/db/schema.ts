@@ -77,6 +77,16 @@ export const users = pgTable("users", {
 }, (t) => [uniqueIndex("users_realm_upn_idx").on(t.identityRealm, t.upn),
   check("users_identity_realm_check", sql`(${t.identityRealm} = 'local' and ${t.authSource} = 'local') or (${t.identityRealm} = 'directory' and ${t.authSource} in ('entra', 'ldap'))`)]);
 
+/** Application permission only; absence is denial. Runtime data remains in broker-owned storage. */
+export const dockerHermesEnrollments = pgTable("docker_hermes_enrollments", {
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  cleanup: text("cleanup").$type<"none" | "pending" | "stopping" | "failed" | "stopped">().notNull().default("none"),
+  error: text("error"),
+  changedBy: text("changed_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: updatedAt(),
+}, (t) => [check("docker_hermes_cleanup_check", sql`${t.cleanup} in ('none', 'pending', 'stopping', 'failed', 'stopped')`)]);
+
 /** Password material is deliberately separate from user records sent to UI components. */
 export const localCredentials = pgTable("local_credentials", {
   userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
