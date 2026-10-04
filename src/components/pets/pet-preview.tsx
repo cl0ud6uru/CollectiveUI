@@ -47,7 +47,7 @@ export function PetPreview({ src, manifest }: { src: string; manifest: PetManife
       </button>)}</div>
     </fieldset>
     <p className="text-xs text-muted">Selected: {direction === null ? `${state.label}, frame ${frame + 1}` : PET_DIRECTIONS[direction].label}. Check gaze direction, clipping, consistent identity and motion. Structural validation cannot judge artwork quality.</p>
-    <div className="space-y-2">{["Light", "Dark"].map((theme) => <div key={theme} className="rounded-lg border p-3" style={{ background: theme === "Light" ? "#fff" : "#171717", color: theme === "Light" ? "#171717" : "#fff", borderColor: "#737373" }}>
+    <div className="space-y-2">{["Light", "Dark"].map((theme) => <div key={theme} className="rounded-lg border p-3" style={{ background: theme === "Light" ? "#ffffff" : "#181818", color: theme === "Light" ? "#0d0d0d" : "#ececec", borderColor: "#737373" }}>
       <p className="mb-2 text-xs font-medium">{theme} · actual avatar sizes</p>
       <div className="flex flex-wrap items-end gap-3">{PET_AVATAR_SIZES.map((size) => <figure key={size} className="text-center"><Cell src={src} row={cell.row} column={cell.column} size={size} /><figcaption className="text-[10px]">{size} px</figcaption></figure>)}</div>
     </div>)}</div>

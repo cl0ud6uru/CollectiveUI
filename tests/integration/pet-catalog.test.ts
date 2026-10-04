@@ -2,6 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Principal } from "@/lib/auth/groups";
 import { DEFAULT_PREFERENCES } from "@/lib/pets/shared";
+import { petV2Fixture } from "../fixtures/pet-v2";
 const run = process.env.DATABASE_URL ? describe : describe.skip;
 run("shared catalog and private avatar boundaries", () => {
   let admin: Principal, owner: Principal, outsider: Principal;
@@ -133,10 +134,14 @@ run("shared catalog and private avatar boundaries", () => {
   });
   it("copies only the admin's own selected import to a draft, retains bytes and credit privately", async () => {
     const c = await import("@/lib/pets/catalog"); const s = await import("@/lib/pets/store");
-    const own = await s.replacePet(admin, restricted, manifest, Buffer.from("admin-private"));
+    const legacy = await s.replacePet(admin, restricted, manifest, Buffer.from("admin-private"));
+    await expect(c.copyOwnImport(admin, restricted, legacy.revision!, "confirmed")).rejects.toThrow(/Legacy v1/);
+    const v2 = { ...manifest, spriteVersionNumber: 2 as const }, unchecked = await s.replacePet(admin, restricted, v2, Buffer.from("unvalidated-v2"));
+    await expect(c.copyOwnImport(admin, restricted, unchecked.revision!, "confirmed")).rejects.toThrow(/undamaged/);
+    const pixels = await petV2Fixture(), own = await s.replacePet(admin, restricted, v2, pixels);
     const draft = await c.copyOwnImport(admin, restricted, own.revision!, "confirmed"); assets.push(draft.id);
-    expect(draft).toMatchObject({ manifest, status: "draft" });
-    expect((await s.readPetSprite(admin, restricted)).toString()).toBe("admin-private");
+    expect(draft).toMatchObject({ manifest: v2, status: "draft" });
+    expect(await s.readPetSprite(admin, restricted)).toEqual(pixels);
     await expect(c.copyOwnImport(admin, restricted, "stale", "confirmed")).rejects.toThrow();
     await s.savePet(admin, restricted, { ...DEFAULT_PREFERENCES, mode: "personal", appearance: "moss" });
     await expect(c.copyOwnImport(admin, restricted, own.revision!, "confirmed")).rejects.toThrow();

@@ -85,7 +85,8 @@ export function assertPetOrigin(request: Request) {
 
 /** Structural checks are deterministic; visual identity, gaze semantics and animation quality need human review. */
 export async function validateV2Cells(sprite: Buffer): Promise<void> {
-  const { data, info } = await sharp(sprite, { limitInputPixels: PET_WIDTH * 2288 }).toColourspace("srgb").ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await sharp(sprite, { limitInputPixels: PET_WIDTH * 2288 }).timeout({ seconds: 5 }).toColourspace("srgb").ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+    .catch(() => { throw new HttpError(400, "Use an undamaged static 1536 × 2288 Codex Pet v2 sprite sheet."); });
   if (info.width !== PET_WIDTH || info.height !== 2288) throw new HttpError(400, "V2 validation requires a 1536 × 2288 sprite sheet.");
   const occupied = Array.from({ length: 11 }, () => Array<boolean>(8).fill(false));
   for (let y = 0; y < info.height; y++) for (let x = 0; x < info.width; x++) {
