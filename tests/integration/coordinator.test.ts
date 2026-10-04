@@ -222,6 +222,33 @@ suite("coordinator on disposable Postgres and synthetic local model", () => {
     expect(await db.select().from(s.botDelegates)).toEqual([]);
   });
 
+  it.each(["model", "creation"] as const)("rechecks %s access after waiting for a coordinator lock and rolls back revocation", async (revoked) => {
+    const source = await newBot({ isCoordinator: true, ownerId: alice.user.id, visibility: "private" });
+    await db.insert(s.userExternalGroups).values({ userId: alice.user.id, source: "ldap", externalId: "coordinator-fixture" });
+    await db.update(s.groups).set({ canCreateBots: true }).where(eq(s.groups.id, groupId));
+    const [childApp] = await db.insert(s.aiApps).values({ name: "Restricted child model", provider: "openai-compatible", model: "fixture", baseUrl: "http://127.0.0.1:1",
+      supportsTools: true, isPublic: false }).returning();
+    apps.push(childApp.id);
+    await db.insert(s.appAccess).values({ appId: childApp.id, groupId });
+    if (revoked === "creation") await setSetting("tools", { ...await getSetting("tools"), botCreation: "groups" });
+    session.principal = (await loadPrincipal(alice.user.id))!;
+    const locker = await pool.connect();
+    let creation: Promise<unknown> | undefined;
+    try {
+      await locker.query("BEGIN");
+      await locker.query("SELECT id FROM bots WHERE id=$1 FOR UPDATE", [source.id]);
+      const pid = (await locker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      creation = createBot(botInput({ name: "Must roll back", appId: revoked === "model" ? childApp.id : app.id, delegatorIds: [source.id] }))
+        .then(() => null, err => err);
+      await expect.poll(async () => (await pool.query("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS waiting", [pid])).rows[0].waiting,
+        { timeout: 3000 }).toBe(true);
+      await db.delete(s.userExternalGroups).where(eq(s.userExternalGroups.userId, alice.user.id));
+    } finally { await locker.query("ROLLBACK"); locker.release(); }
+    expect(await creation).toMatchObject({ status: 403 });
+    expect(await db.select().from(s.bots).where(eq(s.bots.name, "Must roll back"))).toEqual([]);
+    expect(await db.select().from(s.botDelegates).where(eq(s.botDelegates.botId, source.id))).toEqual([]);
+  });
+
   it("rejects coordinator roles and incoming links for service and Hermes bots", async () => {
     const source = await newBot({ isCoordinator: true });
     await expect(createBot(botInput({ executionMode: "service", isCoordinator: true }))).rejects.toMatchObject({ status: 400 });

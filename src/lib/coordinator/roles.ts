@@ -4,6 +4,7 @@ import { aiApps, botDelegates, type Bot } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { getAccessibleModel, HttpError, listAccessibleBots } from "@/lib/authz";
 import { canEditBot, lockEditableBot } from "@/lib/bots/service";
+import { getSetting } from "@/lib/settings";
 
 /** Incoming links change the source's team, so visibility alone is insufficient. */
 export async function listEditableCoordinators(p: Principal, q: DbOrTx = db): Promise<Bot[]> {
@@ -26,12 +27,15 @@ export async function addSelectedDelegators(tx: Tx, p: Principal, bot: Bot, sele
   const [app] = await tx.select().from(aiApps).where(eq(aiApps.id, bot.appId!)).for("share");
   if (bot.executionMode !== "caller" || !app?.enabled || app.provider === "hermes")
     throw new HttpError(400, "Coordinator teams require a native caller bot.");
-  await getAccessibleModel(p, app.id, tx);
   // Stable source lock order serializes simultaneous team edits and role changes.
   for (const id of ids) await lockEditableBot(p, id, tx);
   const fresh = await loadPrincipal(p.user.id, tx);
   if (!fresh || fresh.user.sessionVersion !== p.user.sessionVersion)
     throw new HttpError(403, "Your access changed. Sign in again.");
+  await getAccessibleModel(fresh, app.id, tx);
+  const policy = await getSetting("tools", tx);
+  if ((policy.botCreation === "admins" && !fresh.isAdmin) || (policy.botCreation === "groups" && !fresh.canCreateBots))
+    throw new HttpError(403, "You are no longer allowed to create bots.");
   const allowed = new Set((await listEditableCoordinators(fresh, tx)).map(b => b.id));
   if (ids.some(id => id === bot.id || !allowed.has(id)))
     throw new HttpError(403, "A selected coordinator is no longer available. Review the delegator selection.");
