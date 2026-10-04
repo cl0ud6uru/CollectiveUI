@@ -60,6 +60,59 @@ class NativeSettings(unittest.TestCase):
     def save(self, data, name='default'):
         return bridge.profile_settings(name, bridge.profile(name)[1], 'settings-save', data)
 
+    def test_pinned_image_seed_can_select_every_supported_provider(self):
+        # s6 copies these exact files on first boot; an empty model fixture missed this route.
+        (self.root / 'config.yaml').write_text((SOURCE / 'cli-config.yaml.example').read_text())
+        (self.root / '.env').write_text((SOURCE / '.env.example').read_text())
+        before = self.files()
+        view = bridge.settings_view(before)
+        self.assertIsNone(view['provider'])
+        self.assertEqual(view['model'], 'anthropic/claude-opus-4.6')
+        self.assertTrue(view['advancedSupported'])
+        self.assertTrue(all(view['editableProviders'].values()), view['editableProviders'])
+        self.assertEqual(before, self.files())
+
+    def test_custom_and_imported_routes_stay_blocked_without_disclosing_values(self):
+        cases = [
+            ({'model': {'provider': 'auto', 'base_url': 'https://secret-endpoint.invalid'}}, {}, {}, 'custom_endpoint'),
+            ({'model': {'provider': 'openai-codex', 'base_url': bridge.PROVIDERS['openrouter'][1]}}, {}, {}, 'custom_endpoint'),
+            ({'model': {'api_key': 'private-inline-value'}}, {}, {}, 'model_authentication'),
+            ({'model': {'key_env': 'PRIVATE_KEY_NAME'}}, {}, {}, 'model_authentication'),
+            ({'model': {'api_mode': 'custom'}}, {}, {}, 'model_authentication'),
+            ({'model': {'openai_runtime': 'codex_app_server'}}, {}, {}, 'codex_runtime'),
+            ({}, {'HERMES_CODEX_BASE_URL': 'https://secret-endpoint.invalid'}, {}, 'custom_endpoint'),
+            ({'providers': {'openai-codex': {'custom': 'private-value'}}}, {}, {}, 'provider_configuration'),
+            ({'custom_providers': [{'name': 'openai-codex', 'api_key': 'private-value'}]}, {}, {}, 'custom_provider'),
+            ({}, {}, {'credential_pool': {'openai-codex': [{'source': 'manual:private-value'}]}}, 'credential_pool'),
+        ]
+        for cfg, env, auth, reason in cases:
+            with self.subTest(reason=reason, cfg=cfg):
+                self.assertFalse(bridge.simple_route(cfg, env, auth, 'openai-codex'))
+                self.assertEqual(bridge.route_blocker(cfg, env, auth, 'openai-codex'), reason)
+        files = self.files()
+        files['config.yaml'] = 'model:\n  base_url: https://secret-endpoint.invalid\n'
+        files['auth.json'] = json.dumps({'credential_pool': {'openai-codex': [{'source': 'manual:private-value'}]}})
+        view = bridge.settings_view(files)
+        self.assertEqual(view['providerBlockers']['openai-codex'], 'custom_endpoint')
+        self.assertNotIn('secret-endpoint', json.dumps(view))
+        self.assertNotIn('private-value', json.dumps(view))
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(), 'Native transaction requires Linux /proc')
+    def test_image_seed_transitions_preserve_unrelated_native_settings(self):
+        for provider in bridge.SUPPORTED_PROVIDERS:
+            with self.subTest(provider=provider):
+                (self.root / 'config.yaml').write_text((SOURCE / 'cli-config.yaml.example').read_text())
+                (self.root / '.env').write_text('UNRELATED_FIXTURE_VALUE=keep-me\n')
+                before_cfg = bridge.parse_settings(self.files())[0]
+                saved = self.save(self.data(self.files(), provider, action='keep' if provider == bridge.CODEX else 'replace'))
+                self.assertEqual(saved['provider'], provider)
+                self.assertTrue(saved['editableProviders'][provider])
+                cfg, env, _ = bridge.parse_settings(self.files())
+                self.assertNotIn('base_url', cfg['model'])
+                self.assertEqual(env['UNRELATED_FIXTURE_VALUE'], 'keep-me')
+                for name in before_cfg.keys() - {'model', 'providers', 'agent'}:
+                    self.assertEqual(cfg[name], before_cfg[name], name)
+
     def test_all_providers_roundtrip_rotate_clear_readd_without_secret_response(self):
         for provider in bridge.PROVIDERS:
             with self.subTest(provider=provider):

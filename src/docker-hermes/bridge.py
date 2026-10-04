@@ -260,23 +260,45 @@ def codex_connected(cfg, auth):
 
 
 def codex_simple_route(cfg, env, auth):
+    return codex_route_blocker(cfg, env, auth) is None
+
+
+def native_model_endpoint(model, target_url):
+    endpoint = model.get('base_url')
+    if not endpoint:
+        return True
+    if not isinstance(endpoint, str):
+        return False
+    endpoint = endpoint.rstrip('/')
+    if endpoint == target_url.rstrip('/'):
+        return True
+    # The pinned image seeds provider:auto with the official OpenRouter endpoint.
+    # Selecting a built-in provider may clear that starter route, never a custom URL.
+    return model.get('provider') in (None, '', 'auto') and endpoint == PROVIDERS['openrouter'][1]
+
+
+def codex_route_blocker(cfg, env, auth):
     from hermes_cli.auth import DEFAULT_CODEX_BASE_URL
     model = cfg.get('model') or {}
     model = model if isinstance(model, dict) else {}
     entry = (cfg.get('providers') or {}).get(CODEX, {})
     if not isinstance(entry, dict) or set(entry) - {'enabled'}:
-        return False
-    if any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode', 'openai_runtime')):
-        return False
+        return 'provider_configuration'
+    if model.get('openai_runtime'):
+        return 'codex_runtime'
+    if any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode')):
+        return 'model_authentication'
     if env.get('HERMES_CODEX_BASE_URL', DEFAULT_CODEX_BASE_URL).rstrip('/') != DEFAULT_CODEX_BASE_URL.rstrip('/'):
-        return False
-    if model.get('base_url') and model['base_url'].rstrip('/') != DEFAULT_CODEX_BASE_URL.rstrip('/'):
-        return False
+        return 'custom_endpoint'
+    if not native_model_endpoint(model, DEFAULT_CODEX_BASE_URL):
+        return 'custom_endpoint'
     if any(isinstance(p, dict) and p.get('name') == CODEX for p in cfg.get('custom_providers', [])):
-        return False
+        return 'custom_provider'
     entries = (auth.get('credential_pool') or {}).get(CODEX, [])
-    return isinstance(entries, list) and all(isinstance(e, dict) and e.get('source') == 'device_code' and
-        (not e.get('base_url') or e['base_url'].rstrip('/') == DEFAULT_CODEX_BASE_URL.rstrip('/')) for e in entries)
+    if not isinstance(entries, list) or not all(isinstance(e, dict) and e.get('source') == 'device_code' and
+        (not e.get('base_url') or e['base_url'].rstrip('/') == DEFAULT_CODEX_BASE_URL.rstrip('/')) for e in entries):
+        return 'credential_pool'
+    return None
 
 
 def commit_native_settings(fd, original, updated):
@@ -502,6 +524,8 @@ def settings_view(files):
             'reasoningEffort': effort if effort in EFFORTS else '', 'maxTurns': turns if supported else None,
             'advancedSupported': supported,
             'editableProviders': {p: simple_route(cfg, env, auth, p) for p in SUPPORTED_PROVIDERS},
+            # Fixed reason codes only: never export URLs, keys, credential sources or auth payloads.
+            'providerBlockers': {p: route_blocker(cfg, env, auth, p) for p in SUPPORTED_PROVIDERS},
             'credentials': {**{p: bool(env.get(v[0])) for p, v in PROVIDERS.items()}, CODEX: codex_connected(cfg, auth)},
             'codexModels': codex_models()}
 
@@ -529,26 +553,30 @@ def validate_settings_input(data):
 
 def simple_route(cfg, env, auth, provider):
     """Imported/custom/OAuth/multi-key routes require native maintenance, never silent conversion."""
+    return route_blocker(cfg, env, auth, provider) is None
+
+
+def route_blocker(cfg, env, auth, provider):
     if provider == CODEX:
-        return codex_simple_route(cfg, env, auth)
+        return codex_route_blocker(cfg, env, auth)
     key, url, url_key = PROVIDERS[provider]
     model = cfg.get('model', {})
     model = model if isinstance(model, dict) else {}
     entry = (cfg.get('providers') or {}).get(provider, {})
     if not isinstance(entry, dict) or set(entry) - {'enabled'}:
-        return False
-    if env.get(url_key, url).rstrip('/') != url or any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode')):
-        return False
-    if model.get('base_url') and model.get('base_url').rstrip('/') != url:
-        return False
+        return 'provider_configuration'
+    if any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode')):
+        return 'model_authentication'
+    if env.get(url_key, url).rstrip('/') != url or not native_model_endpoint(model, url):
+        return 'custom_endpoint'
     if provider == 'anthropic' and any(env.get(k) for k in ('ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN')):
-        return False
+        return 'provider_authentication'
     if any(isinstance(p, dict) and p.get('name') == provider for p in cfg.get('custom_providers', [])):
-        return False
+        return 'custom_provider'
     entries = (auth.get('credential_pool') or {}).get(provider, [])
     if not isinstance(entries, list) or any(not isinstance(e, dict) or e.get('source') != 'env:' + key for e in entries):
-        return False
-    return not (auth.get('providers') or {}).get(provider)
+        return 'credential_pool'
+    return 'provider_authentication' if (auth.get('providers') or {}).get(provider) else None
 
 
 def stage_settings(files, data, fd):
