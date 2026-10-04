@@ -16,7 +16,7 @@ export async function listenBroker(broker: DockerBroker) {
     const owner = ownerId.parse(req.headers['x-collective-owner']);
     const url = req.url ?? '';
     if (req.method === 'GET' && url === '/admin/ready') return json(res, 200, { ready: true });
-    if (req.method === 'POST' && url === '/control/revoke') { await broker.revoke(owner); return json(res, 200, { stopped: true }); }
+    if (req.method === 'POST' && url === '/control/revoke') return json(res, 200, broker.requestRevoke(owner));
     if (req.method === 'GET' && url === '/admin/owners') return json(res, 200, broker.owners());
     if (req.method === 'POST' && url === '/control/lease') {
       const lease = z.object({ canCreate: z.boolean() }).strict().parse(await body(req));

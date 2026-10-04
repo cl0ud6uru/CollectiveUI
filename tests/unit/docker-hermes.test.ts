@@ -184,4 +184,16 @@ describe('personal Docker Hermes durable broker', () => {
     expect(() => broker.enable('alice')).toThrow('authorization');
   });
 
+  it('requests revocation promptly while native cleanup is slow, without duplicating queued stops', async () => {
+    await enable('alice'); const stop = driver.stop.bind(driver);
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let stopCount = 0; driver.stop = async owner => { stopCount++; await gate; return stop(owner); };
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: false, failed: false });
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: false, failed: false });
+    expect(() => broker.enable('alice')).toThrow('authorization');
+    release(); await until(async () => (await broker.status('alice')).phase === 'stopped');
+    expect(stopCount).toBe(1);
+    expect(broker.requestRevoke('alice')).toEqual({ stopped: true, failed: false });
+  });
+
 });

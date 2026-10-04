@@ -10,11 +10,13 @@ import { reconcileDockerRuntimes } from '@/lib/docker-hermes/lifecycle';
 import { importLegacyEnrollment, legacyEnrollmentIds } from '@/lib/docker-hermes/legacy-enrollment';
 import { newId } from '@/lib/ids';
 import { HttpError } from '@/lib/authz';
-const f = vi.hoisted(() => ({ calls: [] as { owner: string; action: string }[], owners: [] as string[], fail: false, leaseGate: null as Promise<void> | null, principal: null as Principal | null }));
+const f = vi.hoisted(() => ({ calls: [] as { owner: string; action: string }[], owners: [] as string[], fail: false, leaseGate: null as Promise<void> | null, statusGate: null as Promise<void> | null, stopGate: null as Promise<void> | null, stopOwner: null as string | null, stopping: false, principal: null as Principal | null }));
 vi.mock('@/lib/docker-hermes/client', () => ({ dockerControl: async (owner: string, action: string) => {
   f.calls.push({ owner, action });
   if (f.fail) throw new Error('secret broker path / credentials must never escape');
   if (action === '/control/lease') await f.leaseGate;
+  if (action === '/control/status') await f.statusGate;
+  if (action === '/control/revoke') { if (owner === f.stopOwner) await f.stopGate; return { stopped: !f.stopping, failed: false }; }
   if (action === '/admin/owners') return f.owners;
   if (action === '/admin/ready') return { ready: true };
   return { phase: 'disabled', bindings: [], unlinked: [] };
@@ -91,6 +93,45 @@ suite('database personal Hermes enrollment (mock broker, real PostgreSQL)', () =
     expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/lease' });
     await setDockerEnrollment(admin, alice.user.id, false); f.calls = []; await reconcileDockerRuntimes();
     expect(f.calls.some(c => c.action === '/control/lease')).toBe(false);
+  });
+  it('a slow failed cleanup does not block another owner lease or duplicate the denied owner stop', async () => {
+    await setDockerEnrollment(admin, alice.user.id, true); await setDockerEnrollment(admin, bob.user.id, true);
+    f.fail = true; await setDockerEnrollment(admin, bob.user.id, false); f.fail = false;
+    let release!: () => void; f.stopOwner = bob.user.id; f.stopGate = new Promise<void>(resolve => { release = resolve; });
+    f.owners = [bob.user.id, alice.user.id]; f.calls = [];
+    const reconcile = reconcileDockerRuntimes();
+    await vi.waitFor(() => expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/lease' }));
+    expect(f.calls.filter(c => c.owner === bob.user.id && c.action === '/control/revoke')).toHaveLength(1);
+    release(); await reconcile; f.stopGate = null; f.stopOwner = null;
+    await setDockerEnrollment(admin, alice.user.id, false);
+    // The later legacy migration case needs an owner without a previous permission decision.
+    await db.delete(dockerHermesEnrollments).where(eq(dockerHermesEnrollments.userId, bob.user.id));
+  });
+  it('pending native stops remain visible across ticks while other owners keep receiving leases', async () => {
+    await setDockerEnrollment(admin, alice.user.id, true); await setDockerEnrollment(admin, bob.user.id, true);
+    f.stopping = true; await setDockerEnrollment(admin, bob.user.id, false); expect(await row(bob.user.id)).toMatchObject({ cleanup: 'pending' });
+    f.owners = [bob.user.id, alice.user.id];
+    for (let tick = 0; tick < 2; tick++) {
+      f.calls = []; await reconcileDockerRuntimes();
+      expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/lease' });
+      expect(f.calls.filter(c => c.owner === bob.user.id && c.action === '/control/revoke')).toHaveLength(1);
+    }
+    f.stopping = false; await reconcileDockerRuntimes(); expect(await row(bob.user.id)).toMatchObject({ cleanup: 'stopped' });
+    await setDockerEnrollment(admin, alice.user.id, false);
+    await db.delete(dockerHermesEnrollments).where(eq(dockerHermesEnrollments.userId, bob.user.id));
+  });
+  it('a delayed old worker status failure cannot revoke a newly re-enrolled runtime', async () => {
+    await setDockerEnrollment(admin, alice.user.id, true); f.owners = [alice.user.id]; f.calls = []; f.principal = alice;
+    let reject!: (error: Error) => void;
+    f.statusGate = new Promise<void>((_, rejectPromise) => { reject = rejectPromise; });
+    const reconcile = reconcileDockerRuntimes();
+    await vi.waitFor(() => expect(f.calls).toContainEqual({ owner: alice.user.id, action: '/control/status' }));
+    await setDockerEnrollment(admin, alice.user.id, false);
+    await setDockerEnrollment(admin, alice.user.id, true);
+    const { enablePersonalHermes } = await import('@/app/(chat)/settings/hermes-actions'); await enablePersonalHermes();
+    f.calls = []; reject(new Error('Old status failed')); await reconcile; f.statusGate = null;
+    expect(f.calls).toEqual([]); expect(await dockerAllowed(alice)).toBe(true);
+    await setDockerEnrollment(admin, alice.user.id, false);
   });
   it('legacy migration is previewed, explicit, atomic on invalid IDs, audited and cannot override revocation', async () => {
     const raw = `${alice.user.id}, ${bob.user.id};bad/id;unknown-user`;

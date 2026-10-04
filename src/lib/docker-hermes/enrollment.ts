@@ -40,8 +40,10 @@ export async function cleanupDockerEnrollment(id: string) {
     if (row?.enabled || row?.cleanup === 'stopped') return;
     if (row) await tx.update(dockerHermesEnrollments).set({ cleanup: 'stopping', error: null }).where(eq(dockerHermesEnrollments.userId, id));
     try {
-      await dockerControl(id, '/control/revoke', {});
-      if (row) await tx.update(dockerHermesEnrollments).set({ cleanup: 'stopped', error: null }).where(eq(dockerHermesEnrollments.userId, id));
+      const result = await dockerControl<{ stopped: boolean; failed: boolean }>(id, '/control/revoke', {}, 3000);
+      if (typeof result.stopped !== 'boolean' || typeof result.failed !== 'boolean') throw new Error('Incompatible broker');
+      if (row) await tx.update(dockerHermesEnrollments).set({ cleanup: result.stopped ? 'stopped' : result.failed ? 'failed' : 'pending',
+        error: result.failed ? 'Runtime stop is unconfirmed. Access is denied; cleanup is being retried.' : null }).where(eq(dockerHermesEnrollments.userId, id));
     } catch {
       if (row) await tx.update(dockerHermesEnrollments).set({ cleanup: 'failed', error: 'Runtime stop is unconfirmed. Access is denied; the worker will retry. Ask the operator to check broker availability.' }).where(eq(dockerHermesEnrollments.userId, id));
     }
