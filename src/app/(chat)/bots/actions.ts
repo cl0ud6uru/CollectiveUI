@@ -48,6 +48,7 @@ import { randomBlob } from "@/components/bots/bot-avatar";
 import { loadBotActivity, loadWorkspacePreview } from "@/lib/chat/activity";
 import { botDefaultSchema } from "@/lib/pets/shared";
 import { initializeBotPet } from "@/lib/pets/store";
+import { addSelectedDelegators } from "@/lib/coordinator/roles";
 
 import { assertApprovedBot, guardManagedBotMutation } from "@/lib/hermes-provisioning/bot-policy";
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
@@ -83,6 +84,9 @@ const BotInput = z.object({
   executionMode: z.enum(["caller", "service"]).optional(),
   initialPet: botDefaultSchema.optional(),
   coordinatorEligible: z.boolean().optional(),
+  isCoordinator: z.boolean().optional(),
+  // Incoming team links are selected only during creation, never inferred on save.
+  delegatorIds: z.array(z.string().min(1).max(128)).max(100).optional(),
 });
 export type BotInput = z.infer<typeof BotInput>;
 
@@ -123,6 +127,10 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
     throw new HttpError(400, "Service bots require a native company model and only MCP tools, without delegation.");
   if (input.coordinatorEligible && (input.executionMode === "service" || app.provider === "hermes"))
     throw new HttpError(400, "Only native caller bots can opt into coordinator delegation.");
+  if ((input.isCoordinator || input.delegatorIds?.length) && (input.executionMode === "service" || app.provider === "hermes"))
+    throw new HttpError(400, "Coordinator roles and teams require native caller bots.");
+  if (input.isCoordinator && !app.supportsTools)
+    throw new HttpError(400, "Coordinators require a model with tool support.");
   const delegates: string[] = [];
   for (const id of input.delegateIds) {
     if (id === botId) continue;
@@ -153,6 +161,7 @@ export async function createBot(raw: BotInput) {
         ownerId: p.user.id,
         executionMode: input.executionMode ?? "caller",
         coordinatorEligible: input.coordinatorEligible ?? false,
+        isCoordinator: input.isCoordinator ?? false,
         name: input.name,
         avatar: input.avatar || randomBlob(),
         label: input.label || null,
@@ -166,6 +175,7 @@ export async function createBot(raw: BotInput) {
       })
       .returning();
     await saveRelations(tx, bot.id, input, v);
+    await addSelectedDelegators(tx, fresh, bot, input.delegatorIds ?? []);
     if (input.initialPet) await initializeBotPet(tx, fresh, bot, input.initialPet);
     return bot;
   });
@@ -189,6 +199,7 @@ export async function updateBot(botId: string, raw: BotInput) {
   await getEditableBot(p, botId);
   const input = BotInput.parse(raw);
   if (input.initialPet) throw new HttpError(400, "Use the separate Pet avatar controls to change an existing bot's pet.");
+  if (input.delegatorIds !== undefined) throw new HttpError(400, "Edit each coordinator's Team to change existing delegation links.");
   const v = await validateBotInput(p, input, botId);
   await db.transaction(async (tx) => {
     const current = await lockEditableBot(p, botId, tx);
@@ -197,6 +208,11 @@ export async function updateBot(botId: string, raw: BotInput) {
     await guardManagedBotMutation(tx, p, botId, input);
     if ((input.coordinatorEligible ?? current.coordinatorEligible) && (input.executionMode ?? current.executionMode) === "service")
       throw new HttpError(400, "Service bots cannot opt into coordinator delegation.");
+    if (input.isCoordinator ?? current.isCoordinator) {
+      const [app] = await tx.select().from(aiApps).where(eq(aiApps.id, input.appId)).for("share");
+      if ((input.executionMode ?? current.executionMode) !== "caller" || !app?.enabled || app.provider === "hermes" || !app.supportsTools)
+        throw new HttpError(400, "Coordinators require a native caller bot with a tool-capable model.");
+    }
     const changed = await tx
       .update(bots)
       .set({
@@ -212,6 +228,7 @@ export async function updateBot(botId: string, raw: BotInput) {
         starters: input.starters.filter(Boolean),
         executionMode: input.executionMode ?? current.executionMode,
         coordinatorEligible: input.coordinatorEligible ?? current.coordinatorEligible,
+        isCoordinator: input.isCoordinator ?? current.isCoordinator,
         revision: current.revision + 1,
         publishedRevision: null,
         publishedConfigHash: null,

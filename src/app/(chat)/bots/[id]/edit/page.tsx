@@ -29,6 +29,7 @@ export default async function EditBotPage(props: PageProps<"/bots/[id]/edit">) {
             name: bot.name,
             executionMode: bot.executionMode,
             coordinatorEligible: bot.coordinatorEligible,
+            isCoordinator: bot.isCoordinator,
             avatar: bot.avatar,
             label: bot.label,
             description: bot.description,

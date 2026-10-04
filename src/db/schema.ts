@@ -495,6 +495,8 @@ export const bots = pgTable("bots", {
   executionMode: text("execution_mode").$type<"caller" | "service">().notNull().default("caller"),
   /** Explicit opt-in to discovery by the installation coordinator; never an audience or tool grant. */
   coordinatorEligible: boolean("coordinator_eligible").notNull().default(false),
+  /** Suggested delegator for new bots; never an audience or tool grant. */
+  isCoordinator: boolean("is_coordinator").notNull().default(false),
   revision: integer("revision").notNull().default(1),
   publishedRevision: integer("published_revision"),
   publishedConfigHash: text("published_config_hash"),

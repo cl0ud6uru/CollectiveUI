@@ -16,7 +16,7 @@ export function CoordinatorForm({ initial, bots, models }: { initial: Coordinato
   const router = useRouter();
   const [mode, setMode] = useState(initial.enabled ? "existing" : "off");
   const [botId, setBotId] = useState(initial.defaultBotId ?? "");
-  const [name, setName] = useState("Queen");
+  const [name, setName] = useState("The Queen");
   const [appId, setAppId] = useState("");
   const [pending, start] = useTransition();
   const [error, setError] = useState("");
@@ -47,7 +47,7 @@ export function CoordinatorForm({ initial, bots, models }: { initial: Coordinato
           <select id="coordinator-mode" value={mode} onChange={e => setMode(e.target.value)} className={selectStyle} disabled={pending}>
             <option value="off">Off</option>
             <option value="existing">Choose an existing bot</option>
-            {!initial.starterBotId && <option value="starter">Create Queen starter</option>}
+            {!initial.starterBotId && <option value="starter">Create The Queen starter</option>}
           </select>
         </div>
         {mode === "existing" && <div>

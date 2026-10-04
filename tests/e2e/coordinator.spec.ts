@@ -55,7 +55,7 @@ test("keyboard admin setup creates one optional model-less Queen, allows rename/
   await expect(page.getByRole("status").filter({ hasText: "Starter created" })).toBeVisible();
   const cfg = (await pool.query("SELECT value FROM settings WHERE key='coordinator'")).rows[0].value;
   const queen = (await pool.query("SELECT * FROM bots WHERE id=$1", [cfg.starterBotId])).rows[0];
-  expect(queen).toMatchObject({ name: "Queen", app_id: null, avatar: "blob:hexagon:purple" });
+  expect(queen).toMatchObject({ name: "The Queen", app_id: null, avatar: "blob:hexagon:purple", is_coordinator: true });
   await page.reload();
   await expect(mode.locator("option[value=starter]")).toHaveCount(0);
   await page.goto("/");
@@ -79,6 +79,77 @@ test("keyboard admin setup creates one optional model-less Queen, allows rename/
   await page.getByRole("button", { name: "Save coordinator", exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: "Default coordinator is off" })).toBeVisible();
   expect((await pool.query("SELECT COUNT(*)::int AS n FROM bots WHERE id=$1", [queen.id])).rows[0].n).toBe(1);
+});
+
+test("new-bot delegators are editable defaults, cancel has no effects, and personal coordinators remain isolated", async ({ page, browser }) => {
+  await login(page, "fixture-admin");
+  const queen = (await pool.query("SELECT id FROM bots WHERE name='Queen, renamed'")).rows[0];
+  const before = (await pool.query("SELECT count(*)::int AS n FROM bots")).rows[0].n;
+  async function newBot(name: string) {
+    await page.goto("/bots/new");
+    await page.getByRole("button", { name: "configure", exact: true }).click();
+    await page.getByPlaceholder("Name your bot").fill(name);
+  }
+  await newBot("Canceled specialist");
+  const delegator = page.getByRole("button", { name: "Delegator: Queen, renamed", exact: true });
+  await expect(delegator).toHaveAttribute("aria-pressed", "true");
+  await delegator.click(); await expect(delegator).toHaveAttribute("aria-pressed", "false");
+  await delegator.click(); await expect(delegator).toHaveAttribute("aria-pressed", "true");
+  await page.goto("/bots");
+  expect((await pool.query("SELECT count(*)::int AS n FROM bots")).rows[0].n).toBe(before);
+  expect((await pool.query("SELECT * FROM bot_delegates WHERE bot_id=$1", [queen.id])).rows).toEqual([]);
+  await newBot("Explicitly unlinked specialist");
+  await delegator.click();
+  // Moving between tabs must not reapply defaults to an explicit empty selection.
+  await page.getByRole("button", { name: "create", exact: true }).first().click();
+  await page.getByRole("button", { name: "configure", exact: true }).click();
+  await expect(delegator).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await page.waitForURL(/\/bots\/[^/]+\/edit/);
+  expect((await pool.query("SELECT * FROM bot_delegates WHERE bot_id=$1", [queen.id])).rows).toEqual([]);
+  await newBot("Selected specialist");
+  for (let i = 0; i < 4; i++) await delegator.click();
+  await expect(delegator).toHaveAttribute("aria-pressed", "true");
+  await delegator.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${screenshots}/queen-delegators-desktop.png` });
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await page.waitForURL(/\/bots\/[^/]+\/edit/);
+  const specialistId = page.url().split("/bots/")[1].split("/")[0];
+  expect((await pool.query("SELECT * FROM bot_delegates WHERE bot_id=$1 AND delegate_bot_id=$2", [queen.id, specialistId])).rowCount).toBe(1);
+  await page.goto(`/bots/${queen.id}/edit`);
+  await page.getByRole("button", { name: "configure", exact: true }).click();
+  const role = page.getByRole("checkbox", { name: "Coordinator", exact: true });
+  await expect(role).toBeChecked();
+  await role.uncheck();
+  await page.getByRole("button", { name: "Update", exact: true }).click();
+  await expect.poll(async () => (await pool.query("SELECT is_coordinator FROM bots WHERE id=$1", [queen.id])).rows[0].is_coordinator).toBe(false);
+  await newBot("No default after role disabled");
+  await expect(delegator).toHaveCount(0);
+  expect((await pool.query("SELECT name FROM bots WHERE id=$1", [queen.id])).rows[0].name).toBe("Queen, renamed");
+  expect((await pool.query("SELECT * FROM bot_delegates WHERE bot_id=$1 AND delegate_bot_id=$2", [queen.id, specialistId])).rowCount).toBe(1);
+  await pool.query("UPDATE bots SET is_coordinator=true WHERE id=$1", [queen.id]);
+  for (const owner of ["alice", "bob"]) {
+    await pool.query("INSERT INTO bots(id,owner_id,name,app_id,visibility,is_coordinator) VALUES ($1,$2,$3,'coordinator-browser-model','private',true)",
+      [`coordinator-browser-${owner}-personal`, `coordinator-browser-${owner}`, `${owner} personal coordinator`]);
+  }
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  try {
+    const personal = await context.newPage(); await login(personal, "fixture-alice");
+    await personal.goto("/bots/new");
+    await personal.getByRole("button", { name: "configure", exact: true }).click();
+    const own = personal.getByRole("button", { name: "Delegator: alice personal coordinator", exact: true });
+    await expect(own).toHaveAttribute("aria-pressed", "true");
+    await expect(personal.getByRole("button", { name: "Delegator: bob personal coordinator", exact: true })).toHaveCount(0);
+    await expect(personal.getByRole("button", { name: "Delegator: Queen, renamed", exact: true })).toHaveCount(0);
+    await own.scrollIntoViewIfNeeded();
+    expect(await personal.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await personal.screenshot({ path: `${screenshots}/queen-delegators-mobile.png` });
+    await personal.getByPlaceholder("Name your bot").fill("Alice personal specialist");
+    await personal.getByRole("button", { name: "Create", exact: true }).click();
+    await personal.waitForURL(/\/bots\/[^/]+\/edit/);
+    expect((await pool.query("SELECT count(*)::int AS n FROM bot_delegates WHERE bot_id='coordinator-browser-alice-personal'")).rows[0].n).toBe(1);
+    expect((await pool.query("SELECT count(*)::int AS n FROM bot_delegates WHERE bot_id='coordinator-browser-bob-personal'")).rows[0].n).toBe(0);
+  } finally { await context.close(); }
 });
 
 test("first entry and repeated visits use private homes; specialists and /new remain separate", async ({ page, browser }) => {

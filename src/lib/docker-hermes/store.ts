@@ -28,7 +28,7 @@ export async function pairDockerBot(p: Principal, raw: DockerBinding, lockWaitMs
     const [bot] = await tx.select().from(bots).where(eq(bots.id, b.botId));
     if (app || bot) {
       if (!app || !bot || !isDockerHermes(app) || JSON.stringify(bindingSchema.parse(app.providerConfig.docker)) !== JSON.stringify(b) ||
-        bot.ownerId !== p.user.id || bot.appId !== app.id || bot.visibility !== 'private' || bot.executionMode !== 'caller' || bot.coordinatorEligible)
+        bot.ownerId !== p.user.id || bot.appId !== app.id || bot.visibility !== 'private' || bot.executionMode !== 'caller' || bot.coordinatorEligible || bot.isCoordinator)
         throw new HttpError(409, 'Retained native mapping needs operator reconciliation. No bot was reassigned.');
       return bot.id;
     }
