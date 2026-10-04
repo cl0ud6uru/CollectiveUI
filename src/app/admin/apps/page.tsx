@@ -1,4 +1,4 @@
-import { asc } from "drizzle-orm";
+import { asc, inArray } from "drizzle-orm";
 import { AppsAdmin, type AppRow } from "@/components/admin/apps-admin";
 import { ProviderConnectionsAdmin } from "@/components/admin/provider-connections-admin";
 import { providerConnectionView } from "@/lib/llm/provider-connections";
@@ -11,14 +11,15 @@ import { getSetting } from "@/lib/settings";
 
 export default async function AdminAppsPage() {
   await requireAdminPage();
-  const [apps, access, groupRows, chatgpt, connections, creators] = await Promise.all([
+  const [apps, access, groupRows, chatgpt, connections] = await Promise.all([
     db.select().from(aiApps).orderBy(asc(aiApps.sortOrder), asc(aiApps.name)),
     db.select().from(appAccess),
     db.select({ id: groups.id, name: groups.name }).from(groups).orderBy(groups.name),
     getSetting("chatgpt"),
     db.select().from(providerConnections).orderBy(providerConnections.name),
-    db.select({ id: users.id, name: users.name }).from(users),
   ]);
+  const creatorIds = [...new Set(connections.flatMap((c) => (c.createdBy ? [c.createdBy] : [])))];
+  const creators = creatorIds.length ? await db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, creatorIds)) : [];
   // Only non-secret fields reach the browser; the config is re-parsed so unknown keys never leak.
   const rows: AppRow[] = apps.flatMap((a) =>
     isAppProvider(a.provider) && a.providerConfig.managed === undefined && a.providerConfig.local === undefined && a.providerConfig.docker === undefined
