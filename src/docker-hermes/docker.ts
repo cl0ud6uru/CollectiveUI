@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
+import type { CodexStatus } from './oauth';
 import type { RpcTransport } from '../local-hermes/rpc';
 import { HERMES_COMMIT } from '../local-hermes/config';
 import { LocalError } from '../local-hermes/controller';
@@ -35,6 +36,7 @@ export interface RuntimeDriver {
   resources(owner: string, name: string, identity: string): Promise<NativeResources>;
   settings?(owner: string, name: string, identity: string, update?: ProfileUpdate): Promise<ProfileSettings>;
   testSettings?(owner: string, name: string, identity: string, revision: string): Promise<Pick<ProfileTestResult, 'code'>>;
+  codex?(owner: string, name: string, identity: string, data: unknown): Promise<CodexStatus>;
   reopen?(owner: string): Promise<void>;
   transport(owner: string, profile: string, identity: string): RpcTransport;
 }
@@ -170,7 +172,7 @@ export class DockerDriver implements RuntimeDriver {
         clearTimeout(timer); settled = true;
         try {
           const value = JSON.parse(output);
-          if (value.error) return reject(new LocalError(409, value.error === 'conflict' ? 'Profile settings changed. Reload before saving or testing.' : 'Native routing or credentials need maintenance outside this API-key editor. No settings were changed.'));
+          if (value.error) return reject(new LocalError(409, value.error === 'conflict' ? 'Profile settings changed. Reload before retrying.' : 'Native routing or credentials require native maintenance before editing here.'));
           resolve(value as T);
         } catch { reject(new LocalError(503, 'Native settings returned an invalid response.')); }
       });
@@ -182,6 +184,9 @@ export class DockerDriver implements RuntimeDriver {
   }
   testSettings(owner: string, name: string, identity: string, revision: string) {
     return this.settingsCommand<Pick<ProfileTestResult, 'code'>>(owner, ['settings-test', name, identity], { revision });
+  }
+  codex(owner: string, name: string, identity: string, data: unknown) {
+    return this.settingsCommand<CodexStatus>(owner, ['codex', name, identity], data);
   }
   transport(owner: string, profile: string, identity: string): RpcTransport {
     return { spawn: () => spawn('/usr/local/bin/docker', this.argv(owner, ['gateway', profile, identity]), { env: ENV, stdio: ['pipe', 'pipe', 'pipe'], shell: false }),

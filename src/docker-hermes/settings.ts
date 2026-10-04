@@ -1,12 +1,13 @@
 import { z } from 'zod';
 
-/** API-key routes verified against the pinned Hermes release; no browser-selected endpoints. */
+/** Native provider routes verified against the pinned release; no browser-selected endpoints. */
 export const profileProviders = [
+  { id: 'openai-codex', label: 'ChatGPT / Codex subscription', example: 'Choose a native Codex model' },
   { id: 'openai-api', label: 'OpenAI API', example: 'Your OpenAI model ID' },
   { id: 'anthropic', label: 'Anthropic', example: 'Your Claude model ID' },
   { id: 'openrouter', label: 'OpenRouter', example: 'provider/model' },
 ] as const;
-export const providerId = z.enum(['openai-api', 'anthropic', 'openrouter']);
+export const providerId = z.enum(['openai-api', 'anthropic', 'openrouter', 'openai-codex']);
 export const reasoningLevels = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export const profileValues = z.object({
   provider: providerId,
@@ -22,7 +23,7 @@ export const profileUpdate = profileValues.extend({
     z.object({ action: z.literal('clear') }).strict(),
     z.object({ action: z.literal('replace'), value: z.string().min(1).max(4096).regex(/^[\x21-\x7e]+$/) }).strict(),
   ]),
-}).strict();
+}).strict().refine(v => v.provider !== 'openai-codex' || v.credential.action === 'keep', { message: 'Use subscription connection controls.' });
 export const profileTest = z.object({ revision, requestId: z.string().uuid(), consent: z.literal(true) }).strict();
 export type ProfileValues = z.infer<typeof profileValues>;
 export type ProfileUpdate = z.infer<typeof profileUpdate>;
@@ -37,6 +38,7 @@ export type ProfileSettings = {
   credentials: Record<ProfileValues['provider'], boolean>;
   advancedSupported: boolean;
   editableProviders: Record<ProfileValues['provider'], boolean>;
+  codexModels?: string[];
   lastTest?: ProfileTestResult | null;
 };
 export const testMessages: Record<ProfileTestResult['code'], string> = {

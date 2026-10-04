@@ -14,6 +14,8 @@ import { createLocalUser } from '../../src/lib/auth/local';
 import { pool } from '../../src/db';
 class FixtureDriver implements RuntimeDriver {
   saved = new Map<string, ProfileSettings>();
+  logins = new Map<string, import('../../src/docker-hermes/oauth').CodexStatus>();
+  polls = new Map<string, number>();
   active = new Set<string>(); profilesByOwner = new Map<string, Profile[]>(); children = new Map<string, Set<ChildProcessWithoutNullStreams>>();
   ensureCount = 0; createCount = 0; stopFailure = false; gate?: Promise<void>;
   constructor(readonly root: string) {}
@@ -45,13 +47,30 @@ class FixtureDriver implements RuntimeDriver {
   async settings(owner: string, name: string, identity: string, update?: ProfileUpdate) {
     if (!(await this.profiles(owner)).some(p => p.name === name && p.identity === identity)) throw new Error('Changed identity');
     const key = `${owner}:${name}`;
-    const saved = this.saved.get(key) ?? { revision: 'a'.repeat(64), provider: null, model: '', reasoningEffort: '', maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false } };
-    if (!update) return saved;
+    const saved = this.saved.get(key) ?? { revision: 'a'.repeat(64), provider: null, model: '', reasoningEffort: '', maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': false } };
+    if (!update) return { ...saved, codexModels: ['fixture-codex-model', 'fixture-pending-model'] };
     if (update.revision !== saved.revision) throw new Error('Stale fixture update');
     const next: ProfileSettings = { ...saved, provider: update.provider, model: update.model, reasoningEffort: update.reasoningEffort, maxTurns: update.maxTurns,
       revision: createHash('sha256').update(saved.revision + JSON.stringify({ provider: update.provider, model: update.model, action: update.credential.action })).digest('hex'),
       credentials: { ...saved.credentials, [update.provider]: update.credential.action === 'keep' ? saved.credentials[update.provider] : update.credential.action === 'replace' } };
     this.saved.set(key, next); return next;
+  }
+  async codex(owner: string, name: string, identity: string, raw: unknown): Promise<import('../../src/docker-hermes/oauth').CodexStatus> {
+    const saved = await this.settings(owner, name, identity), key = `${owner}:${name}`;
+    const input = raw as { action: string; sessionId?: string };
+    let state = this.logins.get(key) ?? { state: 'disconnected' as const };
+    if (input.action === 'start') {
+      state = { state: 'pending', sessionId: input.sessionId!, userCode: 'DEMO-CODE', verificationUrl: 'https://auth.openai.com/codex/device', expiresAt: Date.now() + 900000, nextPollAt: Date.now() + 3000 };
+      this.polls.set(key, 0);
+    }
+    if (input.action === 'poll' && state.state === 'pending') {
+      const polls = (this.polls.get(key) ?? 0) + 1; this.polls.set(key, polls);
+      state = saved.model !== 'fixture-pending-model' && polls >= 2 ? { state: 'connected', sessionId: input.sessionId } : { ...state, nextPollAt: Date.now() + 3000 };
+    }
+    if (input.action === 'cancel') state = { state: 'cancelled', sessionId: input.sessionId };
+    if (input.action === 'disconnect' || input.action === 'recover' && state.state === 'pending') state = { state: 'disconnected' };
+    if (input.action !== 'read' && input.action !== 'recover') this.saved.set(key, { ...saved, revision: createHash('sha256').update(saved.revision + JSON.stringify(state)).digest('hex'), credentials: { ...saved.credentials, 'openai-codex': state.state === 'connected' } });
+    this.logins.set(key, state); return state;
   }
   async testSettings(owner: string, name: string, identity: string) {
     const s = await this.settings(owner, name, identity);

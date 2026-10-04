@@ -5,10 +5,12 @@ import { z } from 'zod';
 import { LocalController, LocalError } from '../local-hermes/controller';
 import { runtimeKey, BrokerConfig, type RuntimeDriver } from './docker';
 import { bindingSchema, ownerId, phases, profileName, type DockerBinding, type DockerStatus } from './types';
+import { codexAction, codexStatus, codexStates, type CodexStatus } from './oauth';
 import { profileUpdate, profileTest, testCodes, type ProfileSettings, type ProfileTestResult } from './settings';
 const key = () => randomUUID().replaceAll('-', '');
 const storedSchema = z.object({ owner: ownerId, generation: z.number().int(), phase: z.enum(phases), error: z.string().nullable(), cleanupRequired: z.boolean().default(false),
   bindings: z.array(bindingSchema), confirmed: z.array(z.string()).default([]), pending: z.record(z.string(), z.object({ profile: profileName, name: z.string() })),
+  logins: z.record(z.string(), z.object({ bindingId: z.string(), sessionId: z.string().uuid(), state: z.enum(codexStates), expiresAt: z.number() })).default({}),
   tests: z.record(z.string(), z.object({ bindingId: z.string(), revision: z.string(), checkedAt: z.string(), code: z.enum(testCodes) })).default({}) });
 type Stored = z.infer<typeof storedSchema>;
 
@@ -30,6 +32,13 @@ export class DockerBroker {
   async expireLeases() {
     for (const [owner, s] of this.states) if (!['disabled', 'stopped', 'stopping'].includes(s.phase) && ((this.leases.get(owner)?.until ?? 0) <= Date.now() || s.cleanupRequired))
       await this.stop(owner).catch(() => {});
+    for (const [owner, s] of this.states) {
+      const pending = this.pendingLogin(owner);
+      if (pending && pending.expiresAt <= Date.now() && s.phase === 'ready') {
+        await this.codexMutation(owner, pending.bindingId, { action: 'cancel', sessionId: pending.sessionId }).catch(() => {});
+        if (pending.state === 'cancelled') { pending.state = 'expired'; this.save(s); }
+      }
+    }
   }
   private authorized(owner: string, create = false) {
     if ((this.leases.get(owner)?.until ?? 0) <= Date.now()) throw new LocalError(403, 'Runtime authorization expired. The application worker must renew it.');
@@ -53,6 +62,7 @@ export class DockerBroker {
       const state = storedSchema.parse(JSON.parse(readFileSync(path.join(dir, 'runtime.json'), 'utf8')));
       if (runtimeKey(state.owner) !== name) throw new Error('Runtime owner mismatch');
       if (!['stopped', 'disabled'].includes(state.phase)) {
+        for (const login of Object.values(state.logins)) if (login.state === 'pending') login.state = 'interrupted';
         state.phase = 'interrupted'; state.cleanupRequired = true; state.error = 'Broker restarted. Retry to reconcile the retained runtime and profiles; uncertain chat work is not replayed.';
       }
       this.states.set(state.owner, state);
@@ -64,7 +74,7 @@ export class DockerBroker {
     let s = this.states.get(owner);
     if (!s && create) {
       if (this.states.size >= this.config.maxUsers) throw new LocalError(409, 'Personal runtime capacity reached.');
-      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {} };
+      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {} };
       const dir = path.join(this.config.stateDir, runtimeKey(owner));
       mkdirSync(dir, { mode: 0o700 }); this.states.set(owner, s); this.save(s);
     }
@@ -116,6 +126,13 @@ export class DockerBroker {
         for (const b of s.bindings) { await this.controllers.get(b.bindingId)?.stop(); this.controllers.delete(b.bindingId); }
         current();
         await this.driver.ensure(owner, phase => { current(); s.phase = phase; this.save(s); }); current();
+        // Retained device flows are never resumed after runtime/broker restart.
+        for (const b of s.bindings) if (this.driver.codex) {
+          const login = Object.values(s.logins).filter(v => v.bindingId === b.bindingId).at(-1);
+          await this.driver.codex(owner, b.profile, b.identity, { action: 'recover',
+            ...(login && ['pending', 'interrupted'].includes(login.state) ? { sessionId: login.sessionId } : {}) });
+        }
+        for (const login of Object.values(s.logins)) if (login.state === 'pending') login.state = 'interrupted';
         s.phase = 'pairing'; this.save(s);
         const defaultProfile = (await this.driver.profiles(owner)).find(p => p.name === 'default');
         if (!defaultProfile) throw new LocalError(409, 'The native default profile is not initialized. Inspect this runtime in Hermes.');
@@ -149,6 +166,7 @@ export class DockerBroker {
   }
   async stop(owner: string) {
     const s = this.state(owner); if (!s) return;
+    for (const login of Object.values(s.logins)) if (login.state === 'pending') login.state = 'interrupted';
     ++s.generation; s.cleanupRequired = true; s.phase = 'stopping'; s.error = null; this.save(s);
     await this.exclusive(owner, async () => {
       try { await this.driver.stop(owner); }
@@ -183,6 +201,7 @@ export class DockerBroker {
     if (input.profile === 'default') throw new LocalError(400, 'The default profile is paired automatically.');
     return this.exclusive(owner, async () => {
       this.authorized(owner, true);
+      if (this.pendingLogin(owner)) throw new LocalError(409, 'Finish or cancel subscription sign-in first.');
       const s = await this.ready(owner);
       const found = (await this.driver.profiles(owner)).find(p => p.name === input.profile && p.identity === input.identity);
       if (!found) throw new LocalError(409, 'The discovered profile changed. Refresh Unlinked profiles.');
@@ -193,6 +212,7 @@ export class DockerBroker {
     const input = z.object({ requestId: z.string().uuid(), name: z.string().trim().min(1).max(80) }).strict().parse(raw);
     return this.exclusive(owner, async () => {
       this.authorized(owner, true);
+      if (this.pendingLogin(owner)) throw new LocalError(409, 'Finish or cancel subscription sign-in first.');
       const s = await this.ready(owner);
       let pending = s.pending[input.requestId];
       if (!pending) {
@@ -227,8 +247,9 @@ export class DockerBroker {
     return { ...value, lastTest: lastTest ? { code: lastTest.code, checkedAt: lastTest.checkedAt, revision: lastTest.revision } : null };
     });
   }
-  private async maintain<T>(owner: string, id: string, run: (s: Stored, b: DockerBinding, current: () => void) => Promise<T>) {
+  private async maintain<T>(owner: string, id: string, run: (s: Stored, b: DockerBinding, current: () => void) => Promise<T>, oauth = false) {
     return this.exclusive(owner, async () => {
+      if (!oauth && this.pendingLogin(owner)) throw new LocalError(409, 'Finish or cancel subscription sign-in first.');
       const s = await this.ready(owner), b = this.binding(owner, id), generation = ++s.generation;
       this.maintaining.add(owner);
       const release: (() => void)[] = [];
@@ -290,6 +311,75 @@ export class DockerBroker {
       return { code: result.code, revision: result.revision, checkedAt: result.checkedAt };
     });
   }
+  private pendingLogin(owner: string) {
+    return Object.values(this.state(owner)?.logins ?? {}).find(v => v.state === 'pending');
+  }
+  async codexState(owner: string, id: string): Promise<CodexStatus> {
+    return this.exclusive(owner, async () => {
+      await this.ready(owner); const b = this.binding(owner, id);
+      if (!this.driver.codex) throw new LocalError(503, 'Native subscription login is unavailable.');
+      return codexStatus.parse(await this.driver.codex(owner, b.profile, b.identity, { action: 'read' }));
+    });
+  }
+  async codexMutation(owner: string, id: string, raw: unknown): Promise<CodexStatus> {
+    const input = codexAction.parse(raw);
+    return this.maintain(owner, id, async (s, b, current) => {
+      if (!this.driver.codex || !this.driver.settings || !this.driver.reopen) throw new LocalError(503, 'Native subscription login is unavailable.');
+      const pending = this.pendingLogin(owner);
+      if (pending && pending.bindingId !== id) throw new LocalError(409, 'Finish sign-in on your other profile first.');
+      const latest = Object.values(s.logins).filter(v => v.bindingId === id).at(-1);
+      let receipt: Stored['logins'][string] | undefined;
+      if (input.action === 'start') {
+        receipt = s.logins[input.requestId];
+        if (receipt) {
+          if (receipt.bindingId !== id) throw new LocalError(409, 'This request belongs to another profile.');
+          if (receipt.state !== 'pending') return { state: receipt.state, sessionId: receipt.sessionId };
+          return codexStatus.parse(await this.driver.codex(owner, b.profile, b.identity, { action: 'read' }));
+        }
+        if (pending) throw new LocalError(409, 'Finish or cancel the existing sign-in first.');
+        if (this.config.network === 'none') return { state: 'blocked' };
+        if (Object.keys(s.logins).length >= 128) throw new LocalError(409, 'Sign-in receipt capacity reached. Ask the operator to archive settled receipts.');
+      } else if (input.action === 'poll' || input.action === 'cancel') {
+        receipt = Object.values(s.logins).find(v => v.sessionId === input.sessionId && v.bindingId === id);
+        if (!receipt || receipt !== latest) throw new LocalError(409, 'This sign-in is stale. Reload this profile.');
+        if (input.action === 'poll' && receipt.state !== 'pending') return { state: receipt.state, sessionId: receipt.sessionId };
+        if (input.action === 'cancel' && receipt.state === 'cancelled') return { state: 'cancelled', sessionId: receipt.sessionId };
+      } else if (pending) throw new LocalError(409, 'Cancel the pending sign-in first.');
+      if (input.action === 'start' || input.action === 'disconnect') {
+        const before = await this.driver.settings(owner, b.profile, b.identity); current();
+        if (before.revision !== input.revision) throw new LocalError(409, 'Profile settings changed. Reload before signing in.');
+        if (!before.editableProviders['openai-codex'] || (input.action === 'start' && before.provider !== 'openai-codex'))
+          throw new LocalError(409, 'Save the ChatGPT / Codex provider and reconcile unsupported native routing first.');
+      }
+      try {
+        if (input.action !== 'poll') {
+          await this.driver.stop(owner);
+          for (const binding of s.bindings) { await this.controllers.get(binding.bindingId)?.stop(); this.controllers.delete(binding.bindingId); }
+          current(); await this.driver.reopen(owner); current();
+        }
+        if (input.action === 'start') {
+          receipt = { bindingId: id, sessionId: randomUUID(), state: 'pending', expiresAt: Date.now() + 900000 };
+          s.logins[input.requestId] = receipt; this.save(s);
+        }
+        const result = codexStatus.parse(await this.driver.codex(owner, b.profile, b.identity,
+          input.action === 'start' ? { action: 'start', revision: input.revision, sessionId: receipt!.sessionId } : input));
+        current();
+        if (receipt) {
+          if (result.sessionId && result.sessionId !== receipt.sessionId) throw new LocalError(503, 'Native sign-in identity mismatch.');
+          receipt.state = result.state;
+          if (result.expiresAt) receipt.expiresAt = Math.min(result.expiresAt, receipt.expiresAt);
+        }
+        if (input.action === 'disconnect' && latest) latest.state = 'cancelled';
+        this.save(s);
+        return result;
+      } catch {
+        if (receipt) receipt.state = 'interrupted';
+        try { await this.driver.stop(owner); s.cleanupRequired = false; } catch { s.cleanupRequired = true; }
+        s.phase = 'error'; s.error = 'Sign-in could not be confirmed. Restart your runtime and reload. An interrupted grant will not be replayed.'; this.save(s);
+        throw new LocalError(503, s.error);
+      }
+    }, true);
+  }
   async controller(b: DockerBinding) {
     const profiles = await this.driver.profiles(b.ownerId);
     if (!profiles.some(p => p.name === b.profile && p.identity === b.identity)) throw new LocalError(409, 'Retained native profile identity changed.');
@@ -319,6 +409,7 @@ export class DockerBroker {
   async forRequest(owner: string, id: string) {
     return this.exclusive(owner, async () => {
     await this.ready(owner);
+    if (this.pendingLogin(owner)) throw new LocalError(409, 'Finish or cancel subscription sign-in first.');
     if (this.maintaining.has(owner)) throw new LocalError(409, 'Profile settings are being updated or tested. Try again after they settle.');
     const value = await this.controller(this.binding(owner, id));
     if (this.maintaining.has(owner)) throw new LocalError(409, 'Profile settings are being updated or tested. Try again after they settle.');

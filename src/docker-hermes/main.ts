@@ -29,6 +29,12 @@ export async function listenBroker(broker: DockerBroker) {
     if (req.method === 'POST' && url === '/control/link') return json(res, 200, await broker.link(owner, await body(req)));
     const resource = /^\/resources\/([a-f0-9]{32})$/.exec(url);
     if (req.method === 'GET' && resource) return json(res, 200, await broker.resources(owner, resource[1]));
+    const codex = /^\/codex\/([a-f0-9]{32})$/.exec(url);
+    if (codex) {
+      if (req.method === 'GET') return json(res, 200, await broker.codexState(owner, codex[1]));
+      if (req.method === 'POST') return json(res, 200, await broker.codexMutation(owner, codex[1], await body(req)));
+      throw new LocalError(405, 'Method not allowed.');
+    }
     const settings = /^\/settings\/([a-f0-9]{32})(\/test)?$/.exec(url);
     if (settings) {
       if (req.method === 'GET' && !settings[2]) return json(res, 200, await broker.profileSettings(owner, settings[1]));

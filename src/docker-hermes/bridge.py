@@ -8,6 +8,7 @@ import re
 import runpy
 import stat
 import sys
+import time
 
 ROOT = Path('/opt/data')
 SOURCE = Path('/opt/hermes')
@@ -136,6 +137,9 @@ PROVIDERS = {
     'anthropic': ('ANTHROPIC_API_KEY', 'https://api.anthropic.com', 'ANTHROPIC_BASE_URL'),
     'openrouter': ('OPENROUTER_API_KEY', 'https://openrouter.ai/api/v1', 'OPENROUTER_BASE_URL'),
 }
+CODEX = 'openai-codex'
+CODEX_DEVICE = '.collectiveui-codex-device.json'
+SUPPORTED_PROVIDERS = (*PROVIDERS, CODEX)
 SETTINGS_FILES = ('config.yaml', '.env', 'auth.json', 'provider_models_cache.json')
 JOURNAL = '.collectiveui-settings-transaction.json'
 STAGE = '.collectiveui-settings-stage'
@@ -243,6 +247,239 @@ def parse_settings(files):
     return cfg, env, auth
 
 
+def codex_models():
+    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS
+    return list(DEFAULT_CODEX_MODELS)
+
+
+def codex_connected(cfg, auth):
+    state = (auth.get('providers') or {}).get(CODEX) or {}
+    tokens = state.get('tokens') or {}
+    return bool(tokens.get('access_token') and tokens.get('refresh_token') and
+                (cfg.get('providers') or {}).get(CODEX, {}).get('enabled') is not False)
+
+
+def codex_simple_route(cfg, env, auth):
+    from hermes_cli.auth import DEFAULT_CODEX_BASE_URL
+    model = cfg.get('model') or {}
+    model = model if isinstance(model, dict) else {}
+    entry = (cfg.get('providers') or {}).get(CODEX, {})
+    if not isinstance(entry, dict) or set(entry) - {'enabled'}:
+        return False
+    if any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode', 'openai_runtime')):
+        return False
+    if env.get('HERMES_CODEX_BASE_URL', DEFAULT_CODEX_BASE_URL).rstrip('/') != DEFAULT_CODEX_BASE_URL.rstrip('/'):
+        return False
+    if model.get('base_url') and model['base_url'].rstrip('/') != DEFAULT_CODEX_BASE_URL.rstrip('/'):
+        return False
+    if any(isinstance(p, dict) and p.get('name') == CODEX for p in cfg.get('custom_providers', [])):
+        return False
+    entries = (auth.get('credential_pool') or {}).get(CODEX, [])
+    return isinstance(entries, list) and all(isinstance(e, dict) and e.get('source') == 'device_code' and
+        (not e.get('base_url') or e['base_url'].rstrip('/') == DEFAULT_CODEX_BASE_URL.rstrip('/')) for e in entries)
+
+
+def commit_native_settings(fd, original, updated):
+    if snapshot(fd) != original:
+        raise ValueError('native files changed during operation')
+    atomic_at(fd, JOURNAL, json.dumps(original))
+    try:
+        restore_settings(fd, updated)
+        os.unlink(JOURNAL, dir_fd=fd)
+        os.fsync(fd)
+    except BaseException:
+        recover_settings(fd)
+        raise
+
+
+def change_codex_auth(fd, tokens=None):
+    """New grant/local removal only. Never refresh, inherit or copy a grant to another profile."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    files = snapshot(fd)
+    with settings_stage(fd) as stage:
+        for name, value in files.items():
+            if value is not None:
+                p = Path(stage) / name
+                p.write_text(value)
+                p.chmod(0o600)
+        previous = dict(os.environ)
+        os.environ.update(HERMES_HOME=stage, HOME=str(Path(stage) / 'home'))
+        scope = set_hermes_home_override(stage)
+        try:
+            from hermes_cli.auth import clear_provider_auth, _save_codex_tokens, unsuppress_credential_source, suppress_credential_source, _load_auth_store
+            from hermes_cli.config import read_user_config_raw, save_config
+            from agent.credential_pool import load_pool
+            clear_provider_auth(CODEX)
+            if tokens is not None:
+                if any(not isinstance(tokens.get(k), str) or not tokens[k] for k in ('access_token', 'refresh_token')):
+                    raise ValueError('incomplete native grant')
+                _save_codex_tokens({k: tokens[k] for k in ('access_token', 'refresh_token')}, write_through=False)
+                unsuppress_credential_source(CODEX, 'device_code')
+                entries = load_pool(CODEX).entries()
+                if not entries or any(e.source != 'device_code' or e.runtime_api_key != tokens['access_token'] for e in entries):
+                    raise ValueError('native credential pool reconciliation failed')
+            else:
+                suppress_credential_source(CODEX, 'device_code')
+            config = read_user_config_raw(Path(stage) / 'config.yaml')
+            config.setdefault('providers', {}).setdefault(CODEX, {})['enabled'] = tokens is not None
+            save_config(config, strip_defaults=False)
+            if codex_connected(config, _load_auth_store()) != (tokens is not None):
+                raise ValueError('native auth reconciliation failed')
+            with directory_fd(stage) as stage_fd:
+                updated = snapshot(stage_fd)
+        finally:
+            reset_hermes_home_override(scope)
+            os.environ.clear()
+            os.environ.update(previous)
+    commit_native_settings(fd, files, updated)
+
+
+def codex_device(fd):
+    try:
+        value = json.loads(read_at(fd, CODEX_DEVICE, 16384, strict=True))
+    except FileNotFoundError:
+        return None
+    if not isinstance(value, dict) or not re.fullmatch(r'[a-f0-9-]{36}', value.get('sessionId', '')):
+        raise ValueError('unsafe device state')
+    return value
+
+
+def codex_public(value):
+    result = {k: value[k] for k in ('state', 'sessionId')}
+    if value['state'] == 'pending':
+        result.update(userCode=value['user_code'], verificationUrl='https://auth.openai.com/codex/device',
+                      expiresAt=value['expiresAt'], nextPollAt=value['nextPollAt'])
+    return result
+
+
+def finish_codex_device(fd, value, state):
+    clean = {'state': state, 'sessionId': value['sessionId']}
+    atomic_at(fd, CODEX_DEVICE, json.dumps(clean))
+    return clean
+
+
+def recover_codex_device(fd):
+    value = codex_device(fd)
+    if value and value['state'] in ('pending', 'exchanging'):
+        change_codex_auth(fd)
+        finish_codex_device(fd, value, 'interrupted')
+
+
+def profile_codex(name, expected, data):
+    parts, identity = profile(name)
+    if identity != expected:
+        raise ValueError('profile identity changed')
+    action = data.get('action')
+    if action not in ('read', 'start', 'poll', 'cancel', 'disconnect', 'recover'):
+        raise ValueError('invalid auth operation')
+    with directory(parts) as fd:
+        if action == 'read':
+            value = codex_device(fd)
+            if value and value['state'] == 'pending':
+                return codex_public(value)
+            cfg, _, auth = parse_settings(snapshot(fd))
+            return {'state': 'connected' if codex_connected(cfg, auth) else 'disconnected'}
+        lock = os.open('.collectiveui-native.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            if not stat.S_ISREG(os.fstat(lock).st_mode) or os.fstat(lock).st_nlink != 1:
+                raise ValueError('unsafe native lock')
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert_no_other_native(name, ROOT.joinpath(*parts))
+            recover_settings(fd)
+            value = codex_device(fd)
+            files = snapshot(fd)
+            if action == 'recover':
+                recover_codex_device(fd)
+                if value and data.get('sessionId') == value['sessionId'] and value['state'] == 'connected':
+                    # Native commit can finish just before broker revocation/death. A
+                    # broker-interrupted receipt must clear that exact unconfirmed grant.
+                    change_codex_auth(fd)
+                    finish_codex_device(fd, value, 'interrupted')
+                return {'state': 'interrupted'}
+            if action in ('start', 'disconnect'):
+                if data.get('revision') != settings_revision(files):
+                    return {'error': 'conflict'}
+                if not codex_simple_route(*parse_settings(files)):
+                    return {'error': 'unsupported'}
+            if action in ('poll', 'cancel'):
+                if not value or value['sessionId'] != data.get('sessionId'):
+                    return {'error': 'conflict'}
+            if action in ('cancel', 'disconnect'):
+                change_codex_auth(fd)
+                if value:
+                    finish_codex_device(fd, value, 'cancelled')
+                return {'state': 'cancelled' if action == 'cancel' else 'disconnected'}
+            if action == 'start':
+                if not re.fullmatch(r'[a-f0-9-]{36}', data.get('sessionId', '')):
+                    raise ValueError('invalid session')
+                if settings_view(files)['provider'] != CODEX:
+                    return {'error': 'unsupported'}
+                change_codex_auth(fd)  # Reconnect replaces this profile's grant; cancel stays disconnected.
+                value = {'sessionId': data['sessionId'], 'state': 'exchanging'}
+                atomic_at(fd, CODEX_DEVICE, json.dumps(value))
+            elif value['state'] == 'exchanging':
+                recover_codex_device(fd)
+                return {'state': 'interrupted', 'sessionId': value['sessionId']}
+            elif value['state'] != 'pending':
+                return codex_public(value)
+            # Bound the ENTIRE native operation, including its supported transport retries.
+            import signal
+            class NativeDeadline(BaseException):
+                pass
+            def timeout(_signum, _frame):
+                # Native transport retries catch Exception/OSError. The overall deadline
+                # must escape those handlers without replaying a token exchange.
+                raise NativeDeadline('native device operation deadline')
+            previous_handler = signal.signal(signal.SIGALRM, timeout)
+            signal.alarm(20)
+            try:
+                import httpx
+                from hermes_cli.web_routers.oauth import _codex_request_user_code, _codex_exchange_tokens
+                from hermes_cli.auth_codex import _codex_http_client
+                if action == 'start':
+                    device = _codex_request_user_code(httpx)
+                    if not isinstance(device['user_code'], str) or not re.fullmatch(r'[A-Z0-9-]{3,32}', device['user_code']):
+                        raise ValueError('invalid device code')
+                    interval = max(3, min(60, int(device['interval'])))
+                    value.update(state='pending', user_code=device['user_code'], device_auth_id=device['device_auth_id'],
+                                 interval=interval, expiresAt=(time.time() + 900) * 1000, nextPollAt=(time.time() + interval) * 1000)
+                    atomic_at(fd, CODEX_DEVICE, json.dumps(value))
+                    return codex_public(value)
+                if time.time() * 1000 >= value['expiresAt']:
+                    return finish_codex_device(fd, value, 'expired')
+                if time.time() * 1000 < value['nextPollAt']:
+                    return codex_public(value)
+                value['nextPollAt'] = (time.time() + value['interval']) * 1000
+                atomic_at(fd, CODEX_DEVICE, json.dumps(value))
+                # Native poll helper blocks for15min. Use its client and exact endpoint for one poll.
+                with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+                    response = client.post('https://auth.openai.com/api/accounts/deviceauth/token',
+                        json={'device_auth_id': value['device_auth_id'], 'user_code': value['user_code']},
+                        headers={'Content-Type': 'application/json'})
+                if response.status_code in (403, 404):
+                    return codex_public(value)  # Native pending response; a proxy may also block it.
+                if response.status_code != 200:
+                    return finish_codex_device(fd, value, 'error')
+                # Durable exchange marker: an interrupted exchange is NEVER automatically replayed.
+                value['state'] = 'exchanging'
+                atomic_at(fd, CODEX_DEVICE, json.dumps(value))
+                tokens = _codex_exchange_tokens(httpx, response.json())
+                if time.time() * 1000 >= value['expiresAt'] or profile(name)[1] != expected:
+                    return finish_codex_device(fd, value, 'expired')
+                change_codex_auth(fd, tokens)
+                return finish_codex_device(fd, value, 'connected')
+            except (Exception, NativeDeadline):
+                # No exceptions, token previews, account identity or upstream bodies cross IPC.
+                signal.alarm(0)
+                change_codex_auth(fd)
+                return finish_codex_device(fd, value, 'error')
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous_handler)
+        finally:
+            os.close(lock)
+
+
 def settings_view(files):
     cfg, env, auth = parse_settings(files)
     model = cfg.get('model', {})
@@ -260,22 +497,25 @@ def settings_view(files):
     if effort is None:
         effort = ''
     supported = effort in EFFORTS and (turns is None or type(turns) is int and 1 <= turns <= 1000)
-    return {'revision': settings_revision(files), 'provider': model.get('provider') if model.get('provider') in PROVIDERS else None,
+    return {'revision': settings_revision(files), 'provider': model.get('provider') if model.get('provider') in SUPPORTED_PROVIDERS else None,
             'model': name if isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}', name) else '',
             'reasoningEffort': effort if effort in EFFORTS else '', 'maxTurns': turns if supported else None,
             'advancedSupported': supported,
-            'editableProviders': {p: simple_route(cfg, env, auth, p) for p in PROVIDERS},
-            'credentials': {p: bool(env.get(v[0])) for p, v in PROVIDERS.items()}}
+            'editableProviders': {p: simple_route(cfg, env, auth, p) for p in SUPPORTED_PROVIDERS},
+            'credentials': {**{p: bool(env.get(v[0])) for p, v in PROVIDERS.items()}, CODEX: codex_connected(cfg, auth)},
+            'codexModels': codex_models()}
 
 
 def validate_settings_input(data):
     if set(data) != {'revision', 'provider', 'model', 'reasoningEffort', 'maxTurns', 'credential'}:
         raise ValueError('invalid settings')
-    if data['provider'] not in PROVIDERS or not isinstance(data['model'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}', data['model']):
+    if data['provider'] not in SUPPORTED_PROVIDERS or not isinstance(data['model'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}', data['model']):
         raise ValueError('invalid provider or model')
     if data['reasoningEffort'] not in EFFORTS or not (data['maxTurns'] is None or type(data['maxTurns']) is int and 1 <= data['maxTurns'] <= 1000):
         raise ValueError('invalid agent settings')
     credential = data['credential']
+    if data['provider'] == CODEX and credential != {'action': 'keep'}:
+        raise ValueError('use subscription connection controls')
     if not isinstance(credential, dict) or credential.get('action') not in ('keep', 'replace', 'clear'):
         raise ValueError('invalid credential action')
     if credential['action'] == 'replace':
@@ -289,6 +529,8 @@ def validate_settings_input(data):
 
 def simple_route(cfg, env, auth, provider):
     """Imported/custom/OAuth/multi-key routes require native maintenance, never silent conversion."""
+    if provider == CODEX:
+        return codex_simple_route(cfg, env, auth)
     key, url, url_key = PROVIDERS[provider]
     model = cfg.get('model', {})
     model = model if isinstance(model, dict) else {}
@@ -315,7 +557,7 @@ def stage_settings(files, data, fd):
     provider = data['provider']
     if not settings_view(files)['advancedSupported'] or not simple_route(cfg, env, auth, provider):
         return {'error': 'unsupported'}
-    key = PROVIDERS[provider][0]
+    key = PROVIDERS[provider][0] if provider in PROVIDERS else None
     with settings_stage(fd) as stage:
         os.chmod(stage, 0o700)
         for name, value in files.items():
@@ -354,7 +596,7 @@ def stage_settings(files, data, fd):
             agent = cfg.setdefault('agent', {})
             agent['max_turns'] = data['maxTurns']
             agent['reasoning_effort'] = data['reasoningEffort'] or None
-            saved_key = load_env().get(key)
+            saved_key = load_env().get(key) if key else codex_connected({}, _load_auth_store())
             # A cleared/missing local key must NOT silently borrow the root profile's auth pool.
             cfg.setdefault('providers', {}).setdefault(provider, {})['enabled'] = bool(saved_key)
             save_config(cfg, strip_defaults=False)
@@ -437,6 +679,8 @@ def test_settings(files):
         return 'not_configured'
     if not simple_route(cfg, env, auth, provider):
         return 'unsupported'
+    if provider == CODEX:
+        return 'unsupported'  # This adapter reports sign-in, never claims inference is verified.
     key, base_url, _ = PROVIDERS[provider]
     if (cfg.get('providers') or {}).get(provider, {}).get('enabled') is False:
         return 'not_configured'
@@ -527,6 +771,11 @@ def main():
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             result = profile_settings(sys.argv[2], sys.argv[3], op, data)
         print(json.dumps(result))
+    elif op == 'codex':
+        data = json.loads(sys.stdin.read(16385))
+        with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            result = profile_codex(sys.argv[2], sys.argv[3], data)
+        print(json.dumps(result))
     elif op == 'gateway':
         name, expected = sys.argv[2:4]
         parts, identity = profile(name)
@@ -540,6 +789,7 @@ def main():
         assert_no_other_native(name, home)
         with directory(parts) as fd:
             recover_settings(fd)
+            recover_codex_device(fd)
         if profile(name)[1] != expected:
             raise ValueError('profile changed during process admission')
         os.environ.update(HERMES_HOME=str(home), HOME=str(home / 'home'))

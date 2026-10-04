@@ -91,6 +91,29 @@ suite('personal Docker Hermes app authorization and recovery (disposable Postgre
       await expect(actions.continueSharedConversation(token)).rejects.toThrow('Link not found');
     } finally { f.principal = alice; await db.delete(conversations).where(eq(conversations.id, conversationId)); }
   });
+  it('subscription routes preserve owner, enrollment, CSRF and fixed-input boundaries', async () => {
+    const { GET, POST } = await import('@/app/api/bots/[id]/native/codex/route');
+    const ctx = { params: Promise.resolve({ id: binding.botId }) };
+    const url = `http://localhost/api/bots/${binding.botId}/native/codex`;
+    const input = { action: 'start', requestId: crypto.randomUUID(), revision: 'a'.repeat(64) };
+    const request = (body: unknown, origin = 'http://localhost') => new Request(url, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    vi.stubEnv('AUTH_URL', 'http://localhost'); f.principal = bob; f.calls = [];
+    expect([403, 404]).toContain((await GET(new Request(url), ctx)).status);
+    expect([403, 404]).toContain((await POST(request(input), ctx)).status); expect(f.calls).toHaveLength(0);
+    f.principal = alice;
+    expect((await POST(request(input, 'https://cross-site.invalid'), ctx)).status).toBe(403);
+    const log = vi.spyOn(console, 'error');
+    try {
+      const denied = await POST(request({ ...input, access_token: 'synthetic-must-not-escape', url: 'https://untrusted.invalid' }), ctx);
+      expect(denied.status).toBe(400); expect(await denied.text()).not.toContain('synthetic-must-not-escape'); expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+    expect(f.calls).toHaveLength(0);
+    expect((await POST(request(input), ctx)).status).toBe(200);
+    expect(f.calls).toContainEqual({ owner: alice.user.id, action: `/codex/${binding.bindingId}` });
+    await db.update(dockerHermesEnrollments).set({ enabled: false }).where(eq(dockerHermesEnrollments.userId, alice.user.id)); f.calls = [];
+    expect((await POST(request(input), ctx)).status).toBe(403); expect(f.calls).toHaveLength(0);
+    await db.update(dockerHermesEnrollments).set({ enabled: true }).where(eq(dockerHermesEnrollments.userId, alice.user.id));
+  });
   it('settings routes enforce owner, current enrollment, origin, strict fields and write-only errors', async () => {
     const { GET, POST } = await import('@/app/api/bots/[id]/native/settings/route');
     const ctx = { params: Promise.resolve({ id: binding.botId }) };

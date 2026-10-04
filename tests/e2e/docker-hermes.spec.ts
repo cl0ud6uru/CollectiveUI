@@ -184,3 +184,70 @@ test('interrupted save reloads committed state without resending credentials or 
   expect(saves).toBe(1); expect(tests).toBe(0);
   await page.unroute(api);
 });
+
+test('subscription device login resumes after reload, cancels safely, reconnects and disconnects', async ({ page, browser }) => {
+  await login(page, 'alice');
+  const [bot] = (await pool.query("SELECT id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') AND name='Hermes'")).rows;
+  await page.goto(`/bots/${bot.id}/settings`);
+  await page.getByLabel('Model provider', { exact: true }).click();
+  await page.getByRole('option', { name: 'ChatGPT / Codex subscription', exact: true }).click();
+  await page.getByLabel('Model ID', { exact: true }).fill('fixture-pending-model');
+  await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('Saved in this native profile.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Sign in with OpenAI', exact: true }).click();
+  await expect(page.getByLabel('OpenAI verification code')).toHaveText('DEMO-CODE');
+  await expect(page.getByRole('link', { name: 'Open OpenAI verification' })).toHaveAttribute('href', 'https://auth.openai.com/codex/device');
+  await expect(page.getByLabel('Model ID', { exact: true })).toBeDisabled();
+  await page.reload(); await expect(page.getByLabel('OpenAI verification code')).toHaveText('DEMO-CODE');
+  await page.evaluate(() => localStorage.setItem('theme', 'dark')); await page.reload();
+  await page.setViewportSize({ width: 1360, height: 1850 });
+  await expect(page.getByLabel('OpenAI verification code')).toBeVisible();
+  await page.screenshot({ path: '/tmp/hermes-codex-device-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: '/tmp/hermes-codex-device-mobile.png' });
+  await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
+  await expect(page.getByText('Sign-in cancelled. This profile is disconnected.', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Model ID', { exact: true })).toBeEnabled();
+  await page.getByLabel('Model ID', { exact: true }).fill('fixture-codex-model');
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Sign in with OpenAI', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Sign in with OpenAI', exact: true }).click();
+  await expect(page.getByText('Signed in to ChatGPT / Codex for this profile. Model access has not been tested.', { exact: true })).toBeVisible({ timeout: 20000 });
+  await page.reload(); await expect(page.getByRole('button', { name: 'Reconnect with OpenAI', exact: true })).toBeEnabled();
+  await page.screenshot({ path: '/tmp/hermes-codex-connected-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: 'Reconnect with OpenAI', exact: true }).click();
+  await expect(page.getByLabel('OpenAI verification code')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
+  await expect(page.getByText('Sign-in cancelled. This profile is disconnected.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Disconnect this profile', exact: true }).click();
+  await expect(page.getByText('No subscription sign-in stored for this profile.', { exact: true })).toBeVisible();
+  const context = await browser.newContext({ ignoreHTTPSErrors: true }); const other = await context.newPage();
+  try { await login(other, 'bob'); expect([403, 404]).toContain((await other.request.get(`/api/bots/${bot.id}/native/codex`)).status()); }
+  finally { await context.close(); }
+});
+
+
+test('lost subscription mutation response reloads the native revision before retry', async ({ page }) => {
+  await login(page, 'alice');
+  const [bot] = (await pool.query("SELECT id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') AND name='Hermes'")).rows;
+  await page.goto(`/bots/${bot.id}/settings`);
+  await page.getByRole('button', { name: 'Sign in with OpenAI', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Reconnect with OpenAI', exact: true })).toBeEnabled({ timeout: 20000 });
+  let dropped = false;
+  await page.route(`**/api/bots/${bot.id}/native/codex`, async route => {
+    if (!dropped && route.request().method() === 'POST' && route.request().postDataJSON().action === 'disconnect') {
+      dropped = true; await route.fetch(); await route.abort('failed');
+    } else await route.continue();
+  });
+  await page.getByRole('button', { name: 'Disconnect this profile', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.getByRole('button', { name: 'Reload sign-in status', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Sign in with OpenAI', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Sign in with OpenAI', exact: true }).click();
+  await expect(page.getByLabel('OpenAI verification code')).toHaveText('DEMO-CODE');
+  await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
+  await expect(page.getByText('Sign-in cancelled. This profile is disconnected.', { exact: true })).toBeVisible();
+});

@@ -201,7 +201,7 @@ describe('personal Docker Hermes durable broker', () => {
 
 describe('personal native profile settings transactions', () => {
   const revision = 'a'.repeat(64);
-  const initial = () => ({ revision, provider: 'openai-api' as const, model: 'fixture-model', reasoningEffort: '' as const, maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false } });
+  const initial = () => ({ revision, provider: 'openai-api' as const, model: 'fixture-model', reasoningEffort: '' as const, maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': false } });
   async function fixture() {
     await enable('alice'); const b = (await broker.status('alice')).bindings[0];
     let saved: import('@/docker-hermes/settings').ProfileSettings = initial();
@@ -297,5 +297,107 @@ describe('personal native profile settings transactions', () => {
     await broker.testProfile('alice', b.bindingId, input);
     expect(d.testSettings).toHaveBeenCalledTimes(1);
     expect(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8')).toContain('uncertain');
+  });
+});
+
+describe('native Codex subscription sessions', () => {
+  const revision = 'a'.repeat(64);
+  async function fixture(online = true) {
+    if (online) config.network = 'proxy';
+    await enable('alice'); const b = (await broker.status('alice')).bindings[0];
+    const d: RuntimeDriver = driver;
+    let state: import('@/docker-hermes/oauth').CodexStatus = { state: 'disconnected' };
+    d.settings = vi.fn(async (): Promise<import('@/docker-hermes/settings').ProfileSettings> => ({ revision, provider: 'openai-codex', model: 'fixture-model', reasoningEffort: '', maxTurns: null, advancedSupported: true,
+      editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true },
+      credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': state.state === 'connected' } }));
+    d.reopen = vi.fn(async owner => { driver.active.add(owner); });
+    d.codex = vi.fn(async (_owner, _profile, _identity, raw) => {
+      const v = raw as { action: string; sessionId?: string };
+      if (v.action === 'start') state = { state: 'pending', sessionId: v.sessionId!, userCode: 'ABCD-EFGH', verificationUrl: 'https://auth.openai.com/codex/device', expiresAt: Date.now() + 900000, nextPollAt: Date.now() + 5000 };
+      if (v.action === 'cancel') state = { state: 'cancelled', sessionId: v.sessionId };
+      if (v.action === 'disconnect' || v.action === 'recover') state = { state: 'disconnected' };
+      return state;
+    });
+    return { b, d, input: { action: 'start' as const, requestId: randomUUID(), revision }, set: (v: typeof state) => { state = v; } };
+  }
+  it('blocks network none without native changes, enforces owner and strict fixed inputs', async () => {
+    const { b, d, input } = await fixture(false); await enable('bob'); vi.mocked(d.codex!).mockClear();
+    await expect(broker.codexMutation('bob', b.bindingId, input)).rejects.toThrow('belong');
+    await expect(broker.codexState('bob', b.bindingId)).rejects.toThrow('belong');
+    await expect(broker.codexMutation('alice', b.bindingId, { ...input, url: 'http://internal.invalid' })).rejects.toThrow();
+    expect(await broker.codexMutation('alice', b.bindingId, input)).toEqual({ state: 'blocked' });
+    expect(d.codex).not.toHaveBeenCalled(); expect(d.reopen).not.toHaveBeenCalled();
+  });
+  it('deduplicates start, fences all work/settings, polls without restart, keeps codes out of journal', async () => {
+    const { b, d, input } = await fixture();
+    const [one, two] = await Promise.all([broker.codexMutation('alice', b.bindingId, input), broker.codexMutation('alice', b.bindingId, input)]);
+    expect(one).toEqual(two); expect(d.reopen).toHaveBeenCalledTimes(1);
+    await expect(broker.forRequest('alice', b.bindingId)).rejects.toThrow('sign-in');
+    await expect(broker.create('alice', { name: 'Blocked', requestId: randomUUID() })).rejects.toThrow('sign-in');
+    await expect(broker.updateProfile('alice', b.bindingId, { revision, provider: 'openai-codex', model: 'changed', reasoningEffort: '', maxTurns: null, credential: { action: 'keep' } })).rejects.toThrow('sign-in');
+    const journal = await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8');
+    expect(journal).not.toContain('ABCD-EFGH'); expect(journal).not.toContain('userCode');
+    await broker.codexMutation('alice', b.bindingId, { action: 'poll', sessionId: one.sessionId });
+    expect(d.reopen).toHaveBeenCalledTimes(1);
+    await broker.codexMutation('alice', b.bindingId, { action: 'cancel', sessionId: one.sessionId });
+    expect((await broker.codexMutation('alice', b.bindingId, { action: 'poll', sessionId: one.sessionId })).state).toBe('cancelled');
+    expect(d.reopen).toHaveBeenCalledTimes(2);
+    const newer = await broker.codexMutation('alice', b.bindingId, { ...input, requestId: randomUUID() });
+    expect(newer.sessionId).not.toBe(one.sessionId);
+    await expect(broker.codexMutation('alice', b.bindingId, { action: 'cancel', sessionId: one.sessionId })).rejects.toThrow('stale');
+  });
+  it('serializes cancel behind polling and clears a grant completed during the race', async () => {
+    const { b, d, input, set } = await fixture(); const started = await broker.codexMutation('alice', b.bindingId, input);
+    const actual = d.codex!; let release!: () => void; let entered = false;
+    d.codex = async (...args) => {
+      if ((args[3] as { action: string }).action === 'poll') { entered = true; await new Promise<void>(r => { release = r; }); set({ state: 'connected', sessionId: started.sessionId }); }
+      return actual(...args);
+    };
+    const poll = broker.codexMutation('alice', b.bindingId, { action: 'poll', sessionId: started.sessionId });
+    await until(async () => entered);
+    let cancelled = false;
+    const cancel = broker.codexMutation('alice', b.bindingId, { action: 'cancel', sessionId: started.sessionId }).then(v => { cancelled = true; return v; });
+    expect(cancelled).toBe(false); release(); expect((await poll).state).toBe('connected');
+    expect((await cancel).state).toBe('cancelled'); expect((await broker.codexState('alice', b.bindingId)).state).toBe('cancelled');
+  });
+  it('refuses active work and stale revisions before stopping; revocation during reopen prevents auth', async () => {
+    const { b, d, input } = await fixture();
+    await expect(broker.codexMutation('alice', b.bindingId, { ...input, revision: 'b'.repeat(64) })).rejects.toThrow('changed');
+    const pair = await broker.forRequest('alice', b.bindingId);
+    const run = pair.controller.begin(pair.nativeBindingId, { input: 'approve', session_id: 'oauth-busy' }, 'oauth-busy');
+    await until(async () => pair.controller.getRun(run).status === 'waiting_for_approval');
+    await expect(broker.codexMutation('alice', b.bindingId, input)).rejects.toThrow('unfinished');
+    expect(d.reopen).not.toHaveBeenCalled();
+    await broker.stop('alice'); await enable('alice'); vi.mocked(d.codex!).mockClear();
+    let release!: () => void; let entered = false;
+    d.reopen = async owner => { entered = true; await new Promise<void>(r => { release = r; }); driver.active.add(owner); };
+    const start = broker.codexMutation('alice', b.bindingId, input).catch(e => e);
+    await until(async () => entered); const stop = broker.stop('alice'); release();
+    expect(await start).toBeInstanceOf(Error); await stop;
+    expect(d.codex).not.toHaveBeenCalled(); expect(driver.active.has('alice')).toBe(false);
+  });
+  it('reconciles a grant that commits during revocation using the interrupted session identity', async () => {
+    const { b, d, input, set } = await fixture(); const started = await broker.codexMutation('alice', b.bindingId, input);
+    const original = d.codex!; let release!: () => void; let entered = false;
+    d.codex = vi.fn(async (...args: Parameters<NonNullable<RuntimeDriver['codex']>>) => {
+      const action = (args[3] as { action: string }).action;
+      if (action === 'poll') { entered = true; await new Promise<void>(r => { release = r; }); set({ state: 'connected', sessionId: started.sessionId }); }
+      return original(...args);
+    });
+    const poll = broker.codexMutation('alice', b.bindingId, { action: 'poll', sessionId: started.sessionId }).catch(e => e);
+    await until(async () => entered); const stop = broker.stop('alice'); release();
+    expect(await poll).toBeInstanceOf(Error); await stop;
+    await enable('alice');
+    expect(d.codex).toHaveBeenCalledWith('alice', b.profile, b.identity, { action: 'recover', sessionId: started.sessionId });
+    expect((await broker.codexMutation('alice', b.bindingId, { action: 'poll', sessionId: started.sessionId })).state).toBe('interrupted');
+  });
+  it('recovers unfinished native login on restart and never replays the old start', async () => {
+    // config is persisted by the constructor; preserve network here for restart schema equality.
+    const { b, d, input } = await fixture(false); config.network = 'proxy';
+    const started = await broker.codexMutation('alice', b.bindingId, input);
+    await broker.close(); config.network = 'none'; broker = new DockerBroker(config, driver); await enable('alice');
+    expect(d.codex).toHaveBeenCalledWith('alice', b.profile, b.identity, { action: 'recover', sessionId: started.sessionId });
+    expect((await broker.codexMutation('alice', b.bindingId, input)).state).toBe('interrupted');
+    expect((await broker.codexMutation('alice', b.bindingId, { action: 'poll', sessionId: started.sessionId })).state).toBe('interrupted');
   });
 });
