@@ -1,5 +1,7 @@
 import sharp from "sharp";
 import { z } from "zod";
+import { PET_ANIMATIONS, PET_DIRECTIONS } from "./atlas";
+import { PET_ARCHIVE_MAX_BYTES, readPetArchive } from "./archive";
 import { HttpError } from "@/lib/authz";
 import { MANIFEST_MAX_BYTES, PET_MAX_BYTES, PET_WIDTH, type PetManifest } from "./shared";
 
@@ -81,20 +83,61 @@ export function assertPetOrigin(request: Request) {
   if (request.headers.get("origin") !== expected) throw new HttpError(403, "Invalid request origin");
 }
 
-/** Shared by private imports and admin catalog drafts; all callers authorize before decoding. */
+/** Structural checks are deterministic; visual identity, gaze semantics and animation quality need human review. */
+export async function validateV2Cells(sprite: Buffer): Promise<void> {
+  const { data, info } = await sharp(sprite, { limitInputPixels: PET_WIDTH * 2288 }).toColourspace("srgb").ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (info.width !== PET_WIDTH || info.height !== 2288) throw new HttpError(400, "V2 validation requires a 1536 × 2288 sprite sheet.");
+  const occupied = Array.from({ length: 11 }, () => Array<boolean>(8).fill(false));
+  for (let y = 0; y < info.height; y++) for (let x = 0; x < info.width; x++) {
+    if (data[(y * info.width + x) * 4 + 3] > 0) occupied[Math.floor(y / 208)][Math.floor(x / 192)] = true;
+  }
+  const errors: string[] = [];
+  PET_ANIMATIONS.forEach((state, row) => {
+    for (let column = 0; column < 8; column++) {
+      if (column < state.durations.length && !occupied[row][column]) errors.push(`${state.name} frame ${column + 1} is empty`);
+      if (column >= state.durations.length && occupied[row][column]) errors.push(`${state.name} unused cell ${column + 1} must be transparent`);
+    }
+  });
+  PET_DIRECTIONS.forEach(({ row, column, label }) => { if (!occupied[row][column]) errors.push(`look ${label} is empty`); });
+  if (errors.length) throw new HttpError(400, `Fix these v2 cells: ${errors.slice(0, 8).join("; ")}${errors.length > 8 ? `; and ${errors.length - 8} more` : ""}.`);
+}
+
+/** Shared by validation, private imports, admin drafts and export. All callers authorize before decoding. */
 export async function parsePetUpload(request: Request) {
   const type = request.headers.get("content-type") ?? "";
-  if (!type.startsWith("multipart/form-data;")) throw new HttpError(415, "Choose pet.json and a sprite sheet.");
-  const body = await readPetBody(request, PET_MAX_BYTES + MANIFEST_MAX_BYTES + 8192);
+  if (!type.startsWith("multipart/form-data;")) throw new HttpError(415, "Choose pet.json and a sprite sheet, or a pet ZIP.");
+  const body = await readPetBody(request, PET_ARCHIVE_MAX_BYTES + 8192);
   let form: FormData;
   try { form = await new Response(new Uint8Array(body), { headers: { "Content-Type": type } }).formData(); }
   catch { throw new HttpError(400, "Invalid upload."); }
-  const manifestFile = form.get("manifest"), spriteFile = form.get("sprite"), credit = form.get("credit");
   if (form.get("rights") !== "confirmed") throw new HttpError(400, "Confirm you have permission to use and share this artwork.");
-  if (form.getAll("manifest").length !== 1 || form.getAll("sprite").length !== 1 || !(manifestFile instanceof File) || !(spriteFile instanceof File) || manifestFile.name !== "pet.json" || typeof credit !== "string") throw new HttpError(400, "Choose one pet.json and one matching sprite sheet.");
-  const { spritesheetPath, ...manifest } = parsePetManifest(Buffer.from(await manifestFile.arrayBuffer()), credit);
-  if (spriteFile.name !== spritesheetPath) throw new HttpError(400, "The sprite filename must match spritesheetPath in pet.json.");
-  const sprite = await normalizePetSprite(Buffer.from(await spriteFile.arrayBuffer()), manifest.spriteVersionNumber, spriteFile.name);
+  const credit = form.get("credit");
+  if (typeof credit !== "string" || form.getAll("credit").length !== 1 || form.getAll("rights").length !== 1) throw new HttpError(400, "Supply one plain-text credit and one artwork permission confirmation.");
+  let manifestBytes: Buffer, spriteBytes: Buffer, spriteName: string;
+  const archive = form.get("archive");
+  if (archive instanceof File && archive.size) {
+    if (form.getAll("archive").length !== 1 || form.has("manifest") || form.has("sprite")) throw new HttpError(400, "Choose either a pet ZIP or the two individual files.");
+    const files = readPetArchive(Buffer.from(await archive.arrayBuffer()));
+    manifestBytes = files.get("pet.json")!;
+    spriteName = files.has("spritesheet.png") ? "spritesheet.png" : "spritesheet.webp";
+    spriteBytes = files.get(spriteName)!;
+  } else {
+    const manifestFile = form.get("manifest"), spriteFile = form.get("sprite");
+    if (form.getAll("manifest").length !== 1 || form.getAll("sprite").length !== 1 || !(manifestFile instanceof File) || !(spriteFile instanceof File) || manifestFile.name !== "pet.json") throw new HttpError(400, "Choose one pet.json and one matching sprite sheet.");
+    manifestBytes = Buffer.from(await manifestFile.arrayBuffer());
+    spriteBytes = Buffer.from(await spriteFile.arrayBuffer()); spriteName = spriteFile.name;
+  }
+  const { spritesheetPath, ...manifest } = parsePetManifest(manifestBytes, credit);
+  if (manifest.spriteVersionNumber !== 2) throw new HttpError(400, "New pets must use Codex Pet v2. Set spriteVersionNumber to 2 and provide all nine animation rows and sixteen look directions in a 1536 × 2288 sheet. Existing v1 pets remain available.");
+  if (spriteName !== spritesheetPath) throw new HttpError(400, "The sprite filename must match spritesheetPath in pet.json.");
+  // An exported archive carries its attribution; an explicit user credit may replace it.
+  if (!credit.trim()) {
+    const embedded = text(240).safeParse(JSON.parse(manifestBytes.toString("utf8")).credit ?? "");
+    if (!embedded.success) throw new HttpError(400, "The embedded credit must be plain text up to 240 characters.");
+    manifest.credit = embedded.data;
+  }
+  const sprite = await normalizePetSprite(spriteBytes, 2, spriteName);
+  await validateV2Cells(sprite);
   return { manifest, sprite, rights: "confirmed" as const };
 }
 
