@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { users, userBotPrefs } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { HttpError, listAccessibleBots } from "@/lib/authz";
-import { getSetting } from "@/lib/settings";
+import { defaultCoordinator } from "@/lib/coordinator/store";
 import { changeBotNavigation, orderBots } from "./navigation";
 
 const id = z.string().min(1).max(128);
@@ -22,9 +22,10 @@ export async function saveBotNavigation(p: Principal, raw: unknown) {
     if (!user || !fresh || user.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, "Your access changed. Sign in again.");
     const accessible = await listAccessibleBots(fresh, tx);
     const prefs = await tx.select().from(userBotPrefs).where(eq(userBotPrefs.userId, user.id));
-    const config = await getSetting("coordinator", tx);
+    // Same coordinator rule as the layout, so unsaved bots get the order the user sees before their first move.
+    const coordinatorId = (await defaultCoordinator(fresh))?.bot.id;
     const byBot = new Map(prefs.map(pref => [pref.botId, pref]));
-    const ordered = orderBots(accessible.map(b => ({ id: b.id, name: b.name, pinned: byBot.get(b.id)?.pinned ?? false, hidden: byBot.get(b.id)?.hidden ?? false, coordinator: config.enabled && config.defaultBotId === b.id })), user.prefs.botOrder);
+    const ordered = orderBots(accessible.map(b => ({ id: b.id, name: b.name, pinned: byBot.get(b.id)?.pinned ?? false, hidden: byBot.get(b.id)?.hidden ?? false, coordinator: b.id === coordinatorId })), user.prefs.botOrder);
     if (!ordered.some(b => b.id === input.botId) || (input.kind === "move" && !ordered.some(b => b.id === input.targetId)))
       throw new HttpError(403, "This bot is no longer available in your navigation. Refresh and try again.");
     const next = changeBotNavigation(ordered, input);

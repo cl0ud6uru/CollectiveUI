@@ -89,4 +89,24 @@ run("personal navigation persistence and authorization", () => {
     expect(await saved(alice)).toEqual(before);
     expect(await db.select().from(schema.userBotPrefs).where(eq(schema.userBotPrefs.userId, alice.user.id))).toEqual(pinsBefore);
   });
+  it("orders unsaved bots with the layout's coordinator rule, so a first move cannot reorder other rows", async () => {
+    const { saveBotNavigation } = await import("@/lib/bots/navigation-store");
+    const { setSetting } = await import("@/lib/settings");
+    const { db, schema } = await import("@/db");
+    const { newId } = await import("@/lib/ids");
+    const id = newId();
+    const [user] = await db.insert(schema.users).values({ id, upn: `${id}@test.invalid`, name: "Navigation Carol", authSource: "ldap" }).returning();
+    const carol: Principal = { user, groupIds: [], isAdmin: false, canCreateBots: false };
+    // A service-mode default bot is never the sidebar coordinator, so it keeps its alphabetical place.
+    const [service] = await db.insert(schema.bots).values({ name: "Navigation Z service", ownerId: alice.user.id, visibility: "org", executionMode: "service" }).returning();
+    await setSetting("coordinator", { enabled: true, defaultBotId: service.id, starterBotId: null });
+    try {
+      await saveBotNavigation(carol, { kind: "move", botId: ids[2], targetId: ids[1], placement: "before" });
+      expect((await saved(carol)).botOrder?.filter(b => [ids[1], ids[2], service.id].includes(b))).toEqual([ids[2], ids[1], service.id]);
+    } finally {
+      await db.delete(schema.settings).where(eq(schema.settings.key, "coordinator"));
+      await db.delete(schema.users).where(eq(schema.users.id, carol.user.id));
+      await db.delete(schema.bots).where(eq(schema.bots.id, service.id));
+    }
+  });
 });
