@@ -92,6 +92,35 @@ The device appears in the server session list under its device name. Signing out
   - `MainView`: a `NavigationSplitView` with the sidebar (search, bots, grouped chats, inbox, compose, settings) and a chat detail column.
   - `ChatModel` / `ChatView`: snapshot loading (thread = path from the leaf to the root), streaming with live updates, resume after relaunch, stop, regenerate, tool approvals, uploads and the composer.
 
+## Demo mode & screenshots
+
+Debug builds include a demo mode that runs entirely offline. A `URLProtocol` answers every request to `demo.collectiveui.app` from in-memory fixtures (`CollectiveUI/Demo/`), including streamed replies, approvals, search, the inbox and a generated chart image. Release builds don't contain any demo code: everything is wrapped in `#if DEBUG`.
+
+Launch arguments (Xcode: **Product → Scheme → Edit Scheme → Run → Arguments**, or `xcrun simctl launch <device> io.collectiveui.app …`):
+
+| Argument | Effect |
+| --- | --- |
+| `--demo` | Start signed in as the demo user "Jordan Lee". The Keychain is never touched. |
+| `--demo-open <conversationId>` | Open a conversation, e.g. `demo-research`, `demo-approval`, `demo-image`, or a bot home chat such as `home-bot-atlas` |
+| `--demo-send "<text>"` | About 1 s after opening, type and send this message in that chat, then stream the reply |
+| `--demo-screen <name>` | Show `inbox`, `settings`, `newchat`, `search`, `setup` or `signin` |
+| `--demo-sidebar-collapsed` | On iPad, show only the chat column |
+
+Example:
+
+```sh
+xcrun simctl launch booted io.collectiveui.app --demo --demo-open home-bot-atlas \
+  --demo-send "How do I enable the iOS app on our server?"
+```
+
+The **Simulator screenshots** job in `.github/workflows/ios.yml` builds the Debug app and runs `ios/scripts/simulator-screenshots.sh`. That script captures light and dark iPhone and iPad screenshots plus a short streaming video, and uploads them as the `ios-screenshots` artifact. To run it locally, build the Debug app for the simulator and run:
+
+```sh
+xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI -configuration Debug \
+  -sdk iphonesimulator -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO build
+ios/scripts/simulator-screenshots.sh build/DD/Build/Products/Debug-iphonesimulator/CollectiveUI.app screenshots
+```
+
 ## Troubleshooting
 
 - **"This server doesn't support the mobile app"**: the server returned 404 for `/api/mobile/info`. Update the server.

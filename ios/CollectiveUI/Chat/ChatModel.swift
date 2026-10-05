@@ -141,7 +141,34 @@ final class ChatModel {
         } else if !isStreaming {
             await load(showSpinner: false)
         }
+        #if DEBUG
+        await runDemoSendIfNeeded()
+        #endif
     }
+
+    #if DEBUG
+    /// `--demo-send "<text>"`: types and sends a message in the chat opened with `--demo-open`.
+    private func runDemoSendIfNeeded() async {
+        guard DemoMode.isEnabled,
+              let text = DemoMode.sendText,
+              DemoMode.openConversationId == conversationId,
+              !DemoRuntime.sendConsumed
+        else {
+            return
+        }
+        DemoRuntime.sendConsumed = true
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        for character in text {
+            if Task.isCancelled {
+                return
+            }
+            composerText.append(character)
+            try? await Task.sleep(nanoseconds: 35_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        send()
+    }
+    #endif
 
     func deactivate() {
         isActive = false

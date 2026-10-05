@@ -39,6 +39,8 @@ final class AppModel {
     var isSigningIn: Bool = false
 
     private let authenticator: WebAuthenticator
+    /// Custom URLSession for every API client (used by the debug demo mode); nil uses the shared session.
+    private let sessionOverride: URLSession?
 
     private enum Keys {
         static let token = "token"
@@ -48,6 +50,14 @@ final class AppModel {
 
     init() {
         authenticator = WebAuthenticator()
+        #if DEBUG
+        if DemoMode.isEnabled {
+            sessionOverride = DemoMode.session
+            configureDemo()
+            return
+        }
+        #endif
+        sessionOverride = nil
         let stored = KeychainStore.string(for: Keys.baseURL) ?? UserDefaults.standard.string(forKey: Keys.baseURL)
         if let stored, let url = APIClient.normalizeBaseURL(stored) {
             serverURL = url
@@ -97,6 +107,11 @@ final class AppModel {
         return shell?.inboxUnread ?? 0
     }
 
+    /// Client without a token, for the public endpoints used before sign-in.
+    private func publicClient(_ url: URL) -> APIClient {
+        return APIClient(baseURL: url, session: sessionOverride)
+    }
+
     private func rebuildClient() {
         guard let serverURL else {
             api = nil
@@ -104,7 +119,7 @@ final class AppModel {
         }
         // AppModel lives as long as the app, so a strong reference here is fine.
         let model = self
-        api = APIClient(baseURL: serverURL, token: token, onUnauthorized: {
+        api = APIClient(baseURL: serverURL, token: token, session: sessionOverride, onUnauthorized: {
             Task { @MainActor in
                 model.handleUnauthorized()
             }
@@ -117,7 +132,7 @@ final class AppModel {
         guard let url = APIClient.normalizeBaseURL(input) else {
             throw APIError.invalidURL
         }
-        let info = try await APIClient(baseURL: url).mobileInfo()
+        let info = try await publicClient(url).mobileInfo()
         return (url, info)
     }
 
@@ -145,7 +160,7 @@ final class AppModel {
     func loadServerInfoIfNeeded() async {
         guard serverInfo == nil, let serverURL else { return }
         do {
-            serverInfo = try await APIClient(baseURL: serverURL).mobileInfo()
+            serverInfo = try await publicClient(serverURL).mobileInfo()
         } catch {
             // The sign-in button still works; the info is only cosmetic here.
         }
@@ -159,7 +174,7 @@ final class AppModel {
         defer { isSigningIn = false }
 
         do {
-            let info = try await APIClient(baseURL: serverURL).mobileInfo()
+            let info = try await publicClient(serverURL).mobileInfo()
             serverInfo = info
             if !info.enabled {
                 showBanner("Mobile sign-in is turned off on this server. Ask your administrator to set MOBILE_APP_ENABLED=true.", isError: true)
@@ -183,7 +198,7 @@ final class AppModel {
             let callback = try await authenticator.authenticate(url: authorizeURL, callbackScheme: MobileAuth.callbackScheme)
             switch MobileAuth.parseCallback(callback, expectedState: state) {
             case .code(let code):
-                let response = try await APIClient(baseURL: serverURL).exchangeToken(code: code, codeVerifier: verifier)
+                let response = try await publicClient(serverURL).exchangeToken(code: code, codeVerifier: verifier)
                 KeychainStore.set(response.token, for: Keys.token)
                 KeychainStore.set(serverURL.absoluteString, for: Keys.baseURL)
                 token = response.token
@@ -225,6 +240,11 @@ final class AppModel {
     }
 
     func handleUnauthorized() {
+        #if DEBUG
+        if DemoMode.isEnabled {
+            return
+        }
+        #endif
         guard token != nil else { return }
         clearSession()
         showBanner("Your session has ended. Please sign in again.", isError: true)
@@ -308,6 +328,27 @@ final class AppModel {
         }
         await refreshShell()
     }
+
+    #if DEBUG
+    /// Demo mode starts signed in against the in-memory demo server (or on the signed-out screens).
+    private func configureDemo() {
+        DemoServer.shared.install(chartPNG: DemoArt.chartPNG())
+        switch DemoMode.screen {
+        case "setup":
+            serverURL = nil
+            token = nil
+        case "signin":
+            serverURL = DemoMode.baseURL
+            serverInfo = DemoMode.info
+            token = nil
+        default:
+            serverURL = DemoMode.baseURL
+            serverInfo = DemoMode.info
+            token = DemoMode.token
+        }
+        rebuildClient()
+    }
+    #endif
 
     // MARK: - Banner
 

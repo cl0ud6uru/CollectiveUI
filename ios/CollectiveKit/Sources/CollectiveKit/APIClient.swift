@@ -17,14 +17,20 @@ public final class APIClient: @unchecked Sendable {
     /// Shared session with long timeouts so streamed replies (with periodic keepalives) are not cut off.
     public static let sharedSession: URLSession = APIClient.makeSession()
 
-    public static func makeSession() -> URLSession {
+    /// The configuration used by `sharedSession`. Callers can adjust a copy (for example to add
+    /// `protocolClasses`) and pass the resulting session to `init(baseURL:token:session:onUnauthorized:)`.
+    public static func makeConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 300
         configuration.timeoutIntervalForResource = 60 * 60 * 6
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
-        return URLSession(configuration: configuration)
+        return configuration
+    }
+
+    public static func makeSession() -> URLSession {
+        return URLSession(configuration: makeConfiguration())
     }
 
     public init(baseURL: URL, token: String? = nil, session: URLSession? = nil, onUnauthorized: (@Sendable () -> Void)? = nil) {

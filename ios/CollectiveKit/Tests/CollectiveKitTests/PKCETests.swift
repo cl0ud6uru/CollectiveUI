@@ -59,6 +59,16 @@ final class PKCETests: XCTestCase {
         XCTAssertEqual(APIClient.pathComponent("a/b c"), "a%2Fb%20c")
     }
 
+    func testSessionConfiguration() {
+        let configuration = APIClient.makeConfiguration()
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 300)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        let session = URLSession(configuration: configuration)
+        let base = URL(string: "https://x.org") ?? URL(fileURLWithPath: "/")
+        let client = APIClient(baseURL: base, token: "t", session: session)
+        XCTAssertTrue(client.session === session)
+    }
+
     func testMultipartBody() {
         let body = Multipart.body(boundary: "B", fieldName: "file", filename: "a\"b.txt", mimeType: "text/plain", data: Data("hi".utf8))
         let text = String(decoding: body, as: UTF8.self)

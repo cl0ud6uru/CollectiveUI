@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import CollectiveKit
 
 @MainActor
@@ -20,6 +21,7 @@ struct MainView: View {
                 ChatDetailView(route: model.selection)
             }
         }
+        .navigationSplitViewStyle(.balanced)
         .onChange(of: model.selection) { _, newValue in
             if newValue != nil {
                 compactColumn = .detail
@@ -39,6 +41,9 @@ struct MainView: View {
         }
         .task {
             await model.refreshShell()
+            #if DEBUG
+            await applyDemoLaunchOptions()
+            #endif
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -48,6 +53,33 @@ struct MainView: View {
             }
         }
     }
+
+    #if DEBUG
+    /// Applies `--demo-open`, `--demo-screen` and `--demo-sidebar-collapsed` once per launch.
+    private func applyDemoLaunchOptions() async {
+        guard DemoMode.isEnabled, !DemoRuntime.launchOptionsApplied else { return }
+        DemoRuntime.launchOptionsApplied = true
+        if DemoMode.sidebarCollapsed {
+            columnVisibility = .detailOnly
+        } else if UIDevice.current.userInterfaceIdiom == .pad {
+            columnVisibility = .all
+        }
+        if let conversationId = DemoMode.openConversationId {
+            model.openConversation(conversationId)
+        }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        switch DemoMode.screen {
+        case "inbox":
+            showInbox = true
+        case "settings":
+            showSettings = true
+        case "newchat":
+            showCompose = true
+        default:
+            break
+        }
+    }
+    #endif
 }
 
 /// Detail column content for the current route.

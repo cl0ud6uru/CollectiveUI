@@ -38,6 +38,11 @@ struct SidebarView: View {
         .task(id: searchText) {
             await runSearch()
         }
+        .onAppear {
+            #if DEBUG
+            applyDemoSearch()
+            #endif
+        }
         .refreshable {
             await model.refreshShell()
         }
@@ -252,6 +257,15 @@ struct SidebarView: View {
             }
         )
     }
+
+    #if DEBUG
+    /// `--demo-screen search` shows results for a sample query.
+    private func applyDemoSearch() {
+        guard DemoMode.isEnabled, DemoMode.screen == "search", !DemoRuntime.searchApplied else { return }
+        DemoRuntime.searchApplied = true
+        searchText = "vector"
+    }
+    #endif
 
     private func runSearch() async {
         let query = trimmedQuery
