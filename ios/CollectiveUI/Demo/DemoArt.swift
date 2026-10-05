@@ -6,6 +6,42 @@ import UIKit
 enum DemoArt {
     static let weeklySignups: [CGFloat] = [610, 655, 640, 700, 735, 760, 1240, 790, 820, 690, 670, 860, 905]
 
+    /// A synthetic imported-pet atlas exercises the real authenticated image loader, without a server.
+    static func petAtlasPNG(version: Int) -> Data {
+        let rows = version == 2 ? 11 : 9
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = false
+        return UIGraphicsImageRenderer(size: CGSize(width: 1536, height: rows * 208), format: format).pngData { renderer in
+            for row in 0..<rows {
+                for column in 0..<8 {
+                    let context = renderer.cgContext
+                    context.saveGState()
+                    let bob = sin(Double(column) / 6 * .pi * 2) * 4
+                    context.translateBy(x: CGFloat(column * 192), y: CGFloat(row * 208) + bob)
+                    let color = version == 2 ? UIColor(red: 0.55, green: 0.36, blue: 0.97, alpha: 1) : UIColor(red: 0.12, green: 0.7, blue: 0.6, alpha: 1)
+                    UIColor.black.withAlphaComponent(0.10).setFill()
+                    UIBezierPath(ovalIn: CGRect(x: 48, y: 182, width: 96, height: 9)).fill()
+                    color.setFill()
+                    UIBezierPath(roundedRect: CGRect(x: 49, y: 58, width: 94, height: 114), cornerRadius: 29).fill()
+                    UIBezierPath(roundedRect: CGRect(x: 37, y: 107, width: 20, height: 43), cornerRadius: 10).fill()
+                    UIBezierPath(roundedRect: CGRect(x: 135, y: 107, width: 20, height: 43), cornerRadius: 10).fill()
+                    UIBezierPath(roundedRect: CGRect(x: 61, y: 161, width: 23, height: 23), cornerRadius: 9).fill()
+                    UIBezierPath(roundedRect: CGRect(x: 108, y: 161, width: 23, height: 23), cornerRadius: 9).fill()
+                    UIBezierPath(roundedRect: CGRect(x: 92, y: 32, width: 8, height: 33), cornerRadius: 4).fill()
+                    UIBezierPath(ovalIn: CGRect(x: 86, y: 21, width: 20, height: 20)).fill()
+                    UIColor(red: 0.13, green: 0.10, blue: 0.22, alpha: 1).setFill()
+                    UIBezierPath(roundedRect: CGRect(x: 61, y: 81, width: 70, height: 51), cornerRadius: 18).fill()
+                    UIColor.white.setFill()
+                    for x in [77, 107] {
+                        UIBezierPath(roundedRect: CGRect(x: x, y: column == 5 ? 103 : 94, width: 8, height: column == 5 ? 4 : 17), cornerRadius: 4).fill()
+                    }
+                    context.restoreGState()
+                }
+            }
+        }
+    }
+
     static func chartPNG() -> Data {
         let size = CGSize(width: 600, height: 600)
         let format = UIGraphicsImageRendererFormat()

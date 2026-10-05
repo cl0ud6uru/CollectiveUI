@@ -341,9 +341,11 @@ public struct ShellResponse: Decodable, Hashable, Sendable {
     public var apps: [TargetOption]
     public var bots: [TargetOption]
     public var inboxUnread: Int
+    public var pets: [String: PetAppearance]
+    public var hasPetMetadata: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case user, branding, conversations, folders, apps, bots, inboxUnread
+        case user, branding, conversations, folders, apps, bots, inboxUnread, pets
     }
 
     public init(from decoder: Decoder) throws {
@@ -355,6 +357,8 @@ public struct ShellResponse: Decodable, Hashable, Sendable {
         apps = c.lenient([TargetOption].self, .apps) ?? []
         bots = c.lenient([TargetOption].self, .bots) ?? []
         inboxUnread = c.lenient(Int.self, .inboxUnread) ?? 0
+        pets = c.lenient([String: PetAppearance].self, .pets) ?? [:]
+        hasPetMetadata = c.contains(.pets)
     }
 }
 
@@ -559,10 +563,11 @@ public struct ConversationSnapshot: Decodable, Hashable, Sendable {
     public var target: TargetOption?
     public var initialRows: [MessageRow]
     public var initialLeafId: String?
+    public var skills: [ChatSkill]
     public var resume: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case summary, run, conversationId, isBotHome, unavailable, unavailableReason, target, initialRows, initialLeafId, resume
+        case summary, run, conversationId, isBotHome, unavailable, unavailableReason, target, initialRows, initialLeafId, resume, skills
     }
 
     public init(from decoder: Decoder) throws {
@@ -576,6 +581,7 @@ public struct ConversationSnapshot: Decodable, Hashable, Sendable {
         target = c.lenient(TargetOption.self, .target)
         initialRows = c.lenient([MessageRow].self, .initialRows) ?? []
         initialLeafId = c.lenient(String.self, .initialLeafId)
+        skills = c.lenient([ChatSkill].self, .skills) ?? []
         resume = c.lenient(Bool.self, .resume) ?? false
     }
 

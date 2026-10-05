@@ -55,34 +55,17 @@ struct BlobAvatar: Equatable {
         return Color(hex: colorHex)
     }
 
-    var outline: AnyShape {
-        switch shape {
-        case "triangle":
-            return AnyShape(BlobTriangle())
-        case "egg":
-            return AnyShape(BlobEgg())
-        case "hexagon":
-            return AnyShape(BlobHexagon())
-        case "ghost":
-            return AnyShape(BlobGhost())
-        case "drop":
-            return AnyShape(BlobDrop())
-        case "pill":
-            return AnyShape(BlobPill())
-        default:
-            return AnyShape(Circle())
-        }
-    }
+    var outline: AnyShape { AnyShape(SiteBlobShape(name: shape)) }
 
     /// Vertical offset of the eyes, as a fraction of the avatar size.
     var eyeOffset: CGFloat {
         switch shape {
         case "triangle":
-            return 0.12
-        case "drop":
-            return 0.12
+            return 0.095
+        case "pill":
+            return -0.005
         default:
-            return 0.0
+            return 0.015
         }
     }
 }
@@ -98,13 +81,15 @@ struct AvatarView: View {
             ZStack {
                 blob.outline
                     .fill(blob.color)
-                HStack(spacing: size * 0.16) {
-                    Circle()
+                HStack(spacing: size * 0.10) {
+                    Capsule()
                         .fill(Color.white)
-                        .frame(width: size * 0.13, height: size * 0.13)
-                    Circle()
+                        .frame(width: size * 0.07, height: size * 0.15)
+                        .rotationEffect(.degrees(-14))
+                    Capsule()
                         .fill(Color.white)
-                        .frame(width: size * 0.13, height: size * 0.13)
+                        .frame(width: size * 0.07, height: size * 0.15)
+                        .rotationEffect(.degrees(-14))
                 }
                 .offset(y: size * blob.eyeOffset)
             }
@@ -130,96 +115,45 @@ struct AvatarView: View {
     }
 }
 
-struct BlobTriangle: Shape {
+/// Same 100 × 100 artwork coordinates as the website's BlobSvg.
+private struct SiteBlobShape: Shape {
+    let name: String
     func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let inset = rect.width * 0.06
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY + inset))
-        path.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.maxY - inset * 1.5))
-        path.addLine(to: CGPoint(x: rect.minX + inset, y: rect.maxY - inset * 1.5))
-        path.closeSubpath()
-        return path
-    }
-}
-
-struct BlobEgg: Shape {
-    func path(in rect: CGRect) -> Path {
-        let eggRect = rect.insetBy(dx: rect.width * 0.12, dy: rect.height * 0.02)
-        return Path(ellipseIn: eggRect)
-    }
-}
-
-struct BlobPill: Shape {
-    func path(in rect: CGRect) -> Path {
-        let pillRect = rect.insetBy(dx: rect.width * 0.2, dy: rect.height * 0.04)
-        return Path(roundedRect: pillRect, cornerRadius: pillRect.width / 2)
-    }
-}
-
-struct BlobHexagon: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let radius = min(rect.width, rect.height) / 2
-        for index in 0..<6 {
-            let angle = Double(index) * Double.pi / 3.0 - Double.pi / 2.0
-            let point = CGPoint(
-                x: center.x + radius * CGFloat(cos(angle)),
-                y: center.y + radius * CGFloat(sin(angle))
-            )
-            if index == 0 {
-                path.move(to: point)
-            } else {
-                path.addLine(to: point)
-            }
+        var p = Path()
+        switch name {
+        case "triangle":
+            p.move(to: .init(x: 50, y: 12))
+            p.addCurve(to: .init(x: 61, y: 20), control1: .init(x: 55, y: 12), control2: .init(x: 58, y: 15))
+            p.addLine(to: .init(x: 90, y: 70))
+            p.addCurve(to: .init(x: 79, y: 88), control1: .init(x: 95, y: 79), control2: .init(x: 89, y: 88))
+            p.addLine(to: .init(x: 21, y: 88))
+            p.addCurve(to: .init(x: 10, y: 70), control1: .init(x: 11, y: 88), control2: .init(x: 5, y: 79))
+            p.addLine(to: .init(x: 39, y: 20))
+            p.addCurve(to: .init(x: 50, y: 12), control1: .init(x: 42, y: 15), control2: .init(x: 45, y: 12))
+        case "egg": p = Path(ellipseIn: CGRect(x: 14, y: 12, width: 72, height: 84))
+        case "pill": p = Path(roundedRect: CGRect(x: 8, y: 24, width: 84, height: 54), cornerRadius: 27)
+        case "hexagon":
+            p.move(to: .init(x: 50, y: 10))
+            for point in [CGPoint(x: 86, y: 30), CGPoint(x: 86, y: 70), CGPoint(x: 50, y: 90), CGPoint(x: 14, y: 70), CGPoint(x: 14, y: 30)] { p.addLine(to: point) }
+            p.closeSubpath()
+            let outline = p.strokedPath(StrokeStyle(lineWidth: 10, lineJoin: .round))
+            p = p.union(outline)
+        case "ghost":
+            p.move(to: .init(x: 18, y: 48))
+            p.addArc(center: .init(x: 50, y: 48), radius: 32, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+            p.addLine(to: .init(x: 82, y: 88))
+            p.addCurve(to: .init(x: 66, y: 84), control1: .init(x: 76, y: 88), control2: .init(x: 74, y: 84))
+            p.addCurve(to: .init(x: 50, y: 88), control1: .init(x: 58, y: 84), control2: .init(x: 56, y: 88))
+            p.addCurve(to: .init(x: 34, y: 84), control1: .init(x: 44, y: 88), control2: .init(x: 42, y: 84))
+            p.addCurve(to: .init(x: 18, y: 88), control1: .init(x: 26, y: 84), control2: .init(x: 24, y: 88))
+        case "drop":
+            p.move(to: .init(x: 50, y: 8))
+            p.addCurve(to: .init(x: 84, y: 64), control1: .init(x: 50, y: 8), control2: .init(x: 84, y: 44))
+            p.addArc(center: .init(x: 50, y: 64), radius: 34, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+            p.addCurve(to: .init(x: 50, y: 8), control1: .init(x: 16, y: 44), control2: .init(x: 50, y: 8))
+        default: p = Path(ellipseIn: CGRect(x: 8, y: 8, width: 84, height: 84))
         }
-        path.closeSubpath()
-        return path
-    }
-}
-
-struct BlobGhost: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let width = rect.width * 0.8
-        let left = rect.midX - width / 2
-        let right = rect.midX + width / 2
-        let top = rect.minY + rect.height * 0.06
-        let bottom = rect.maxY - rect.height * 0.06
-        let radius = width / 2
-        let wave = rect.height * 0.1
-
-        path.move(to: CGPoint(x: left, y: bottom))
-        path.addLine(to: CGPoint(x: left, y: top + radius))
-        path.addQuadCurve(to: CGPoint(x: rect.midX, y: top), control: CGPoint(x: left, y: top))
-        path.addQuadCurve(to: CGPoint(x: right, y: top + radius), control: CGPoint(x: right, y: top))
-        path.addLine(to: CGPoint(x: right, y: bottom))
-        let step = width / 3
-        path.addQuadCurve(to: CGPoint(x: right - step, y: bottom), control: CGPoint(x: right - step / 2, y: bottom - wave))
-        path.addQuadCurve(to: CGPoint(x: right - step * 2, y: bottom), control: CGPoint(x: right - step * 1.5, y: bottom - wave))
-        path.addQuadCurve(to: CGPoint(x: left, y: bottom), control: CGPoint(x: left + step / 2, y: bottom - wave))
-        path.closeSubpath()
-        return path
-    }
-}
-
-struct BlobDrop: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let top = CGPoint(x: rect.midX, y: rect.minY + rect.height * 0.04)
-        let bottomY = rect.maxY - rect.height * 0.04
-        let radius = rect.width * 0.36
-        let sideY = bottomY - radius
-        let rightPoint = CGPoint(x: rect.midX + radius, y: sideY)
-        let leftPoint = CGPoint(x: rect.midX - radius, y: sideY)
-        let bottom = CGPoint(x: rect.midX, y: bottomY)
-
-        path.move(to: top)
-        path.addQuadCurve(to: rightPoint, control: CGPoint(x: rect.midX + radius * 0.45, y: rect.minY + rect.height * 0.3))
-        path.addQuadCurve(to: bottom, control: CGPoint(x: rect.midX + radius, y: bottomY))
-        path.addQuadCurve(to: leftPoint, control: CGPoint(x: rect.midX - radius, y: bottomY))
-        path.addQuadCurve(to: top, control: CGPoint(x: rect.midX - radius * 0.45, y: rect.minY + rect.height * 0.3))
-        path.closeSubpath()
-        return path
+        p.closeSubpath()
+        return p.applying(CGAffineTransform(a: rect.width / 100, b: 0, c: 0, d: rect.height / 100, tx: rect.minX, ty: rect.minY))
     }
 }

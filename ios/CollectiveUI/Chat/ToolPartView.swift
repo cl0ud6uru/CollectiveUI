@@ -8,6 +8,7 @@ struct ToolPartView: View {
     let messageId: String
     let model: ChatModel
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var isExpanded: Bool = false
     @State private var showDenyPrompt: Bool = false
     @State private var denyReason: String = ""
@@ -32,16 +33,15 @@ struct ToolPartView: View {
                     isExpanded.toggle()
                 }
             } label: {
-                HStack(spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
                     stateIcon
-                        .frame(width: 18, height: 18)
-                    Text(displayName)
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
+                        .font(.subheadline)
+                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(displayName).font(.subheadline.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                        Text(statusText).font(.caption).foregroundStyle(PortalTheme.muted)
+                    }
                     Spacer(minLength: 4)
-                    Text(statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -61,11 +61,11 @@ struct ToolPartView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
+                .fill(PortalTheme.surface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isAwaitingApproval ? Color.orange.opacity(0.6) : Color.clear, lineWidth: 1)
+                .stroke(isAwaitingApproval ? PortalTheme.warning.opacity(0.6) : Color.clear, lineWidth: 1)
         )
         .alert("Deny this action?", isPresented: $showDenyPrompt) {
             TextField("Reason (optional)", text: $denyReason)
@@ -86,7 +86,7 @@ struct ToolPartView: View {
                 .controlSize(.small)
         case .awaitingApproval:
             Image(systemName: "shield.lefthalf.filled")
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(PortalTheme.warning)
         case .approvalResponded:
             if part.approval?.approved == false {
                 Image(systemName: "hand.raised.fill")
@@ -97,10 +97,10 @@ struct ToolPartView: View {
             }
         case .completed:
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(Color.green)
+                .foregroundStyle(PortalTheme.success)
         case .failed:
             Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(Color.red)
+                .foregroundStyle(PortalTheme.danger)
         case .denied:
             Image(systemName: "hand.raised.fill")
                 .foregroundStyle(Color.secondary)
@@ -153,7 +153,8 @@ struct ToolPartView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 10) {
+                let layout = dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+                layout {
                     Button {
                         answer(approved: true)
                     } label: {
@@ -161,6 +162,8 @@ struct ToolPartView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(PortalTheme.ink)
+                    .foregroundStyle(PortalTheme.onInk)
 
                     Button(role: .destructive) {
                         denyReason = ""
@@ -211,7 +214,7 @@ private struct DetailBlock: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(uiColor: .tertiarySystemBackground))
+                    .fill(PortalTheme.surfaceSecondary)
             )
         }
     }

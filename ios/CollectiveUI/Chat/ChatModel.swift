@@ -40,6 +40,7 @@ final class ChatModel {
     var target: TargetOption? = nil
     var source: String = "chat"
     var isGroup: Bool = false
+    var isBotHome: Bool = false
     var isUnavailable: Bool = false
     var unavailableReason: String? = nil
 
@@ -51,9 +52,26 @@ final class ChatModel {
     var inlineError: String? = nil
     var alertMessage: String? = nil
 
+    var commandResult: ChatCommandResult?
+    var commandCatalog: ChatCommandCatalog?
+    var commandError: String?
+    var isExecutingCommand = false
+    var skills: [ChatSkill] = []
+    @ObservationIgnored private var commandRevision = 0
+    @ObservationIgnored private var commandAttempt: (text: String, nextId: String)?
+    @ObservationIgnored private var commandTask: Task<Void, Never>?
+
+    var commands: [ComposerCommand] {
+        guard !isReadOnly && !isUnavailable else { return [] }
+        return ComposerCommands.options(target: target, skills: skills, catalog: commandCatalog)
+    }
+
     var composerText: String = ""
     var attachments: [ComposerAttachment] = []
     var approvalDecisions: [String: ApprovalDecision] = [:]
+    var needsMessageStatusCheck = false
+    @ObservationIgnored private var pendingDraft: (messageId: String, text: String, attachments: [ComposerAttachment])?
+    @ObservationIgnored private var submittedApproval = false
 
     /// Bumped whenever the view should scroll to the bottom.
     var scrollToken: Int = 0
@@ -99,6 +117,26 @@ final class ChatModel {
         return target?.kind == "app" ? "✨" : nil
     }
 
+    var usesBubbles: Bool { target?.kind == "bot" || isGroup }
+
+    var avatarActivity: BotActivity {
+        if isUnavailable { return .unavailable }
+        if messages.contains(where: { !$0.pendingApprovals.isEmpty }) { return .approval }
+        if isStreaming { return .working }
+        if inlineError != nil { return .attention }
+        return .idle
+    }
+
+    var statusLabel: String {
+        switch avatarActivity {
+        case .working: return "Working…"
+        case .approval: return "Waiting for your approval"
+        case .attention: return "Needs attention"
+        case .unavailable: return "Unavailable"
+        case .idle: return target?.label ?? "Ready"
+        }
+    }
+
     var hasComposerContent: Bool {
         let hasText = !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasFiles = attachments.contains(where: { $0.uploaded != nil })
@@ -110,7 +148,7 @@ final class ChatModel {
     }
 
     var canSend: Bool {
-        return !isStreaming && !isReadOnly && !isUnavailable && !isUploading && hasComposerContent
+        return !needsMessageStatusCheck && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && hasComposerContent
     }
 
     var showsTypingIndicator: Bool {
@@ -128,7 +166,7 @@ final class ChatModel {
     }
 
     var canAnswerApprovals: Bool {
-        return !isStreaming && !isReadOnly && !isUnavailable
+        return !needsMessageStatusCheck && !isStreaming && !isReadOnly && !isUnavailable
     }
 
     // MARK: - Lifecycle
@@ -141,6 +179,7 @@ final class ChatModel {
         } else if !isStreaming {
             await load(showSpinner: false)
         }
+        await loadCommandCatalog()
         #if DEBUG
         await runDemoSendIfNeeded()
         #endif
@@ -172,6 +211,7 @@ final class ChatModel {
 
     func deactivate() {
         isActive = false
+        commandTask?.cancel()
         if isStreaming {
             // The server keeps generating; the reply is resumed when the chat is opened again.
             streamTask?.cancel()
@@ -204,22 +244,85 @@ final class ChatModel {
             title = summary.title
             source = summary.source
             isGroup = summary.isGroup
+            isBotHome = summary.isBotHome
         }
         if let snapshotTarget = snapshot.target {
             target = snapshotTarget
         }
+        skills = snapshot.skills
         isUnavailable = snapshot.unavailable
         unavailableReason = snapshot.unavailableReason
         guard !isStreaming else { return }
         messages = snapshot.displayedThread()
+        // Decisions are transient UI state; the server snapshot owns approval status.
+        approvalDecisions = [:]
         scrollToken += 1
+    }
+
+    private func loadCommandCatalog() async {
+        guard target?.hermes == true, let api = app.api else { return }
+        do {
+            var query = [URLQueryItem(name: "conversationId", value: conversationId)]
+            if let target { query.append(URLQueryItem(name: target.kind == "bot" ? "botId" : "appId", value: target.id)) }
+            let catalog = try await api.get("/api/chat/commands", query: query, as: ChatCommandCatalog.self)
+            guard !Task.isCancelled else { return }
+            commandCatalog = catalog
+            commandRevision = max(commandRevision, catalog.revision ?? 0)
+        } catch { /* Basic controls remain available if optional discovery fails. */ }
+    }
+
+    private func executeCommand(_ text: String) async {
+        defer { isExecutingCommand = false; commandTask = nil }
+        guard let api = app.api, let target else { return }
+        if commandAttempt?.text != text { commandAttempt = (text, IDGenerator.make()) }
+        let originalDraft = composerText
+        var body: [String: JSONValue] = [
+            "conversationId": .string(conversationId), "text": .string(text),
+            "revision": .number(Double(commandRevision)),
+            "newConversationId": .string(commandAttempt?.nextId ?? IDGenerator.make()),
+            target.kind == "bot" ? "botId" : "appId": .string(target.id),
+        ]
+        if let id = messages.last?.id { body["messageId"] = .string(id) }
+        commandError = nil
+        do {
+            let result = try await api.send("/api/chat/commands", method: "POST", body: .object(body), as: ChatCommandResult.self)
+            guard !Task.isCancelled else { return }
+            commandResult = result
+            commandRevision = max(commandRevision, result.revision ?? 0)
+            commandAttempt = nil
+            if composerText == originalDraft { composerText = "" }
+            if result.conversationId != nil { isNew = false }
+            if let destination = result.destinationConversationId {
+                app.openConversation(destination)
+            } else if result.refresh == true {
+                streamTask?.cancel()
+                await load(showSpinner: false)
+            }
+            await app.refreshShell()
+            await loadCommandCatalog()
+        } catch {
+            if !error.isCancellation && !error.isUnauthorized {
+                commandError = "\(error.localizedDescription) Your draft has been kept; you can retry."
+            }
+            await loadCommandCatalog()
+        }
     }
 
     // MARK: - Sending
 
     func send() {
         guard canSend, let api = app.api else { return }
-        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let draft = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ComposerCommands.isControl(draft, target: target) {
+            guard attachments.isEmpty else {
+                commandError = "Remove attachments before running a command. Your draft and files have been kept."
+                return
+            }
+            isExecutingCommand = true
+            commandTask = Task { await executeCommand(draft) }
+            return
+        }
+        let text = ComposerCommands.messageText(draft, target: target)
         var parts: [MessagePart] = []
         if !text.isEmpty {
             parts.append(.text(TextPart(text: text)))
@@ -236,6 +339,9 @@ final class ChatModel {
             "conversationId": .string(conversationId),
             "message": message.toJSON(),
         ]
+        if draft.hasPrefix("//"), target?.kind == "bot" || target?.hermes == true {
+            body["literalSlash"] = .bool(true)
+        }
         if let parentId = messages.last?.id {
             body["parentId"] = .string(parentId)
         } else {
@@ -249,6 +355,7 @@ final class ChatModel {
             }
         }
 
+        pendingDraft = (message.id, composerText, attachments)
         messages.append(message)
         composerText = ""
         attachments = []
@@ -355,6 +462,7 @@ final class ChatModel {
             answeredParts.append(.object(object))
         }
         messages[index] = message
+        submittedApproval = true
         inlineError = nil
 
         let body: JSONValue = .object([
@@ -430,23 +538,55 @@ final class ChatModel {
         streamingMessageId = nil
 
         if let error, !error.isCancellation, !error.isUnauthorized {
-            if let apiError = error as? APIError, case .server(_, let message, let unsavedMessageId) = apiError {
-                alertMessage = message
-                if let unsavedMessageId, let index = messages.firstIndex(where: { $0.id == unsavedMessageId }) {
-                    let removed = messages.remove(at: index)
-                    if composerText.isEmpty {
-                        composerText = removed.plainText
-                    }
-                }
-            } else {
-                inlineError = error.localizedDescription
+            inlineError = error.localizedDescription
+            if let apiError = error as? APIError,
+               case .server(_, _, let unsavedMessageId) = apiError,
+               unsavedMessageId == pendingDraft?.messageId, unsavedMessageId != nil {
+                restorePendingDraft()
+            } else if pendingDraft != nil || submittedApproval {
+                // A dropped connection does not prove rejection. Read persisted state before retrying.
+                await checkMessageStatus()
             }
+        } else if error == nil {
+            pendingDraft = nil
+            submittedApproval = false
         }
 
-        if !isNew {
-            await load(showSpinner: false)
-        }
+        if !isNew && !needsMessageStatusCheck { await load(showSpinner: false) }
         await app.refreshShell()
+    }
+
+    func checkMessageStatus() async {
+        guard let api = app.api else { return }
+        needsMessageStatusCheck = true
+        do {
+            let snapshot = try await api.snapshot(conversationId: conversationId)
+            let pendingId = pendingDraft?.messageId
+            isNew = false
+            apply(snapshot)
+            if let pendingId, !snapshot.initialRows.contains(where: { $0.id == pendingId }) {
+                restorePendingDraft()
+            } else { pendingDraft = nil }
+            submittedApproval = false
+            needsMessageStatusCheck = false
+            if snapshot.resume && isActive { resume() }
+        } catch {
+            if isNew, (error as? APIError)?.statusCode == 404, pendingDraft != nil {
+                restorePendingDraft()
+                needsMessageStatusCheck = false
+            } else {
+                inlineError = "Couldn't confirm the message status. Check again before sending another message."
+            }
+        }
+    }
+
+    private func restorePendingDraft() {
+        guard let pending = pendingDraft else { return }
+        messages.removeAll { $0.id == pending.messageId }
+        // Preserve anything the user typed while the request was in flight.
+        composerText = composerText.isEmpty ? pending.text : pending.text + "\n\n" + composerText
+        attachments = pending.attachments + attachments
+        pendingDraft = nil
     }
 
     private func answeredUserMessageId() -> String? {

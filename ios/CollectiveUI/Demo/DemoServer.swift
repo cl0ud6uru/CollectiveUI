@@ -25,6 +25,7 @@ final class DemoServer: @unchecked Sendable {
     private var inbox: [JSONValue] = []
     private var files: [String: StoredFile] = [:]
     private var chartPNG = Data()
+    private var petAtlases: [String: Data] = [:]
     private var counter = 0
 
     private init() {
@@ -69,9 +70,10 @@ final class DemoServer: @unchecked Sendable {
     }
 
     /// Called once on the main actor with the rendered chart image.
-    func install(chartPNG data: Data) {
+    func install(chartPNG data: Data, petV1: Data, petV2: Data) {
         lock.lock()
         chartPNG = data
+        petAtlases = ["bot-atlas": petV2, "bot-research": petV1]
         lock.unlock()
     }
 
@@ -86,6 +88,20 @@ final class DemoServer: @unchecked Sendable {
         let path = request.url?.path ?? "/"
         let parts = path.split(separator: "/").map { String($0) }
         let query = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+        if method == "GET", let captures = DemoServer.match(parts, ["api", "mobile", "v1", "bots", "*", "pet", "avatar"]),
+           let image = petAtlases[captures[0]] {
+            return .immediate(status: 200, contentType: "image/png", body: image)
+        }
+        if path == "/api/chat/commands" {
+            if method == "GET" { return json(.object(["commands": .array([]), "revision": .number(0)])) }
+            let command = DemoServer.jsonBody(body)?["text"]?.stringValue ?? ""
+            return json(.object([
+                "title": .string("Offline demo command"),
+                "lines": .array([.string("Selected: " + command), .string("This is a local fixture; no server command was run.")]),
+                "revision": .number(0),
+            ]))
+        }
+
 
         if method == "GET", DemoServer.match(parts, ["api", "mobile", "info"]) != nil {
             return json(.object([
@@ -192,6 +208,10 @@ final class DemoServer: @unchecked Sendable {
             "apps": .array(apps),
             "bots": .array(bots),
             "inboxUnread": .number(Double(unread)),
+            "pets": .object([
+                "bot-atlas": .object(["enabled": .bool(true), "appearance": .string("custom"), "motion": .string("auto"), "spriteVersionNumber": .number(2), "spriteUrl": .string("/api/mobile/v1/bots/bot-atlas/pet/avatar?v=demo-v2")]),
+                "bot-research": .object(["enabled": .bool(true), "appearance": .string("catalog"), "motion": .string("still"), "spriteVersionNumber": .number(1), "spriteUrl": .string("/api/mobile/v1/bots/bot-research/pet/avatar?v=demo-v1")]),
+            ]),
         ]))
     }
 

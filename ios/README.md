@@ -78,6 +78,34 @@ The device appears in the server session list under its device name. Signing out
 
 ## Architecture
 
+### Appearance and chat input
+
+The native views use a black dark-mode canvas, floating material controls, a compact sidebar,
+bot artwork and the website's message colors. `PortalTheme` centralizes adaptive colors; the interface remains
+SwiftUI, with a native `UITextView` for the composer. Return (including a hardware keyboard's Enter)
+inserts a newline. Only the Send button submits a message.
+
+Settings → Appearance saves System, Light or Dark independently of the phone's setting.
+Messages fade continuously behind the floating portrait header; compact layouts reserve space for readable text.
+The unified composer has its plus menu inside the capsule and the microphone on the right. Its placeholder is
+`Type / for commands`. Typing `/` or choosing Commands in the plus menu opens the command picker without submitting; bot skills come from the conversation snapshot,
+and Hermes controls use `/api/chat/commands` (including its revision and retry identifiers).
+Control failures retain the draft, and controls with attachments are rejected locally without losing files.
+After an uncertain chat submission, the app checks persisted message status before allowing another send.
+Confirmed unsaved messages restore their original multiline draft and attachments; approval snapshots clear
+optimistic local decisions. Artwork credentials are limited to the exact server origin, and authenticated
+redirects cannot move to another scheme, host or port.
+
+The microphone uses native on-device speech recognition after the user grants Speech Recognition and
+Microphone permission. Recognized words are added to the draft for review, never sent automatically.
+Recording stops on backgrounding, interruption or leaving the composer. Unsupported locales show a
+message so the user can use keyboard dictation instead; no transcription service is called.
+
+The mobile shell optionally includes display-only `pets` metadata. Updated servers provide authenticated
+artwork through `GET /api/mobile/v1/bots/[id]/pet/avatar`; older servers continue to use blob/emoji avatars.
+Built-in pets use native vector artwork. Custom avatars also require these server changes to be deployed; an app-only rebuild against an older server cannot supply the missing metadata/endpoint. Imported atlases honor the user's still-motion preference,
+Reduce Motion and app backgrounding; compact roster avatars remain still. Pet editing stays on the website.
+
 - **CollectiveKit** (`CollectiveKit/Sources/CollectiveKit`)
   - `JSONValue`: Codable arbitrary JSON (tool input/output, data parts).
   - `Models`: lenient `Decodable` API types. Missing or `null` optional fields never fail decoding.
@@ -126,3 +154,9 @@ ios/scripts/simulator-screenshots.sh build/DD/Build/Products/Debug-iphonesimulat
 - **"This server doesn't support the mobile app"**: the server returned 404 for `/api/mobile/info`. Update the server.
 - **Sign-in sheet closes immediately**: make sure the server redirects to the `collectiveui://auth/callback` scheme.
 - **Replies stop mid-way on a flaky network**: when you reopen the chat, the app re-fetches the conversation and resumes any reply that is still running.
+
+For offline visual checks, `--demo-appearance dark` saves the demo app's dark preference,
+`--demo-commands` opens the command picker, `--demo-focus` opens the keyboard, and
+`--demo-draft "Line one\nLine two"` sets a draft (use an actual newline in the argument).
+Demo Atlas and Research use synthetic v2 and v1 atlases
+through the same authenticated loader as imported pets. These fixtures are not a user's custom avatar.

@@ -70,7 +70,7 @@ struct MarkdownBlockView: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .fill(PortalTheme.surfaceSecondary)
             )
         case .rule:
             Divider()
@@ -134,7 +134,7 @@ struct CodeBlockView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
+                .fill(PortalTheme.surfaceSecondary)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
