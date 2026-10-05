@@ -55,6 +55,6 @@ run("usage reporting (integration)", () => {
     const background = rows.find((r) => r.purpose === "title");
     expect(background).toMatchObject({ target: "Background", replies: 0, billing_source: "org" });
     const csv = toCsv(rows, USAGE_EXPORT_COLUMNS);
-    expect(csv.split("\n")[0]).toBe("day,upn,target,replies,input_tokens,output_tokens,purpose,cache_read_tokens,cache_write_tokens,reasoning_tokens,billing_source");
+    expect(csv.split("\n")[0]).toBe("day,upn,target,replies,input_tokens,output_tokens,purpose,cache_read_tokens,cache_write_tokens,reasoning_tokens,billing_source,hosted_search_calls,search_tool_cost_estimate_micros");
   });
 });

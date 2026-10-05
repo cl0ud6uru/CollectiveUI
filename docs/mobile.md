@@ -29,7 +29,7 @@ MOBILE_APP_ENABLED=true
 MOBILE_SESSION_DAYS=30
 ```
 
-Apply migrations (`0026_mobile_sessions`) before starting the new version. Use HTTPS with a certificate the device
+Apply migrations (`0027_mobile_sessions`) before starting the new version. Use HTTPS with a certificate the device
 trusts; iOS refuses plain HTTP except for local-network development servers.
 
 ## How sign-in works

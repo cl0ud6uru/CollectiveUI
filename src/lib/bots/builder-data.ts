@@ -1,3 +1,4 @@
+import { nativeSearchAvailability } from "@/lib/agent/native-search";
 import { isDockerHermes, dockerAllowed } from "@/lib/docker-hermes/policy";
 import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
@@ -88,7 +89,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
       serverId: g.serverId, serverRevision: g.serverRevision, toolName: g.toolName, toolHash: g.toolHash,
       effect: g.effect, requireApproval: g.requireApproval, constraints: g.constraints,
     })) : [],
-    apps: apps.filter((a) => (!isManagedHermes(a) && !isLocalHermes(a)) || currentBot?.appId === a.id).map((a) => ({ id: a.id, name: a.name, model: a.model, supportsTools: a.supportsTools, agentServer: isAgentServer(a.provider), managed: isManagedHermes(a) || isLocalHermes(a), local: isLocalHermes(a), docker: isDockerHermes(a) })),
+    apps: await Promise.all(apps.filter((a) => (!isManagedHermes(a) && !isLocalHermes(a)) || currentBot?.appId === a.id).map(async (a) => ({ nativeSearchReason: await nativeSearchAvailability(a, toolSettings), id: a.id, name: a.name, model: a.model, supportsTools: a.supportsTools, agentServer: isAgentServer(a.provider), managed: isManagedHermes(a) || isLocalHermes(a), local: isLocalHermes(a), docker: isDockerHermes(a) }))),
     groups: groupRows,
     tools,
     delegates: bots.filter((b) => b.id !== botId && b.executionMode !== "service").map((b) => ({ id: b.id, name: b.name, avatar: b.avatar })),

@@ -14,8 +14,8 @@ const messages: Record<CodexStatus['state'], string> = {
   blocked: 'This runtime has no external network access. An operator must provide approved auth.openai.com egress for login/refresh and chatgpt.com egress for inference. No login request was sent.',
 };
 
-export function HermesCodexConnection({ botId, revision, canStart, onChanged, onPendingChange }: {
-  botId: string; revision: string; canStart: boolean; onChanged: () => Promise<void>; onPendingChange: (v: boolean) => void;
+export function HermesCodexConnection({ botId, revision, canStart, startBlockedReason, onChanged, onPendingChange }: {
+  botId: string; revision: string; canStart: boolean; startBlockedReason?: string | null; onChanged: () => Promise<void>; onPendingChange: (v: boolean) => void;
 }) {
   const [status, setStatus] = useState<CodexStatus | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
@@ -67,8 +67,9 @@ export function HermesCodexConnection({ botId, revision, canStart, onChanged, on
     </div>}
     {!pending && <>
       <p className="text-xs text-muted">Save this provider and model before signing in. All profiles must be idle. Reconnect replaces this profile’s previous login; cancel or failure leaves it disconnected. Native Hermes manages token refresh.</p>
+      {startBlockedReason && <p id="codex-start-blocker" className="text-sm text-muted">{startBlockedReason}</p>}
       <div className="flex flex-wrap gap-2">
-        <Button disabled={!!busy || !canStart || !!error} onClick={() => void request({ action: 'start', requestId: crypto.randomUUID(), revision })}>{busy === 'start' ? 'Starting sign-in…' : status?.state === 'connected' ? 'Reconnect with OpenAI' : 'Sign in with OpenAI'}</Button>
+        <Button aria-describedby={startBlockedReason ? 'codex-start-blocker' : undefined} disabled={!!busy || !canStart || !!error || !!startBlockedReason} onClick={() => void request({ action: 'start', requestId: crypto.randomUUID(), revision })}>{busy === 'start' ? 'Starting sign-in…' : status?.state === 'connected' ? 'Reconnect with OpenAI' : 'Sign in with OpenAI'}</Button>
         <Button variant="outline" disabled={!!busy || !canStart || !!error} onClick={() => void request({ action: 'disconnect', revision })}>Disconnect this profile</Button>
       </div>
     </>}

@@ -199,3 +199,7 @@ Architecture, test commands and the source map moved to the [development guide](
 ## License
 
 CollectiveUI is available under the [MIT License](LICENSE). Third-party dependencies, tools and imported artwork retain their own licenses and required notices. See the [pet artwork and credit notes](docs/features/bot-companions.md#source-and-license-research).
+
+### OpenAI native web search
+
+Optional hosted search is available for verified official OpenAI API models, with admin limits, bot defaults, per-chat Off/Auto controls, citations and separate call accounting. It defaults off and does not use ChatGPT subscription credentials. See [setup, policy and fixture validation](docs/operations/openai-native-search.md).

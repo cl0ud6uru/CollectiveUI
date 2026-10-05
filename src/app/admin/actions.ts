@@ -1,5 +1,7 @@
 "use server";
 
+import { nativeSearchSettingsSchema, NATIVE_SEARCH_DEFAULTS } from "@/lib/native-search-policy";
+
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 
 import { eq, sql } from "drizzle-orm";
@@ -504,6 +506,7 @@ export async function saveToolSettings(value: Omit<ToolSettings, "webSearch"> & 
       enforcedApproval: z.array(z.string()),
       fetchAllowlist: z.array(z.string().trim().toLowerCase()).transform((l) => l.filter(Boolean)),
       webSearch: z.object({ provider: z.enum(["none", "searxng", "brave", "bing"]), url: z.string().optional(), apiKey: z.string().optional() }),
+      nativeSearch: nativeSearchSettingsSchema.optional(),
       maxStepsCap: z.number().int().min(1).max(100),
       botCreation: z.enum(["everyone", "groups", "admins"]),
       utilityAppId: z.string().optional(),
@@ -522,6 +525,7 @@ export async function saveToolSettings(value: Omit<ToolSettings, "webSearch"> & 
   }
   const next: ToolSettings = {
     ...v,
+    nativeSearch: v.nativeSearch ?? current.nativeSearch ?? NATIVE_SEARCH_DEFAULTS,
     utilityAppId: v.utilityAppId || undefined,
     embeddingAppId: v.embeddingAppId || undefined,
     webSearch: {

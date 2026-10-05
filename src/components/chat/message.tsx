@@ -104,7 +104,7 @@ export function UserMessage({
             </Button>
             <Button
               size="sm"
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || !onEdit}
               onClick={() => {
                 setEditing(false);
                 onEdit?.(draft);
@@ -235,6 +235,7 @@ export function AssistantMessage({
   const runs = toRuns(message.parts);
   const stepGroups = runs.reduce((n, r) => n + toBlocks(r.parts).filter((b) => b.kind === "steps").length, 0);
   const meta = message.metadata;
+  const searchCalls = new Set(message.parts.filter(p => isToolUIPart(p) && p.type === "tool-openai_web_search").map(p => (p as { toolCallId: string }).toolCallId)).size;
 
   const tool = (part: Part) =>
     isToolUIPart(part) ? (
@@ -350,6 +351,7 @@ export function AssistantMessage({
         })}
         {streaming && !text && !message.parts.some(isToolUIPart) && !bubbles && <span className="streaming-dot" />}
       </div>
+      {searchCalls > 0 && <p className="mt-2 text-xs text-muted">OpenAI search: {searchCalls} observed call{searchCalls === 1 ? "" : "s"} · ${(searchCalls * 0.01).toFixed(2)} estimated tool fees, plus model/search-content tokens. Final billing may differ.</p>}
       {!streaming && !message.parts.some((p) => isToolUIPart(p) && p.state === "approval-requested") && (
         <div
           className={cn(

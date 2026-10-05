@@ -417,6 +417,7 @@ export const conversations = pgTable(
     pinned: boolean("pinned").notNull().default(false),
     archived: boolean("archived").notNull().default(false),
     currentLeafId: text("current_leaf_id"),
+    nativeSearchMode: text("native_search_mode").$type<"off" | "auto">(),
     source: text("source")
       .$type<"chat" | "routine" | "delegation">()
       .notNull()
@@ -867,6 +868,14 @@ export const toolGrants = pgTable(
  * Usage ledger: one row per model call (each step of a multi-step turn, delegates, titles, memory extraction,
  * drafts, embeddings). Survives chat deletion. message_id/app_id/bot_id are plain text so rows never block deletes.
  */
+/** Durable reservation: an interrupted response retains its reservation, so retry cannot overspend. */
+export const hostedSearchBudgets = pgTable("hosted_search_budgets", {
+  messageId: text("message_id").primaryKey(),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  maxCalls: integer("max_calls").notNull(),
+  reservedCalls: integer("reserved_calls").notNull().default(0),
+}, t => [check("hosted_search_budget_check", sql`${t.maxCalls} between 1 and 10 and ${t.reservedCalls} between 0 and ${t.maxCalls}`)]);
+
 export const usageEvents = pgTable(
   "usage_events",
   {
@@ -895,6 +904,8 @@ export const usageEvents = pgTable(
     cacheWriteTokens: integer("cache_write_tokens"),
     reasoningTokens: integer("reasoning_tokens"),
     costMicros: bigint("cost_micros", { mode: "number" }),
+    hostedSearchCalls: integer("hosted_search_calls"),
+    searchToolCostEstimateMicros: bigint("search_tool_cost_estimate_micros", { mode: "number" }),
   },
   (t) => [
     index("usage_events_created_idx").on(t.createdAt),

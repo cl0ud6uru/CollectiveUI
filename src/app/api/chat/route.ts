@@ -1,3 +1,4 @@
+import { nativeSearchSelection } from "@/lib/agent/native-search";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 import { authorizeDockerStream } from "@/lib/docker-hermes/store";
 import { createUIMessageStreamResponse } from "ai";
@@ -37,6 +38,7 @@ const Body = z.object({
   appId: z.string().optional(),
   botId: z.string().optional(),
   parentId: z.string().nullable().optional(),
+  nativeSearchMode: z.enum(["off", "auto"]).nullable().optional(),
   regenerate: z.boolean().optional(),
   literalSlash: z.boolean().optional(),
   message: z
@@ -130,6 +132,11 @@ export async function POST(req: Request) {
       if (body.botId) await getUsableBot(p, body.botId);
       else if (body.appId) await getAccessibleModel(p, body.appId);
       else throw new HttpError(400, "Choose a model or bot to chat with");
+      if (body.nativeSearchMode === "auto") {
+        const { app, bot } = await resolveTurnTarget(p, { appId: body.appId ?? null, botId: body.botId ?? null });
+        const { reason } = await nativeSearchSelection(app, bot, await getSetting("tools"), "auto");
+        if (reason) throw new HttpError(403, reason);
+      }
       [conv] = await db
         .insert(conversations)
         .values({
@@ -137,6 +144,7 @@ export async function POST(req: Request) {
           userId: p.user.id,
           appId: body.botId ? null : body.appId,
           botId: body.botId ?? null,
+          nativeSearchMode: body.nativeSearchMode ?? null,
         })
         .onConflictDoNothing()
         .returning();

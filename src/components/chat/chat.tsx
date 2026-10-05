@@ -10,6 +10,8 @@ import { ArrowDown, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, 
 import { grantToolForBot, setConversationLeaf, setMessageFeedback } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { newId } from "@/lib/ids";
+import { NativeSearchControl } from "./native-search-control";
+import type { NativeSearchMode } from "@/lib/native-search-policy";
 import { Composer, type ComposerHandle, type UploadedFile } from "./composer";
 import { AssistantMessage, UserMessage, type BranchInfo } from "./message";
 import { ShareButton } from "./share-dialog";
@@ -97,6 +99,13 @@ export function Chat({
   const { user, branding, upsertConversation, setMobileOpen, apps, bots, setBotLive, setChatStatus, serverBots } = useShell();
   const [target, setTarget] = useState<TargetOption | null>(initialTarget);
   const [started, setStarted] = useState(!isNew);
+  const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
+  const [searchPending, setSearchPending] = useState(true);
+  const searchPendingRef = useRef(true);
+  const searchChanged = useCallback((mode: NativeSearchMode | null, pending: boolean) => {
+    searchPendingRef.current = pending;
+    setNativeSearchMode(mode); setSearchPending(pending);
+  }, []);
   // Deliberately visit-local: every chat mount/reload starts collapsed. Opening
   // details never writes a preference or remounts the conversation/composer.
   const [detailsView, setDetailsView] = useState<"desktop" | "mobile" | null>(null);
@@ -206,7 +215,7 @@ export function Chat({
     resume: resumeOnMount,
     transport,
     generateId: () => newId(),
-    sendAutomaticallyWhen: (options) => !unavailable && lastAssistantMessageIsCompleteWithApprovalResponses(options),
+    sendAutomaticallyWhen: (options) => !unavailable && !searchPendingRef.current && lastAssistantMessageIsCompleteWithApprovalResponses(options),
     onData: (part) => {
       if (part.type === "data-title") {
         upsertConversation({ id: conversationId, title: (part.data as { title: string }).title });
@@ -380,7 +389,7 @@ export function Chat({
     }
   }
 
-  const targetBody = { appId: target?.kind === "app" ? target.id : undefined, botId: target?.kind === "bot" ? target.id : undefined };
+  const targetBody = { nativeSearchMode, appId: target?.kind === "app" ? target.id : undefined, botId: target?.kind === "bot" ? target.id : undefined };
 
   // Redirect work in progress: sending while a reply streams stops it, then sends the new instruction.
   const pendingRef = useRef<{ text: string; files: UploadedFile[] } | null>(null);
@@ -420,6 +429,7 @@ export function Chat({
     }
   }
   function send(text: string, files: UploadedFile[]): void | boolean | Promise<boolean> {
+    if (searchPendingRef.current) return false;
     if (!target || unavailable) { toast.error("Pick a model or bot first"); return false; }
     const parsed = parseHermesInput(text);
     const localFresh = target.kind === "bot" && parsed.kind === "command" && ["new", "reset"].includes(parsed.name);
@@ -459,6 +469,7 @@ export function Chat({
   });
 
   function editMessage(index: number, text: string) {
+    if (searchPendingRef.current || busy || unavailable) return;
     const original = messages[index];
     const files = original.parts.filter((p) => p.type === "file");
     keepCurrentBranch();
@@ -534,11 +545,12 @@ export function Chat({
   }, [overlayHeader]);
   const lastAssistantIdx = messages.map((m) => m.role).lastIndexOf("assistant");
 
-  const approve = (id: string) => addToolApprovalResponse({ id, approved: true });
-  const deny = (id: string) => addToolApprovalResponse({ id, approved: false, reason: "The user denied this action." });
+  const approve = (id: string) => { if (!searchPendingRef.current) addToolApprovalResponse({ id, approved: true }); };
+  const deny = (id: string) => { if (!searchPendingRef.current) addToolApprovalResponse({ id, approved: false, reason: "The user denied this action." }); };
   const alwaysAllow = async (id: string, toolName: string) => {
+    if (searchPendingRef.current) return;
     if (target?.kind === "bot") await grantToolForBot(target.id, toolName).catch(() => {});
-    addToolApprovalResponse({ id, approved: true });
+    approve(id);
   };
 
   return (
@@ -646,12 +658,13 @@ export function Chat({
                 <h1 className="mb-8 text-center text-[28px] font-normal">{branding.welcomeText}</h1>
               )}
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
+              {target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
               <Composer
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
                 busy={busy}
-                disabled={!target || unavailable}
+                disabled={!target || unavailable || searchPending}
                 skills={skills}
                 hermesCommands={hermesCommands}
                 commands={composerCommandList}
@@ -685,13 +698,13 @@ export function Chat({
                 {messages.map((m, i) => [
                   <TimeDivider key={`t-${m.id}`} at={m.metadata?.createdAt} previous={i > 0 ? messages[i - 1].metadata?.createdAt : undefined} />,
                   m.role === "user" ? (
-                    <UserMessage key={m.id} message={m} branch={branchInfo(m, i)} onEdit={busy || unavailable ? undefined : (t) => editMessage(i, t)} variant={variant} tint={tint} />
+                    <UserMessage key={m.id} message={m} branch={branchInfo(m, i)} onEdit={busy || unavailable || searchPending ? undefined : (t) => editMessage(i, t)} variant={variant} tint={tint} />
                   ) : (
                     <AssistantMessage
                       key={m.id}
                       variant={variant}
                       message={m}
-                      readOnly={unavailable}
+                      readOnly={unavailable || searchPending}
                       streaming={busy && i === messages.length - 1}
                       isLast={i === lastAssistantIdx}
                       branch={branchInfo(m, i)}
@@ -702,9 +715,10 @@ export function Chat({
                         void setMessageFeedback(conversationId, m.id, v);
                       }}
                       onRegenerate={
-                        busy || unavailable
+                        busy || unavailable || searchPending
                           ? undefined
                           : () => {
+                              if (searchPendingRef.current) return;
                               keepCurrentBranch();
                               regenerate({ messageId: m.id, body: targetBody });
                             }
@@ -727,7 +741,7 @@ export function Chat({
                         Open settings
                       </Link>
                     )}
-                    <button disabled={unavailable} className="underline disabled:opacity-50" onClick={() => regenerate({ body: targetBody })}>
+                    <button disabled={unavailable || searchPending} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current) regenerate({ body: targetBody }); }}>
                       Retry
                     </button>
                   </div>
@@ -750,12 +764,13 @@ export function Chat({
                 </button>
               )}
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
+              {target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
               <Composer
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
                 busy={busy}
-                disabled={!target || unavailable}
+                disabled={!target || unavailable || searchPending}
                 skills={skills}
                 hermesCommands={hermesCommands}
                 commands={composerCommandList}

@@ -31,8 +31,10 @@ export default async function AdminUsagePage() {
         />
         <Stat label="Bots" value={n(totals.bots)} />
         <Stat label="Tool calls" value={n(totals.tool_calls)} />
+        <Stat label="OpenAI search calls observed" value={n(totals.hosted_search_calls)} sub={`$${(Number(totals.search_tool_cost_estimate_micros) / 1_000_000).toFixed(2)} estimated tool fees; token charges additional`} />
         <Stat label="Satisfaction" value={fb ? `${Math.round((Number(totals.thumbs_up) / fb) * 100)}%` : "—"} sub={`${n(totals.thumbs_up)} 👍 · ${n(totals.thumbs_down)} 👎`} />
       </div>
+      <p className="mt-3 text-xs text-muted">Search fees are estimates from observed hosted calls, not an invoice. Interrupted requests may have unreported usage. Search-content tokens are not separately itemized by the response; reported model tokens are counted once.</p>
       <Card className="mt-6">
         <div className="mb-3 text-sm font-medium">Assistant messages per day</div>
         <div className="flex h-40 items-end gap-1" role="img" aria-label="Messages per day chart">

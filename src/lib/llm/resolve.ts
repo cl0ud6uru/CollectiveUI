@@ -1,3 +1,5 @@
+import { nativeSearchMiddleware, type NativeSearchOptions } from "./native-search";
+import { nativeSearchCapability } from "@/lib/native-search-policy";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 import { freshDocker } from "@/lib/docker-hermes/store";
 import { dockerFetch, dockerControl } from "@/lib/docker-hermes/client";
@@ -31,6 +33,7 @@ import { isLocalHermes, localBinding } from "@/lib/local-hermes/config";
 import { LOCAL_ORIGIN, localControl, localSocketPath, socketFetch } from "@/lib/local-hermes/client";
 
 export type ResolveModelOptions = {
+  nativeSearch?: NativeSearchOptions;
   purpose: ModelPurpose;
   /** The acting user (chatting user or routine owner). */
   principal?: Principal;
@@ -146,8 +149,13 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
   if (app.provider === "chatgpt") return resolveChatGPT(app, opts);
   if (app.provider === "hermes") return resolveHermes(app, opts);
   const ctx = await providerContextFor(app);
+  if (opts.nativeSearch) {
+    const reason = nativeSearchCapability(app, ctx.baseUrl);
+    if (reason) throw new ProviderUnavailableError(reason);
+  }
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   const middleware = [usageMiddleware(usageContext(app, opts, app.model))];
+  if (opts.nativeSearch) middleware.unshift(nativeSearchMiddleware(usageContext(app, opts, app.model), opts.nativeSearch));
   if (ctx.kind !== "openai-compatible") middleware.unshift(defaultsMiddleware(ctx.kind, ctx.config, app.model, opts.purpose));
   return {
     model: wrapLanguageModel({ model: instance.chat(app.model), middleware }),

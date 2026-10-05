@@ -6,7 +6,7 @@ import { LocalController, LocalError } from '../local-hermes/controller';
 import { runtimeKey, BrokerConfig, type RuntimeDriver } from './docker';
 import { bindingSchema, ownerId, phases, profileName, type DockerBinding, type DockerStatus } from './types';
 import { codexAction, codexStatus, codexStates, type CodexStatus } from './oauth';
-import { profileUpdate, profileTest, testCodes, type ProfileSettings, type ProfileTestResult } from './settings';
+import { profileUpdate, profileTest, testCodes, providerBlocker, type ProfileSettings, type ProfileTestResult } from './settings';
 const key = () => randomUUID().replaceAll('-', '');
 const storedSchema = z.object({ owner: ownerId, generation: z.number().int(), phase: z.enum(phases), error: z.string().nullable(), cleanupRequired: z.boolean().default(false),
   bindings: z.array(bindingSchema), confirmed: z.array(z.string()).default([]), pending: z.record(z.string(), z.object({ profile: profileName, name: z.string() })),
@@ -269,7 +269,9 @@ export class DockerBroker {
       if (before.revision !== input.revision) throw new LocalError(409, 'Profile settings changed. Reload before saving.');
       const unchanged = input.credential.action === 'keep' && (['provider', 'model', 'maxTurns', 'reasoningEffort'] as const).every(k => input[k] === before[k]);
       if (unchanged) return { ...before, lastTest: null };
-      if (!before.advancedSupported || !before.editableProviders[input.provider]) throw new LocalError(409, 'This profile has native routing, credentials or advanced values outside this editor. Use native maintenance before changing them.');
+      const blocker = providerBlocker(before, input.provider);
+      if (blocker) throw new LocalError(409, blocker);
+      if (!before.advancedSupported) throw new LocalError(409, 'Native advanced values are outside this editor. Use native maintenance before changing them.');
       try {
         // Stop all native writers before the transaction. Holds above ensure no sibling work is lost.
         await this.driver.stop(owner);
@@ -348,7 +350,9 @@ export class DockerBroker {
       if (input.action === 'start' || input.action === 'disconnect') {
         const before = await this.driver.settings(owner, b.profile, b.identity); current();
         if (before.revision !== input.revision) throw new LocalError(409, 'Profile settings changed. Reload before signing in.');
-        if (!before.editableProviders['openai-codex'] || (input.action === 'start' && before.provider !== 'openai-codex'))
+        const blocker = providerBlocker(before, 'openai-codex');
+        if (blocker) throw new LocalError(409, blocker);
+        if (input.action === 'start' && before.provider !== 'openai-codex')
           throw new LocalError(409, 'Save the ChatGPT / Codex provider and reconcile unsupported native routing first.');
       }
       try {
