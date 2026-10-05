@@ -1,12 +1,24 @@
 import "server-only";
 import { cache } from "react";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
+import { bearerToken, mobilePrincipal } from "@/lib/auth/mobile";
 import { HttpError } from "@/lib/authz";
 
-/** The signed-in principal for this request (memoised per request). */
+const requestBearer = cache(async () => bearerToken(await headers()));
+const mobileAuth = cache(async () => {
+  const token = await requestBearer();
+  return token ? mobilePrincipal(token) : null;
+});
+
+/**
+ * The signed-in principal for this request (memoised per request). A request with an Authorization header is judged
+ * by its native app token alone, never by cookies; proxy.ts admits such requests only to the mobile API paths.
+ */
 export const getPrincipal = cache(async (): Promise<Principal | null> => {
+  if (await requestBearer() !== undefined) return (await mobileAuth())?.principal ?? null;
   const session = await auth();
   if (!session?.user?.id || session.user.mustChangePassword) return null;
   const p = await loadPrincipal(session.user.id);
@@ -49,8 +61,16 @@ export function errorResponse(err: unknown) {
   return Response.json({ error: "Internal error" }, { status: 500 });
 }
 
+/** The native app sign-in behind this request (bearer token requests only). */
+export async function requireMobileSession() {
+  const m = await mobileAuth();
+  if (!m) throw new HttpError(401, "Unauthorized");
+  return m;
+}
+
 /** Only the password screen/action can use a restricted first-login session. */
 export async function requirePasswordPrincipal() {
+  if (await requestBearer() !== undefined) throw new HttpError(401, "Sign in on the web to change security settings");
   const session = await auth();
   if (!session?.user?.id) throw new HttpError(401, "Unauthorized");
   const p = await loadPrincipal(session.user.id);
