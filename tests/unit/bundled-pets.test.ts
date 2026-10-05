@@ -50,7 +50,7 @@ describe("Bundled pet validation with synthetic pixels", () => {
 
 const bundles = [
   { slug: "hermes", name: "Hermes", file: "spritesheet.webp", hash: "80e08093c5cdaa390c6176fca447acf3cacb122e08927573f0f7256622c2c646", normalizedBytes: 3904456 },
-  { slug: "hermes-assimilated", name: "Hermes Assimilated", file: "spritesheet.webp", hash: "74e1f12b9c792122c57cd9b204be79eaf825f6a97d61cf0ece9ec835186438db", normalizedBytes: 2493533 },
+  { slug: "hermes-assimilated", name: "Hermes Assimilated", file: "spritesheet.webp", hash: "071c27d8292fd0da02fbc7d7e923fbc98cbfc2de16b29f14f32624bee981dc7b", normalizedBytes: 3585739 },
   { slug: "the-queen", name: "The Queen", file: "spritesheet.png", hash: "fed57f8824f9e4a93064ab9e60996637867a583b2e3b83d3a175460560ac7487" },
 ];
 

@@ -118,3 +118,40 @@ test("actual file uploads validate and save as private imports without changing 
   expect((await page.request.patch(endpoint, { headers: { origin }, data: { mode: "off", appearance: "moss", catalogId: null, motion: "still" } })).ok()).toBe(true);
   expect(await (await page.request.get(endpoint)).json()).toMatchObject({ enabled: false, preference: { mode: "off", motion: "still" } });
 });
+
+test("close-framed Assimilated and green Hermes render in real 32px navigation and 28px group choices", async ({ page }) => {
+  await login(page);
+  for (const [botId, catalogId, name] of [
+    ["bundle-browser-shared", "builtin-hermes-v2", "Green Hermes · reference"],
+    ["bundle-browser-private", "builtin-hermes-assimilated-v2", "Hermes Assimilated · closer"],
+  ]) {
+    await pool.query("UPDATE bots SET name=$2 WHERE id=$1", [botId, name]);
+    const response = await page.request.put(`/api/bots/${botId}/pet/default`, { headers: { origin }, data: { appearance: "catalog", catalogId } });
+    expect(response.ok(), await response.text()).toBe(true);
+    const motion = await page.request.patch(`/api/bots/${botId}/pet/motion`, { headers: { origin }, data: { motion: "still" } });
+    expect(motion.ok(), await motion.text()).toBe(true);
+    if (botId === "bundle-browser-private") {
+      const follow = await page.request.patch(`/api/bots/${botId}/pet`, { headers: { origin }, data: { mode: "follow", appearance: "moss", catalogId: null, motion: "still" } });
+      expect(follow.ok(), await follow.text()).toBe(true);
+    }
+  }
+  await page.goto("/");
+  const nav = page.getByRole("region", { name: "Bot navigation" });
+  for (const botId of ["bundle-browser-shared", "bundle-browser-private"]) {
+    const avatar = nav.locator(`[data-bot-avatar="${botId}"]`);
+    await expect(avatar).toHaveCSS("width", "32px");
+    await expect(avatar.locator("img.pet-atlas")).toHaveJSProperty("naturalWidth", 1536);
+    await expect(avatar.locator("img.pet-atlas")).toHaveCSS("animation-name", "none");
+  }
+  await nav.screenshot({ path: `${screens}/assimilated-navigation-32px.png` });
+  await nav.getByRole("button", { name: "New group chat", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New group chat", exact: true });
+  for (const botId of ["bundle-browser-shared", "bundle-browser-private"]) {
+    const avatar = dialog.locator(`[data-bot-avatar="${botId}"]`);
+    await expect(avatar).toHaveCSS("width", "28px");
+    await expect(avatar.locator("img.pet-atlas")).toHaveJSProperty("naturalWidth", 1536);
+  }
+  await dialog.screenshot({ path: `${screens}/assimilated-group-choice-28px.png` });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await dialog.screenshot({ path: `${screens}/assimilated-group-choice-dark-28px.png` });
+});
