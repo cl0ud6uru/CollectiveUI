@@ -32,7 +32,7 @@ describe("mobile pet display contract", () => {
     expect(mocks.pets).toHaveBeenCalledWith(mocks.principal, authorized);
     expect((await response.json()).pets).toEqual({ "bot /1": {
       enabled: true, appearance: "catalog", motion: "still", spriteVersionNumber: 2,
-      spriteUrl: "/api/mobile/v1/bots/bot%20%2F1/pet/avatar?v=rev%2B1",
+      spriteUrl: "/api/mobile/v1/bots/bot%20%2F1/pet/avatar?v=rev%2B1", spriteHdUrl: null,
     } });
     expect(response.headers.get("cache-control")).toBe("private, no-store");
   });
@@ -40,10 +40,23 @@ describe("mobile pet display contract", () => {
   it("passes the mobile principal and revision to the existing access-checked image reader", async () => {
     mocks.sprite.mockResolvedValue(Buffer.from([137, 80, 78, 71]));
     const response = await avatar(new Request("https://example.test/api/mobile/v1/bots/b1/pet/avatar?v=r1"), { params: Promise.resolve({ id: "b1" }) });
-    expect(mocks.sprite).toHaveBeenCalledWith(mocks.principal, "b1", "r1");
+    expect(mocks.sprite).toHaveBeenCalledWith(mocks.principal, "b1", "r1", false);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
     expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("vary")).toBe("Authorization");
+  });
+
+  it("offers and serves the catalog HD rendition only through the same access-checked reader", async () => {
+    const authorized = [{ id: "b1" }];
+    mocks.shell.mockResolvedValue({ user: { id: "viewer" }, bots: authorized, botRows: authorized });
+    mocks.pets.mockResolvedValue({ b1: { enabled: true, appearance: "catalog", motion: "auto", revision: "r1", spriteUrl: "/api/bots/b1/pet/avatar?v=r1",
+      spriteHdUrl: "/api/bots/b1/pet/avatar?v=r1&size=2x", custom: { displayName: "Pet", spriteVersionNumber: 2 } } });
+    expect((await (await shell()).json()).pets.b1.spriteHdUrl).toBe("/api/mobile/v1/bots/b1/pet/avatar?v=r1&size=2x");
+    mocks.sprite.mockResolvedValue(Buffer.from("RIFF\0\0\0\0WEBPVP8L"));
+    const response = await avatar(new Request("https://example.test/api/mobile/v1/bots/b1/pet/avatar?v=r1&size=2x"), { params: Promise.resolve({ id: "b1" }) });
+    expect(mocks.sprite).toHaveBeenCalledWith(mocks.principal, "b1", "r1", true);
+    expect(response.headers.get("content-type")).toBe("image/webp");
     expect(response.headers.get("vary")).toBe("Authorization");
   });
 

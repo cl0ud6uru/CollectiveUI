@@ -28,6 +28,6 @@ export type PublicBranding = {
 /** What the public sign-in page may know about its companion: built-in art, or one admin-confirmed catalog pet. */
 export type PublicLoginPet =
   | { appearance: "off" | "moss" | "ember"; name: string }
-  | { appearance: "catalog"; name: string; credit: string; spriteVersionNumber: 1 | 2; spriteUrl: string };
+  | { appearance: "catalog"; name: string; credit: string; spriteVersionNumber: 1 | 2; spriteUrl: string; spriteHdUrl: string | null };
 export const LOGIN_PET_NAMES = { off: "Portal bot", moss: "Moss", ember: "Ember" } as const;
-export const loginPetSpriteUrl = (revision: string) => `/api/branding/login-pet?v=${encodeURIComponent(revision)}`;
+export const loginPetSpriteUrl = (revision: string, hd = false) => `/api/branding/login-pet?v=${encodeURIComponent(revision)}${hd ? "&size=2x" : ""}`;

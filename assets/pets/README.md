@@ -10,8 +10,10 @@ published catalog options through the same manifest/raster/cell validation as im
 | The Queen | `builtin-the-queen-v2` | [The Queen](the-queen/README.md) |
 
 Select them in Pet avatar settings, or assign a bot default through Admin → Pets.
-Installation adds missing entries and upgrades only the known original standing
-Hermes Assimilated raster to its close-framing revision. Other artwork and revisions,
+Installation adds missing entries and upgrades only artwork from a known earlier
+official release (listed in `BUNDLED_PETS[].releases`, such as the original standing
+Hermes Assimilated raster) to the current bundle. It also adds a newly shipped HD
+rendition to an untouched current release. Other artwork and revisions,
 unpublication, bot defaults, personal selections, Off, and private imports are preserved.
 Concurrent installers use conflict-safe inserts and an atomic revision/hash guard for
 the artwork upgrade. Every needed bundle is validated before the transaction writes.
@@ -23,6 +25,18 @@ All runtime atlases have nine animation rows and sixteen clockwise gaze poses,
 1536 × 2288 pixels in an 8 × 11 grid of 192 × 208 cells. Required row frame counts
 are 6, 8, 8, 4, 5, 8, 6, 6, 6, 8, 8; the 15 unused cells are transparent.
 Gaze rows complete the v2 format but do not add cursor tracking to the renderer.
+
+## Optional HD rendition
+
+A bundle may also ship `v2/spritesheet@2x.webp`: the same atlas at 3072 × 4576
+(384 × 416 cells). It is a CollectiveUI extension, not part of Codex Pet v2.
+`pet.json` never lists it, and imports and ZIP exports stay standard v2. It's
+stored beside the v2 sheet under the same revision, and browsers fetch it (as a
+`srcset` candidate) only for avatars drawn wider than their v2 frame, such as
+the sign-in companion and 112-pixel avatars on retina screens. The installer
+validates it like the v2 sheet, and also checks that it is the same artwork.
+None ships yet. [REDRAW-2X.md](REDRAW-2X.md) covers making one with
+`scripts/export-pet-frames.ts` and `scripts/build-pet-hd.ts`.
 
 ## Reproducible validation
 

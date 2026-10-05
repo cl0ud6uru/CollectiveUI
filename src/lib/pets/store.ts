@@ -6,7 +6,7 @@ import type { Principal } from "@/lib/auth/groups";
 import { getEditableBot, getUsableBot, HttpError, listAccessibleBots } from "@/lib/authz";
 import { lockEditableBot } from "@/lib/bots/service";
 import { newId } from "@/lib/ids";
-import { DEFAULT_PET, DEFAULT_PREFERENCES, type BotPetDefault, type PetManifest, type PetPreferences, type PetView } from "./shared";
+import { DEFAULT_PET, DEFAULT_PREFERENCES, HD_QUERY, type BotPetDefault, type PetManifest, type PetPreferences, type PetView } from "./shared";
 
 import { canManagePetDefault, hasSharedPetIdentity, type PetBot } from "./policy";
 import { assertPersonalPetAllowed, lockPetViewer } from "./authorization";
@@ -23,7 +23,7 @@ async function resolvePets(p: Principal, authorizedBots: PetBot[]): Promise<Reco
     db.select({ botId: botPetDefaults.botId, appearance: botPetDefaults.appearance, catalogId: botPetDefaults.catalogId }).from(botPetDefaults).where(inArray(botPetDefaults.botId, botIds)),
   ]);
   const ids = [...new Set([...rows, ...defaults].flatMap((r) => r.catalogId ? [r.catalogId] : []))];
-  const catalog = ids.length ? await db.select({ id: petCatalog.id, manifest: petCatalog.manifest, revision: petCatalog.revision }).from(petCatalog).where(and(inArray(petCatalog.id, ids), eq(petCatalog.status, "published"))) : [];
+  const catalog = ids.length ? await db.select({ id: petCatalog.id, manifest: petCatalog.manifest, revision: petCatalog.revision, hd: sql<boolean>`${petCatalog.spriteHd} is not null` }).from(petCatalog).where(and(inArray(petCatalog.id, ids), eq(petCatalog.status, "published"))) : [];
   const assets = new Map(catalog.map((r) => [r.id, r]));
   const preferences = new Map(rows.map((r) => [r.botId, r]));
   const shared = new Map(defaults.map((r) => [r.botId, r]));
@@ -35,20 +35,22 @@ async function resolvePets(p: Principal, authorizedBots: PetBot[]): Promise<Reco
     const def = shared.get(botId);
     const botDefault: BotPetDefault = def ? { appearance: def.appearance, catalogId: def.catalogId } : DEFAULT_PET.botDefault;
     const privateImport = row?.custom && row.revision ? { manifest: row.custom, revision: row.revision } : null;
-    let effective: Pick<PetView, "appearance" | "custom" | "revision" | "enabled" | "source"> = { appearance: "moss", custom: null, revision: null, enabled: false, source: "none" };
+    let effective: Pick<PetView, "appearance" | "custom" | "revision" | "enabled" | "source"> & { hd?: boolean } = { appearance: "moss", custom: null, revision: null, enabled: false, source: "none" };
     if (sharedIdentity || preference.mode !== "off") {
       if (botDefault.appearance === "moss" || botDefault.appearance === "ember") effective = { ...effective, appearance: botDefault.appearance, enabled: true, source: "default" };
       const defaultAsset = botDefault.catalogId && assets.get(botDefault.catalogId);
-      if (defaultAsset) effective = { appearance: "catalog", custom: defaultAsset.manifest, revision: defaultAsset.revision, enabled: true, source: "default" };
+      if (defaultAsset) effective = { appearance: "catalog", custom: defaultAsset.manifest, revision: defaultAsset.revision, hd: defaultAsset.hd, enabled: true, source: "default" };
       if (!sharedIdentity && preference.mode === "personal") {
         if (preference.appearance === "moss" || preference.appearance === "ember") effective = { appearance: preference.appearance, custom: null, revision: null, enabled: true, source: "personal" };
         if (preference.appearance === "custom" && privateImport) effective = { appearance: "custom", custom: privateImport.manifest, revision: privateImport.revision, enabled: true, source: "personal" };
         const personalAsset = preference.catalogId && assets.get(preference.catalogId);
-        if (personalAsset) effective = { appearance: "catalog", custom: personalAsset.manifest, revision: personalAsset.revision, enabled: true, source: "personal" };
+        if (personalAsset) effective = { appearance: "catalog", custom: personalAsset.manifest, revision: personalAsset.revision, hd: personalAsset.hd, enabled: true, source: "personal" };
       }
     }
-    return [botId, { ...effective, motion: preference.motion, preference, privateImport, botDefault, sharedIdentity, canManageDefault: canManagePetDefault(p, bot), canPublish: p.isAdmin,
-      spriteUrl: effective.revision ? `/api/bots/${encodeURIComponent(botId)}/pet/avatar?v=${encodeURIComponent(effective.revision)}` : null } satisfies PetView];
+    const { hd, ...shown } = effective;
+    const avatarUrl = shown.revision && `/api/bots/${encodeURIComponent(botId)}/pet/avatar?v=${encodeURIComponent(shown.revision)}`;
+    return [botId, { ...shown, motion: preference.motion, preference, privateImport, botDefault, sharedIdentity, canManageDefault: canManagePetDefault(p, bot), canPublish: p.isAdmin,
+      spriteUrl: avatarUrl || null, spriteHdUrl: avatarUrl && hd ? `${avatarUrl}&${HD_QUERY}` : null } satisfies PetView];
   }));
 }
 
@@ -109,7 +111,8 @@ export async function readPetSprite(p: Principal, botId: string, revision: strin
   return row.sprite;
 }
 
-export async function readAvatarSprite(p: Principal, botId: string, revision: string | null) {
+/** `hd` reads the catalog HD rendition of the same effective revision. Private imports never have one. */
+export async function readAvatarSprite(p: Principal, botId: string, revision: string | null, hd = false) {
   await getUsableBot(p, botId);
   if (!revision) throw new HttpError(404, "Pet image not found.");
   const personal = alias(petCatalog, "personal_pet");
@@ -121,7 +124,9 @@ export async function readAvatarSprite(p: Principal, botId: string, revision: st
   const custom = sql`${privateIdentity} and ${botPets.mode} = 'personal' and ${botPets.appearance} = 'custom' and ${botPets.custom} is not null and ${botPets.revision} is not null`;
   const selected = sql`${privateIdentity} and ${botPets.mode} = 'personal' and ${personal.id} is not null`;
   const effectiveRevision = sql`case when ${disabled} then null when ${custom} then ${botPets.revision} when ${selected} then ${personal.revision} else ${shared.revision} end`;
-  const [row] = await db.select({ sprite: sql<Buffer | null>`case when ${disabled} then null when ${custom} then ${botPets.sprite} when ${selected} then ${personal.sprite} else ${shared.sprite} end` })
+  const [row] = await db.select({ sprite: hd
+    ? sql<Buffer | null>`case when (${disabled}) or (${custom}) then null when ${selected} then ${personal.spriteHd} else ${shared.spriteHd} end`
+    : sql<Buffer | null>`case when ${disabled} then null when ${custom} then ${botPets.sprite} when ${selected} then ${personal.sprite} else ${shared.sprite} end` })
     .from(bots)
     .leftJoin(botPets, and(eq(botPets.botId, bots.id), eq(botPets.userId, p.user.id)))
     .leftJoin(botPetDefaults, eq(botPetDefaults.botId, bots.id))

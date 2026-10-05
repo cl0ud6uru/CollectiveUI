@@ -164,4 +164,70 @@ run("bundled pet installation with actual artwork", () => {
       await db.update(schema.petCatalog).set(original).where(eq(schema.petCatalog.id, id));
     }
   });
+  it("adds a shipped HD rendition to official artwork once, serves it with the same access rules, and never loops", async () => {
+    const { cp, mkdtemp, rm, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const path = await import("node:path");
+    const sharp = (await import("sharp")).default;
+    const { db, schema } = await import("@/db");
+    const { BUNDLED_PETS, HD_SPRITE_FILE, installBundledPets } = await import("@/lib/pets/bundled");
+    const { loadPrincipal } = await import("@/lib/auth/groups");
+    const { readLoginPetSprite, saveLoginPet, getPublicLoginPet } = await import("@/lib/branding/login-pet");
+    const s = await import("@/lib/pets/store"), c = await import("@/lib/pets/catalog");
+    const owner = (await loadPrincipal("bundle-owner"))!;
+    const hermes = { ...BUNDLED_PETS[0], hd: true };
+    const id = hermes.id;
+    const [original] = await db.select().from(schema.petCatalog).where(eq(schema.petCatalog.id, id));
+    // A mechanical enlargement of the shipped sheet in a temporary bundle. It exercises installation only; never shipped.
+    const root = await mkdtemp(path.join(tmpdir(), "bundled-hd-"));
+    try {
+      await cp("assets/pets/hermes/v2", path.join(root, hermes.directory), { recursive: true });
+      await writeFile(path.join(root, hermes.directory, HD_SPRITE_FILE), await sharp("assets/pets/hermes/v2/spritesheet.webp").resize(3072, 4576, { kernel: "lanczos3" }).webp({ quality: 95, alphaQuality: 100 }).toBuffer());
+      await s.saveBotDefault(owner, "bundle-follow", { appearance: "catalog", catalogId: id });
+      await saveLoginPet(owner.user.id, { appearance: "catalog", catalogId: id }, "confirmed");
+      expect(await readLoginPetSprite(true)).toBeNull();
+      await expect(c.readCatalogSprite(owner, id, original.revision, true)).rejects.toThrow(/not found/);
+      expect(await s.readPet(owner, "bundle-follow")).toMatchObject({ revision: original.revision, spriteHdUrl: null });
+
+      // Web and worker startups race; HD encoding is slow, so two concurrent installers keep this test practical.
+      await Promise.all(Array.from({ length: 2 }, () => installBundledPets(root, [hermes])));
+      const [after] = await db.select().from(schema.petCatalog).where(eq(schema.petCatalog.id, id));
+      expect(after.sprite.equals(original.sprite)).toBe(true);
+      expect(await sharp(after.spriteHd!).metadata()).toMatchObject({ format: "webp", width: 3072, height: 4576 });
+      expect(after.revision).not.toBe(original.revision);
+      expect({ ...after, spriteHd: null, revision: original.revision, updatedAt: original.updatedAt }).toEqual(original);
+
+      // The shared identity offers the 2× sheet beside the v2 sheet, at the same revision and with the same checks.
+      const pet = await s.readPet(owner, "bundle-follow");
+      expect(pet).toMatchObject({ revision: after.revision, spriteUrl: expect.stringContaining(`v=${after.revision}`) });
+      expect(pet.spriteHdUrl).toBe(`${pet.spriteUrl}&size=2x`);
+      expect((await s.readAvatarSprite(owner, "bundle-follow", after.revision, true)).equals(after.spriteHd!)).toBe(true);
+      expect((await s.readAvatarSprite(owner, "bundle-follow", after.revision)).equals(after.sprite)).toBe(true);
+      await expect(s.readAvatarSprite(owner, "bundle-follow", original.revision, true)).rejects.toThrow();
+      // A private import never has an HD rendition, even with a catalog default underneath it.
+      await s.saveBotDefault(owner, "bundle-custom", { appearance: "catalog", catalogId: id });
+      const custom = await s.readPet(owner, "bundle-custom");
+      expect(custom).toMatchObject({ source: "personal", spriteHdUrl: null });
+      await expect(s.readAvatarSprite(owner, "bundle-custom", custom.revision, true)).rejects.toThrow();
+      expect((await c.listCatalog(owner)).find(entry => entry.id === id)).toMatchObject({ hd: true, revision: after.revision });
+      expect((await c.readCatalogSprite(owner, id, after.revision, true)).equals(after.spriteHd!)).toBe(true);
+
+      // New pixels never inherit public sign-in consent; reconfirming covers both renditions of the pinned revision.
+      expect(await readLoginPetSprite()).toBeNull();
+      await saveLoginPet(owner.user.id, { appearance: "catalog", catalogId: id }, "confirmed");
+      expect(await getPublicLoginPet()).toMatchObject({ spriteHdUrl: `/api/branding/login-pet?v=${after.revision}&size=2x` });
+      expect((await readLoginPetSprite(true))!.equals(after.spriteHd!)).toBe(true);
+
+      // Once attached, every later startup is a no-op that reads no files.
+      expect(await installBundledPets("/tmp/nonexistent-bundled-pets", [hermes])).toEqual([]);
+      expect((await db.select().from(schema.petCatalog).where(eq(schema.petCatalog.id, id)))[0]).toEqual(after);
+      // Operator-replaced artwork under the bundled ID is never given the shipped HD sheet.
+      await db.update(schema.petCatalog).set({ sprite: Buffer.from("operator-owned fixture"), spriteHd: null }).where(eq(schema.petCatalog.id, id));
+      expect(await installBundledPets("/tmp/nonexistent-bundled-pets", [hermes])).toEqual([]);
+    } finally {
+      await db.update(schema.petCatalog).set(original).where(eq(schema.petCatalog.id, id));
+      await db.delete(schema.settings).where(eq(schema.settings.key, "loginPet"));
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 180_000);
 });

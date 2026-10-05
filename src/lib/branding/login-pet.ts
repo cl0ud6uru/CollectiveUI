@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, petCatalog, settings } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
@@ -18,15 +18,17 @@ export async function getPublicLoginPet(): Promise<PublicLoginPet> {
   const choice = await getSetting("loginPet");
   if (choice.appearance !== "catalog") return builtIn(choice.appearance);
   const where = activePet(choice);
-  const [row] = where ? await db.select({ manifest: petCatalog.manifest, revision: petCatalog.revision }).from(petCatalog).where(where) : [];
+  const [row] = where ? await db.select({ manifest: petCatalog.manifest, revision: petCatalog.revision, hd: sql<boolean>`${petCatalog.spriteHd} is not null` }).from(petCatalog).where(where) : [];
   if (!row) return builtIn("off");
-  return { appearance: "catalog", name: row.manifest.displayName, credit: row.manifest.credit, spriteVersionNumber: row.manifest.spriteVersionNumber, spriteUrl: loginPetSpriteUrl(row.revision) };
+  return { appearance: "catalog", name: row.manifest.displayName, credit: row.manifest.credit, spriteVersionNumber: row.manifest.spriteVersionNumber, spriteUrl: loginPetSpriteUrl(row.revision),
+    spriteHdUrl: row.hd ? loginPetSpriteUrl(row.revision, true) : null };
 }
 
-export async function readLoginPetSprite(): Promise<Buffer | null> {
+/** The HD rendition shares the pinned revision, so the same public confirmation covers it. */
+export async function readLoginPetSprite(hd = false): Promise<Buffer | null> {
   const where = activePet(await getSetting("loginPet"));
   if (!where) return null;
-  const [row] = await db.select({ sprite: petCatalog.sprite }).from(petCatalog).where(where);
+  const [row] = await db.select({ sprite: hd ? petCatalog.spriteHd : petCatalog.sprite }).from(petCatalog).where(where);
   return row?.sprite ?? null;
 }
 

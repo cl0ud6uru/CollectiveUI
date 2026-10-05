@@ -4,8 +4,8 @@ import type { CatalogPet } from "@/lib/pets/shared";
 
 const manifest = { displayName: "Fixture pet", description: "", spriteVersionNumber: 2 as const, credit: "MIT" };
 const catalog: CatalogPet[] = [
-  { id: "live", manifest, revision: "r1", status: "published" },
-  { id: "hidden", manifest: { ...manifest, displayName: "Hidden" }, revision: "r2", status: "unpublished" },
+  { id: "live", manifest, revision: "r1", status: "published", hd: true },
+  { id: "hidden", manifest: { ...manifest, displayName: "Hidden" }, revision: "r2", status: "unpublished", hd: false },
 ];
 
 describe("bot editor header preview (#24)", () => {
@@ -18,11 +18,12 @@ describe("bot editor header preview (#24)", () => {
 
   it("previews built-in and published catalog pets before saving", () => {
     const ember = draftPetPreview({ appearance: "ember", catalogId: null }, catalog)!;
-    expect(ember).toMatchObject({ enabled: true, appearance: "ember", spriteUrl: null });
+    expect(ember).toMatchObject({ enabled: true, appearance: "ember", spriteUrl: null, spriteHdUrl: null });
     expect(petDisplayName(ember)).toBe("Ember");
     expect(petDisplayName(draftPetPreview({ appearance: "moss", catalogId: null }, catalog)!)).toBe("Moss");
     const live = draftPetPreview({ appearance: "catalog", catalogId: "live" }, catalog)!;
-    expect(live).toMatchObject({ enabled: true, appearance: "catalog", revision: "r1", spriteUrl: "/api/pets/catalog/live/sprite?v=r1" });
+    expect(live).toMatchObject({ enabled: true, appearance: "catalog", revision: "r1", spriteUrl: "/api/pets/catalog/live/sprite?v=r1",
+      spriteHdUrl: "/api/pets/catalog/live/sprite?v=r1&size=2x" });
     expect(petDisplayName(live)).toBe("Fixture pet");
   });
 });
