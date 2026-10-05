@@ -5,6 +5,7 @@ import CollectiveKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("appearance") private var appearance: AppAppearance = .system
     @State private var isSigningOut: Bool = false
 
     private var user: User? {
@@ -14,6 +15,13 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Appearance") {
+                    Picker("Color scheme", selection: $appearance) {
+                        ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Section("Account") {
                     LabeledContent("Name", value: user?.name ?? "—")
                     LabeledContent("Email", value: user?.email ?? "—")
@@ -25,6 +33,10 @@ struct SettingsView: View {
                 Section("Server") {
                     LabeledContent("Address", value: model.serverURL?.absoluteString ?? "—")
                     LabeledContent("Name", value: model.appName)
+                    if let shell = model.shell, !shell.hasPetMetadata {
+                        Text("Update your CollectiveUI server to display custom pet avatars in the app.")
+                            .font(.footnote).foregroundStyle(PortalTheme.muted)
+                    }
                 }
 
                 Section("This device") {
@@ -53,6 +65,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(PortalTheme.sidebar)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

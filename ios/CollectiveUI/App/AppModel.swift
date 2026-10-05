@@ -332,7 +332,7 @@ final class AppModel {
     #if DEBUG
     /// Demo mode starts signed in against the in-memory demo server (or on the signed-out screens).
     private func configureDemo() {
-        DemoServer.shared.install(chartPNG: DemoArt.chartPNG())
+        DemoServer.shared.install(chartPNG: DemoArt.chartPNG(), petV1: DemoArt.petAtlasPNG(version: 1), petV2: DemoArt.petAtlasPNG(version: 2))
         switch DemoMode.screen {
         case "setup":
             serverURL = nil

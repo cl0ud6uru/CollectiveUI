@@ -29,6 +29,9 @@ struct NewChatSheet: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(PortalTheme.background)
             .navigationTitle("New chat")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -47,7 +50,7 @@ struct NewChatSheet: View {
             dismiss()
         } label: {
             HStack(spacing: 12) {
-                AvatarView(icon: option.icon ?? (option.kind == "app" ? "✨" : nil), size: 32)
+                BotIdentityView(botId: option.kind == "bot" ? option.id : nil, icon: option.icon ?? (option.kind == "app" ? "✨" : nil), size: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.name)
                         .foregroundStyle(Color.primary)

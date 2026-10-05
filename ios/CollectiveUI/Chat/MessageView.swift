@@ -6,6 +6,7 @@ import CollectiveKit
 struct MessageView: View {
     let message: UIMessage
     let model: ChatModel
+    @State private var showWork = false
 
     var body: some View {
         Group {
@@ -48,12 +49,13 @@ struct MessageView: View {
                 }
                 if !message.plainText.isEmpty {
                     Text(message.plainText)
+                        .foregroundStyle(model.usesBubbles ? PortalTheme.bubbleTint(model.assistantIcon).foreground : PortalTheme.ink)
                         .textSelection(.enabled)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(Color.accentColor.opacity(0.18))
+                                .fill(model.usesBubbles ? PortalTheme.bubbleTint(model.assistantIcon).background : PortalTheme.surfaceSecondary)
                         )
                 }
             }
@@ -63,19 +65,42 @@ struct MessageView: View {
 
     private var assistantBody: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if !model.isGroup {
-                HStack(spacing: 8) {
-                    AvatarView(icon: model.assistantIcon, size: 24)
-                    Text(model.assistantName)
-                        .font(.subheadline.weight(.semibold))
+            if !model.usesBubbles {
+                Text(model.assistantName).font(.caption.weight(.medium)).foregroundStyle(PortalTheme.muted)
+            }
+            if !completedWork.isEmpty {
+                DisclosureGroup(isExpanded: $showWork) {
+                    ForEach(Array(completedWork.enumerated()), id: \.offset) { item in
+                        MessagePartView(part: item.element, messageId: message.id, model: model)
+                    }
+                } label: {
+                    Label("\(completedWork.count) completed \(completedWork.count == 1 ? "step" : "steps")", systemImage: "checkmark")
+                        .font(.footnote).foregroundStyle(PortalTheme.muted)
                 }
+                .tint(PortalTheme.muted)
             }
             ForEach(Array(message.parts.enumerated()), id: \.offset) { item in
-                MessagePartView(part: item.element, messageId: message.id, model: model)
+                if !isCompletedWork(item.element) {
+                    // Approvals, failures and running tools always remain visible.
+                    MessagePartView(part: item.element, messageId: message.id, model: model)
+                }
             }
         }
+        .padding(model.usesBubbles ? 14 : 0)
+        .background(model.usesBubbles ? PortalTheme.botBubble : Color.clear, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.trailing, model.usesBubbles ? 28 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private var completedWork: [MessagePart] { message.parts.filter(isCompletedWork) }
+    private func isCompletedWork(_ part: MessagePart) -> Bool {
+        switch part {
+        case .tool(let tool): return tool.phase == .completed
+        case .reasoning(let reasoning): return reasoning.state != "streaming" && !reasoning.text.isEmpty
+        default: return false
+        }
+    }
+
 }
 
 @MainActor
@@ -168,7 +193,7 @@ struct DataPartView: View {
             InlineErrorView(text: part.data["message"]?.stringValue ?? "Something went wrong.")
         case "speaker":
             HStack(spacing: 8) {
-                AvatarView(icon: part.data["avatar"]?.stringValue, size: 22)
+                BotIdentityView(botId: part.data["botId"]?.stringValue, icon: part.data["avatar"]?.stringValue, size: 22)
                 Text(part.data["name"]?.stringValue ?? "Bot")
                     .font(.subheadline.weight(.semibold))
             }

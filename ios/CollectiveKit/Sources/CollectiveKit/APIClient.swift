@@ -30,7 +30,7 @@ public final class APIClient: @unchecked Sendable {
     }
 
     public static func makeSession() -> URLSession {
-        return URLSession(configuration: makeConfiguration())
+        return URLSession(configuration: makeConfiguration(), delegate: SameOriginRedirectDelegate(), delegateQueue: nil)
     }
 
     public init(baseURL: URL, token: String? = nil, session: URLSession? = nil, onUnauthorized: (@Sendable () -> Void)? = nil) {
@@ -57,7 +57,8 @@ public final class APIClient: @unchecked Sendable {
         }
         guard let components = URLComponents(string: text),
               let host = components.host, !host.isEmpty,
-              components.query == nil,
+              components.query == nil, components.fragment == nil,
+              components.user == nil, components.password == nil,
               let url = components.url
         else {
             return nil
@@ -362,7 +363,7 @@ public final class APIClient: @unchecked Sendable {
     }
 
     /// Loads file bytes: `data:` URLs are decoded locally, server-relative paths (`/api/files/<id>`)
-    /// and same-host URLs are fetched with the bearer token.
+    /// and same-origin URLs are fetched with the bearer token.
     public func loadData(from urlString: String) async throws -> Data {
         if urlString.hasPrefix("data:") {
             return try APIClient.decodeDataURL(urlString)
@@ -371,17 +372,27 @@ public final class APIClient: @unchecked Sendable {
         if urlString.hasPrefix("/") {
             request = try makeRequest(urlString)
         } else {
-            guard let url = URL(string: urlString) else {
+            guard let url = URL(string: urlString),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.user == nil, url.password == nil else {
                 throw APIError.invalidURL
             }
             request = URLRequest(url: url)
-            if let token, url.host() == baseURL.host() {
+            if let token, APIClient.sameOrigin(url, baseURL) {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
         }
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         let (data, _) = try await perform(request)
         return data
+    }
+
+    /// Credentials are scoped to the full origin, including the scheme and effective port.
+    static func sameOrigin(_ first: URL, _ second: URL) -> Bool {
+        func port(_ url: URL) -> Int? { url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80) }
+        return first.scheme?.lowercased() == second.scheme?.lowercased()
+            && first.host?.lowercased() == second.host?.lowercased()
+            && port(first) == port(second)
     }
 
     public static func decodeDataURL(_ urlString: String) throws -> Data {
@@ -418,5 +429,22 @@ public enum Multipart {
         body.append(data)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         return body
+    }
+}
+
+/// Prevent redirect responses from moving an authenticated request to another origin.
+final class SameOriginRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let original = task.originalRequest,
+              original.value(forHTTPHeaderField: "Authorization") != nil else {
+            completionHandler(request)
+            return
+        }
+        guard let origin = original.url, let destination = request.url, APIClient.sameOrigin(origin, destination) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

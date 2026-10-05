@@ -9,7 +9,7 @@ import { isPublicPath, PUBLIC_PREFIXES } from "@/lib/public-routes";
  */
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const SRC = path.join(ROOT, "src");
-const AUTH_CALL = /\brequire(Principal|Admin|PagePrincipal|AdminPage|PasswordPrincipal|SecurityActor)\s*\(/;
+const AUTH_CALL = /\brequire(Principal|Admin|PagePrincipal|AdminPage|PasswordPrincipal|SecurityActor|MobileSession)\s*\(/;
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {

@@ -9,5 +9,9 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>CollectiveUI connects to the server address you enter, which may be on your local network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Use your microphone to dictate a message when you tap the microphone button.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turn your speech into a message draft. You choose when to send it.</string>
 </dict>
 </plist>
