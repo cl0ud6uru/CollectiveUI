@@ -1,0 +1,98 @@
+TAP version 13
+# Subtest: complete loopback OAuth fixture validates JWT before saving and reauthorizes same subject
+ok 1 - complete loopback OAuth fixture validates JWT before saving and reauthorizes same subject
+  ---
+  duration_ms: 733.407084
+  type: 'test'
+  ...
+# Subtest: code exchange verifies signature discovery audience nonce and stores granted scopes
+ok 2 - code exchange verifies signature discovery audience nonce and stores granted scopes
+  ---
+  duration_ms: 188.027042
+  type: 'test'
+  ...
+# Subtest: ID token rejects nonce
+ok 3 - ID token rejects nonce
+  ---
+  duration_ms: 399.064245
+  type: 'test'
+  ...
+# Subtest: ID token rejects issuer
+ok 4 - ID token rejects issuer
+  ---
+  duration_ms: 346.117989
+  type: 'test'
+  ...
+# Subtest: ID token rejects audience
+ok 5 - ID token rejects audience
+  ---
+  duration_ms: 353.823347
+  type: 'test'
+  ...
+# Subtest: ID token rejects expiry
+ok 6 - ID token rejects expiry
+  ---
+  duration_ms: 141.090152
+  type: 'test'
+  ...
+# Subtest: ID token rejects subject
+ok 7 - ID token rejects subject
+  ---
+  duration_ms: 150.239819
+  type: 'test'
+  ...
+# Subtest: token granted scope required regardless of callback scope
+ok 8 - token granted scope required regardless of callback scope
+  ---
+  duration_ms: 303.759325
+  type: 'test'
+  ...
+# Subtest: fresh PKCE state nonce and initial/returning authorization parameters
+ok 9 - fresh PKCE state nonce and initial/returning authorization parameters
+  ---
+  duration_ms: 3.668655
+  type: 'test'
+  ...
+# Subtest: callback atomically consumed and issued ID required before exchange
+ok 10 - callback atomically consumed and issued ID required before exchange
+  ---
+  duration_ms: 2.718389
+  type: 'test'
+  ...
+# Subtest: empty supplied returning client ID is rejected rather than normalized
+not ok 11 - empty supplied returning client ID is rejected rather than normalized
+  ---
+  duration_ms: 2.304486
+  type: 'test'
+  location: '/home/hermes/collectiveui-codex-spike/spikes/001-chatgpt-plan/oauth.test.mjs:233:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (file:///home/hermes/collectiveui-codex-spike/spikes/001-chatgpt-plan/oauth.test.mjs:235:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+    Test.postRun (node:internal/test_runner/test:1173:19)
+    Test.run (node:internal/test_runner/test:1101:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: expired, denial, dynamic and mismatched returning IDs rejected
+ok 12 - expired, denial, dynamic and mismatched returning IDs rejected
+  ---
+  duration_ms: 2.286466
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 11
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3211.39485

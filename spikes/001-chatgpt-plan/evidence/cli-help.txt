@@ -1,0 +1,9 @@
+Standalone ChatGPT plan-use spike (Node 22+)
+Usage: node cli.mjs <auth|models|probe|discover> [options]
+  --help                      Show this help; never starts auth
+  --credential-file PATH      Outside checkout; default ~/.config/collectiveui-spike/account.json
+  --model SLUG                Required for probe; select from models
+  --port PORT                 auth loopback port (default available port)
+  --ssh-target USER@HOST      Print optional SSH loopback tunnel guidance
+Auth prints Continue with ChatGPT URL, does not open a browser, and waits up to 3 minutes.
+Expired credentials require auth; automatic refresh is not implemented.

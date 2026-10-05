@@ -1,0 +1,4 @@
+{
+  "issuer": "https://auth.openai.com",
+  "jwks_uri": "https://auth.openai.com/.well-known/jwks.json"
+}

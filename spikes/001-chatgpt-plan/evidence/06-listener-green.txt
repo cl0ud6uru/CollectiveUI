@@ -1,0 +1,148 @@
+TAP version 13
+# Subtest: explicit auth listener loopback callback persists only validated result
+ok 1 - explicit auth listener loopback callback persists only validated result
+  ---
+  duration_ms: 174.32155
+  type: 'test'
+  ...
+# Subtest: denial closes listener and leaves active credentials untouched
+ok 2 - denial closes listener and leaves active credentials untouched
+  ---
+  duration_ms: 40.345413
+  type: 'test'
+  ...
+# Subtest: auth listener timeout is bounded
+ok 3 - auth listener timeout is bounded
+  ---
+  duration_ms: 47.909553
+  type: 'test'
+  ...
+# Subtest: SSE probe accepts split CRLF multiline completed event and exact marker
+ok 4 - SSE probe accepts split CRLF multiline completed event and exact marker
+  ---
+  duration_ms: 347.661038
+  type: 'test'
+  ...
+# Subtest: SSE rejects failed
+ok 5 - SSE rejects failed
+  ---
+  duration_ms: 26.202406
+  type: 'test'
+  ...
+# Subtest: SSE rejects incomplete
+ok 6 - SSE rejects incomplete
+  ---
+  duration_ms: 14.376154
+  type: 'test'
+  ...
+# Subtest: SSE rejects partial
+ok 7 - SSE rejects partial
+  ---
+  duration_ms: 12.135505
+  type: 'test'
+  ...
+# Subtest: SSE rejects wrong marker
+ok 8 - SSE rejects wrong marker
+  ---
+  duration_ms: 13.546202
+  type: 'test'
+  ...
+# Subtest: expired credentials never contact transport
+ok 9 - expired credentials never contact transport
+  ---
+  duration_ms: 1.654604
+  type: 'test'
+  ...
+# Subtest: provider errors are sanitized
+ok 10 - provider errors are sanitized
+  ---
+  duration_ms: 13.208323
+  type: 'test'
+  ...
+# Subtest: body size and timeout are bounded
+ok 11 - body size and timeout are bounded
+  ---
+  duration_ms: 44.575255
+  type: 'test'
+  ...
+# Subtest: discovery and account-visible models use actual HTTP fixtures
+ok 12 - discovery and account-visible models use actual HTTP fixtures
+  ---
+  duration_ms: 27.563309
+  type: 'test'
+  ...
+# Subtest: code exchange verifies signature discovery audience nonce and stores granted scopes
+ok 13 - code exchange verifies signature discovery audience nonce and stores granted scopes
+  ---
+  duration_ms: 418.52423
+  type: 'test'
+  ...
+# Subtest: ID token rejects nonce
+ok 14 - ID token rejects nonce
+  ---
+  duration_ms: 298.783522
+  type: 'test'
+  ...
+# Subtest: ID token rejects issuer
+ok 15 - ID token rejects issuer
+  ---
+  duration_ms: 158.004017
+  type: 'test'
+  ...
+# Subtest: ID token rejects audience
+ok 16 - ID token rejects audience
+  ---
+  duration_ms: 83.881171
+  type: 'test'
+  ...
+# Subtest: ID token rejects expiry
+ok 17 - ID token rejects expiry
+  ---
+  duration_ms: 179.969178
+  type: 'test'
+  ...
+# Subtest: ID token rejects subject
+ok 18 - ID token rejects subject
+  ---
+  duration_ms: 194.141334
+  type: 'test'
+  ...
+# Subtest: token granted scope required regardless of callback scope
+ok 19 - token granted scope required regardless of callback scope
+  ---
+  duration_ms: 229.444729
+  type: 'test'
+  ...
+# Subtest: fresh PKCE state nonce and initial/returning authorization parameters
+ok 20 - fresh PKCE state nonce and initial/returning authorization parameters
+  ---
+  duration_ms: 2.324493
+  type: 'test'
+  ...
+# Subtest: callback atomically consumed and issued ID required before exchange
+ok 21 - callback atomically consumed and issued ID required before exchange
+  ---
+  duration_ms: 2.471276
+  type: 'test'
+  ...
+# Subtest: expired, denial, dynamic and mismatched returning IDs rejected
+ok 22 - expired, denial, dynamic and mismatched returning IDs rejected
+  ---
+  duration_ms: 2.729359
+  type: 'test'
+  ...
+# Subtest: owner-only atomic storage and stable per-host identifier
+ok 23 - owner-only atomic storage and stable per-host identifier
+  ---
+  duration_ms: 61.712183
+  type: 'test'
+  ...
+1..23
+# tests 23
+# suites 0
+# pass 23
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2237.374895

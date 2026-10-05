@@ -2,6 +2,9 @@
 
 # dependencies
 /node_modules
+/spikes/**/node_modules
+/spikes/**/coverage
+/spikes/**/test-results
 /.pnp
 .pnp.*
 .yarn/*

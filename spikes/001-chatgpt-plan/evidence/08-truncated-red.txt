@@ -1,0 +1,201 @@
+TAP version 13
+# Subtest: explicit auth listener loopback callback persists only validated result
+ok 1 - explicit auth listener loopback callback persists only validated result
+  ---
+  duration_ms: 161.266623
+  type: 'test'
+  ...
+# Subtest: denial closes listener and leaves active credentials untouched
+ok 2 - denial closes listener and leaves active credentials untouched
+  ---
+  duration_ms: 28.672014
+  type: 'test'
+  ...
+# Subtest: auth listener timeout is bounded
+ok 3 - auth listener timeout is bounded
+  ---
+  duration_ms: 46.545685
+  type: 'test'
+  ...
+# Subtest: help is runnable without credentials or side effects
+ok 4 - help is runnable without credentials or side effects
+  ---
+  duration_ms: 318.274939
+  type: 'test'
+  ...
+# Subtest: discover CLI prints only public metadata
+ok 5 - discover CLI prints only public metadata
+  ---
+  duration_ms: 7.483095
+  type: 'test'
+  ...
+# Subtest: unknown commands options and checkout credential paths rejected
+ok 6 - unknown commands options and checkout credential paths rejected
+  ---
+  duration_ms: 42.102757
+  type: 'test'
+  ...
+# Subtest: models and probe CLI never print credential material
+ok 7 - models and probe CLI never print credential material
+  ---
+  duration_ms: 12.946774
+  type: 'test'
+  ...
+# Subtest: SSE probe accepts split CRLF multiline completed event and exact marker
+ok 8 - SSE probe accepts split CRLF multiline completed event and exact marker
+  ---
+  duration_ms: 344.946416
+  type: 'test'
+  ...
+# Subtest: SSE rejects failed
+ok 9 - SSE rejects failed
+  ---
+  duration_ms: 20.369896
+  type: 'test'
+  ...
+# Subtest: SSE rejects incomplete
+ok 10 - SSE rejects incomplete
+  ---
+  duration_ms: 9.324435
+  type: 'test'
+  ...
+# Subtest: SSE rejects partial
+ok 11 - SSE rejects partial
+  ---
+  duration_ms: 8.12453
+  type: 'test'
+  ...
+# Subtest: SSE rejects wrong marker
+ok 12 - SSE rejects wrong marker
+  ---
+  duration_ms: 11.038916
+  type: 'test'
+  ...
+# Subtest: expired credentials never contact transport
+ok 13 - expired credentials never contact transport
+  ---
+  duration_ms: 1.174497
+  type: 'test'
+  ...
+# Subtest: provider errors are sanitized
+ok 14 - provider errors are sanitized
+  ---
+  duration_ms: 17.599949
+  type: 'test'
+  ...
+# Subtest: body size and timeout are bounded
+ok 15 - body size and timeout are bounded
+  ---
+  duration_ms: 46.875136
+  type: 'test'
+  ...
+# Subtest: SSE rejects truncated after completion
+not ok 16 - SSE rejects truncated after completion
+  ---
+  duration_ms: 38.483111
+  type: 'test'
+  location: '/home/hermes/collectiveui-codex-spike/spikes/001-chatgpt-plan/http.test.mjs:12:364'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async fixture (file:///home/hermes/collectiveui-codex-spike/spikes/001-chatgpt-plan/http.test.mjs:11:142)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: SSE rejects unclosed completion
+ok 17 - SSE rejects unclosed completion
+  ---
+  duration_ms: 29.196559
+  type: 'test'
+  ...
+# Subtest: discovery and account-visible models use actual HTTP fixtures
+ok 18 - discovery and account-visible models use actual HTTP fixtures
+  ---
+  duration_ms: 24.57268
+  type: 'test'
+  ...
+# Subtest: complete loopback OAuth fixture validates JWT before saving and reauthorizes same subject
+ok 19 - complete loopback OAuth fixture validates JWT before saving and reauthorizes same subject
+  ---
+  duration_ms: 491.091572
+  type: 'test'
+  ...
+# Subtest: code exchange verifies signature discovery audience nonce and stores granted scopes
+ok 20 - code exchange verifies signature discovery audience nonce and stores granted scopes
+  ---
+  duration_ms: 115.543387
+  type: 'test'
+  ...
+# Subtest: ID token rejects nonce
+ok 21 - ID token rejects nonce
+  ---
+  duration_ms: 255.455057
+  type: 'test'
+  ...
+# Subtest: ID token rejects issuer
+ok 22 - ID token rejects issuer
+  ---
+  duration_ms: 127.269863
+  type: 'test'
+  ...
+# Subtest: ID token rejects audience
+ok 23 - ID token rejects audience
+  ---
+  duration_ms: 224.186795
+  type: 'test'
+  ...
+# Subtest: ID token rejects expiry
+ok 24 - ID token rejects expiry
+  ---
+  duration_ms: 229.057011
+  type: 'test'
+  ...
+# Subtest: ID token rejects subject
+ok 25 - ID token rejects subject
+  ---
+  duration_ms: 326.497241
+  type: 'test'
+  ...
+# Subtest: token granted scope required regardless of callback scope
+ok 26 - token granted scope required regardless of callback scope
+  ---
+  duration_ms: 209.338816
+  type: 'test'
+  ...
+# Subtest: fresh PKCE state nonce and initial/returning authorization parameters
+ok 27 - fresh PKCE state nonce and initial/returning authorization parameters
+  ---
+  duration_ms: 6.841952
+  type: 'test'
+  ...
+# Subtest: callback atomically consumed and issued ID required before exchange
+ok 28 - callback atomically consumed and issued ID required before exchange
+  ---
+  duration_ms: 8.475686
+  type: 'test'
+  ...
+# Subtest: expired, denial, dynamic and mismatched returning IDs rejected
+ok 29 - expired, denial, dynamic and mismatched returning IDs rejected
+  ---
+  duration_ms: 3.493264
+  type: 'test'
+  ...
+# Subtest: owner-only atomic storage and stable per-host identifier
+ok 30 - owner-only atomic storage and stable per-host identifier
+  ---
+  duration_ms: 90.959765
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 29
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2694.935094

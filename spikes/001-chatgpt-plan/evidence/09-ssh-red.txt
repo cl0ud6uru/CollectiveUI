@@ -1,0 +1,51 @@
+TAP version 13
+# Subtest: help is runnable without credentials or side effects
+ok 1 - help is runnable without credentials or side effects
+  ---
+  duration_ms: 441.409176
+  type: 'test'
+  ...
+# Subtest: SSH tunnel target rejects shell expansion and option injection before auth
+not ok 2 - SSH tunnel target rejects shell expansion and option injection before auth
+  ---
+  duration_ms: 26.512139
+  type: 'test'
+  location: '/home/hermes/collectiveui-codex-spike/spikes/001-chatgpt-plan/cli.test.mjs:6:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///home/hermes/collectiveui-codex-spike/spikes/001-chatgpt-plan/cli.test.mjs:6:167)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: discover CLI prints only public metadata
+ok 3 - discover CLI prints only public metadata
+  ---
+  duration_ms: 6.103707
+  type: 'test'
+  ...
+# Subtest: unknown commands options and checkout credential paths rejected
+ok 4 - unknown commands options and checkout credential paths rejected
+  ---
+  duration_ms: 7.859813
+  type: 'test'
+  ...
+# Subtest: models and probe CLI never print credential material
+ok 5 - models and probe CLI never print credential material
+  ---
+  duration_ms: 9.383079
+  type: 'test'
+  ...
+1..5
+# tests 5
+# suites 0
+# pass 4
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1070.471104

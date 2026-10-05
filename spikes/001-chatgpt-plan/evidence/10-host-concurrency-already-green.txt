@@ -1,0 +1,22 @@
+TAP version 13
+# Subtest: concurrent host initialization publishes one complete stable ID atomically
+ok 1 - concurrent host initialization publishes one complete stable ID atomically
+  ---
+  duration_ms: 101.263547
+  type: 'test'
+  ...
+# Subtest: owner-only atomic storage and stable per-host identifier
+ok 2 - owner-only atomic storage and stable per-host identifier
+  ---
+  duration_ms: 40.263092
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 495.076702

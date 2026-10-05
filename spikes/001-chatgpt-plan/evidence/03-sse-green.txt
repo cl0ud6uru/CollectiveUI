@@ -1,0 +1,70 @@
+TAP version 13
+# Subtest: SSE probe accepts split CRLF multiline completed event and exact marker
+ok 1 - SSE probe accepts split CRLF multiline completed event and exact marker
+  ---
+  duration_ms: 384.777824
+  type: 'test'
+  ...
+# Subtest: SSE rejects failed
+ok 2 - SSE rejects failed
+  ---
+  duration_ms: 19.382785
+  type: 'test'
+  ...
+# Subtest: SSE rejects incomplete
+ok 3 - SSE rejects incomplete
+  ---
+  duration_ms: 9.250764
+  type: 'test'
+  ...
+# Subtest: SSE rejects partial
+ok 4 - SSE rejects partial
+  ---
+  duration_ms: 8.198787
+  type: 'test'
+  ...
+# Subtest: SSE rejects wrong marker
+ok 5 - SSE rejects wrong marker
+  ---
+  duration_ms: 8.882418
+  type: 'test'
+  ...
+# Subtest: expired credentials never contact transport
+ok 6 - expired credentials never contact transport
+  ---
+  duration_ms: 1.179756
+  type: 'test'
+  ...
+# Subtest: provider errors are sanitized
+ok 7 - provider errors are sanitized
+  ---
+  duration_ms: 7.725319
+  type: 'test'
+  ...
+# Subtest: body size and timeout are bounded
+ok 8 - body size and timeout are bounded
+  ---
+  duration_ms: 40.374773
+  type: 'test'
+  ...
+# Subtest: discovery and account-visible models use actual HTTP fixtures
+ok 9 - discovery and account-visible models use actual HTTP fixtures
+  ---
+  duration_ms: 20.745535
+  type: 'test'
+  ...
+# Subtest: owner-only atomic storage and stable per-host identifier
+ok 10 - owner-only atomic storage and stable per-host identifier
+  ---
+  duration_ms: 56.529682
+  type: 'test'
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 903.754664

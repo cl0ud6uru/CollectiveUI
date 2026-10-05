@@ -1,0 +1,172 @@
+TAP version 13
+# Subtest: explicit auth listener loopback callback persists only validated result
+ok 1 - explicit auth listener loopback callback persists only validated result
+  ---
+  duration_ms: 205.71916
+  type: 'test'
+  ...
+# Subtest: denial closes listener and leaves active credentials untouched
+ok 2 - denial closes listener and leaves active credentials untouched
+  ---
+  duration_ms: 51.390708
+  type: 'test'
+  ...
+# Subtest: auth listener timeout is bounded
+ok 3 - auth listener timeout is bounded
+  ---
+  duration_ms: 47.659684
+  type: 'test'
+  ...
+# Subtest: help is runnable without credentials or side effects
+ok 4 - help is runnable without credentials or side effects
+  ---
+  duration_ms: 415.580319
+  type: 'test'
+  ...
+# Subtest: discover CLI prints only public metadata
+ok 5 - discover CLI prints only public metadata
+  ---
+  duration_ms: 3.66904
+  type: 'test'
+  ...
+# Subtest: unknown commands options and checkout credential paths rejected
+ok 6 - unknown commands options and checkout credential paths rejected
+  ---
+  duration_ms: 20.985229
+  type: 'test'
+  ...
+# Subtest: models and probe CLI never print credential material
+ok 7 - models and probe CLI never print credential material
+  ---
+  duration_ms: 6.919451
+  type: 'test'
+  ...
+# Subtest: SSE probe accepts split CRLF multiline completed event and exact marker
+ok 8 - SSE probe accepts split CRLF multiline completed event and exact marker
+  ---
+  duration_ms: 442.048929
+  type: 'test'
+  ...
+# Subtest: SSE rejects failed
+ok 9 - SSE rejects failed
+  ---
+  duration_ms: 46.187099
+  type: 'test'
+  ...
+# Subtest: SSE rejects incomplete
+ok 10 - SSE rejects incomplete
+  ---
+  duration_ms: 8.939284
+  type: 'test'
+  ...
+# Subtest: SSE rejects partial
+ok 11 - SSE rejects partial
+  ---
+  duration_ms: 8.100417
+  type: 'test'
+  ...
+# Subtest: SSE rejects wrong marker
+ok 12 - SSE rejects wrong marker
+  ---
+  duration_ms: 8.852315
+  type: 'test'
+  ...
+# Subtest: expired credentials never contact transport
+ok 13 - expired credentials never contact transport
+  ---
+  duration_ms: 1.111988
+  type: 'test'
+  ...
+# Subtest: provider errors are sanitized
+ok 14 - provider errors are sanitized
+  ---
+  duration_ms: 7.430063
+  type: 'test'
+  ...
+# Subtest: body size and timeout are bounded
+ok 15 - body size and timeout are bounded
+  ---
+  duration_ms: 39.952409
+  type: 'test'
+  ...
+# Subtest: discovery and account-visible models use actual HTTP fixtures
+ok 16 - discovery and account-visible models use actual HTTP fixtures
+  ---
+  duration_ms: 21.180587
+  type: 'test'
+  ...
+# Subtest: code exchange verifies signature discovery audience nonce and stores granted scopes
+ok 17 - code exchange verifies signature discovery audience nonce and stores granted scopes
+  ---
+  duration_ms: 402.17515
+  type: 'test'
+  ...
+# Subtest: ID token rejects nonce
+ok 18 - ID token rejects nonce
+  ---
+  duration_ms: 126.72417
+  type: 'test'
+  ...
+# Subtest: ID token rejects issuer
+ok 19 - ID token rejects issuer
+  ---
+  duration_ms: 550.205515
+  type: 'test'
+  ...
+# Subtest: ID token rejects audience
+ok 20 - ID token rejects audience
+  ---
+  duration_ms: 73.206537
+  type: 'test'
+  ...
+# Subtest: ID token rejects expiry
+ok 21 - ID token rejects expiry
+  ---
+  duration_ms: 216.730959
+  type: 'test'
+  ...
+# Subtest: ID token rejects subject
+ok 22 - ID token rejects subject
+  ---
+  duration_ms: 132.773263
+  type: 'test'
+  ...
+# Subtest: token granted scope required regardless of callback scope
+ok 23 - token granted scope required regardless of callback scope
+  ---
+  duration_ms: 117.664513
+  type: 'test'
+  ...
+# Subtest: fresh PKCE state nonce and initial/returning authorization parameters
+ok 24 - fresh PKCE state nonce and initial/returning authorization parameters
+  ---
+  duration_ms: 1.818211
+  type: 'test'
+  ...
+# Subtest: callback atomically consumed and issued ID required before exchange
+ok 25 - callback atomically consumed and issued ID required before exchange
+  ---
+  duration_ms: 1.945645
+  type: 'test'
+  ...
+# Subtest: expired, denial, dynamic and mismatched returning IDs rejected
+ok 26 - expired, denial, dynamic and mismatched returning IDs rejected
+  ---
+  duration_ms: 4.727987
+  type: 'test'
+  ...
+# Subtest: owner-only atomic storage and stable per-host identifier
+ok 27 - owner-only atomic storage and stable per-host identifier
+  ---
+  duration_ms: 97.871751
+  type: 'test'
+  ...
+1..27
+# tests 27
+# suites 0
+# pass 27
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2375.599687
