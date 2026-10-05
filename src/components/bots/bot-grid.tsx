@@ -98,7 +98,7 @@ export function BotGrid({ mine, others }: { mine: Card[]; others: Card[] }) {
   return (
     <div>
       <p role="status" className={navigationPending ? "mb-2 text-xs text-muted" : "sr-only"}>{navigationPending ? "Saving bot navigation…" : navigationMessage}</p>
-      <div className="mb-8 flex max-w-xl items-center gap-3 rounded-full bg-surface-2 pl-4 pr-1 focus-within:outline-2 focus-within:outline-accent">
+      <div className="mb-8 flex max-w-xl items-center gap-3 rounded-full border border-transparent bg-surface-2 pl-4 pr-1 focus-within:border-fg/40">
         <Search className="h-5 w-5 shrink-0 text-subtle" aria-hidden="true" />
         <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setQ("")} placeholder="Search bots" aria-label="Search bots" className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-subtle" />
         {q && (
