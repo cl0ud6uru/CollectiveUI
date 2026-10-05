@@ -35,8 +35,9 @@ test.afterAll(async () => { await pool.end(); });
 
 test("admin setup, ordinary-user denial, failed first use, retry, private routing and fresh sessions", async ({ page, browser }) => {
   await login(page, "hermes-admin");
-  await page.goto("/admin/hermes");
+  await page.goto("/admin/hermes?tab=manual");
   await expect(page.getByText("Hermes is single-tenant.", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "Add runtime", exact: true }).click();
   const [admin] = (await pool.query("SELECT id FROM users WHERE upn='local:hermes-admin'")).rows;
   await page.locator("select[name=userId]").selectOption(admin.id);
   await page.getByLabel("Operator isolation boundary ID").fill("browser-admin-boundary");
@@ -57,11 +58,15 @@ test("admin setup, ordinary-user denial, failed first use, retry, private routin
   const actionHeaders = await registrationRequest.allHeaders();
   await expect(page.getByRole("status")).toHaveText("Saved");
   await page.reload();
+  await page.getByRole("button", { name: "Add runtime", exact: true }).click();
   await expect(page.getByLabel("Dashboard session token")).toHaveValue("");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(await page.content()).not.toContain("synthetic-admin-profile-key");
+  await page.getByText("Replace dashboard token", { exact: true }).click();
   await page.getByLabel("Replacement dashboard token").fill("synthetic-rotated-dashboard-token");
-  await page.getByRole("button", { name: "Replace dashboard token" }).click();
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
   await expect(page.getByLabel("Replacement dashboard token")).toHaveValue("");
+  await page.getByRole("button", { name: "New definition", exact: true }).click();
   await page.getByLabel("Bot name", { exact: true }).fill("Browser managed bot");
   await page.getByLabel("Instructions", { exact: true }).fill("Only use synthetic fixture data.");
   await page.getByLabel("Native model ID").fill("mock-model");
@@ -79,7 +84,8 @@ test("admin setup, ordinary-user denial, failed first use, retry, private routin
     await expect(member.getByText("Your Hermes runtime is not configured or has been disabled.", { exact: false })).toBeVisible();
     expect((await state()).profiles).toBe(0);
 
-    await page.goto("/admin/hermes");
+    await page.goto("/admin/hermes?tab=manual");
+    await page.getByRole("button", { name: "Add runtime", exact: true }).click();
     const [u] = (await pool.query("SELECT id FROM users WHERE upn='local:hermes-member'")).rows;
     await page.locator("select[name=userId]").selectOption(u.id);
     await page.getByLabel("Operator isolation boundary ID").fill("browser-member-boundary");
@@ -106,8 +112,8 @@ test("admin setup, ordinary-user denial, failed first use, retry, private routin
     // Regeneration fails before admission, but its prompt is already stored and must stay out of the composer.
     const conversationId = new URL(member.url()).pathname.split("/").at(-1)!;
     const storedBefore = (await pool.query("SELECT id FROM messages WHERE conversation_id=$1", [conversationId])).rows;
-    await page.goto("/admin/hermes");
-    const memberRuntime = page.locator("section > div").filter({ hasText: "browser-member-boundary" });
+    await page.goto("/admin/hermes?tab=manual");
+    const memberRuntime = page.getByRole("row").filter({ hasText: "browser-member-boundary" });
     await memberRuntime.getByRole("button", { name: "Disable runtime", exact: true }).click();
     await expect(page.getByRole("status")).toHaveText("Saved");
     await member.getByRole("button", { name: "Regenerate", exact: true }).click();
@@ -139,7 +145,7 @@ test("admin setup, ordinary-user denial, failed first use, retry, private routin
     await expect(page.locator("label").filter({ hasText: /^Instructions$/ }).locator("..").locator("textarea")).toBeDisabled();
     await expect(page.getByLabel("Model (app)", { exact: true })).toBeDisabled();
     await expect(page.getByText("Managed Hermes definitions preserve existing profiles", { exact: false })).toBeVisible();
-    await page.goto("/admin/hermes"); await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/admin/hermes?tab=manual"); await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: "/tmp/collective-hermes-screenshots/admin-mobile.png", fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   } finally { await context.close(); }
