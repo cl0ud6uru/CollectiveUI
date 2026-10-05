@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("spotlight follows live motion and pointer preferences without a reload", async ({ page, context }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/login");
-  const story = page.locator(".login-story");
+  const story = page.locator(".login-shell");
   const spotlight = page.locator(".login-spotlight");
   const move = async () => { await page.mouse.move(160, 260); await page.mouse.move(320, 340); };
   const expectStill = async () => {
@@ -86,12 +86,12 @@ test("successful login removes spotlight listeners from the detached story", asy
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/login");
   const cdp = await context.newCDPSession(page);
-  const { result } = await cdp.send("Runtime.evaluate", { expression: "document.querySelector('.login-story')" });
+  const { result } = await cdp.send("Runtime.evaluate", { expression: "document.querySelector('.login-shell')" });
   const listeners = async () => (await cdp.send("DOMDebugger.getEventListeners", { objectId: result.objectId! })).listeners.map(l => l.type);
   // Navigation can finish before React attaches the effect's listeners.
   await expect.poll(listeners).toEqual(expect.arrayContaining(["pointermove", "pointerleave"]));
   await page.mouse.move(200, 250);
-  await expect(page.locator(".login-story")).toHaveAttribute("data-pointer", "on");
+  await expect(page.locator(".login-shell")).toHaveAttribute("data-pointer", "on");
   await page.getByLabel("Company username").fill("alice");
   await page.getByLabel("Password", { exact: true }).fill("Passw0rd!");
   await page.getByRole("button", { name: "Continue", exact: true }).click();

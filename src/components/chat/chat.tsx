@@ -13,7 +13,7 @@ import { newId } from "@/lib/ids";
 import { NativeSearchControl } from "./native-search-control";
 import type { NativeSearchMode } from "@/lib/native-search-policy";
 import { Composer, type ComposerHandle, type UploadedFile } from "./composer";
-import { AssistantMessage, UserMessage, type BranchInfo } from "./message";
+import { AssistantMessage, hasContent, UserMessage, type BranchInfo } from "./message";
 import { ShareButton } from "./share-dialog";
 import { useShell } from "./shell-context";
 import { TargetPicker } from "./target-picker";
@@ -709,6 +709,7 @@ export function Chat({
                       isLast={i === lastAssistantIdx}
                       branch={branchInfo(m, i)}
                       botName={botName}
+                      avatar={target?.kind === "bot" ? { botId: target.id, value: target.icon } : undefined}
                       feedback={feedback[m.id]}
                       onFeedback={(v) => {
                         setFeedback((f) => ({ ...f, [m.id]: v }));
@@ -730,7 +731,8 @@ export function Chat({
                   ),
                 ])}
                 {bubbles && busy && botState === "thinking" && (
-                  <BotThinking botId={target?.kind === "bot" ? target.id : undefined} avatar={target?.kind === "group" ? undefined : target?.icon} />
+                  <BotThinking botId={target?.kind === "bot" ? target.id : undefined} avatar={target?.kind === "group" ? undefined : target?.icon}
+                    indented={target?.kind === "bot" && messages.at(-1)?.role === "assistant" && hasContent(messages.at(-1)!)} />
                 )}
                 {!bubbles && status === "submitted" && messages[messages.length - 1]?.role === "user" && <span className="streaming-dot" />}
                 {error && status === "error" && (
@@ -816,10 +818,11 @@ function BotHeader({ bot, state, status }: { bot: TargetOption; state: BlobState
 }
 
 /** Shown while a bot is getting started on a reply: its avatar glances around instead of typing dots. */
-function BotThinking({ avatar, botId }: { avatar?: string | null; botId?: string }) {
+/** `indented`: the reply above already shows the bot's avatar, so this row lines up under it instead of repeating it. */
+function BotThinking({ avatar, botId, indented }: { avatar?: string | null; botId?: string; indented?: boolean }) {
   return (
     <div role="status" className="flex items-center gap-2 text-sm text-muted">
-      <BotAvatar botId={botId} value={avatar} size={28} state="thinking" className="h-7 w-7" />
+      {indented ? <span aria-hidden className="w-7 shrink-0" /> : <BotAvatar botId={botId} value={avatar} size={28} state="thinking" className="h-7 w-7" />}
       <span className="motion-safe:animate-pulse">Thinking…</span>
     </div>
   );

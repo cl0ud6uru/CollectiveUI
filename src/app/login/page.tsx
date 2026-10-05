@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import { ArrowUpRight, LockKeyhole } from "lucide-react";
 import { auth } from "@/auth";
 import { entraEnabled, localEnabled } from "@/lib/auth/config";
 import { BrandMark } from "@/components/brand-mark";
@@ -26,32 +25,22 @@ export default async function LoginPage(props: PageProps<"/login">) {
   const error = typeof sp.error === "string" ? sp.error : undefined;
 
   return (
-    <main className="login-page">
+    <main className="login-page dark">
       <a href="#sign-in" className="login-skip">Skip to sign in</a>
-      <LoginMoodProvider><div className="login-layout">
-        <section className="login-story" aria-label="Your AI workspace">
-          <div className="login-aurora" aria-hidden="true"><span /><span /><span /></div>
-          <StorySpotlight />
-          <div className="login-brand"><BrandMark logoUrl={branding.logoUrl} logoEmoji={branding.logoEmoji} className="h-10 w-10" /><span>{branding.appName}</span></div>
-          <div className="login-story-content">
-            <BotConstellation><LoginCompanion pet={pet} /></BotConstellation>
-            <div className="login-eyebrow"><span /> YOUR COLLECTIVE ADVANTAGE</div>
-            <h1>{revealWords(branding.loginHeadline)}</h1>
-            <p className="login-description">{branding.loginDescription}</p>
-          </div>
-          <div className="login-story-footer"><span>{pet.appearance === "catalog" && pet.credit ? `${pet.name} · ${pet.credit}` : "Built for ideas. Ready for what’s next."}</span><ArrowUpRight aria-hidden="true" size={18} /></div>
-        </section>
-        <section className="login-entry" aria-labelledby="sign-in-title">
+      <LoginMoodProvider><div className="login-shell">
+        <div className="login-aurora" aria-hidden="true"><span /><span /><span /></div>
+        <StorySpotlight />
+        <div className="login-brand"><BrandMark logoUrl={branding.logoUrl} logoEmoji={branding.logoEmoji} className="h-7 w-7 rounded-lg" /><span>{branding.appName}</span></div>
+        <section className="login-content" aria-labelledby="sign-in-title">
+          <BotConstellation><LoginCompanion pet={pet} /></BotConstellation>
+          <h1 id="sign-in-title">{revealWords("Welcome back")}</h1>
+          <p className="login-headline">{branding.loginHeadline}</p>
           <div className="login-form-wrap" id="sign-in" tabIndex={-1}>
             {preview && <p className="login-preview" role="status">Admin preview · You’re still signed in.</p>}
-            <div className="login-form-kicker"><span aria-hidden="true" />LET’S GET STARTED</div>
-            <h2 id="sign-in-title">Welcome back.</h2>
-            <p className="login-form-description">Sign in to <strong>{branding.appName}</strong> with your {localEnabled() ? "account" : "company account"}.</p>
             <LoginForm callbackUrl={callbackUrl} entra={entraEnabled()} ldap={ldapEnabled()} local={localEnabled()} error={error ? "Sign-in failed. Please try again or contact IT." : undefined} />
-            <div className="login-security"><LockKeyhole aria-hidden="true" size={15} /><span>Your {localEnabled() ? "account" : "company account"}. Your workspace.</span></div>
           </div>
-          <p className="login-entry-footer">A little intelligence. A lot of possibility.</p>
         </section>
+        {pet.appearance === "catalog" && pet.credit && <p className="login-credit">{pet.name} · {pet.credit}</p>}
       </div></LoginMoodProvider>
     </main>
   );

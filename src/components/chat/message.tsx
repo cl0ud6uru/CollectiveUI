@@ -17,7 +17,7 @@ export type BranchInfo = { index: number; total: number; onPrev: () => void; onN
 /**
  * "plain": ChatGPT layout for app/model chats (grey user bubble, assistant as full-width text).
  * "bubbles": messaging layout for bot and group chats (Grok Bot / ChatGPT dots): the bot's text in grey bubbles, your
- * messages in the bot's colour, the speaker's avatar at the end of each run in groups.
+ * messages in the bot's colour, the bot's avatar beside its reply (in groups, at the end of each speaker's run).
  */
 export type MessageVariant = "plain" | "bubbles";
 export type BubbleTint = { bg: string; fg: string };
@@ -159,6 +159,9 @@ export function UserMessage({
   );
 }
 
+/** Step boundaries alone render nothing. */
+export const hasContent = (m: PortalUIMessage) => m.parts.some((p) => p.type !== "step-start");
+
 /** Short plain paragraphs read like chat messages; anything with code, tables, lists or headings stays one bubble. */
 const RICH = /```|^\s*([|#>]|[-*+] |\d+\. )/m;
 const isRich = (text: string) => RICH.test(text);
@@ -214,12 +217,15 @@ export function AssistantMessage({
   onDeny,
   onAlwaysAllow,
   variant = "plain",
+  avatar,
 }: {
   message: PortalUIMessage;
   streaming: boolean;
   isLast: boolean;
   branch?: BranchInfo;
   botName?: string;
+  /** Direct bot chats: the bot shown beside each reply. Group replies carry their own speakers. */
+  avatar?: { botId: string; value: string | null };
   feedback?: 1 | -1 | null;
   readOnly?: boolean;
   onRegenerate?: () => void;
@@ -322,83 +328,90 @@ export function AssistantMessage({
     });
   };
 
+  // Direct bot chats: the bot sits beside its reply once there is something to show; until then the thinking row has it.
+  const beside = bubbles && avatar && !runs.some((r) => r.speaker) && hasContent(message);
+  const replyActivity = isLast && message.parts.some(needsAction) ? "approval" : streaming ? "working" : isLast && message.parts.some((p) => p.type === "data-run-error") ? "attention" : "decorative";
+
   return (
-    <div className="group">
-      <div className={cn(bubbles ? "space-y-1.5" : "space-y-1")}>
-        {runs.map((run, ri) => {
-          const lastRun = ri === runs.length - 1;
-          if (!run.speaker) return <div key={ri} className={cn(bubbles ? "space-y-1.5" : "space-y-1")}>{renderBlocks(run.parts, lastRun)}</div>;
-          const active = isLast && lastRun;
-          const speakerActivity = active && run.parts.some(({ part }) => needsAction(part)) ? "approval" : streaming && lastRun ? "working" : active && run.parts.some(({ part }) => part.type === "data-run-error" || part.type === "data-bot-error") ? "attention" : "decorative";
-          return bubbles ? (
-            // Grok Bot groups: the sender's name above the run, their avatar beside its last bubble.
-            <div key={ri} className={cn("flex items-end gap-2", ri > 0 && "pt-3")}>
-              <BotAvatar botId={run.speaker.botId} activity={speakerActivity} value={run.speaker.avatar} size={28} className="mb-0.5 h-7 w-7" state={streaming && lastRun ? "working" : undefined} />
-              <div className="min-w-0 flex-1 space-y-1.5">
-                <div className="px-1 text-xs font-medium text-muted">{run.speaker.name}</div>
+    <div className={cn("group", beside && "flex items-start gap-2")}>
+      {beside && <BotAvatar botId={avatar.botId} activity={replyActivity} value={avatar.value} size={28} className="mt-1 h-7 w-7" state={streaming ? "working" : undefined} />}
+      <div className={cn(beside && "min-w-0 flex-1")}>
+        <div className={cn(bubbles ? "space-y-1.5" : "space-y-1")}>
+          {runs.map((run, ri) => {
+            const lastRun = ri === runs.length - 1;
+            if (!run.speaker) return <div key={ri} className={cn(bubbles ? "space-y-1.5" : "space-y-1")}>{renderBlocks(run.parts, lastRun)}</div>;
+            const active = isLast && lastRun;
+            const speakerActivity = active && run.parts.some(({ part }) => needsAction(part)) ? "approval" : streaming && lastRun ? "working" : active && run.parts.some(({ part }) => part.type === "data-run-error" || part.type === "data-bot-error") ? "attention" : "decorative";
+            return bubbles ? (
+              // Grok Bot groups: the sender's name above the run, their avatar beside its last bubble.
+              <div key={ri} className={cn("flex items-end gap-2", ri > 0 && "pt-3")}>
+                <BotAvatar botId={run.speaker.botId} activity={speakerActivity} value={run.speaker.avatar} size={28} className="mb-0.5 h-7 w-7" state={streaming && lastRun ? "working" : undefined} />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <div className="px-1 text-xs font-medium text-muted">{run.speaker.name}</div>
+                  {renderBlocks(run.parts, lastRun)}
+                </div>
+              </div>
+            ) : (
+              <div key={ri} className="space-y-1">
+                <div className={cn("flex items-center gap-2 pb-1 text-sm font-semibold", ri > 0 && "mt-5")}>
+                  <BotAvatar botId={run.speaker.botId} activity={speakerActivity} value={run.speaker.avatar} size={24} className="h-6 w-6" />
+                  {run.speaker.name}
+                </div>
                 {renderBlocks(run.parts, lastRun)}
               </div>
-            </div>
-          ) : (
-            <div key={ri} className="space-y-1">
-              <div className={cn("flex items-center gap-2 pb-1 text-sm font-semibold", ri > 0 && "mt-5")}>
-                <BotAvatar botId={run.speaker.botId} activity={speakerActivity} value={run.speaker.avatar} size={24} className="h-6 w-6" />
-                {run.speaker.name}
-              </div>
-              {renderBlocks(run.parts, lastRun)}
-            </div>
-          );
-        })}
-        {streaming && !text && !message.parts.some(isToolUIPart) && !bubbles && <span className="streaming-dot" />}
-      </div>
-      {searchCalls > 0 && <p className="mt-2 text-xs text-muted">OpenAI search: {searchCalls} observed call{searchCalls === 1 ? "" : "s"} · ${(searchCalls * 0.01).toFixed(2)} estimated tool fees, plus model/search-content tokens. Final billing may differ.</p>}
-      {!streaming && !message.parts.some((p) => isToolUIPart(p) && p.state === "approval-requested") && (
-        <div
-          className={cn(
-            "mt-2 flex items-center gap-0.5 text-muted transition-opacity",
-            isLast ? "opacity-100" : "opacity-0 group-hover:opacity-100",
-          )}
-        >
-          <Tip label="Copy">
-            <span>
-              <CopyButton text={text} label="" className="rounded-lg p-1.5 hover:bg-hover" />
-            </span>
-          </Tip>
-          {!readOnly && (
-            <>
-              <Tip label="Good response">
-                <button
-                  onClick={() => onFeedback?.(feedback === 1 ? null : 1)}
-                  className={cn("rounded-lg p-1.5 hover:bg-hover", feedback === 1 && "text-fg")}
-                  aria-label="Good response"
-                >
-                  <ThumbsUp className={cn("h-3.5 w-3.5", feedback === 1 && "fill-current")} />
-                </button>
-              </Tip>
-              <Tip label="Bad response">
-                <button
-                  onClick={() => onFeedback?.(feedback === -1 ? null : -1)}
-                  className={cn("rounded-lg p-1.5 hover:bg-hover", feedback === -1 && "text-fg")}
-                  aria-label="Bad response"
-                >
-                  <ThumbsDown className={cn("h-3.5 w-3.5", feedback === -1 && "fill-current")} />
-                </button>
-              </Tip>
-              {onRegenerate && (
-                <Tip label="Regenerate">
-                  <button onClick={onRegenerate} className="rounded-lg p-1.5 hover:bg-hover" aria-label="Regenerate">
-                    <RefreshCw className="h-3.5 w-3.5" />
+            );
+          })}
+          {streaming && !text && !message.parts.some(isToolUIPart) && !bubbles && <span className="streaming-dot" />}
+        </div>
+        {searchCalls > 0 && <p className="mt-2 text-xs text-muted">OpenAI search: {searchCalls} observed call{searchCalls === 1 ? "" : "s"} · ${(searchCalls * 0.01).toFixed(2)} estimated tool fees, plus model/search-content tokens. Final billing may differ.</p>}
+        {!streaming && !message.parts.some((p) => isToolUIPart(p) && p.state === "approval-requested") && (
+          <div
+            className={cn(
+              "mt-2 flex items-center gap-0.5 text-muted transition-opacity",
+              isLast ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+            )}
+          >
+            <Tip label="Copy">
+              <span>
+                <CopyButton text={text} label="" className="rounded-lg p-1.5 hover:bg-hover" />
+              </span>
+            </Tip>
+            {!readOnly && (
+              <>
+                <Tip label="Good response">
+                  <button
+                    onClick={() => onFeedback?.(feedback === 1 ? null : 1)}
+                    className={cn("rounded-lg p-1.5 hover:bg-hover", feedback === 1 && "text-fg")}
+                    aria-label="Good response"
+                  >
+                    <ThumbsUp className={cn("h-3.5 w-3.5", feedback === 1 && "fill-current")} />
                   </button>
                 </Tip>
-              )}
-            </>
-          )}
-          <BranchSwitcher info={branch} />
-          {message.metadata?.model && (
-            <span className="ml-2 hidden text-xs text-subtle group-hover:inline">{message.metadata.model}</span>
-          )}
-        </div>
-      )}
+                <Tip label="Bad response">
+                  <button
+                    onClick={() => onFeedback?.(feedback === -1 ? null : -1)}
+                    className={cn("rounded-lg p-1.5 hover:bg-hover", feedback === -1 && "text-fg")}
+                    aria-label="Bad response"
+                  >
+                    <ThumbsDown className={cn("h-3.5 w-3.5", feedback === -1 && "fill-current")} />
+                  </button>
+                </Tip>
+                {onRegenerate && (
+                  <Tip label="Regenerate">
+                    <button onClick={onRegenerate} className="rounded-lg p-1.5 hover:bg-hover" aria-label="Regenerate">
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </button>
+                  </Tip>
+                )}
+              </>
+            )}
+            <BranchSwitcher info={branch} />
+            {message.metadata?.model && (
+              <span className="ml-2 hidden text-xs text-subtle group-hover:inline">{message.metadata.model}</span>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
