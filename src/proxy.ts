@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { isPublicPath } from "@/lib/public-routes";
+import { hasBearer, isMobileApiPath, isPublicPath, MOBILE_ONLY_PREFIX } from "@/lib/public-routes";
 
 export const proxy = auth((req) => {
+  const { pathname: path } = req.nextUrl;
+  // Native app tokens reach only the mobile API, where session.ts checks the token (never the cookies); the
+  // mobile-only API never takes a browser session.
+  if (!isPublicPath(path) && hasBearer(req.headers.get("authorization")))
+    return isMobileApiPath(path) ? NextResponse.next() : NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (path.startsWith(MOBILE_ONLY_PREFIX)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!req.auth?.user) {
     const { pathname, search } = req.nextUrl;
     if (!isPublicPath(pathname)) {
