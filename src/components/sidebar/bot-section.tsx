@@ -4,10 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowDown, ArrowUp, ChevronDown, Copy, Eye, EyeOff, GripVertical, Info, MessageSquare, MoreHorizontal, Pin, PinOff, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Copy, Eye, EyeOff, GripVertical, Info, MessageSquare, MoreHorizontal, Pin, PinOff } from "lucide-react";
 import { duplicateBot } from "@/app/(chat)/bots/actions";
 import { BotAvatar } from "@/components/bots/bot-avatar";
-import { NewGroupDialog } from "@/components/bots/new-group-dialog";
 import type { TargetOption } from "@/components/chat/types";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "@/components/ui/menu";
 import { StartSideChat } from "@/components/chat/start-side-chat";
@@ -146,17 +145,6 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
           <Link href="/bots" onClick={onNavigate} className="text-xs text-subtle hover:text-fg">
             See all
           </Link>
-        )}
-        {bots.length > 1 && (
-          <NewGroupDialog
-            bots={bots}
-            onCreated={onNavigate}
-            trigger={
-              <button className="rounded p-0.5 text-subtle hover:bg-hover hover:text-fg" aria-label="New group chat" title="New group chat">
-                <Users className="h-3.5 w-3.5" />
-              </button>
-            }
-          />
         )}
       </div>
       {visible.map((b) => (

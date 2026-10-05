@@ -1,0 +1,2 @@
+ALTER TABLE "pet_catalog" ADD COLUMN "sprite_hd" "bytea";--> statement-breakpoint
+ALTER TABLE "pet_catalog" ADD CONSTRAINT "pet_catalog_sprite_hd_size" CHECK ("pet_catalog"."sprite_hd" is null or octet_length("pet_catalog"."sprite_hd") between 1 and 12582912);

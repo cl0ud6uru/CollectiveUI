@@ -59,7 +59,7 @@ run("public sign-in companion", () => {
 
     await saveLoginPet({ appearance: "moss", catalogId: null });
     expect(await getPublicLoginPet()).toEqual({ appearance: "moss", name: "Moss" });
-    expect((await GET()).status).toBe(404);
+    expect((await GET(new Request("http://localhost/api/branding/login-pet"))).status).toBe(404);
 
     const draft = await createCatalogPet(admin, manifest, Buffer.from("public-pixels"), "confirmed"); assets.push(draft.id);
     await expect(saveLoginPet({ appearance: "catalog", catalogId: draft.id }, "confirmed")).rejects.toThrow(/published/);
@@ -69,9 +69,11 @@ run("public sign-in companion", () => {
     expect((await getPublicLoginPet()).appearance).toBe("moss");
 
     await saveLoginPet({ appearance: "catalog", catalogId: draft.id }, "confirmed");
-    expect(await getPublicLoginPet()).toEqual({ appearance: "catalog", name: manifest.displayName, credit: manifest.credit, spriteVersionNumber: 2, spriteUrl: `/api/branding/login-pet?v=${draft.revision}` });
-    const response = await GET();
+    expect(await getPublicLoginPet()).toEqual({ appearance: "catalog", name: manifest.displayName, credit: manifest.credit, spriteVersionNumber: 2, spriteUrl: `/api/branding/login-pet?v=${draft.revision}`, spriteHdUrl: null });
+    const response = await GET(new Request("http://localhost/api/branding/login-pet"));
     expect(response.status).toBe(200);
+    // A pet without an HD rendition answers the 2× srcset candidate with a 404, so browsers use the v2 sheet.
+    expect((await GET(new Request("http://localhost/api/branding/login-pet?size=2x"))).status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(Buffer.from(await response.arrayBuffer()).toString()).toBe("public-pixels");
@@ -81,13 +83,13 @@ run("public sign-in companion", () => {
     // Unpublishing withdraws it from the public page; the selection returns with republication.
     await setCatalogStatus(admin, draft.id, "unpublished");
     expect(await getPublicLoginPet()).toEqual({ appearance: "off", name: "Portal bot" });
-    expect((await GET()).status).toBe(404);
+    expect((await GET(new Request("http://localhost/api/branding/login-pet"))).status).toBe(404);
     await setCatalogStatus(admin, draft.id, "published", "confirmed");
     expect((await getPublicLoginPet()).appearance).toBe("catalog");
 
     // A different revision than the one confirmed is never served.
     await db.update(schema.petCatalog).set({ revision: "replaced-revision" }).where(eq(schema.petCatalog.id, draft.id));
     expect((await getPublicLoginPet()).appearance).toBe("off");
-    expect((await GET()).status).toBe(404);
+    expect((await GET(new Request("http://localhost/api/branding/login-pet"))).status).toBe(404);
   });
 });

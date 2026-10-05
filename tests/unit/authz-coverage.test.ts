@@ -9,7 +9,7 @@ import { isPublicPath, PUBLIC_PREFIXES } from "@/lib/public-routes";
  */
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const SRC = path.join(ROOT, "src");
-const AUTH_CALL = /\brequire(Principal|Admin|PagePrincipal|AdminPage|PasswordPrincipal|SecurityActor)\s*\(/;
+const AUTH_CALL = /\brequire(Principal|Admin|PagePrincipal|AdminPage|PasswordPrincipal|SecurityActor|MobileSession)\s*\(/;
 
 function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -32,6 +32,8 @@ const PUBLIC_HANDLERS: Record<string, string> = {
   "/api/health": "no data",
   "/api/branding/logo": "only the active, normalized public logo; no settings or arbitrary files",
   "/api/branding/login-pet": "only the admin-confirmed sign-in pet at its pinned, published revision",
+  "/api/mobile/info": "only the public app name/emoji and whether native sign-in is enabled",
+  "/api/mobile/auth/token": "one-time, expiring, PKCE-bound code issued after a signed-in person approved the device",
 };
 const PUBLIC_ACTIONS: Record<string, string> = {
   "src/app/login/actions.ts:localLogin": "Auth.js credentials plus explicit same-origin check",

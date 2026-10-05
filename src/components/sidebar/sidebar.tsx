@@ -12,13 +12,13 @@ import {
   ChevronRight,
   Folder,
   FolderOpen,
-  FolderPlus,
   LogOut,
   MoreHorizontal,
   PanelLeft,
   Pencil,
   Pin,
   PinOff,
+  Plus,
   Search,
   Settings,
   Shield,
@@ -36,6 +36,8 @@ import {
   renameFolder,
   setConversationPinned,
 } from "@/app/(chat)/actions";
+import { BotAvatar } from "@/components/bots/bot-avatar";
+import { NewGroupDialog } from "@/components/bots/new-group-dialog";
 import { useShell } from "@/components/chat/shell-context";
 import type { ConversationSummary } from "@/components/chat/types";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuSub, MenuSubContent, MenuSubTrigger, MenuTrigger } from "@/components/ui/menu";
@@ -85,9 +87,47 @@ function NavItem({
   );
 }
 
+const STACK_MAX = 3;
+
+/** A group's member bots, lead first, overlapping like the mockup's chat heads. */
+function MemberStack({ ids }: { ids: string[] }) {
+  const { bots } = useShell();
+  const members = ids.flatMap((id) => bots.find((b) => b.id === id) ?? []);
+  if (!members.length) return null;
+  const extra = members.length - STACK_MAX;
+  return (
+    <span className="ml-auto flex shrink-0 items-center pl-2" aria-hidden="true">
+      {members.slice(0, STACK_MAX).map((b, i) => (
+        <span key={b.id} className={cn("flex h-6 w-6 items-center justify-center rounded-full bg-surface-2 ring-2 ring-sidebar", i > 0 && "-ml-1.5")}>
+          <BotAvatar botId={b.id} value={b.icon} size={18} className="h-[18px] w-[18px]" />
+        </span>
+      ))}
+      {extra > 0 && <span className="-ml-1.5 flex h-6 min-w-6 items-center justify-center rounded-full bg-surface-2 px-1 text-[10px] font-medium text-muted ring-2 ring-sidebar">+{extra}</span>}
+    </span>
+  );
+}
+
+function SectionHeader({ title, children }: { title: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 pb-1 pl-2.5 pr-1">
+      <h3 className="flex-1 text-xs font-medium text-subtle">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+const AddButton = ({ label, ...props }: { label: string } & React.ButtonHTMLAttributes<HTMLButtonElement>) => (
+  <Tip label={label}>
+    <button type="button" className="rounded-md p-1 text-subtle hover:bg-hover hover:text-fg" aria-label={label} {...props}>
+      <Plus className="h-4 w-4" />
+    </button>
+  </Tip>
+);
+
 function ConversationItem({ c, active, recent = false }: { c: ConversationSummary; active: boolean; recent?: boolean }) {
-  const { folders, upsertConversation, removeConversation, setMobileOpen } = useShell();
+  const { folders, bots, upsertConversation, removeConversation, setMobileOpen } = useShell();
   const router = useRouter();
+  const stacked = !!c.isGroup && !!c.memberBotIds?.some((id) => bots.some((b) => b.id === id));
   const isCurrent = usePathname() === `/c/${c.id}`;
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(c.title);
@@ -127,14 +167,15 @@ function ConversationItem({ c, active, recent = false }: { c: ConversationSummar
         href={`/c/${c.id}`}
         aria-current={active ? "page" : undefined}
         onClick={() => setMobileOpen(false)}
-        className={cn("flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap px-2.5 text-sm", !(recent && c.taskActivity) && "fade-end")}
+        className={cn("flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap px-2.5 text-sm", !(recent && c.taskActivity) && !stacked && "fade-end")}
         title={c.title}
       >
         {c.source === "routine" && <Bot className="h-3.5 w-3.5 shrink-0 text-subtle" />}
         {c.isBotHome && <span className="shrink-0 text-[10px] text-subtle">Home</span>}
-        {c.isGroup && <Users className="h-3.5 w-3.5 shrink-0 text-subtle" />}
-        <span className={cn("min-w-0", recent && c.taskActivity && "truncate")}>{c.title}</span>
+        {c.isGroup && !stacked && <Users className="h-3.5 w-3.5 shrink-0 text-subtle" />}
+        <span className={cn("min-w-0", ((recent && c.taskActivity) || stacked) && "truncate")}>{c.title}</span>
         {recent && <TaskIndicator activity={c.taskActivity} />}
+        {stacked && <MemberStack ids={c.memberBotIds!} />}
       </Link>
       <Menu>
         <MenuTrigger asChild>
@@ -274,21 +315,23 @@ export function Sidebar() {
   const activeBotId = current?.isBotHome && bots.some((b) => b.id === current.botId) ? current.botId ?? undefined : undefined;
   const historyActiveId = activeBotId ? undefined : activeId;
 
-  const { pinned, grouped, byFolder } = useMemo(() => {
+  const { pinned, groups, grouped, byFolder } = useMemo(() => {
     const byFolder = new Map<string, ConversationSummary[]>();
     const loose: ConversationSummary[] = [];
     const pinned: ConversationSummary[] = [];
+    const groups: ConversationSummary[] = [];
     for (const c of conversations) {
       if (c.archived) continue;
       if (c.folderId) {
         const l = byFolder.get(c.folderId) ?? [];
         l.push(c);
         byFolder.set(c.folderId, l);
-      } else if (c.pinned) pinned.push(c);
+      } else if (c.isGroup) groups.push(c);
+      else if (c.pinned) pinned.push(c);
       // Homes live in the bot roster. Keep inaccessible/hidden-bot history reachable, and respect explicit shortcuts.
       else if (!(c.isBotHome && bots.some((b) => b.id === c.botId && (!b.hidden || b.id === activeBotId)))) loose.push(c);
     }
-    return { pinned, grouped: groupByDate(loose), byFolder };
+    return { pinned, groups, grouped: groupByDate(loose), byFolder };
   }, [conversations, bots, activeBotId]);
 
   const initials = user.name
@@ -329,20 +372,32 @@ export function Sidebar() {
       <div className="mt-4 flex-1 overflow-y-auto px-2 pb-4">
         <BotSection bots={bots} activeBotId={activeBotId} onNavigate={() => setMobileOpen(false)} />
 
-        <section className="mb-4">
-          <h3 className="px-2.5 pb-1 text-xs font-medium text-subtle">Projects</h3>
-          <button
-            onClick={async () => {
-              const name = prompt("Project name");
-              if (name?.trim()) await createFolder(name.trim());
-            }}
-            className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-sm hover:bg-hover"
-          >
-            <FolderPlus className="h-[18px] w-[18px]" /> New project
-          </button>
+        {(bots.length > 1 || groups.length > 0) && (
+          <section className="mb-4" aria-label="Groups">
+            <SectionHeader title="Groups">
+              {bots.length > 1 && <NewGroupDialog bots={bots} onCreated={() => setMobileOpen(false)} trigger={<AddButton label="New group chat" />} />}
+            </SectionHeader>
+            {groups.map((c) => (
+              <ConversationItem key={c.id} c={c} active={c.id === historyActiveId} />
+            ))}
+            {!groups.length && <p className="px-2.5 py-1.5 text-sm text-subtle">No groups yet</p>}
+          </section>
+        )}
+
+        <section className="mb-4" aria-label="Projects">
+          <SectionHeader title="Projects">
+            <AddButton
+              label="New project"
+              onClick={async () => {
+                const name = prompt("Project name");
+                if (name?.trim()) await createFolder(name.trim());
+              }}
+            />
+          </SectionHeader>
           {folders.map((f) => (
             <FolderItem key={f.id} folder={f} convs={byFolder.get(f.id) ?? []} activeId={historyActiveId} />
           ))}
+          {!folders.length && <p className="px-2.5 py-1.5 text-sm text-subtle">No projects yet</p>}
         </section>
 
         {pinned.length > 0 && (
@@ -362,7 +417,7 @@ export function Sidebar() {
             ))}
           </section>
         ))}
-        {!pinned.length && !grouped.length && !byFolder.size && <p className="px-2.5 text-xs text-subtle">Side chats and previous homes will appear here.</p>}
+        {!pinned.length && !grouped.length && !byFolder.size && !groups.length && <p className="px-2.5 text-xs text-subtle">Side chats and previous homes will appear here.</p>}
       </div>
 
       <div className="border-t border-border p-2">

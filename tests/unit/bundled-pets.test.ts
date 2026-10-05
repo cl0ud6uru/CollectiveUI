@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { readBundledPet } from "@/lib/pets/bundled";
+import { BUNDLED_PETS, HD_SPRITE_FILE, readBundledPet } from "@/lib/pets/bundled";
+import { hdDifference } from "@/lib/pets/import";
 import { petV2Fixture } from "../fixtures/pet-v2";
 
 let directory: string, source: Record<string, unknown>, sprite: Buffer;
@@ -14,10 +15,13 @@ beforeAll(async () => {
   sprite = await sharp(await petV2Fixture()).webp({ lossless: true }).toBuffer();
 });
 afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
-async function fixture(manifest = source, pixels = sprite) {
+async function fixture(manifest = source, pixels = sprite, hd?: Buffer) {
   await writeFile(path.join(directory, "pet.json"), JSON.stringify(manifest));
   await writeFile(path.join(directory, "spritesheet.webp"), pixels);
+  if (hd) await writeFile(path.join(directory, HD_SPRITE_FILE), hd);
+  else await rm(path.join(directory, HD_SPRITE_FILE), { force: true });
 }
+const doubled = (pixels: Buffer) => sharp(pixels).resize(3072, 4576, { kernel: "nearest" }).webp({ quality: 95, alphaQuality: 100 }).toBuffer();
 
 describe("Bundled pet validation with synthetic pixels", () => {
   it("normalizes a complete v2 sheet and retains the exact approved metadata", async () => {
@@ -48,13 +52,44 @@ describe("Bundled pet validation with synthetic pixels", () => {
   });
 });
 
+describe("HD renditions with synthetic pixels", () => {
+  it("reads an optional 2× sheet as a WebP rendition of the same artwork", async () => {
+    await fixture();
+    expect((await readBundledPet(directory)).spriteHd).toBeNull();
+    await fixture(source, sprite, await doubled(sprite));
+    const { sprite: standard, spriteHd } = await readBundledPet(directory);
+    expect(await sharp(spriteHd!).metadata()).toMatchObject({ format: "webp", width: 3072, height: 4576, hasAlpha: true });
+    expect(await hdDifference(standard, spriteHd!)).toBeLessThan(1);
+  }, 30_000);
+  it("rejects an HD sheet of the wrong size, with an empty frame, or of different artwork", async () => {
+    await fixture(source, sprite, sprite);
+    await expect(readBundledPet(directory)).rejects.toThrow(/3072 × 4576 HD sprite sheet/);
+    await fixture(source, sprite, Buffer.from("not an image"));
+    await expect(readBundledPet(directory)).rejects.toThrow(/3072 × 4576 HD sprite sheet/);
+    const blank = { input: { create: { width: 384, height: 416, channels: 4 as const, background: "transparent" } }, blend: "clear" as const, left: 0, top: 0 };
+    await fixture(source, sprite, await sharp(await doubled(sprite)).composite([blank]).webp({ lossless: true }).toBuffer());
+    await expect(readBundledPet(directory)).rejects.toThrow(/idle frame 1 is empty/);
+    await fixture(source, sprite, await sharp(await doubled(sprite)).negate({ alpha: false }).webp({ lossless: true }).toBuffer());
+    await expect(readBundledPet(directory)).rejects.toThrow(/same artwork as the v2 sheet/);
+  }, 30_000);
+});
+
 const bundles = [
   { slug: "hermes", name: "Hermes", file: "spritesheet.webp", hash: "80e08093c5cdaa390c6176fca447acf3cacb122e08927573f0f7256622c2c646", normalizedBytes: 3904456 },
-  { slug: "hermes-assimilated", name: "Hermes Assimilated", file: "spritesheet.webp", hash: "74e1f12b9c792122c57cd9b204be79eaf825f6a97d61cf0ece9ec835186438db", normalizedBytes: 2493533 },
+  { slug: "hermes-assimilated", name: "Hermes Assimilated", file: "spritesheet.webp", hash: "071c27d8292fd0da02fbc7d7e923fbc98cbfc2de16b29f14f32624bee981dc7b", normalizedBytes: 3585739 },
   { slug: "the-queen", name: "The Queen", file: "spritesheet.png", hash: "fed57f8824f9e4a93064ab9e60996637867a583b2e3b83d3a175460560ac7487" },
 ];
 
 describe("shipped artwork", () => {
+  it("keeps BUNDLED_PETS hashes and HD flags in step with the shipped files", async () => {
+    const { createHash } = await import("node:crypto");
+    for (const pet of BUNDLED_PETS) {
+      const loaded = await readBundledPet(`assets/pets/${pet.directory}`);
+      expect(createHash("sha256").update(loaded.sprite).digest("hex")).toBe(pet.sprite);
+      expect(!!loaded.spriteHd).toBe(pet.hd);
+      expect(pet.releases).not.toContain(pet.sprite);
+    }
+  }, 120_000);
   it.each(bundles)("imports $name through multipart and ZIP export/reimport with credit intact", async (bundle) => {
     const { createHash } = await import("node:crypto");
     const { parsePetUpload } = await import("@/lib/pets/import");

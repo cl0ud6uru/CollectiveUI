@@ -3,7 +3,7 @@ import { z } from "zod";
 import { PET_ANIMATIONS, PET_DIRECTIONS } from "./atlas";
 import { PET_ARCHIVE_MAX_BYTES, readPetArchive } from "./archive";
 import { HttpError } from "@/lib/authz";
-import { MANIFEST_MAX_BYTES, PET_MAX_BYTES, PET_WIDTH, type PetManifest } from "./shared";
+import { MANIFEST_MAX_BYTES, PET_HD_MAX_BYTES, PET_HD_SCALE, PET_MAX_BYTES, PET_WIDTH, type PetManifest } from "./shared";
 
 const text = (max: number) => z.string().trim().max(max).refine((s) => !/[\u0000-\u001f\u007f]/.test(s), "Control characters are not supported");
 const manifestSchema = z.object({
@@ -49,23 +49,29 @@ export async function readPetBody(request: Request, max: number): Promise<Buffer
   return Buffer.concat(chunks);
 }
 
+const rasterFormat = (data: Buffer) => data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "png" as const
+  : data.toString("ascii", 0, 4) === "RIFF" && data.toString("ascii", 8, 12) === "WEBP" ? "webp" as const : null;
+
+/** libvips may decode only the first APNG or animated WebP frame. Reject their animation markers explicitly. */
+function assertStill(data: Buffer, format: "png" | "webp") {
+  if (format === "png") {
+    for (let offset = 8; offset + 12 <= data.length;) {
+      const length = data.readUInt32BE(offset);
+      if (data.toString("ascii", offset + 4, offset + 8) === "acTL") throw new Error("Animated PNG");
+      offset += length + 12;
+    }
+  } else if (data.toString("ascii", 12, 16) === "VP8X" && (data[20] & 2)) {
+    throw new Error("Animated WebP");
+  }
+}
+
 /** Only static PNG/WebP rasters, canonical dimensions, and freshly encoded pixels reach storage. */
 export async function normalizePetSprite(data: Buffer, version: 1 | 2, filename: string): Promise<Buffer> {
   if (!data.length || data.length > PET_MAX_BYTES) throw new HttpError(413, "The sprite must be between 1 byte and 4 MB.");
-  const format = data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "png"
-    : data.toString("ascii", 0, 4) === "RIFF" && data.toString("ascii", 8, 12) === "WEBP" ? "webp" : null;
+  const format = rasterFormat(data);
   if (!format || filename !== `spritesheet.${format}`) throw new HttpError(415, "Choose a static spritesheet.png or spritesheet.webp matching pet.json. SVG, HTML and archives are not supported.");
   try {
-    // libvips may decode only the first APNG frame. Reject its animation marker explicitly.
-    if (format === "png") {
-      for (let offset = 8; offset + 12 <= data.length;) {
-        const length = data.readUInt32BE(offset);
-        if (data.toString("ascii", offset + 4, offset + 8) === "acTL") throw new Error("Animated PNG");
-        offset += length + 12;
-      }
-    } else if (data.toString("ascii", 12, 16) === "VP8X" && (data[20] & 2)) {
-      throw new Error("Animated WebP");
-    }
+    assertStill(data, format);
     const sprite = sharp(data, { limitInputPixels: PET_WIDTH * 2288, failOn: "warning" }).timeout({ seconds: 5 });
     const meta = await sprite.metadata();
     const height = version === 2 ? 2288 : 1872;
@@ -83,14 +89,63 @@ export function assertPetOrigin(request: Request) {
   if (request.headers.get("origin") !== expected) throw new HttpError(403, "Invalid request origin");
 }
 
+/**
+ * The optional HD rendition: the same static-raster rules at exactly PET_HD_SCALE × the v2 sheet, re-encoded as WebP
+ * with lossless alpha so it stays small enough to serve. Callers also run validateV2Cells and assertHdMatches.
+ */
+export async function normalizePetSpriteHd(data: Buffer): Promise<Buffer> {
+  const [width, height] = [PET_WIDTH * PET_HD_SCALE, 2288 * PET_HD_SCALE];
+  const failure = () => new HttpError(400, `Use an undamaged static ${width} × ${height} HD sprite sheet (maximum 12 MB).`);
+  const format = rasterFormat(data);
+  if (!data.length || data.length > PET_HD_MAX_BYTES || !format) throw failure();
+  try {
+    assertStill(data, format);
+    // Encoding 14 megapixels takes several seconds on a small server; it runs once per installed or upgraded pet.
+    const sprite = sharp(data, { limitInputPixels: width * height, failOn: "warning" }).timeout({ seconds: 60 });
+    const meta = await sprite.metadata();
+    if (meta.format !== format || meta.width !== width || meta.height !== height || (meta.pages ?? 1) !== 1) throw new Error("Invalid atlas");
+    const webp = await sprite.webp({ quality: 92, alphaQuality: 100, effort: 4 }).toBuffer();
+    if (webp.length > PET_HD_MAX_BYTES) throw new Error("Encoded image is too large");
+    return webp;
+  } catch { throw failure(); }
+}
+
+/** Premultiplied RGBA at v2 size, so differences in invisible colour never count. */
+async function premultiplied(sprite: Buffer, scale: number) {
+  const pipeline = sharp(sprite, { limitInputPixels: PET_WIDTH * 2288 * scale * scale }).timeout({ seconds: 10 }).toColourspace("srgb").ensureAlpha();
+  const { data } = await (scale === 1 ? pipeline : pipeline.resize(PET_WIDTH, 2288, { kernel: "lanczos3" })).raw().toBuffer({ resolveWithObject: true });
+  for (let i = 0; i < data.length; i += 4) for (let c = 0; c < 3; c++) data[i + c] = Math.round(data[i + c] * data[i + 3] / 255);
+  return data;
+}
+
+export const HD_LIKENESS_LIMIT = 4;
+
+/** Mean absolute difference, per 8-bit channel, between the HD sheet shrunk to v2 size and the v2 sheet itself. */
+export async function hdDifference(sprite: Buffer, hd: Buffer): Promise<number> {
+  const [a, b] = await Promise.all([premultiplied(sprite, 1), premultiplied(hd, PET_HD_SCALE)]);
+  let total = 0;
+  for (let i = 0; i < a.length; i++) total += Math.abs(a[i] - b[i]);
+  return total / a.length;
+}
+
+/**
+ * The HD sheet must be the same artwork, frame for frame, as the v2 sheet everyone else sees. A sheet produced by
+ * scripts/build-pet-hd.ts differs by about one level and a smooth 2× enlargement of
+ * the same sheet by about two; different art (Hermes against Hermes Assimilated) differs by about twenty.
+ */
+export async function assertHdMatches(sprite: Buffer, hd: Buffer): Promise<void> {
+  if (await hdDifference(sprite, hd) > HD_LIKENESS_LIMIT) throw new HttpError(400, "The HD sprite sheet must be the same artwork as the v2 sheet at twice the size. Build both from one 2× source with scripts/build-pet-hd.ts.");
+}
+
 /** Structural checks are deterministic; visual identity, gaze semantics and animation quality need human review. */
-export async function validateV2Cells(sprite: Buffer): Promise<void> {
-  const { data, info } = await sharp(sprite, { limitInputPixels: PET_WIDTH * 2288 }).timeout({ seconds: 5 }).toColourspace("srgb").ensureAlpha().raw().toBuffer({ resolveWithObject: true })
-    .catch(() => { throw new HttpError(400, "Use an undamaged static 1536 × 2288 Codex Pet v2 sprite sheet."); });
-  if (info.width !== PET_WIDTH || info.height !== 2288) throw new HttpError(400, "V2 validation requires a 1536 × 2288 sprite sheet.");
+export async function validateV2Cells(sprite: Buffer, scale = 1): Promise<void> {
+  const [width, height, cellWidth, cellHeight] = [PET_WIDTH * scale, 2288 * scale, 192 * scale, 208 * scale];
+  const { data, info } = await sharp(sprite, { limitInputPixels: width * height }).timeout({ seconds: 5 * scale }).toColourspace("srgb").ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+    .catch(() => { throw new HttpError(400, `Use an undamaged static ${width} × ${height} Codex Pet v2 sprite sheet.`); });
+  if (info.width !== width || info.height !== height) throw new HttpError(400, `V2 validation requires a ${width} × ${height} sprite sheet.`);
   const occupied = Array.from({ length: 11 }, () => Array<boolean>(8).fill(false));
   for (let y = 0; y < info.height; y++) for (let x = 0; x < info.width; x++) {
-    if (data[(y * info.width + x) * 4 + 3] > 0) occupied[Math.floor(y / 208)][Math.floor(x / 192)] = true;
+    if (data[(y * info.width + x) * 4 + 3] > 0) occupied[Math.floor(y / cellHeight)][Math.floor(x / cellWidth)] = true;
   }
   const errors: string[] = [];
   PET_ANIMATIONS.forEach((state, row) => {

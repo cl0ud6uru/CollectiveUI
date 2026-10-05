@@ -36,7 +36,7 @@ function PortalBot({ state }: { state: PetArtState }) {
 
 function petView(pet: PublicLoginPet): PetView | null {
   if (pet.appearance === "off") return null;
-  if (pet.appearance === "catalog") return { ...DEFAULT_PET, enabled: true, appearance: "catalog", spriteUrl: pet.spriteUrl,
+  if (pet.appearance === "catalog") return { ...DEFAULT_PET, enabled: true, appearance: "catalog", spriteUrl: pet.spriteUrl, spriteHdUrl: pet.spriteHdUrl,
     custom: { displayName: pet.name, description: "", spriteVersionNumber: pet.spriteVersionNumber, credit: pet.credit } };
   return { ...DEFAULT_PET, enabled: true, appearance: pet.appearance };
 }
