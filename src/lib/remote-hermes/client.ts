@@ -66,6 +66,7 @@ export class DashboardClient {
     return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(100) }).parse(await this.call(`/api/sessions?${query}`)).sessions;
   }
   async history(profile: string, storedId: string, offset: number) {
+    if (!storedId || storedId === '.' || storedId === '..') throw new HttpError(400, 'Invalid Hermes session identity.');
     const query = new URLSearchParams({ profile, limit: '200', offset: String(offset), order: 'latest', inline_images: 'false' });
     const result = z.object({ messages: z.array(z.record(z.string(), z.unknown())).max(200) }).parse(await this.call(`/api/sessions/${encodeURIComponent(storedId)}/messages?${query}`, undefined, {}, 8 * 1024 * 1024));
     return { messages: result.messages.filter(m => m.display_kind !== 'hidden').map(m => ({

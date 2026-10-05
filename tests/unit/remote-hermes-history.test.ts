@@ -15,6 +15,11 @@ describe('native paged browsing and history projections', () => {
     expect(result).toEqual({ messages: [{id:'1',role:'user',text:'User-visible text'},{id:'3',role:'assistant',text:'Answer'}],nextOffset:203,hasMore:false });
     expect(JSON.stringify(result)).not.toContain('private');
   });
+  it('rejects dot-segment identities before contacting a dashboard', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    for (const id of ['.', '..', '']) await expect(new DashboardClient('https://example.com', fetcher).history('default', id, 0)).rejects.toThrow('identity');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it('advances offsets by raw rows even when hidden rows have no display representation', async () => {
     const fetcher = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => Response.json({messages:Array.from({length:200}, (_,id)=>({id,role:'assistant',content:'hidden',display_kind:'hidden'}))}));
     expect(await new DashboardClient('https://example.com',fetcher).history('default','chat',400)).toEqual({messages:[],nextOffset:600,hasMore:true});
