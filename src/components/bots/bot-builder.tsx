@@ -19,6 +19,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import type { ApprovalMode } from "@/db/schema";
 import type { ToolOption } from "@/lib/bots/builder-data";
 import { cn } from "@/lib/utils";
+import { SEARCH_COST_NOTICE } from "@/lib/native-search-policy";
 import { BuilderAvatar } from "./builder-avatar";
 import { BotDeleteButton } from "./bot-delete-button";
 import { BotPetSettings } from "@/components/pets/bot-pet";
@@ -439,24 +440,25 @@ export function BotBuilder({
                     const replace = (c: ToolChoice) => set("tools", form.tools.map((x) => (x.key === t.key ? c : x)));
                     return (
                       <div key={t.key}>
-                        <div className="flex items-center gap-3 px-3 py-2.5">
+                        <div className="grid grid-cols-[1rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2 px-3 py-2.5 sm:grid-cols-[1rem_minmax(0,1fr)_auto]">
                           <input
                             type="checkbox"
+                            id={`bot-tool-${t.key}`}
                             aria-label={t.label}
                             checked={!!on}
                             disabled={!on && !!searchReason}
                             onChange={(e) => toggleTool(t, e.target.checked)}
-                            className="h-4 w-4 accent-[var(--accent)]"
+                            className="mt-0.5 h-4 w-4 accent-[var(--accent)]"
                           />
-                          <div className="min-w-0 flex-1">
-                            <div className="text-sm font-medium">{t.label}</div>
-                            <div className="text-xs text-muted">{searchReason ?? t.description}</div>
-                          </div>
+                          <label htmlFor={`bot-tool-${t.key}`} className="min-w-0 cursor-pointer wrap-anywhere">
+                            <span className="block text-sm font-medium">{t.label}</span>
+                            <span className="block text-xs text-muted">{searchReason ?? t.description}</span>
+                          </label>
                           {on && !service && t.key !== "openai_web_search" && (
                             <Select
                               value={on.approval}
                               onChange={(e) => replace({ ...on, approval: e.target.value as ApprovalMode })}
-                              className="h-8 w-auto shrink-0 px-2.5 text-xs"
+                              className="col-start-2 h-9 w-fit max-w-full px-2.5 text-xs sm:col-start-3 sm:row-start-1"
                               aria-label={`${t.label} approval`}
                             >
                               <option value="auto">{APPROVAL_LABELS.auto}</option>
@@ -464,6 +466,7 @@ export function BotBuilder({
                               {(isMcp || on.approval === "smart") && <option value="smart">{APPROVAL_LABELS.smart}</option>}
                             </Select>
                           )}
+                          {on && t.key === "openai_web_search" && <p className="col-start-2 text-xs text-muted sm:col-span-2">{SEARCH_COST_NOTICE}</p>}
                         </div>
                         {on && isMcp && <McpToolChoices option={t} choice={on} onChange={replace} service={service} />}
                       </div>

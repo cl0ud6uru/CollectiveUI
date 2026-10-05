@@ -246,13 +246,14 @@ export function ToolPartView({
   const preliminary = part.state === "output-available" && !!(part as { preliminary?: boolean }).preliminary;
   // A turn that ended mid-tool (timeout, stop) leaves its last progress update behind: show it as interrupted.
   const preliminaryRunning = preliminary && live;
-  // Hermes tool steps whose run ended (stopped, failed) without a result are shown as interrupted.
-  const interrupted = (preliminary && !live) || (running && !live && isHermesTool(name));
+  // Remote tool steps whose run ended without a result must not keep spinning.
+  const interrupted = (preliminary && !live) || (running && !live && (isHermesTool(name) || name === "openai_web_search"));
 
   return (
     <div className="my-2 text-sm">
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={cn("flex items-center gap-2 text-muted hover:text-fg", denied && "line-through")}
       >

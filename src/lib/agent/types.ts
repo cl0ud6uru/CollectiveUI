@@ -62,8 +62,8 @@ export type ToolEntry = {
 
 /** Built-in tool groups a bot can enable (MCP servers and delegates are added dynamically). */
 export const BUILTIN_TOOLS: { key: string; label: string; description: string; defaultApproval: ApprovalMode }[] = [
-  { key: "openai_web_search", label: "OpenAI native search", description: "Let a supported OpenAI API model search automatically. Billed by OpenAI; no automatic fallback. Chats may switch it off.", defaultApproval: "auto" },
-  { key: "web_search", label: "Web search", description: "Search the public web for current information.", defaultApproval: "auto" },
+  { key: "openai_web_search", label: "OpenAI native search", description: "Let a supported OpenAI API model search when needed. Chats can switch it off.", defaultApproval: "auto" },
+  { key: "web_search", label: "Web search (external)", description: "Search with your administrator's SearXNG, Brave or Bing provider.", defaultApproval: "auto" },
   { key: "fetch_url", label: "Read web pages", description: "Fetch and read the text of a URL.", defaultApproval: "auto" },
   { key: "knowledge", label: "Knowledge files", description: "Search the files attached to this bot.", defaultApproval: "auto" },
   { key: "memory", label: "Memory", description: "Remember and forget facts about the user across chats.", defaultApproval: "auto" },

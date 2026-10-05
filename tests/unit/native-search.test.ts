@@ -19,10 +19,19 @@ describe("native search policy before hosted dispatch", () => {
     expect(nativeSearchCapability(app, null)).toBeNull();
     expect(nativeSearchCapability(app, "https://api.openai.com/v1/")).toBeNull();
     for (const provider of ["azure", "openai-compatible", "chatgpt", "hermes", "anthropic"] as const) expect(nativeSearchCapability({ ...app, provider }, null)).toBeTruthy();
-    for (const model of ["gpt-4.1-nano", "gpt-5-nano", "gpt-future", "gpt-4o-search-preview", "gpt-5-search-api", "gpt-4.1-custom"]) expect(nativeSearchCapability({ ...app, model }, null)).toBeTruthy();
+    for (const model of ["gpt-4.1-nano", "gpt-5-nano", "gpt-future", "gpt-4o-search-preview", "gpt-5-search-api", "gpt-4.1-custom", "gpt-6-luna-custom", "gpt-6.1-sol-unknown", "gpt-6.2-luna"]) expect(nativeSearchCapability({ ...app, model }, null)).toBeTruthy();
     for (const url of ["http://api.openai.com/v1", "https://proxy.test/v1", "https://api.openai.com.evil.test/v1", "https://api.openai.com/v1?proxy=x", "https://user@api.openai.com/v1"]) expect(nativeSearchCapability(app, url)).toBeTruthy();
     expect(nativeSearchCapability({ ...app, supportsTools: false }, null)).toBeTruthy();
     expect(nativeSearchCapability({ ...app, credentialMode: "user" }, null)).toBeTruthy();
+  });
+  it.each(["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"])("allows documented %s only with an eligible connection and policy", model => {
+    const candidate = { ...app, model };
+    expect(nativeSearchCapability(candidate, null)).toBeNull();
+    expect(nativeSearchCapability(candidate, "https://api.openai.com/v1")).toBeNull();
+    expect(nativeSearchCapability(candidate, "https://proxy.test/v1")).toBeTruthy();
+    expect(nativeSearchCapability({ ...candidate, provider: "openai-compatible" }, null)).toBeTruthy();
+    expect(nativeSearchCapability({ ...candidate, credentialMode: "user" }, null)).toBeTruthy();
+    expect(nativeSearchPolicy({ ...policy, nativeSearch: { ...policy.nativeSearch!, enabled: false } })).toBeTruthy();
   });
   it("fails closed on restrictions and unsupported per-call approvals", () => {
     expect(nativeSearchPolicy(policy)).toBeNull();
@@ -68,6 +77,7 @@ describe("SDK Responses wire fixtures", () => {
   it("sends hosted filters and max_tool_calls, streams citations and records calls apart from tokens", async () => {
     const f = await fixture();
     expect(f.bodies[0].max_tool_calls).toBe(2);
+    expect(f.bodies[0].tool_choice).not.toBe("required");
     expect(f.bodies[0].tools).toEqual([{ type: "web_search", filters: { allowed_domains: ["example.com"] } }]);
     expect(f.message?.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "source-url", url: "https://example.com/weather" }), expect.objectContaining({ type: "tool-openai_web_search", state: "output-available" })]));
     expect(f.rows.filter(r => r.hostedSearchCalls)).toEqual([expect.objectContaining({ hostedSearchCalls: 1, searchToolCostEstimateMicros: 10000, inputTokens: null, outputTokens: null, userId: "owner" })]);
