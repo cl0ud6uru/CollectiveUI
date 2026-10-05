@@ -103,6 +103,22 @@ describe("buildToolset MCP loading", () => {
     expect(ts.approval({ toolCall: { toolName: "b__echo" } })).toBeUndefined();
   });
 
+  it("native Auto coexists with an MCP tool without changing that tool's approval or availability", async () => {
+    rows.set(botTools, [{ toolKey: "openai_web_search", approval: "auto" }, { toolKey: "mcp:a", approval: "ask" }]);
+    listAccessibleMcpServers.mockResolvedValue([server("a", "a", { toolsSnapshot: [] })]);
+    mcpTools.mockResolvedValue({ entries: [{ name: "a__lookup", key: "mcp:a", tool: {}, mcp: { tool: "lookup", readOnly: true, destructive: false, trusted: true, requireApproval: false } }], close: async () => {} });
+    const nativeCtx = { ...ctx, app: { ...ctx.app, provider: "openai", model: "gpt-6-luna", credentialMode: "org", baseUrl: null } as AiApp,
+      toolSettings: { disabledTools: [], enforcedApproval: [], fetchAllowlist: [], maxStepsCap: 10, webSearch: { provider: "none" }, botCreation: "everyone", nativeSearch: { enabled: true, maxCalls: 2, allowedDomains: [] } } as never };
+    for (const nativeSearchMode of ["auto", "off"] as const) {
+      const ts = await buildToolset({ ...nativeCtx, nativeSearchMode });
+      expect(ts.tools.a__lookup).toBeDefined();
+      expect(Boolean(ts.tools.openai_web_search)).toBe(nativeSearchMode === "auto");
+      expect(ts.approval({ toolCall: { toolName: "a__lookup" } })).toBe("user-approval");
+      expect(ts.approval({ toolCall: { toolName: "openai_web_search" } })).toBeUndefined();
+      await ts.close();
+    }
+  });
+
   it("assigns colliding tool names in server order despite reversed discovery completion", async () => {
     rows.set(botTools, [{ toolKey: "mcp:a", approval: "auto" }, { toolKey: "mcp:b", approval: "auto" }]);
     listAccessibleMcpServers.mockResolvedValue([server("b", "Tickets"), server("a", "Tickets")]);

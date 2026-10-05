@@ -52,7 +52,7 @@ run("hosted search database and agent fixtures", () => {
     vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toBe("https://api.openai.com/v1/responses");
       const body = JSON.parse(String(init?.body)); calls.push(body);
-      return searchResponse({ calls: body.tools?.some((t: { type: string }) => t.type === "web_search") ? 1 : 0, id: `${seq++}` });
+      return searchResponse({ calls: body.tools?.some((t: { type: string }) => t.type === "web_search") ? 1 : 0, id: `${seq++}`, model: body.model });
     });
   }
   async function conversation(mode: "off" | "auto" | null = "auto", botId: string | null = null) {
@@ -60,15 +60,15 @@ run("hosted search database and agent fixtures", () => {
     const [conv] = await db.insert(conversations).values({ userId: `${prefix}-owner`, appId: botId ? null : app.id, botId, title: "Fixture search", nativeSearchMode: mode }).returning();
     ids.push(conv.id); return conv;
   }
-  async function turn(conv: Conversation, member: Bot | null = null) {
+  async function turn(conv: Conversation, member: Bot | null = null, history: import("@/lib/chat/store").PortalUIMessage[] = []) {
     const { runTurn } = await import("@/lib/agent/run");
     const { insertMessage } = await import("@/lib/chat/store");
     const { newId } = await import("@/lib/ids");
     const prompt = { id: newId(), role: "user" as const, parts: [{ type: "text" as const, text: "Fixture weather" }] };
-    await insertMessage(conv.id, prompt, null);
-    const response = await runTurn({ principal: session.principal, conversation: conv, app, bot: member, history: [prompt], continuation: false, background: true });
+    await insertMessage(conv.id, prompt, history.at(-1)?.id ?? null);
+    const response = await runTurn({ principal: session.principal, conversation: conv, app, bot: member, history: [...history, prompt], continuation: false, background: true });
     const chunks = await drain(response.stream);
-    return { chunks, ...await response.done };
+    return { prompt, chunks, ...await response.done };
   }
   it("direct auto streams sources, persists/reloads parts and avoids token double counting", async () => {
     fixtureFetch(); const conv = await conversation(); const result = await turn(conv);
@@ -89,6 +89,38 @@ run("hosted search database and agent fixtures", () => {
     fixtureFetch(); const result = await turn(await conversation("off", bot.id), bot);
     expect(result.error).toBeUndefined();
     expect(calls[0].tools).toBeUndefined();
+  });
+  it.each(["gpt-5.6-luna", "gpt-6-luna", "gpt-6.1-sol"])("direct Auto and bot defaults persist across requests for %s", async model => {
+    const { db } = await import("@/db"); const { aiApps, usageEvents } = await import("@/db/schema");
+    const { GET } = await import("@/app/api/chat/native-search/route");
+    const { loadMessageRows, rowToUIMessage } = await import("@/lib/chat/store");
+    const previous = app;
+    [app] = await db.update(aiApps).set({ model }).where(eq(aiApps.id, app.id)).returning();
+    fixtureFetch();
+    try {
+      for (const member of [null, bot]) {
+        const conv = await conversation(member ? null : "auto", member?.id ?? null);
+        const first = await turn(conv, member);
+        const second = await turn(conv, member, [first.prompt, first.responseMessage]);
+        expect(first.error).toBeUndefined(); expect(second.error).toBeUndefined();
+        const selected = await (await GET(new Request(`http://fixture/api/chat/native-search?conversationId=${conv.id}`))).json();
+        expect(selected).toMatchObject({ mode: "auto", reason: null });
+        const saved = await loadMessageRows(conv.id);
+        const assistants = saved.filter(row => row.role === "assistant");
+        expect(assistants).toHaveLength(2);
+        expect(assistants.every(row => rowToUIMessage(row).parts.some(part => part.type === "source-url"))).toBe(true);
+        const usage = await db.select().from(usageEvents).where(eq(usageEvents.conversationId, conv.id));
+        expect(usage.reduce((n, row) => n + (row.hostedSearchCalls ?? 0), 0)).toBe(2);
+        expect(usage.reduce((n, row) => n + (row.searchToolCostEstimateMicros ?? 0), 0)).toBe(20000);
+        expect(usage.reduce((n, row) => n + (row.inputTokens ?? 0), 0)).toBe(200);
+      }
+      expect(calls).toHaveLength(4);
+      for (const request of calls) {
+        expect(request).toMatchObject({ model, max_tool_calls: 2, store: false, include: expect.arrayContaining(["web_search_call.action.sources"]) });
+        expect(request.tool_choice ?? "auto").toBe("auto");
+        expect(request.tools).toEqual(expect.arrayContaining([expect.objectContaining({ type: "web_search" })]));
+      }
+    } finally { await db.update(aiApps).set({ model: previous.model }).where(eq(aiApps.id, app.id)); app = previous; }
   });
   it("owner-only settings persist; failed updates do not change the owner choice", async () => {
     const conv = await conversation("off", bot.id);

@@ -101,12 +101,10 @@ export function Chat({
   const [started, setStarted] = useState(!isNew);
   const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
   const [searchPending, setSearchPending] = useState(true);
-  const [searchError, setSearchError] = useState<string>();
   const searchPendingRef = useRef(true);
-  const searchChanged = useCallback((mode: NativeSearchMode | null, pending: boolean, error?: string) => {
+  const searchChanged = useCallback((mode: NativeSearchMode | null, pending: boolean) => {
     searchPendingRef.current = pending;
     setNativeSearchMode(mode); setSearchPending(pending);
-    setSearchError(error);
   }, []);
   // Deliberately visit-local: every chat mount/reload starts collapsed. Opening
   // details never writes a preference or remounts the conversation/composer.
@@ -662,7 +660,6 @@ export function Chat({
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
               <Composer
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
-                notice={searchError && <>{searchError} <button type="button" className="underline" onClick={() => window.location.reload()}>Reload before sending</button>.</>}
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
@@ -769,7 +766,6 @@ export function Chat({
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
               <Composer
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
-                notice={searchError && <>{searchError} <button type="button" className="underline" onClick={() => window.location.reload()}>Reload before sending</button>.</>}
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}

@@ -16,7 +16,7 @@ async function login(page: Page) {
 async function searchControl(page: Page) {
   if (!(await page.getByRole("dialog", { name: "Tools", exact: true }).isVisible())) await page.getByRole("button", { name: "Tools", exact: true }).click();
   const select = page.getByLabel("OpenAI native search", { exact: true });
-  await expect(select).toBeEnabled();
+  await expect(page.getByText("Checking availability…", { exact: true })).toHaveCount(0);
   return select;
 }
 async function closeTools(page: Page) {
@@ -109,6 +109,10 @@ test("admin controls, bot default, custom endpoint reason and ambiguous settings
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   await page.goto("/?bot=searchBot");
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled();
+  await expect(page.getByText("OpenAI native search", { exact: true })).toHaveCount(0);
+  await expect(page.locator("summary").filter({ hasText: "OpenAI native search" })).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/compact-search-bot-no-banner.png", fullPage: true });
   await expect(await searchControl(page)).toHaveValue("auto");
   await (await searchControl(page)).selectOption("off");
   await page.reload();
@@ -123,9 +127,11 @@ test("admin controls, bot default, custom endpoint reason and ambiguous settings
     await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Fixture lost save response" }) });
   });
   await (await searchControl(page)).selectOption("auto");
-  await closeTools(page);
   await expect(page.getByRole("alert").filter({ hasText: "Search settings could not be saved or verified." })).toBeVisible();
   await expect(page.getByRole("button", { name: "Reload before sending" })).toBeVisible();
+  await closeTools(page);
+  await expect(page.getByRole("alert").filter({ hasText: /Search settings/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Tools", exact: true })).toHaveAttribute("title", "Search settings need verification");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Regenerate", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
@@ -135,14 +141,19 @@ test("admin controls, bot default, custom endpoint reason and ambiguous settings
   await closeTools(page);
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled();
   await page.goto("/?app=searchCustom");
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled();
+  await expect(page.getByText(/OpenAI native search|Native search is unavailable|Unavailable/)).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/compact-search-custom-no-banner.png", fullPage: true });
   await searchControl(page);
   await expect(page.getByText("Native search is unavailable on custom endpoints.", { exact: true })).toBeVisible();
   await expect(page.getByLabel("OpenAI native search", { exact: true }).locator('option[value="auto"]')).toHaveAttribute("disabled", "");
   await page.route("**/api/chat/native-search?*", route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Fixture settings failure" }) }));
   await page.goto("/?app=searchApp");
   await searchControl(page);
-  await closeTools(page);
   await expect(page.getByRole("alert").filter({ hasText: "Search settings could not be verified." })).toBeVisible();
+  await page.screenshot({ path: "/tmp/compact-search-settings-dialog.png", fullPage: true });
+  await closeTools(page);
+  await expect(page.getByRole("alert").filter({ hasText: /Search settings/ })).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeDisabled();
   await page.screenshot({ path: "/tmp/compact-search-settings-error.png", fullPage: true });
 });

@@ -40,7 +40,6 @@ export const Composer = forwardRef<
     busy: boolean;
     disabled?: boolean;
     tools?: React.ReactNode;
-    notice?: React.ReactNode;
     placeholder?: string;
     skills?: { slug: string; name: string; description: string }[];
     hermesCommands?: { models: string[]; discoveryNote: string };
@@ -52,7 +51,7 @@ export const Composer = forwardRef<
     /** Send button colour (a bot chat uses the bot's colour, like ChatGPT dots). */
     tint?: { bg: string; fg: string };
   }
->(function Composer({ onSend, onStop, busy, disabled, tools, notice, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint }, ref) {
+>(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint }, ref) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -336,7 +335,6 @@ export const Composer = forwardRef<
           aria-controls={commandMatches.length ? "hermes-command-options" : undefined}
           aria-activedescendant={commandMatches.length ? `hermes-command-${selectedIndex}` : undefined}
         />
-        {notice && <p role="alert" className="px-3 py-1 text-xs text-danger">{notice}</p>}
         <div className="flex items-center justify-between px-1 pt-1">
           <div className="flex items-center gap-0.5">
           <Menu>
