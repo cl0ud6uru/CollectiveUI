@@ -658,8 +658,8 @@ export function Chat({
                 <h1 className="mb-8 text-center text-[28px] font-normal">{branding.welcomeText}</h1>
               )}
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
-              {target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
               <Composer
+                tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
@@ -736,7 +736,7 @@ export function Chat({
                 )}
                 {!bubbles && status === "submitted" && messages[messages.length - 1]?.role === "user" && <span className="streaming-dot" />}
                 {error && status === "error" && (
-                  <div className="rounded-2xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
+                  <div role="alert" className="rounded-2xl border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
                     {errorText(error)}{" "}
                     {/Connected accounts/.test(errorText(error)) && (
                       <Link href="/settings?tab=connected-accounts" className="mr-2 underline">
@@ -766,8 +766,8 @@ export function Chat({
                 </button>
               )}
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
-              {target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
               <Composer
+                tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}

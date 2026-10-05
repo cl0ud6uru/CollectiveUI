@@ -5,7 +5,7 @@ import type { ToolSettings } from "@/lib/settings";
 export const NATIVE_SEARCH_KEY = "openai_web_search";
 export type NativeSearchMode = "off" | "auto";
 export const SEARCH_CALL_MICROS = 10_000;
-export const SEARCH_COST_NOTICE = "OpenAI API search costs an estimated $0.01 per call plus search-content tokens at model rates. Auto lets the model decide whether to search. GPT-4.1 mini bills search content as 8,000 input tokens per call. Charges are separate from ChatGPT subscriptions; final billing comes from OpenAI.";
+export const SEARCH_COST_NOTICE = "About $0.01 per search plus search-content tokens at model rates (GPT-4.1 mini: 8,000 input tokens per search). Uses OpenAI API billing, separate from ChatGPT subscriptions. Final charges come from OpenAI.";
 export const nativeSearchSettingsSchema = z.object({
   enabled: z.boolean(),
   maxCalls: z.number().int().min(1).max(10),
@@ -15,8 +15,14 @@ export type NativeSearchSettings = z.infer<typeof nativeSearchSettingsSchema>;
 export const NATIVE_SEARCH_DEFAULTS: NativeSearchSettings = { enabled: false, maxCalls: 2, allowedDomains: [] };
 
 // Deliberately finite: no inference from model prefixes, aliases, Azure deployments or future models.
-// Verified against OpenAI's Responses web-search guide, 2026-10-04. Add snapshots only after verification.
-const MODELS = new Set(["gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5.4", "gpt-5.5", "gpt-6-astra"]);
+// Verified against the Responses web-search guide and each model's Tools section, 2026-10-05.
+// https://developers.openai.com/api/docs/models/<model-id> — add snapshots only after verification.
+export const NATIVE_SEARCH_MODELS = [
+  "gpt-4.1", "gpt-4.1-mini", "gpt-5", "gpt-5.4", "gpt-5.5",
+  "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
+  "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra",
+] as const;
+const MODELS = new Set<string>(NATIVE_SEARCH_MODELS);
 export function nativeSearchCapability(app: Pick<AiApp, "provider" | "credentialMode" | "supportsTools" | "model">, baseUrl: string | null | undefined): string | null {
   if (app.provider !== "openai" || app.credentialMode !== "org") return "Requires an official OpenAI API connection. Azure, compatible endpoints, ChatGPT plans and Hermes are not supported.";
   if (baseUrl && baseUrl !== "https://api.openai.com/v1" && baseUrl !== "https://api.openai.com/v1/") return "Native search is unavailable on custom endpoints.";

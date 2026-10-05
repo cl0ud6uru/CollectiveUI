@@ -363,7 +363,10 @@ export function AssistantMessage({
           })}
           {streaming && !text && !message.parts.some(isToolUIPart) && !bubbles && <span className="streaming-dot" />}
         </div>
-        {searchCalls > 0 && <p className="mt-2 text-xs text-muted">OpenAI search: {searchCalls} observed call{searchCalls === 1 ? "" : "s"} · ${(searchCalls * 0.01).toFixed(2)} estimated tool fees, plus model/search-content tokens. Final billing may differ.</p>}
+        {searchCalls > 0 && <details className="mt-2 text-xs text-muted" data-testid="search-usage">
+          <summary className="w-fit cursor-pointer">Search usage</summary>
+          <p className="mt-1">OpenAI search: {searchCalls} observed call{searchCalls === 1 ? "" : "s"} · ${(searchCalls * 0.01).toFixed(2)} estimated tool fees, plus model/search-content tokens. Final billing may differ.</p>
+        </details>}
         {!streaming && !message.parts.some((p) => isToolUIPart(p) && p.state === "approval-requested") && (
           <div
             className={cn(

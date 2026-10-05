@@ -10,7 +10,9 @@ globalThis.fetch = async (input, init) => {
   if (!body.stream) return Response.json({ id: `resp_${id}`, created_at: 1, model: "gpt-4.1", output: [{ type: "message", id: `msg_${id}`, role: "assistant", content: [{ type: "output_text", text: "Fixture weather", annotations: [] }] }], usage: { input_tokens: 3, output_tokens: 1 } });
   const search = body.tools?.some((t: { type: string }) => t.type === "web_search");
   if (search && (!Number.isInteger(body.max_tool_calls) || body.max_tool_calls < 1)) throw new Error("Fixture requires a hosted tool-call cap");
-  const response = searchResponse({ calls: search ? 1 : 0, id });
+  if (body.tool_choice === "required") throw new Error("Auto must let the model decide whether to search");
+  const latest = JSON.stringify(body.input?.at(-1)).toLowerCase();
+  const response = searchResponse({ calls: search && !latest.includes("no search needed") ? 1 : 0, id, model: body.model, failure: latest.includes("fail search") });
   const chunks = (await response.text()).split("\n\n").filter(Boolean);
   const slow = JSON.stringify(body.input).toLowerCase().includes("slow");
   let index = 0;
