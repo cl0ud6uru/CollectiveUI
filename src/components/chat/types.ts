@@ -7,6 +7,8 @@ export type ConversationSummary = {
   appId: string | null;
   source: "chat" | "routine" | "delegation";
   isGroup?: boolean;
+  /** group chats: member bot ids, lead first */
+  memberBotIds?: string[];
   isBotHome?: boolean;
   archived?: boolean;
   updatedAt: string; // ISO

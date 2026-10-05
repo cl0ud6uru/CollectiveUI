@@ -2,7 +2,7 @@ import "server-only";
 import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { TargetOption } from "@/components/chat/types";
 import { db } from "@/db";
-import { aiApps, conversations, folders, inboxItems, userBotPrefs } from "@/db/schema";
+import { aiApps, conversationBots, conversations, folders, inboxItems, userBotPrefs } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { listAccessibleBots, listAccessibleModels } from "@/lib/authz";
 import { orderBots } from "@/lib/bots/navigation";
@@ -49,6 +49,15 @@ export async function loadShell(p: Principal) {
   const homes = new Map<string, { botId: string; conversationId: string; updatedAt: Date }>();
   for (const c of convs) if (c.isBotHome && c.botId && !homes.has(c.botId)) homes.set(c.botId, { botId: c.botId, conversationId: c.id, updatedAt: c.updatedAt });
   const roster = await loadBotRoster(p.user.id, [...homes.values()]);
+  const groupIds = convs.flatMap((c) => c.isGroup ? [c.id] : []);
+  const members = new Map<string, string[]>();
+  if (groupIds.length) {
+    const rows = await db.select({ conversationId: conversationBots.conversationId, botId: conversationBots.botId }).from(conversationBots)
+      .where(inArray(conversationBots.conversationId, groupIds)).orderBy(conversationBots.position);
+    // Sidebar avatars only: bots this person can no longer use are left out.
+    const accessible = new Set(bots.map((b) => b.id));
+    for (const r of rows) if (accessible.has(r.botId)) members.set(r.conversationId, [...(members.get(r.conversationId) ?? []), r.botId]);
+  }
   const planStatus = await personalPlanStatus(p, apps);
   const botAppIds = bots.flatMap((b) => b.appId ? [b.appId] : []);
   const hermesApps = new Set(botAppIds.length ? (await db.select({ id: aiApps.id }).from(aiApps).where(and(inArray(aiApps.id, botAppIds), eq(aiApps.provider, "hermes")))).map((a) => a.id) : []);
@@ -86,7 +95,7 @@ export async function loadShell(p: Principal) {
     botRows: bots,
     user: { id: p.user.id, name: p.user.name, email: p.user.email, isAdmin: p.isAdmin, canCreateBots: p.canCreateBots },
     branding,
-    conversations: mergeRecentTasks(convs.map((c) => ({ ...c, updatedAt: c.updatedAt.toISOString() })), tasks),
+    conversations: mergeRecentTasks(convs.map((c) => ({ ...c, updatedAt: c.updatedAt.toISOString(), ...(c.isGroup ? { memberBotIds: members.get(c.id) ?? [] } : {}) })), tasks),
     folders: folderRows,
     apps: appOptions,
     bots: botOptions,
