@@ -21,12 +21,25 @@ vi.mock('@/db', () => ({ db: {
     update: () => ({ set: (values: Record<string, unknown>) => ({ where: async () => { f.status = String(values.status); } }) }),
   }),
 } }));
-import { nativeControl, nativeSnapshot, submitNativePrompt } from '@/lib/remote-hermes/sessions';
+import { remoteAccess } from '@/lib/remote-hermes/store';
+import { nativeHistory, nativeControl, nativeSnapshot, submitNativePrompt } from '@/lib/remote-hermes/sessions';
 const receipt = '9fd64d53-084f-4898-96e0-59ea8fdc623f';
 describe('remote native session admission and continuity', () => {
   beforeEach(() => {
     vi.clearAllMocks(); f.enabled = true; f.owner = 'owner'; f.status = 'idle'; f.receipt = null; f.updates = []; f.admissions = 0; f.disableAtLock = false;
     f.refresh.mockResolvedValue({ running: false }); f.call.mockResolvedValue({ status: 'streaming' }); f.answer.mockResolvedValue({ answered: true });
+  });
+  it('authorizes history before contacting Hermes and permits only active continuation after disablement', async () => {
+    const history = vi.fn().mockResolvedValue({ messages: [], nextOffset: 200, hasMore: false });
+    vi.mocked(remoteAccess).mockResolvedValue({ client: { history } } as unknown as Awaited<ReturnType<typeof remoteAccess>>);
+    await expect(nativeHistory('intruder', 'connection', 'session', 0)).rejects.toThrow('not found');
+    expect(remoteAccess).not.toHaveBeenCalled();
+    f.enabled = false;
+    await expect(nativeHistory('owner', 'connection', 'session', 0)).rejects.toThrow('disabled');
+    expect(remoteAccess).not.toHaveBeenCalled();
+    f.status = 'running';
+    await nativeHistory('owner', 'connection', 'session', 200);
+    expect(history).toHaveBeenCalledWith('default', 'stored', 200);
   });
   it('rejects another owner before connecting or answering a native request', async () => {
     await expect(nativeControl('intruder', 'connection', 'session', 'answer', { requestId: 'ask', answer: { value: 'secret' } })).rejects.toThrow('not found');

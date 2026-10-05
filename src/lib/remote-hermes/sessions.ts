@@ -13,6 +13,7 @@ import { record, type RpcRecord } from './socket';
 
 export const profileName = z.string().min(1).max(200).regex(/^[a-zA-Z0-9_.-]+$/);
 export type NativeUpload = { name: string; type: string; bytes: Buffer };
+const pageOffset = z.number().int().min(0).max(100000);
 const active = (status: string) => status !== 'idle';
 export async function ownedNativeSession(ownerId: string, connectionId: string, sessionId: string) {
   const [row] = await db.select({ session: remoteHermesSessions }).from(remoteHermesSessions)
@@ -25,22 +26,24 @@ async function admission(tx: Tx) {
   await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
   assertRemoteHermesAdmission(await getSetting('remoteHermes', tx));
 }
-export async function browseNativeSessions(ownerId: string, connectionId: string, rawProfile: string) {
+export async function browseNativeSessions(ownerId: string, connectionId: string, rawProfile: string, offset = 0) {
+  pageOffset.parse(offset);
   const profile = profileName.parse(rawProfile);
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(p => p.name === profile)) throw new HttpError(404, 'Hermes profile not found.');
-  const sessions = await access.client.sessions(profile);
+  const sessions = await access.client.sessions(profile, offset);
   const linked = await db.select({ id: remoteHermesSessions.id, storedId: remoteHermesSessions.storedId, title: remoteHermesSessions.title, profile: remoteHermesSessions.profile, status: remoteHermesSessions.status }).from(remoteHermesSessions)
     .where(and(eq(remoteHermesSessions.connectionId, connectionId), eq(remoteHermesSessions.profile, profile))).orderBy(desc(remoteHermesSessions.updatedAt));
-  return { sessions, linked };
+  return { sessions, linked, nextOffset: offset + sessions.length, hasMore: sessions.length === 100 };
 }
-export async function openNativeSession(ownerId: string, connectionId: string, rawProfile: string, storedId?: string) {
+export async function openNativeSession(ownerId: string, connectionId: string, rawProfile: string, storedId?: string, offset = 0) {
+  pageOffset.parse(offset);
   const profile = profileName.parse(rawProfile);
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(p => p.name === profile)) throw new HttpError(404, 'Hermes profile not found.');
   let title = 'New Hermes chat';
   if (storedId) {
-    const found = (await access.client.sessions(profile)).find(s => s.id === storedId);
+    const found = (await access.client.sessions(profile, offset)).find(s => s.id === storedId);
     if (!found) throw new HttpError(404, 'Choose a conversation listed by this Hermes profile.');
     title = found.title || title;
   } else {
@@ -66,6 +69,14 @@ export async function nativeSnapshot(ownerId: string, connectionId: string, sess
     throw new HttpError(403, 'Personal remote Hermes is disabled. Saved conversations are retained.');
   }
   return { ...await hub.view(row), admissionAllowed: policy.enabled };
+}
+/** Read history only for a persisted, owned binding; native IDs are never accepted from the browser. */
+export async function nativeHistory(ownerId: string, connectionId: string, sessionId: string, offset: number) {
+  pageOffset.parse(offset);
+  const row = await ownedNativeSession(ownerId, connectionId, sessionId);
+  if (!(await getSetting('remoteHermes')).enabled && !active(row.status)) throw new HttpError(403, 'Personal remote Hermes is disabled. Saved conversations are retained.');
+  const access = await remoteAccess(ownerId, connectionId, 'continuation');
+  return access.client.history(row.profile, row.storedId, offset);
 }
 /** Admission receipts are written before any upload or prompt RPC, so retrying an HTTP request never replays work. */
 export async function submitNativePrompt(ownerId: string, connectionId: string, sessionId: string, requestId: string, text: string, uploads: NativeUpload[] = []) {
