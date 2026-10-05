@@ -10,10 +10,12 @@ published catalog options through the same manifest/raster/cell validation as im
 | The Queen | `builtin-the-queen-v2` | [The Queen](the-queen/README.md) |
 
 Select them in Pet avatar settings, or assign a bot default through Admin → Pets.
-Installation adds missing entries only. Existing artwork, revisions, unpublication,
-bot defaults, personal selections, Off, and private imports are preserved. Concurrent
-installers use a conflict-safe insert. Every missing bundle is validated before that
-single insert. Built-ins can be unpublished, but not deleted through the app.
+Installation adds missing entries and upgrades only the known original standing
+Hermes Assimilated raster to its close-framing revision. Other artwork and revisions,
+unpublication, bot defaults, personal selections, Off, and private imports are preserved.
+Concurrent installers use conflict-safe inserts and an atomic revision/hash guard for
+the artwork upgrade. Every needed bundle is validated before the transaction writes.
+Built-ins can be unpublished, but not deleted through the app.
 No private repository history or application code is imported with these assets.
 The Queen's coordinator feature is separate; this bundle does not change it.
 
@@ -30,7 +32,12 @@ Gaze rows complete the v2 format but do not add cursor tracking to the renderer.
 - Run migrations on a fresh local `collective_bundled_pets_test` database, then
   `BUNDLED_PETS_TEST=1 npm run test:integration -- bundled-pets` with its
   `DATABASE_URL`: clean migration installation, concurrent/idempotent installation,
-  partial catalogs, unpublication and saved-choice preservation.
+  partial catalogs, unpublication and saved-choice preservation. The framing-upgrade
+  tests read the former public WebP with `git show` from commit
+  `a235f001722aa6923799fd9386c10f351c38a86b`; this commit must exist in the checkout.
+  They also cover concurrent upgrades, operator replacements and preserved public
+  sign-in-page revision pins. An admin must reconfirm that public selection after
+  its artwork revision changes.
 - `BUNDLED_PETS_BROWSER=1 npx playwright test -c tests/bundled-pets.playwright.config.ts`
   with the same disposable database and local production app: actual catalog,
   preview, import, selections, motion and browser-rendering checks.
