@@ -204,6 +204,20 @@
       "when": 1791218747232,
       "tag": "0028_pet_catalog_sprite_hd",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791220000000,
+      "tag": "0029_remote_hermes_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791220000001,
+      "tag": "0030_remote_hermes_sessions",
+      "breakpoints": true
     }
   ]
 }
