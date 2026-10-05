@@ -110,6 +110,29 @@ jobs:
             build/DD/Build/Products/Debug-iphonesimulator/CollectiveUI.app \
             "$RUNNER_TEMP/ios-screenshots"
 
+      - name: Print previews (temporary)
+        if: always()
+        shell: bash
+        run: |
+          OUT="$RUNNER_TEMP/ios-screenshots"
+          PREV="$RUNNER_TEMP/previews"
+          mkdir -p "$PREV"
+          if [ -f "$OUT/demo-streaming.mp4" ] && command -v ffmpeg >/dev/null; then
+            for t in 2 4 6 8 10 13; do
+              ffmpeg -loglevel error -ss "$t" -i "$OUT/demo-streaming.mp4" -frames:v 1 "$PREV/video-t$(printf %02d $t).png" || true
+            done
+          fi
+          for f in "$OUT"/*.png "$PREV"/*.png; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .png)
+            sips -Z 1100 -s format jpeg -s formatOptions 72 "$f" --out "$PREV/$name.jpg" >/dev/null
+            echo "B64BEGIN $name"
+            base64 -i "$PREV/$name.jpg" | tr -d '\n'
+            echo
+            echo "B64END $name"
+          done
+          ls -la "$OUT"
+
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
