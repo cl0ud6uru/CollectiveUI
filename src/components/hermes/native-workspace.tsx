@@ -6,6 +6,7 @@ import { Input, Select, Textarea } from '@/components/ui/input';
 import { Markdown } from '@/components/chat/markdown';
 import type { RemoteHermesProfile } from '@/lib/remote-hermes/client';
 import type { NativePrompt, NativeSessionView } from '@/lib/remote-hermes/view';
+import { NativeAdministration } from './native-administration';
 
 type Saved = { id: string; storedId: string; title: string; profile: string; status: string };
 type Snapshot = NativeSessionView & { admissionAllowed: boolean };
@@ -115,6 +116,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
           <Button size="sm" variant="outline" disabled={busy || !enabled} onClick={() => void inspect('context')}>Context</Button>
           {(snapshot.running || snapshot.uncertain) && <Button size="sm" variant="danger" disabled={busy} onClick={() => void action({ operation: 'stop' })}>Stop</Button>}
         </header>
+        <NativeAdministration key={sessionId} connectionId={connectionId} sessionId={sessionId} allowed={enabled} running={snapshot.running || snapshot.uncertain} />
         {Object.keys(snapshot.usage).length > 0 && <p className="text-xs text-muted">{Object.entries(snapshot.usage).map(([k, v]) => `${k.replaceAll('_', ' ')}: ${v}`).join(' · ')}</p>}
         {snapshot.uncertain && <p role="status" className="text-sm">Hermes has not confirmed the last operation. This chat is being checked automatically. Start a new chat if its outcome cannot be recovered; sending again could repeat the work.</p>}
         <div aria-label="Hermes messages" className="space-y-5">

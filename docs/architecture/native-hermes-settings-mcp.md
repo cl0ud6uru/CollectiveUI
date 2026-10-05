@@ -1,0 +1,15 @@
+# Native Hermes settings and MCP administration
+
+This branch extends the personal remote workspace in PR #34. Open a conversation and select **Native settings & MCP**. Settings distinguish the current chat from profile defaults. Changing profile defaults requires explicit confirmation because other clients using the same remote profile can be affected. The panel supports reasoning effort and speed tiers; Hermes remains authoritative about which tiers the selected model accepts.
+
+The MCP panel displays server name, transport, runtime state, enabled state, tool counts and credential key names. It can test an existing server, install an uninstalled preset from the native catalog, and update an existing credential key on a configured server. It does not expose raw configuration, endpoints, commands, arguments, environment values, headers, native error text or OAuth token values. Connection test results provide tool names/counts and an actionable OAuth-required state rather than raw errors.
+
+Every request requires the signed-in owner of the saved connection/session. The profile and runtime session identity come from the server's owned binding, never from request fields. The enabled switch is rechecked under its row lock before native dispatch. Changes and probes require the selected conversation to be idle. Profile administration is a remote profile operation, not a new portal tenant boundary: users must understand whether their Hermes profile is shared with other clients.
+
+Mutations use durable receipts before dispatch. A repeated receipt returns an already-submitted response rather than replaying a possibly completed operation. Protected credentials are sent only to the native setter and stored by Hermes; the portal retains only a digest receipt. The input is cleared on submit and panel close. Native RPC errors remain generic and are not logged with request payloads. A lost response must be checked by refreshing the panel rather than automatically resending.
+
+Methods are fixed and request schemas are narrow. Optional methods reporting `-32601` make the corresponding inspection unavailable; there is no generic RPC proxy or slash-command fallback. The native socket still requires readiness and server-request/approval capability negotiation. Contracts were checked against Hermes `79af3f6cea8067284a7ea5725078578b3f790adb`; older versions may not offer these methods. No live Hermes server has been used for this branch's verification.
+
+Validation: `npx vitest run --project unit tests/unit/remote-hermes-administration.test.ts`, `node tests/browser/remote-hermes-administration.mjs`, targeted ESLint, `next typegen`, and TypeScript. The browser fixture uses the real component with synthetic responses and checks settings, MCP inventory/probes, preset installation and protected-field clearing.
+
+Remaining: model/provider selection and credential pools; MCP enable/disable, reload, OAuth, removal and custom server creation; managed/local administration parity. These need their own capability, active-work and confirmation contracts. No database migration beyond PR #34 is required.
