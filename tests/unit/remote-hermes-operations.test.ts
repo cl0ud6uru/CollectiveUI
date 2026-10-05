@@ -4,7 +4,7 @@ vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: f.access }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardFetch: () => f.fetch }));
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call } }) }));
 vi.mock('@/lib/remote-hermes/sessions', async () => { const { z } = await import('zod'); return { profileName: z.string().regex(/^[a-zA-Z0-9_.-]+$/) }; });
-import { directoryProjection, inspectNative, pluginProjection, projectProjection, scheduleProjection, systemProjection } from '@/lib/remote-hermes/operations';
+import { directoryProjection, inspectNative, pluginProjection, projectProjection, scheduleProjection, systemProjection, validDirectory } from '@/lib/remote-hermes/operations';
 import { HttpError } from '@/lib/authz';
 
 describe('native workspace inspection', () => {
@@ -32,12 +32,15 @@ describe('native workspace inspection', () => {
   });
   it('does not list hidden or sensitive entries, fabricated paths or traversal', () => {
     expect(directoryProjection({ entries: [{ name: 'README.md', path: '/workspace/README.md' }, { name: 'src', path: '/workspace/src', isDirectory: true }, { name: '.env', path: '/workspace/.env' }, { name: 'credentials', path: '/workspace/credentials', isDirectory: true }, { name: 'other', path: '/etc/other' }, { name: '..', path: '/workspace/..' }] }, '/workspace')).toEqual([{ name: 'README.md', path: '/workspace/README.md', directory: false }, { name: 'src', path: '/workspace/src', directory: true }]);
+    for (const sensitive of ['secret.txt', 'secrets.json', 'credentials.yaml', 'id_rsa.pub', 'vault.db', 'auth.yaml', '.config/visible']) expect(validDirectory(`/workspace/${sensitive}`)).toBe(false);
   });
   it('only descends into server-listed directories and excludes symlink leaves', async () => {
     f.fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes('default-cwd') ? { cwd: '/workspace' } : { entries: [{ name: 'link', path: '/workspace/link', isDirectory: false }] })));
     await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace/link/secret' })).rejects.toThrow('listed');
     await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/etc' })).rejects.toThrow('inside');
     await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace/../etc' })).rejects.toThrow('listed');
+    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace//src' })).rejects.toThrow('listed');
+    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace\\src' })).rejects.toThrow('listed');
   });
   it('lists descendants using encoded paths, keeps credentials server-side and never mutates native state', async () => {
     f.fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes('default-cwd') ? { cwd: '/workspace' } : new URL(url).searchParams.get('path') === '/workspace' ? { entries: [{ name: 'src', path: '/workspace/src', isDirectory: true }] } : { entries: [] })));

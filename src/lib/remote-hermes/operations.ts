@@ -28,7 +28,7 @@ export function systemProjection(value: unknown) {
 }
 // Hidden paths and common credential/config stores never enter directory projections.
 export function validDirectory(value: string) {
-  return value.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(value) && !value.split('/').some(s => s === '..' || s.startsWith('.') || /^(?:credentials?|secrets?|vault|config\.ya?ml|auth\.json|id_(?:rsa|ed25519))$/i.test(s));
+  return value.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(value) && !value.split('/').some(s => s === '..' || s.startsWith('.') || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|vault(?:\..*)?|config\.ya?ml|auth\.(?:json|ya?ml)|id_(?:rsa|ed25519)(?:\..*)?)$/i.test(s));
 }
 export function directoryProjection(value: unknown, directory: string) {
   const p = record(value);
