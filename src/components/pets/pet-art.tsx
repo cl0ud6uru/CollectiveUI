@@ -26,6 +26,7 @@ function Seedling({ ember }: { ember: boolean }) {
 
 export function PetArt({ pet, state, size = 64, still = false, compact = false, fallback }: { pet: PetView; state: PetArtState; botId?: string; size?: number; still?: boolean; compact?: boolean; fallback?: React.ReactNode }) {
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const [failedHd, setFailedHd] = useState<string | null>(null);
   const retried = useRef(new Set<string>());
   useEffect(() => {
     if (!failedSrc || retried.current.has(failedSrc)) return;
@@ -34,15 +35,22 @@ export function PetArt({ pet, state, size = 64, still = false, compact = false, 
   }, [failedSrc]);
   const imported = (pet.appearance === "custom" || pet.appearance === "catalog") && pet.custom;
   const src = pet.spriteUrl;
+  // The browser picks the 2× sheet only when the atlas is drawn wider than 1536 device pixels (large avatars on dense
+  // screens). If it fails, the v2 sheet alone is retried before falling back to the original icon.
+  const hdSrc = pet.spriteHdUrl && pet.custom?.spriteVersionNumber === 2 && failedHd !== pet.spriteHdUrl ? pet.spriteHdUrl : null;
   const animation = state === "greeting" ? PET_GREETING : PET_FRAMES[state];
   const height = size * 208 / 192;
   const style = { width: size, height, "--pet-travel": `${-size * animation.frames}px`, "--pet-frames": animation.frames, "--pet-duration": `${animation.seconds}s` } as CSSProperties;
   if (imported && (!src || failedSrc === src) && fallback) return fallback;
   return <span data-pet-art data-state={state} data-compact={compact} data-still={still || pet.motion === "still" || state === "unavailable"} className="pet-art" style={style} aria-hidden="true">
     {imported && src && failedSrc !== src ? (
-      // A bounded, authenticated PNG atlas, rendered at its cell aspect ratio.
+      // A bounded, authenticated PNG atlas (or its WebP HD rendition), rendered at its cell aspect ratio.
       // eslint-disable-next-line @next/next/no-img-element
-      <img key={`${src}:${state}`} className="pet-atlas" src={src} alt="" draggable={false} onError={() => setFailedSrc(src)} style={{ width: size * 8, height: height * (pet.custom?.spriteVersionNumber === 2 ? 11 : 9), top: -height * animation.row }} />
+      <img key={`${src}:${state}`} className="pet-atlas" src={src} srcSet={hdSrc ? `${src} 1536w, ${hdSrc} 3072w` : undefined} sizes={hdSrc ? `${size * 8}px` : undefined}
+        alt="" draggable={false} onError={(event) => {
+          if (hdSrc && event.currentTarget.currentSrc === new URL(hdSrc, location.href).href) setFailedHd(hdSrc);
+          else setFailedSrc(src);
+        }} style={{ width: size * 8, height: height * (pet.custom?.spriteVersionNumber === 2 ? 11 : 9), top: -height * animation.row }} />
     ) : <Seedling ember={pet.appearance === "ember"} />}
   </span>;
 }

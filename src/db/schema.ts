@@ -619,11 +619,14 @@ export const petCatalog = pgTable("pet_catalog", {
   createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
   manifest: jsonb("manifest").$type<PetManifest>().notNull(),
   sprite: petBytes("sprite").notNull(),
+  /** Optional 2× WebP rendition of `sprite`, same layout and revision. Never imported or exported with a v2 package. */
+  spriteHd: petBytes("sprite_hd"),
   revision: text("revision").notNull().$defaultFn(newId),
   status: text("status").$type<CatalogPet["status"]>().notNull().default("draft"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [check("pet_catalog_sprite_size", sql`octet_length(${t.sprite}) between 1 and 4194304`),
+  check("pet_catalog_sprite_hd_size", sql`${t.spriteHd} is null or octet_length(${t.spriteHd}) between 1 and 12582912`),
   check("pet_catalog_status", sql`${t.status} in ('draft', 'published', 'unpublished')`)]);
 
 export const botPetDefaults = pgTable("bot_pet_defaults", {

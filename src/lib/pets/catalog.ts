@@ -8,7 +8,8 @@ import { validateV2Cells } from "./import";
 import { isBundledPet } from "./policy";
 import type { CatalogPet, PetManifest } from "./shared";
 
-const columns = { id: petCatalog.id, manifest: petCatalog.manifest, revision: petCatalog.revision, status: petCatalog.status };
+const columns = { id: petCatalog.id, manifest: petCatalog.manifest, revision: petCatalog.revision, status: petCatalog.status,
+  hd: sql<boolean>`${petCatalog.spriteHd} is not null` };
 function requireSharingConfirmation(rights: unknown): asserts rights is "confirmed" {
   if (rights !== "confirmed") throw new HttpError(400, "Confirm you have permission to share this artwork with all signed-in users.");
 }
@@ -94,8 +95,9 @@ export async function deleteCatalogPet(p: Principal, id: string) {
     return { id, displayName: row.manifest.displayName, defaultsReset: defaults.length, selectionsReset: selections.length };
   });
 }
-export async function readCatalogSprite(p: Principal, id: string, revision: string | null) {
-  const [row] = await db.select({ sprite: petCatalog.sprite }).from(petCatalog).where(and(eq(petCatalog.id, id), p.isAdmin ? undefined : eq(petCatalog.status, "published"), revision ? eq(petCatalog.revision, revision) : undefined));
-  if (!row) throw new HttpError(404, "Catalog pet not found.");
+/** The HD rendition is optional; asking for one that does not exist is a 404, like any other missing sprite. */
+export async function readCatalogSprite(p: Principal, id: string, revision: string | null, hd = false) {
+  const [row] = await db.select({ sprite: hd ? petCatalog.spriteHd : petCatalog.sprite }).from(petCatalog).where(and(eq(petCatalog.id, id), p.isAdmin ? undefined : eq(petCatalog.status, "published"), revision ? eq(petCatalog.revision, revision) : undefined));
+  if (!row?.sprite) throw new HttpError(404, "Catalog pet not found.");
   return row.sprite;
 }
