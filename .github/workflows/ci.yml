@@ -28,3 +28,28 @@ jobs:
       - run: npm run lint
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.
       - run: npm test
+
+  native-hermes:
+    name: Pinned native Hermes settings and synthetic OAuth
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: f97608f178d1ffeca59860195ab7da295f7c8e5f
+          path: .native-hermes-source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/fixtures/hermes-native-requirements.txt
+      - run: python -m pip install -r tests/fixtures/hermes-native-requirements.txt
+      - name: Test native transactions and mocked authentication (no account or inference)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          python tests/fixtures/docker-hermes-settings.py
+          python tests/fixtures/docker-hermes-codex.py

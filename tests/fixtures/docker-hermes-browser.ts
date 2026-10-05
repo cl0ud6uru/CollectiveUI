@@ -47,7 +47,7 @@ class FixtureDriver implements RuntimeDriver {
   async settings(owner: string, name: string, identity: string, update?: ProfileUpdate) {
     if (!(await this.profiles(owner)).some(p => p.name === name && p.identity === identity)) throw new Error('Changed identity');
     const key = `${owner}:${name}`;
-    const saved = this.saved.get(key) ?? { revision: 'a'.repeat(64), provider: null, model: '', reasoningEffort: '', maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': false } };
+    const saved = this.saved.get(key) ?? { revision: 'a'.repeat(64), provider: null, model: 'anthropic/claude-opus-4.6', reasoningEffort: '', maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': false } };
     if (!update) return { ...saved, codexModels: ['fixture-codex-model', 'fixture-pending-model'] };
     if (update.revision !== saved.revision) throw new Error('Stale fixture update');
     const next: ProfileSettings = { ...saved, provider: update.provider, model: update.model, reasoningEffort: update.reasoningEffort, maxTurns: update.maxTurns,

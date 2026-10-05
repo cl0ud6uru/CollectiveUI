@@ -259,24 +259,99 @@ def codex_connected(cfg, auth):
                 (cfg.get('providers') or {}).get(CODEX, {}).get('enabled') is not False)
 
 
-def codex_simple_route(cfg, env, auth):
+def stock_route(provider):
     from hermes_cli.auth import DEFAULT_CODEX_BASE_URL
-    model = cfg.get('model') or {}
-    model = model if isinstance(model, dict) else {}
-    entry = (cfg.get('providers') or {}).get(CODEX, {})
+    if provider == CODEX:
+        return DEFAULT_CODEX_BASE_URL, 'codex_responses'
+    modes = {'openai-api': 'codex_responses', 'anthropic': 'anthropic_messages', 'openrouter': 'chat_completions'}
+    return PROVIDERS[provider][1], modes[provider]
+
+
+def stock_endpoint(value, provider):
+    # Full endpoint identity, never hostname-only ownership: custom paths/query/userinfo stay protected.
+    from hermes_cli.route_identity import normalize_route_base_url
+    return isinstance(value, str) and normalize_route_base_url(value) == normalize_route_base_url(stock_route(provider)[0])
+
+
+def provider_auth_blocker(cfg, env, auth, provider):
+    providers, pools, grants = cfg.get('providers') or {}, auth.get('credential_pool') or {}, auth.get('providers') or {}
+    custom = cfg.get('custom_providers') or []
+    if not all(isinstance(v, dict) for v in (providers, pools, grants)) or not isinstance(custom, list):
+        return 'provider_configuration'
+    entry = providers.get(provider, {})
     if not isinstance(entry, dict) or set(entry) - {'enabled'}:
-        return False
-    if any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode', 'openai_runtime')):
-        return False
-    if env.get('HERMES_CODEX_BASE_URL', DEFAULT_CODEX_BASE_URL).rstrip('/') != DEFAULT_CODEX_BASE_URL.rstrip('/'):
-        return False
-    if model.get('base_url') and model['base_url'].rstrip('/') != DEFAULT_CODEX_BASE_URL.rstrip('/'):
-        return False
-    if any(isinstance(p, dict) and p.get('name') == CODEX for p in cfg.get('custom_providers', [])):
-        return False
-    entries = (auth.get('credential_pool') or {}).get(CODEX, [])
-    return isinstance(entries, list) and all(isinstance(e, dict) and e.get('source') == 'device_code' and
-        (not e.get('base_url') or e['base_url'].rstrip('/') == DEFAULT_CODEX_BASE_URL.rstrip('/')) for e in entries)
+        return 'provider_configuration'
+    if any(not isinstance(p, dict) or p.get('name') == provider for p in custom):
+        return 'custom_provider'
+    if provider == CODEX:
+        # Native Codex treats unset, blank and whitespace-only overrides as its default.
+        endpoint = env.get('HERMES_CODEX_BASE_URL', '').strip()
+        source = 'device_code'
+    else:
+        key, _, url_key = PROVIDERS[provider]
+        endpoint = env.get(url_key, '')
+        source = 'env:' + key
+        if grants.get(provider):
+            return 'provider_authentication'
+        if provider == 'anthropic' and any(env.get(k) for k in ('ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN')):
+            return 'provider_authentication'
+        if provider == 'openrouter' and env.get('CUSTOM_BASE_URL') and not stock_endpoint(env['CUSTOM_BASE_URL'], provider):
+            return 'custom_endpoint'
+    if endpoint and not stock_endpoint(endpoint, provider):
+        return 'custom_endpoint'
+    grant = grants.get(provider, {})
+    if not isinstance(grant, dict) or grant.get('base_url') and not stock_endpoint(grant['base_url'], provider):
+        return 'provider_authentication'
+    entries = pools.get(provider, [])
+    if not isinstance(entries, list) or not all(isinstance(e, dict) and e.get('source') == source and
+            (not e.get('base_url') or stock_endpoint(e['base_url'], provider)) for e in entries):
+        return 'credential_pool'
+    return None
+
+
+def route_blocker(cfg, env, auth, provider):
+    """Prove stock saved routing before switching; never convert ambiguous/custom native state."""
+    model = cfg.get('model', {})
+    model = model if isinstance(model, dict) else {}
+    # Native save_config normalizes legacy aliases, which could resurrect an unchecked URL.
+    if any(cfg.get(k) for k in ('base_url', 'api_base')) or model.get('api_base'):
+        return 'custom_endpoint'
+    if cfg.get('provider'):
+        return 'provider_configuration'
+    if any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env')):
+        return 'model_authentication'
+    runtime = model.get('openai_runtime')
+    if runtime is not None and (not isinstance(runtime, str) or runtime.strip().lower() not in ('', 'auto')):
+        return 'codex_runtime'
+    saved_provider = model.get('provider')
+    if saved_provider not in SUPPORTED_PROVIDERS and saved_provider not in (None, '', 'auto'):
+        return 'provider_configuration'
+    route_provider = saved_provider
+    # The actual pinned image seeds provider:auto and the stock OpenRouter URL.
+    if saved_provider in (None, '', 'auto') and stock_endpoint(model.get('base_url'), 'openrouter'):
+        route_provider = 'openrouter'
+    if model.get('base_url') or model.get('api_mode'):
+        if route_provider not in SUPPORTED_PROVIDERS:
+            return 'custom_endpoint' if model.get('base_url') else 'model_authentication'
+        if model.get('base_url') and not stock_endpoint(model['base_url'], route_provider):
+            return 'custom_endpoint'
+        if model.get('api_mode') and model['api_mode'] != stock_route(route_provider)[1]:
+            return 'model_authentication'
+    # Check both sides, including pool-specific endpoints; source credentials stay untouched.
+    target_blocker = provider_auth_blocker(cfg, env, auth, provider)
+    if target_blocker:
+        return target_blocker
+    if route_provider in SUPPORTED_PROVIDERS and route_provider != provider:
+        return provider_auth_blocker(cfg, env, auth, route_provider)
+    return None
+
+
+def simple_route(cfg, env, auth, provider):
+    return route_blocker(cfg, env, auth, provider) is None
+
+
+def codex_simple_route(cfg, env, auth):
+    return simple_route(cfg, env, auth, CODEX)
 
 
 def commit_native_settings(fd, original, updated):
@@ -502,6 +577,8 @@ def settings_view(files):
             'reasoningEffort': effort if effort in EFFORTS else '', 'maxTurns': turns if supported else None,
             'advancedSupported': supported,
             'editableProviders': {p: simple_route(cfg, env, auth, p) for p in SUPPORTED_PROVIDERS},
+            # Fixed reason codes only: never export URLs, keys, credential sources or auth payloads.
+            'providerBlockers': {p: route_blocker(cfg, env, auth, p) for p in SUPPORTED_PROVIDERS},
             'credentials': {**{p: bool(env.get(v[0])) for p, v in PROVIDERS.items()}, CODEX: codex_connected(cfg, auth)},
             'codexModels': codex_models()}
 
@@ -525,30 +602,6 @@ def validate_settings_input(data):
             raise ValueError('OAuth is not an API key')
     elif set(credential) != {'action'}:
         raise ValueError('invalid credential')
-
-
-def simple_route(cfg, env, auth, provider):
-    """Imported/custom/OAuth/multi-key routes require native maintenance, never silent conversion."""
-    if provider == CODEX:
-        return codex_simple_route(cfg, env, auth)
-    key, url, url_key = PROVIDERS[provider]
-    model = cfg.get('model', {})
-    model = model if isinstance(model, dict) else {}
-    entry = (cfg.get('providers') or {}).get(provider, {})
-    if not isinstance(entry, dict) or set(entry) - {'enabled'}:
-        return False
-    if env.get(url_key, url).rstrip('/') != url or any(model.get(k) for k in ('api_key', 'api', 'key_env', 'api_key_env', 'api_mode')):
-        return False
-    if model.get('base_url') and model.get('base_url').rstrip('/') != url:
-        return False
-    if provider == 'anthropic' and any(env.get(k) for k in ('ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN')):
-        return False
-    if any(isinstance(p, dict) and p.get('name') == provider for p in cfg.get('custom_providers', [])):
-        return False
-    entries = (auth.get('credential_pool') or {}).get(provider, [])
-    if not isinstance(entries, list) or any(not isinstance(e, dict) or e.get('source') != 'env:' + key for e in entries):
-        return False
-    return not (auth.get('providers') or {}).get(provider)
 
 
 def stage_settings(files, data, fd):
@@ -590,7 +643,9 @@ def stage_settings(files, data, fd):
             cfg = read_user_config_raw(Path(stage) / 'config.yaml')
             model = cfg.get('model')
             model = dict(model) if isinstance(model, dict) else {}
-            clear_model_endpoint_credentials(model, clear_base_url=True)
+            if model.get('provider') != provider:
+                # Only the two proven-stock route fields belong to the previous provider.
+                clear_model_endpoint_credentials(model, clear_api_key=False, clear_base_url=True)
             model.update(provider=provider, default=data['model'])
             cfg['model'] = model
             agent = cfg.setdefault('agent', {})

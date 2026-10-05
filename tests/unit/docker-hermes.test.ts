@@ -234,6 +234,16 @@ describe('personal native profile settings transactions', () => {
     await expect(broker.updateProfile('alice', b.bindingId, { ...input, network: 'host' })).rejects.toThrow();
     await expect(broker.updateProfile('alice', b.bindingId, { ...input, credential: { action: 'keep', value: 'secret' } })).rejects.toThrow();
   });
+  it.each([undefined, false] as const)('distinguishes unreported capability from protected config (%s) before writing', async support => {
+    const { b, d, input } = await fixture();
+    const saved = initial();
+    d.settings = vi.fn(async () => ({ ...saved, editableProviders: { ...saved.editableProviders, 'openai-codex': support } }));
+    await expect(broker.updateProfile('alice', b.bindingId, { ...input, provider: 'openai-codex', credential: { action: 'keep' } }))
+      .rejects.toThrow(support === undefined ? 'has not reported support' : 'Native routing or authentication');
+    expect(d.reopen).not.toHaveBeenCalled();
+    expect(vi.mocked(d.settings).mock.calls.every(args => args[3] === undefined)).toBe(true);
+    expect(driver.active.has('alice')).toBe(true);
+  });
   it('rejects active and approval-waiting work before stopping any profile', async () => {
     const { b, d, input } = await fixture();
     const pair = await broker.forRequest('alice', b.bindingId);
@@ -327,6 +337,18 @@ describe('native Codex subscription sessions', () => {
     await expect(broker.codexMutation('alice', b.bindingId, { ...input, url: 'http://internal.invalid' })).rejects.toThrow();
     expect(await broker.codexMutation('alice', b.bindingId, input)).toEqual({ state: 'blocked' });
     expect(d.codex).not.toHaveBeenCalled(); expect(d.reopen).not.toHaveBeenCalled();
+  });
+  it.each([undefined, false] as const)('does not start or disconnect when capability is unreported or protected (%s)', async support => {
+    const { b, d, input } = await fixture();
+    const saved = await d.settings!('alice', b.profile, b.identity);
+    d.settings = vi.fn(async () => ({ ...saved, editableProviders: { ...saved.editableProviders, 'openai-codex': support } }));
+    vi.mocked(d.codex!).mockClear();
+    for (const action of ['start', 'disconnect']) {
+      await expect(broker.codexMutation('alice', b.bindingId, action === 'start' ? input : { action, revision }))
+        .rejects.toThrow(support === undefined ? 'has not reported support' : 'Native routing or authentication');
+    }
+    expect(d.codex).not.toHaveBeenCalled(); expect(d.reopen).not.toHaveBeenCalled();
+    expect(driver.active.has('alice')).toBe(true);
   });
   it('deduplicates start, fences all work/settings, polls without restart, keeps codes out of journal', async () => {
     const { b, d, input } = await fixture();
