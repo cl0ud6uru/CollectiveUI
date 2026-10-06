@@ -94,6 +94,13 @@
     "typescript": "^5",
     "vitest": "^5.0.1"
   },
+  "overrides": {
+    "katex": "$katex",
+    "source-map-js": "1.2.2",
+    "mammoth": {
+      "argparse": "2.0.1"
+    }
+  },
   "engines": {
     "node": ">=22.18"
   }

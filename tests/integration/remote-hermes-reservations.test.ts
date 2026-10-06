@@ -36,12 +36,30 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
   });
   it('dispatches only one of two queue requests whose acknowledgements are withheld', async () => {
     const ack = deferred<unknown>(); f.call.mockImplementation((method: string) => method === 'session.resume' ? Promise.resolve({ ...idle, running: true }) : ack.promise);
-    const first = nativeControl(owner, connection, session, 'queue', { requestId: id1, text: 'Queue A' });
-    const second = nativeControl(owner, connection, session, 'queue', { requestId: id2, text: 'Queue B' }).then(() => null, error => error);
-    await vi.waitFor(() => expect(f.call.mock.calls.filter(c => c[0] === 'prompt.submit')).toHaveLength(1));
-    expect((await second).status).toBe(409); expect(await row()).toMatchObject({ queueRequestId: id1, queueStatus: 'admitting' });
-    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, session))).toHaveLength(1);
-    ack.resolve({ status: 'queued' }); await first; expect((await row()).queueStatus).toBe('queued');
+    const attempt = (id: string, text: string) => nativeControl(owner, connection, session, 'queue', { requestId: id, text })
+      .then(() => ({ id, error: null }), error => ({ id, error: error as { status: number } }));
+    const first = attempt(id1, 'Queue A'), second = attempt(id2, 'Queue B');
+    try {
+      await vi.waitFor(() => expect(f.call.mock.calls.filter(c => c[0] === 'prompt.submit')).toHaveLength(1));
+      // Either transaction can acquire the row lock first; the loser must finish before the winner's acknowledgement.
+      let observed: Awaited<typeof first> | undefined;
+      const outcome = Promise.race([first, second]).then(result => { observed = result; return result; });
+      await vi.waitFor(() => expect(observed?.error?.status).toBe(409));
+      const loser = await outcome;
+      expect(loser.error?.status).toBe(409);
+      const reserved = await row();
+      expect(reserved).toMatchObject({ queueRequestId: loser.id === id1 ? id2 : id1, queueStatus: 'admitting' });
+      const submitted = f.call.mock.calls.find(c => c[0] === 'prompt.submit');
+      expect(submitted?.[1].text).toBe(reserved.queueRequestId === id1 ? 'Queue A' : 'Queue B');
+      expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, session))).toHaveLength(1);
+    } finally {
+      ack.resolve({ status: 'queued' });
+      await Promise.all([first, second]);
+    }
+    const results = await Promise.all([first, second]);
+    expect(results.filter(result => result.error === null)).toHaveLength(1);
+    expect(results.filter(result => result.error?.status === 409)).toHaveLength(1);
+    expect((await row()).queueStatus).toBe('queued');
   });
   it('preserves a newer process admission when an older idle snapshot completes', async () => {
     await db.update(remoteHermesSessions).set({ status: 'idle' }).where(eq(remoteHermesSessions.id, session));
