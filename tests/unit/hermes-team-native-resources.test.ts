@@ -128,6 +128,15 @@ describe("Protected native receipt authority", () => {
 
 
 describe("Strict protected journals and untouched abort", () => {
+  it("keeps the maximum historical metadata bound consistent with native journal action indices", async () => {
+    const overrides = Object.fromEntries(Array.from({ length: 1024 }, (_, index) => [`skills/a-deleted-${index}`, 'deleted' as const]));
+    const current = await inventoryMemberResources(root), release = createTeamResourceSnapshot([skill('new', 'SKILL.md', 'z-new')]);
+    const plan = planTeamResourceUpdate({ installed: createTeamResourceSnapshot([]), current, release, overrides });
+    expect(plan.actions.findIndex(action => action.action === 'install')).toBe(1025);
+    await applyTeamResourcePlan(root, 'maximum-metadata', plan, { journalRoot: journals });
+    await assertResourceUpdatesSettled(journals);
+    expect((await applyTeamResourcePlan(root, 'maximum-metadata', plan, { journalRoot: journals })).status).toBe('complete');
+  });
   it("accepts a bounded write after many preserved deleted and independently learned package actions", async () => {
     await rm(path.join(root, 'skills/support'), { recursive: true });
     const old = Array.from({ length: 256 }, (_, index) => skill('old team package', 'SKILL.md', `a-${index.toString().padStart(3, '0')}`));

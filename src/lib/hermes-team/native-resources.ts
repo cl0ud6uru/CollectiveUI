@@ -153,7 +153,7 @@ async function readJournal(fd: FileHandle, name: string): Promise<NativeJournal 
     const writes = value.writes;
     if (new Set(writes.map(item => item.packageId)).size !== writes.length || writes.some((item, index) => !item || !allowed(item.packageId)
       // Actions also include preserved learned and deleted groups, not only the write groups.
-      || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= DEFAULT_RESOURCE_LIMITS.maxFiles * 4 || (index > 0 && writes[index - 1].index >= item.index)
+      || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= DEFAULT_RESOURCE_LIMITS.maxFiles * 6 || (index > 0 && writes[index - 1].index >= item.index)
       || !/^[a-f0-9]{64}$/.test(item.beforeHash) || !/^[a-f0-9]{64}$/.test(item.afterHash)
       || Object.keys(item).some(key => !['packageId', 'index', 'beforeHash', 'afterHash'].includes(key)))) unsafe('Invalid resource journal write groups.');
     const receipt = value.receipt;
