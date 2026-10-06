@@ -17,6 +17,8 @@ sys.path.insert(0, str(SOURCE))
 os.environ.update(HERMES_HOME=str(ROOT), HERMES_DISABLE_LAZY_INSTALLS='1',
                   HERMES_LAZY_INSTALL_TARGET='', PYTHONDONTWRITEBYTECODE='1')
 NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+TEAM_NAME = re.compile(r'^cui-team-[a-f0-9]{32}$')
+TEAM_MARKER = '.collectiveui-team-profile.json'
 
 
 def check_source():
@@ -59,6 +61,13 @@ def profile(name):
         # Native creation seeds both; marker-only directories and backup names aren't imports.
         read_at(fd, 'SOUL.md')
         read_at(fd, 'config.yaml', 262144)
+        try:
+            read_at(fd, TEAM_MARKER, strict=True)
+        except FileNotFoundError:
+            pass
+        else:
+            # A Team profile that lost native quarantine cannot be published as ready.
+            read_at(fd, 'gateway.parked', strict=True)
         s = os.fstat(fd)
         identity = f'{s.st_dev}:{s.st_ino}'
     return parts, identity
@@ -85,6 +94,63 @@ def profiles():
         except (OSError, ValueError):
             pass
     return out
+
+
+def create_team(name):
+    """Pinned native layout, without create_profile's root model/credential seeding.
+
+    The profile remains inference-blocked in this release. Native defaults can restore
+    learning when a complete route is verified; no gateway or skill code runs here.
+    """
+    import uuid
+    if not TEAM_NAME.fullmatch(name):
+        raise ValueError('only reserved generated Team names can be created')
+    marker = {'format': 1, 'inference': 'unverified'}
+    with directory([]) as root_fd:
+        try:
+            os.mkdir('profiles', 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+    with directory(['profiles']) as profiles_fd:
+        try:
+            existing = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=profiles_fd)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            try:
+                if json.loads(read_at(existing, TEAM_MARKER, strict=True)) != marker:
+                    raise ValueError('reserved Team profile ownership changed')
+                read_at(existing, 'gateway.parked', strict=True)
+            finally:
+                os.close(existing)
+        else:
+            # Hidden staging is never discovered by native list_profile_names. One rename
+            # publishes a complete blank profile; a crash cannot expose a seeded config.
+            stage = '.collectiveui-team-' + uuid.uuid4().hex
+            os.mkdir(stage, 0o700, dir_fd=profiles_fd)
+            stage_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=profiles_fd)
+            try:
+                for subdir in ('memories', 'sessions', 'skills', 'skins', 'logs', 'plans', 'workspace', 'cron', 'home', 'documents'):
+                    os.mkdir(subdir, 0o700, dir_fd=stage_fd)
+                files = {
+                    'config.yaml': '{}\n', '.env': '', 'auth.json': '{}\n',
+                    'SOUL.md': 'You are a team assistant. Learn from conversation in this profile.\n',
+                    '.no-bundled-skills': 'Team resources are installed through reviewed publication.\n',
+                    # Native root gateways enumerate named profiles for both inbound
+                    # multiplexing and cron. Park until the complete route is verified.
+                    'gateway.parked': 'Team model routing is not yet verified.\n',
+                    TEAM_MARKER: json.dumps(marker) + '\n',
+                }
+                for filename, value in files.items():
+                    out = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=stage_fd)
+                    with os.fdopen(out, 'w') as stream:
+                        stream.write(value); stream.flush(); os.fsync(stream.fileno())
+                os.fsync(stage_fd)
+                os.rename(stage, name, src_dir_fd=profiles_fd, dst_dir_fd=profiles_fd)
+                os.fsync(profiles_fd)
+            finally:
+                os.close(stage_fd)
+    return {'name': name, 'identity': profile(name)[1]}
 
 
 def resources(name, expected):
@@ -868,6 +934,8 @@ def main():
             with contextlib.redirect_stdout(sys.stderr):
                 create_profile(name, no_alias=True)
         print(json.dumps({'name': name, 'identity': profile(name)[1]}))
+    elif op == 'create-team':
+        print(json.dumps(create_team(sys.argv[2])))
     elif op == 'resources':
         print(json.dumps(resources(sys.argv[2], sys.argv[3])))
     elif op in ('settings-read', 'settings-save', 'settings-test'):
@@ -884,7 +952,16 @@ def main():
         print(json.dumps(result))
     elif op == 'gateway':
         name, expected = sys.argv[2:4]
+        # Empty local auth alone is insufficient: pinned Hermes falls back to root auth.
+        # No Team route is admitted until replies, helpers, learning and subagents are verified.
         parts, identity = profile(name)
+        with directory(parts) as team_fd:
+            try:
+                read_at(team_fd, TEAM_MARKER, strict=True)
+            except FileNotFoundError:
+                pass  # Existing personal profiles retain their native names and behavior.
+            else:
+                raise ValueError('Team inference route is unverified')
         if identity != expected:
             raise ValueError('profile identity changed')
         home = ROOT.joinpath(*parts)
