@@ -7,20 +7,20 @@ import { aiApps, botUserAccess, bots, groupMembers, groups, localAuthBootstrap, 
 import { createLocalUser } from '../../src/lib/auth/local.ts';
 import { newId } from '../../src/lib/ids.ts';
 
-const url = process.env.BASE_URL ?? 'http://localhost:3110';
-if (new URL(process.env.DATABASE_URL ?? '').pathname !== '/collective_direct_permissions_test' || url !== 'http://localhost:3110')
-  throw new Error('Dedicated disposable permissions database and localhost:3110 required');
+const url = process.env.BASE_URL ?? 'https://localhost:3111';
+if (new URL(process.env.DATABASE_URL ?? '').pathname !== '/collective_direct_permissions_test' || url !== 'https://localhost:3111')
+  throw new Error('Dedicated disposable permissions database and https localhost:3111 required');
 const suffix = newId().toLowerCase(), username = `permissions-${suffix}`, password = 'Synthetic-browser-phrase!42';
 const name = `Direct group ${suffix}`, botName = `Direct bot ${suffix}`;
-const userIds = []; let appId, botId, groupId, browser;
+const userIds = []; let appId, botId, groupId, browser, page;
 try {
   const admin = await createLocalUser({ username, name: 'Permissions Admin', password }, 'bootstrap'); userIds.push(admin.id);
   const [member] = await db.insert(users).values({ upn: `${suffix}@fixture.invalid`, name: 'Direct Recipient', authSource: 'ldap', email: `${suffix}@fixture.invalid` }).returning(); userIds.push(member.id);
   const [app] = await db.insert(aiApps).values({ name: `UI model ${suffix}`, provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:4010/v1', model: 'fixture', supportsTools: true }).returning(); appId = app.id;
   const [bot] = await db.insert(bots).values({ ownerId: admin.id, appId, name: botName, visibility: 'private' }).returning(); botId = bot.id;
   browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1360, height: 1000 } });
-  page.setDefaultTimeout(90000); page.setDefaultNavigationTimeout(120000);
+  page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 1360, height: 1000 } });
+  page.setDefaultTimeout(30000); page.setDefaultNavigationTimeout(30000);
   await page.goto(`${url}/login`);
   await page.getByLabel('Local username or email').fill(username);
   await page.getByLabel('Local password', { exact: true }).fill(password);
@@ -29,7 +29,7 @@ try {
   await page.goto(`${url}/admin/groups`);
   await page.getByRole('button', { name: 'New group', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('Name', { exact: true }).fill(name);
+  await dialog.getByPlaceholder('Legal team', { exact: true }).fill(name);
   await dialog.getByLabel('Search users').fill(member.email);
   await dialog.getByRole('checkbox', { name: /^Select Direct Recipient/ }).check();
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
@@ -59,6 +59,9 @@ try {
   await page.getByText('Bot updated', { exact: true }).waitFor();
   assert.equal((await db.select().from(botUserAccess).where(eq(botUserAccess.botId, botId))).length, 0);
   console.log('Browser verified: group add/remove, saved membership reload, users-only bot sharing, saved audience reload, private audience revocation.');
+} catch (error) {
+  console.error("Browser failed at", page?.url(), await page?.locator("body").innerText());
+  throw error;
 } finally {
   await browser?.close();
   if (botId) await db.delete(bots).where(eq(bots.id, botId));
