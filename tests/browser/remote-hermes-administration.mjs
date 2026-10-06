@@ -10,7 +10,7 @@ const { build } = require('esbuild');
 const { chromium, expect } = require('@playwright/test');
 const dir = await mkdtemp(path.join(tmpdir(), 'hermes-admin-browser-'));
 const entry = path.join(dir, 'entry.tsx');
-await writeFile(entry, `import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client'; import { NativeAdministration } from '${root}/src/components/hermes/native-administration'; createRoot(document.getElementById('root')!).render(<NativeAdministration connectionId="fixture" sessionId="session" allowed={true} running={false}/>);`);
+await writeFile(entry, `import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client'; import { NativeAdministration } from '${root}/src/components/hermes/native-administration'; const root = createRoot(document.getElementById('root')!); window.fixtureSetRunning = running => root.render(<NativeAdministration connectionId="fixture" sessionId="session" allowed={true} running={running}/>); window.fixtureSetRunning(false);`);
 const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src') } });
 const received = [];
 let probeCount = 0;
@@ -76,6 +76,13 @@ try {
   await page.getByRole('button', { name: 'Test connection' }).click();
   await expect(page.getByText('fixture-server: Connection failed; check the server in Hermes')).toBeVisible();
   await expect(page.getByText('fixture-server: OAuth sign-in required in Hermes')).toHaveCount(0);
+  const countBeforePending = received.length;
+  await page.evaluate(() => window.fixtureSetRunning(true));
+  for (const name of ['Apply setting', 'Test connection', 'Install preset', 'Save protected credential']) {
+    await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+  }
+  await expect(page.getByRole('button', { name: 'Refresh settings' })).toBeEnabled();
+  expect(received.length).toBe(countBeforePending);
   expect(errors).toEqual([]);
-  console.log('PASS: native settings including auto/cold in both scopes, safe MCP inventory, token-aware probes, preset install, protected credential clearing; no browser errors.');
+  console.log('PASS: native settings including auto/cold in both scopes, safe MCP inventory, token-aware probes, preset install, protected credential clearing, and active-work disablement; no browser errors.');
 } finally { await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

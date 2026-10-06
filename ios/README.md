@@ -160,3 +160,18 @@ For offline visual checks, `--demo-appearance dark` saves the demo app's dark pr
 `--demo-draft "Line one\nLine two"` sets a draft (use an actual newline in the argument).
 Demo Atlas and Research use synthetic v2 and v1 atlases
 through the same authenticated loader as imported pets. These fixtures are not a user's custom avatar.
+
+## Live Activities
+
+Settings → Live Activities → Show bot status enables a static pet pose and generic run status on the Lock Screen
+and Dynamic Island. Tap returns to the exact authorized chat. It starts while foregrounded; up to three direct-bot
+runs can appear concurrently. Task text stays private. Approval decisions remain in chat.
+
+The `CollectiveLiveActivity` widget extension is embedded automatically. Both targets use `COLLECTIVE_BUNDLE_ID`
+(default `io.collectiveui.app`), with `.liveactivity` appended for the extension. Use that setting when changing
+bundle identifiers, so the app and extension identifiers stay aligned.
+
+Background push is disabled by default and requires separately approved Apple provisioning/APNs setup and device
+verification. See [Live Activity operation and validation](../docs/operations/live-activities.md) for prerequisites,
+configuration, supported cases and offline previews. No Apple account capability or push entitlement is enabled
+by this implementation.

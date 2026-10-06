@@ -803,6 +803,55 @@ def assert_no_other_native(name, home):
         # Relevant unreadable metadata fails closed; never silently ignore PermissionError.
 
 
+def network_check(provider, mode):
+    """Fixed DNS/TLS-only check. No credentials, HTTP provider request or model inference."""
+    import socket
+    import ssl
+    import signal
+    hosts = {
+        'openai-api': ('api.openai.com',),
+        'anthropic': ('api.anthropic.com',),
+        'openrouter': ('openrouter.ai',),
+        'openai-codex': ('auth.openai.com', 'chatgpt.com'),
+    }
+    if provider not in hosts or mode not in ('none', 'internet', 'proxy'):
+        raise ValueError('unsupported fixed network check')
+    if mode == 'none':
+        return {'code': 'offline'}
+    def timeout(*_):
+        raise TimeoutError('bounded check')
+    prior = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(8)
+    try:
+        context = ssl.create_default_context()
+        for host in hosts[provider]:
+            endpoint = ('hermes-egress', 3128) if mode == 'proxy' else (host, 443)
+            with socket.create_connection(endpoint, timeout=3) as sock:
+                if mode == 'proxy':
+                    sock.sendall(('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n').encode('ascii'))
+                    header = bytearray()
+                    while b'\r\n\r\n' not in header and len(header) < 4096:
+                        chunk = sock.recv(1)
+                        if not chunk:
+                            break
+                        header.extend(chunk)
+                    line = bytes(header).split(b'\r\n', 1)[0].split()
+                    if b'\r\n\r\n' not in header or len(line) < 2 or line[1] != b'200':
+                        return {'code': 'proxy_blocked'}
+                with context.wrap_socket(sock, server_hostname=host):
+                    pass  # certificate-verified handshake only; never send provider HTTP data
+        return {'code': 'reachable'}
+    except socket.gaierror:
+        return {'code': 'dns_failed'}
+    except ssl.SSLError:
+        return {'code': 'tls_failed'}
+    except (OSError, TimeoutError):
+        return {'code': 'proxy_blocked' if mode == 'proxy' else 'unavailable'}
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prior)
+
+
 def main():
     check_source()
     op = sys.argv[1]
@@ -826,6 +875,8 @@ def main():
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             result = profile_settings(sys.argv[2], sys.argv[3], op, data)
         print(json.dumps(result))
+    elif op == 'network-check':
+        print(json.dumps(network_check(sys.argv[2], sys.argv[3])))
     elif op == 'codex':
         data = json.loads(sys.stdin.read(16385))
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):

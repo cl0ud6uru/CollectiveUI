@@ -8,10 +8,23 @@
 
 /* Begin PBXBuildFile section */
 		C0DE00000000000000000010 /* CollectiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE00000000000000000011 /* CollectiveKit */; };
+
+        C0DE00000000000000000101 = {isa = PBXBuildFile; productRef = C0DE00000000000000000102; };
+        C0DE00000000000000000103 = {isa = PBXBuildFile; fileRef = C0DE00000000000000000104; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+        C0DE00000000000000000105 = {isa = PBXBuildFile; fileRef = C0DE00000000000000000106; };
+        C0DE00000000000000000107 = {isa = PBXBuildFile; fileRef = C0DE00000000000000000106; };
+        C0DE00000000000000000108 = {isa = PBXBuildFile; fileRef = C0DE00000000000000000109; };
+        C0DE0000000000000000010A = {isa = PBXBuildFile; fileRef = C0DE00000000000000000109; };
+
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		C0DE00000000000000000001 /* CollectiveUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CollectiveUI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+
+        C0DE00000000000000000104 = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = CollectiveLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+        C0DE00000000000000000106 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunActivityViews.swift; sourceTree = "<group>"; };
+        C0DE00000000000000000109 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivitySeedlingView.swift; sourceTree = "<group>"; };
+
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -20,6 +33,9 @@
 			path = CollectiveUI;
 			sourceTree = "<group>";
 		};
+
+        C0DE0000000000000000010B = {isa = PBXFileSystemSynchronizedRootGroup; path = CollectiveLiveActivity; sourceTree = "<group>"; };
+
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -31,6 +47,9 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+
+        C0DE0000000000000000010C = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (C0DE00000000000000000101, ); runOnlyForDeploymentPostprocessing = 0; };
+
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -38,6 +57,8 @@
 			isa = PBXGroup;
 			children = (
 				C0DE00000000000000000002 /* CollectiveUI */,
+                C0DE0000000000000000010B,
+                C0DE0000000000000000010D,
 				C0DE00000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -46,10 +67,14 @@
 			isa = PBXGroup;
 			children = (
 				C0DE00000000000000000001 /* CollectiveUI.app */,
+                C0DE00000000000000000104,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
+
+        C0DE0000000000000000010D = {isa = PBXGroup; children = (C0DE00000000000000000106, C0DE00000000000000000109, ); path = LiveActivityShared; sourceTree = "<group>"; };
+
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -60,10 +85,12 @@
 				C0DE00000000000000000007 /* Sources */,
 				C0DE00000000000000000003 /* Frameworks */,
 				C0DE00000000000000000008 /* Resources */,
+                C0DE00000000000000000112,
 			);
 			buildRules = (
 			);
 			dependencies = (
+                C0DE00000000000000000113,
 			);
 			fileSystemSynchronizedGroups = (
 				C0DE00000000000000000002 /* CollectiveUI */,
@@ -76,6 +103,20 @@
 			productReference = C0DE00000000000000000001 /* CollectiveUI.app */;
 			productType = "com.apple.product-type.application";
 		};
+
+        C0DE0000000000000000010E = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = C0DE0000000000000000010F;
+            buildPhases = (C0DE00000000000000000110, C0DE0000000000000000010C, C0DE00000000000000000111, );
+            buildRules = (); dependencies = ();
+            fileSystemSynchronizedGroups = (C0DE0000000000000000010B, );
+            name = CollectiveLiveActivity;
+            packageProductDependencies = (C0DE00000000000000000102, );
+            productName = CollectiveLiveActivity;
+            productReference = C0DE00000000000000000104;
+            productType = "com.apple.product-type.app-extension";
+        };
+
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -108,6 +149,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+                C0DE0000000000000000010E,
 				C0DE00000000000000000006 /* CollectiveUI */,
 			);
 		};
@@ -121,16 +163,33 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+
+        C0DE00000000000000000111 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+        C0DE00000000000000000112 = {isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (C0DE00000000000000000103, ); name = "Embed App Extensions"; runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXCopyFilesBuildPhase section */
+/* Begin PBXContainerItemProxy section */
+        C0DE00000000000000000114 = {isa = PBXContainerItemProxy; containerPortal = C0DE00000000000000000009; proxyType = 1; remoteGlobalIDString = C0DE0000000000000000010E; remoteInfo = CollectiveLiveActivity; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXTargetDependency section */
+        C0DE00000000000000000113 = {isa = PBXTargetDependency; target = C0DE0000000000000000010E; targetProxy = C0DE00000000000000000114; };
+/* End PBXTargetDependency section */
 /* Begin PBXSourcesBuildPhase section */
 		C0DE00000000000000000007 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                C0DE00000000000000000105,
+                C0DE00000000000000000108,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+
+        C0DE00000000000000000110 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (C0DE00000000000000000107, C0DE0000000000000000010A, ); runOnlyForDeploymentPostprocessing = 0; };
+
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
@@ -138,6 +197,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+                COLLECTIVE_BUNDLE_ID = io.collectiveui.app;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -200,6 +260,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+                COLLECTIVE_BUNDLE_ID = io.collectiveui.app;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -275,7 +336,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = io.collectiveui.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COLLECTIVE_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -307,7 +368,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = io.collectiveui.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(COLLECTIVE_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -315,6 +376,52 @@
 			};
 			name = Release;
 		};
+
+        C0DE00000000000000000115 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                APPLICATION_EXTENSION_API_ONLY = YES;
+                CODE_SIGN_STYLE = Automatic;
+                DEVELOPMENT_TEAM = "";
+                CURRENT_PROJECT_VERSION = 1;
+                MARKETING_VERSION = 1.0;
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = "Config/LiveActivity-Info.plist";
+                INFOPLIST_KEY_CFBundleDisplayName = "CollectiveUI Status";
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", );
+                PRODUCT_BUNDLE_IDENTIFIER = "$(COLLECTIVE_BUNDLE_ID).liveactivity";
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SKIP_INSTALL = YES;
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+            };
+            name = Debug;
+        };
+
+
+        C0DE00000000000000000116 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                APPLICATION_EXTENSION_API_ONLY = YES;
+                CODE_SIGN_STYLE = Automatic;
+                DEVELOPMENT_TEAM = "";
+                CURRENT_PROJECT_VERSION = 1;
+                MARKETING_VERSION = 1.0;
+                GENERATE_INFOPLIST_FILE = YES;
+                INFOPLIST_FILE = "Config/LiveActivity-Info.plist";
+                INFOPLIST_KEY_CFBundleDisplayName = "CollectiveUI Status";
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", );
+                PRODUCT_BUNDLE_IDENTIFIER = "$(COLLECTIVE_BUNDLE_ID).liveactivity";
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SKIP_INSTALL = YES;
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+            };
+            name = Release;
+        };
+
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -336,6 +443,9 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+
+        C0DE0000000000000000010F = {isa = XCConfigurationList; buildConfigurations = (C0DE00000000000000000115, C0DE00000000000000000116, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -350,6 +460,9 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = CollectiveKit;
 		};
+
+        C0DE00000000000000000102 = {isa = XCSwiftPackageProductDependency; productName = CollectiveKit; };
+
 /* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = C0DE00000000000000000009 /* Project object */;

@@ -10,7 +10,7 @@ const { build } = require('esbuild');
 const { chromium, expect } = require('@playwright/test');
 const dir = await mkdtemp(path.join(tmpdir(), 'hermes-browser-'));
 const entry = path.join(dir, 'entry.tsx');
-await writeFile(entry, `import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client'; import { NativeWorkspace } from '${root}/src/components/hermes/native-workspace'; createRoot(document.getElementById('root')!).render(<NativeWorkspace connectionId="fixture" profiles={[{name:'default'}]} saved={[{id:'session',storedId:'stored',title:'Fixture chat',profile:'default',status:'idle'}]} allowed={true} initialSession="session" initialError=""/>);`);
+await writeFile(entry, `import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client'; import { NativeWorkspace } from '${root}/src/components/hermes/native-workspace'; createRoot(document.getElementById('root')!).render(<NativeWorkspace connectionId="fixture" profiles={[{name:'default'},{name:'research'}]} saved={[{id:'session',storedId:'stored',title:'Fixture chat',profile:'default',status:'idle'}]} allowed={true} initialSession="session" initialError=""/>);`);
 const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: {'@': path.join(root, 'src')}, plugins: [{name:'fixture-link',setup(build){build.onResolve({filter:/^next\/link$/},()=>({path:'link',namespace:'fixture'}));build.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:`import React from 'react';export default function Link({children,...props}){return <a {...props}>{children}</a>}`,loader:'jsx',resolveDir:root}));}}] });
 let allowed = true; let running = false; let prompts = []; let queued = ''; const received = []; let uploadCount = 0;
 const server = createServer(async (req,res) => {
@@ -19,6 +19,7 @@ const server = createServer(async (req,res) => {
  if (url.pathname === '/bundle.js') { res.setHeader('Content-Type','application/javascript');res.end(bundle.outputFiles[0].contents); return; }
  if (!url.pathname.startsWith('/api/')) { res.setHeader('Content-Type','text/html');res.end('<div id="root"></div><script src="/bundle.js"></script>');return; }
  if (req.method === 'GET') {
+  if (url.searchParams.get('operation') === 'browse' && url.searchParams.get('profile') === 'research') { res.end(JSON.stringify({sessions:[{id:'research-stored',title:'Research chat'}],linked:[]})); return; }
   if (url.searchParams.get('operation') === 'browse') res.end(JSON.stringify({sessions:[{id:'stored',title:'Fixture chat'}],linked:[{id:'session',storedId:'stored',title:'Fixture chat',profile:'default',status:running?'running':'idle'}]}));
   else res.end(JSON.stringify({id:'session',title:'Fixture chat',profile:'default',running,uncertain:false,connection:'connected',messages:[{id:'message',role:'assistant',text:'Recovered native history'}],partial:running?'Live native response':'',tools:[],prompts,model:'Fixture model',provider:'Fixture',usage:{context_used:100,context_max:1000},queued,admissionAllowed:allowed}));
   return;
@@ -29,6 +30,7 @@ const server = createServer(async (req,res) => {
   const data = await new Response(body,{headers:{'Content-Type':req.headers['content-type']}}).formData(); input = JSON.parse(data.get('request')); uploadCount = data.getAll('files').length;
  } else input = JSON.parse(body.toString());
  received.push(input);
+ if (input.operation === 'open') { res.end(JSON.stringify({id:'research-session',title:'Research chat',profile:'research',running:false,uncertain:false,connection:'connected',messages:[],partial:'',tools:[],prompts:[],model:'Fixture',provider:'Fixture',usage:{},queued:'',queuePending:false})); return; }
  if (input.operation === 'submit') { running=true;prompts=[{id:'approval',method:'approval',title:'Allow fixture command?',command:'synthetic command',choices:[],questions:[]}]; }
  if (input.operation === 'answer') { if (input.requestId === 'approval') prompts=[{id:'clarify',method:'clarify',title:'clarify',command:'',choices:[],questions:[{id:'q1',question:'Choose a fixture answer',choices:['One','Two']}]}]; else if (input.requestId==='clarify') prompts=[{id:'secret',method:'secret',title:'Fixture protected value',command:'',choices:[],questions:[]}]; else prompts=[]; }
  if (input.operation === 'queue') queued=input.text;
@@ -57,6 +59,40 @@ try {
  await page.getByRole('button',{name:'Stop',exact:true}).click();
  expect(uploadCount).toBe(1);expect(received.map(r=>r.operation)).toEqual(['submit','answer','answer','answer','steer','queue','stop']);
  expect(received.find(r=>r.requestId==='clarify').answer).toEqual({answers:{q1:'One'}});
- expect(await page.locator('body').textContent()).not.toContain('synthetic-secret'); expect(errors).toEqual([]);
- console.log('PASS: history, live response, attachment, approval, clarification, protected prompt, steering, queue, admin disablement, stop; no browser errors.');
+ expect(await page.locator('body').textContent()).not.toContain('synthetic-secret');
+ // Hold an already resolved snapshot response across a profile switch, simulating late parsing.
+ allowed=true; running=false; queued='';
+ await expect(page.getByRole('textbox',{name:'Message Hermes'})).toBeEnabled();
+ await page.getByRole('textbox',{name:'Message Hermes'}).fill('Draft for the old profile');
+ await page.getByLabel('Attach files to Hermes').setInputFiles({name:'old-profile.txt',mimeType:'text/plain',buffer:Buffer.from('Old profile attachment')});
+ await page.evaluate(() => {
+   const original = window.fetch;
+   window.__snapshotHeld = false;
+   window.fetch = async (...args) => {
+     const response = await original(...args);
+     if (String(args[0]).includes('operation=snapshot') && !window.__snapshotHeld) {
+       window.__snapshotHeld = true;
+       const data = await response.json();
+       return {ok:true,json:async()=>{await new Promise(resolve=>{window.__releaseSnapshot=resolve;});return data;}};
+     }
+     return response;
+   };
+ });
+ await expect.poll(() => page.evaluate(() => typeof window.__releaseSnapshot)).toBe('function');
+ const countBeforeSwitch = received.length;
+ await page.getByRole('combobox',{name:'Hermes profile'}).click();
+ await page.getByRole('option',{name:'research',exact:true}).click();
+ await page.evaluate(() => window.__releaseSnapshot());
+ await expect(page.getByText('Choose a conversation or start a new Hermes chat.')).toBeVisible();
+ await expect(page.getByRole('textbox',{name:'Message Hermes'})).toHaveCount(0);
+ await expect(page.getByText('Recovered native history')).toHaveCount(0);
+ expect(new URL(page.url()).searchParams.has('session')).toBe(false);
+ expect(received.length).toBe(countBeforeSwitch);
+ await expect(page.getByRole('button',{name:'Research chat',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'Research chat',exact:true}).click();
+ await expect(page.getByRole('textbox',{name:'Message Hermes'})).toHaveValue('');
+ expect(await page.getByLabel('Attach files to Hermes').evaluate(el=>el.files.length)).toBe(0);
+ expect(received.at(-1)).toMatchObject({operation:'open',profile:'research',storedId:'research-stored',sessionId:null});
+ expect(errors).toEqual([]);
+ console.log('PASS: history, live response, attachment, approval, clarification, protected prompt, steering, queue, admin disablement, stop, profile switch, cleared draft/files, and stale snapshot rejection; no browser errors.');
 } finally { await browser.close();server.close();await rm(dir,{recursive:true,force:true}); }

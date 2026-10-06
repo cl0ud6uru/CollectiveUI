@@ -1,6 +1,6 @@
 CREATE TABLE remote_hermes_connections (
   id text PRIMARY KEY,
-  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id text NOT NULL CONSTRAINT remote_hermes_connections_user_id_users_id_fk REFERENCES users(id) ON DELETE CASCADE,
   name text NOT NULL,
   base_url text NOT NULL,
   auth_mode text NOT NULL CONSTRAINT remote_hermes_auth_mode_check CHECK (auth_mode IN ('password', 'sessionToken')),

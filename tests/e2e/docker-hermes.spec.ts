@@ -93,7 +93,8 @@ test('revocation is reload-safe, retains bots and re-enrollment reuses private m
   await allow.click(); await expect(enrollment.getByRole('status')).toContainText('Permission revoked'); await expect(allow).not.toBeChecked();
   await expect.poll(async () => (await pool.query("SELECT cleanup FROM docker_hermes_enrollments WHERE user_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice')")).rows[0]?.cleanup, { timeout: 30000 }).toBe('stopped');
   await enrollment.getByRole('button', { name: 'Refresh enrollment and broker status', exact: true }).click();
-  await expect(enrollment.getByText('Permission: Disabled · Runtime cleanup: Stopped — data retained', { exact: true })).toBeVisible();
+  const aliceRow = enrollment.getByRole('row').filter({ hasText: 'local:docker-hermes-alice' });
+  await expect(aliceRow.getByText('Stopped · data kept', { exact: true })).toBeVisible();
   await page.reload(); await expect(allow).not.toBeChecked();
   expect([403, 404]).toContain((await page.request.get(`/api/bots/${before[0].id}/native`)).status());
   await allow.click(); await expect(enrollment.getByRole('status')).toContainText('Permission saved'); await expect(allow).toBeChecked();

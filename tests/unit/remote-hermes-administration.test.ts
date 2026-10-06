@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { administrationInput, mcpInventory, probeSummary } from '@/lib/remote-hermes/administration-contract';
 import { HttpError } from '@/lib/authz';
 
-const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, locks: 0, receipt: null as null | { digest: string }, call: vi.fn(), refresh: vi.fn(), profiles: vi.fn() }));
+const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, receipt: null as null | { digest: string }, call: vi.fn(), refresh: vi.fn(), profiles: vi.fn() }));
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string) => { if (owner !== 'owner') throw new Error('not found'); return { id: 'session', profile: f.profile }; } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { profiles: f.profiles } }; } }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: { running: f.status === 'running', uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
 vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown) => run({
   select: () => ({ from: (table: { [key: symbol]: unknown }) => {
     const name = table[Symbol.for('drizzle:Name')];
@@ -18,7 +18,7 @@ vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown
 import { nativeAdministration } from '@/lib/remote-hermes/administration';
 const requestId = 'f1eeac5a-c19f-4b5b-97ef-a1cd7b02e658';
 describe('native administration protocol and isolation', () => {
-  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.call.mockResolvedValue({ value: 'high', ok: true }); });
+  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.call.mockResolvedValue({ value: 'high', ok: true }); });
   it('rejects unowned sessions before native RPC', async () => {
     await expect(nativeAdministration('other', 'connection', 'session', { operation: 'inspect' })).rejects.toThrow('not found'); expect(f.call).not.toHaveBeenCalled();
   });
@@ -87,6 +87,11 @@ describe('native administration protocol and isolation', () => {
     f[state] = true;
     await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'test', name: 'example' })).rejects.toThrow('Finish');
     expect(f.call).not.toHaveBeenCalled();
+  });
+  it.each(['runtimeRunning', 'missingView'] as const)('blocks administration when the locked idle row has %s', async state => {
+    f[state] = true;
+    await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'setting', requestId, key: 'fast', value: 'auto', scope: 'session' })).rejects.toThrow('Finish');
+    expect(f.receipt).toBeNull(); expect(f.call).not.toHaveBeenCalled();
   });
   it('rechecks queue reservations after the durable administration receipt', async () => {
     f.reserveQueueAtLock = 2;

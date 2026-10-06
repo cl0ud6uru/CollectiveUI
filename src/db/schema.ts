@@ -100,9 +100,14 @@ export const remoteHermesSessions = pgTable('remote_hermes_sessions', {
   title: text('title').notNull().default('New Hermes chat'),
   status: text('status').$type<'idle' | 'admitting' | 'running' | 'waiting' | 'uncertain'>().notNull().default('idle'),
   admissionAt: timestamp('admission_at', { withTimezone: true }),
+  admissionRequestId: text('admission_request_id'),
+  revision: integer('revision').notNull().default(0),
+  queueRequestId: text('queue_request_id'),
+  queueStatus: text('queue_status').$type<'admitting' | 'queued' | 'uncertain'>(),
   createdAt: createdAt(), updatedAt: updatedAt(),
 }, t => [uniqueIndex('remote_hermes_session_native_idx').on(t.connectionId, t.profile, t.storedId),
-  check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`)]);
+  check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`),
+  check('remote_hermes_queue_check', sql`(${t.queueRequestId} is null) = (${t.queueStatus} is null) and (${t.queueStatus} is null or ${t.queueStatus} in ('admitting','queued','uncertain'))`)]);
 
 /** Write-ahead receipts prevent an HTTP retry from submitting the same prompt twice. No prompt text is stored. */
 export const remoteHermesTurns = pgTable('remote_hermes_turns', {
@@ -1318,3 +1323,25 @@ export type UserCredential = typeof userCredentials.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type RunEvent = typeof runEvents.$inferSelect;
+
+// Owner-scoped, short-lived ActivityKit update-token registrations (never push-to-start tokens).
+export const liveActivities = pgTable("live_activities", {
+  sessionId: text("session_id").notNull().references(() => mobileSessions.id, { onDelete: "cascade" }),
+  activityId: text("activity_id").notNull(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  tokenEnc: text("token_enc").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  tokenVersion: bigint("token_version", { mode: "number" }).notNull(),
+  fingerprint: text("fingerprint"),
+  deliveryTimestamp: integer("delivery_timestamp").notNull().default(0),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  attempts: integer("attempts").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+}, t => [primaryKey({ columns: [t.sessionId, t.activityId] }),
+  uniqueIndex("live_activities_token_idx").on(t.tokenHash),
+  uniqueIndex("live_activities_run_idx").on(t.sessionId, t.runId),
+  index("live_activities_due_idx").on(t.nextAttemptAt),
+]);

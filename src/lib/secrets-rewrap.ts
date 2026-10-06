@@ -1,6 +1,6 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
-import { aiApps, chatgptDeviceLogins, hermesConnections, mcpServers, routines, userTokens, providerConnections } from "@/db/schema";
+import { liveActivities, aiApps, chatgptDeviceLogins, hermesConnections, mcpServers, routines, userTokens, providerConnections } from "@/db/schema";
 import { connectionAAD } from "@/lib/hermes-provisioning/config";
 import { AAD, encrypt, needsRewrap, rewrap } from "@/lib/crypto";
 import { rewrapChatGPTSecrets } from "@/lib/llm/chatgpt/store";
@@ -15,6 +15,14 @@ import { getSetting, setSetting } from "@/lib/settings";
  */
 export async function rewrapAllSecrets(): Promise<number> {
   let changed = 0;
+  for (const row of await db.select().from(liveActivities)) {
+    const next = rewrap(row.tokenEnc, `live_activities.token_enc|${row.sessionId}|${row.activityId}`);
+    if (next) {
+      await db.update(liveActivities).set({ tokenEnc: next }).where(and(eq(liveActivities.sessionId, row.sessionId),
+        eq(liveActivities.activityId, row.activityId), eq(liveActivities.tokenEnc, row.tokenEnc)));
+      changed++;
+    }
+  }
   for (const row of await db.select().from(providerConnections)) {
     const next = rewrap(row.credentialEnc, providerConnectionAad(row.id));
     if (next) {

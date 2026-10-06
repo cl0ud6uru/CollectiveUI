@@ -7,12 +7,17 @@ import { runtimeKey, BrokerConfig, type RuntimeDriver } from './docker';
 import { bindingSchema, ownerId, phases, profileName, type DockerBinding, type DockerStatus } from './types';
 import { codexAction, codexStatus, codexStates, type CodexStatus } from './oauth';
 import { profileUpdate, profileTest, testCodes, providerBlocker, type ProfileSettings, type ProfileTestResult } from './settings';
+import { networkMode, networkRequest, networkMigration, networkReceipt, connectivity, type NetworkStatus, type NetworkMigration, type Connectivity } from './network';
 const key = () => randomUUID().replaceAll('-', '');
 const storedSchema = z.object({ owner: ownerId, generation: z.number().int(), phase: z.enum(phases), error: z.string().nullable(), cleanupRequired: z.boolean().default(false),
   bindings: z.array(bindingSchema), confirmed: z.array(z.string()).default([]), pending: z.record(z.string(), z.object({ profile: profileName, name: z.string() })),
   logins: z.record(z.string(), z.object({ bindingId: z.string(), sessionId: z.string().uuid(), state: z.enum(codexStates), expiresAt: z.number() })).default({}),
+  network: networkMode.optional(), onlineMode: z.enum(['internet', 'proxy']).optional(), networkRevision: z.number().int().nonnegative().default(0),
+  networks: z.record(z.string(), networkMigration).default({}),
+  connections: z.record(z.string(), connectivity).default({}),
   tests: z.record(z.string(), z.object({ bindingId: z.string(), revision: z.string(), checkedAt: z.string(), code: z.enum(testCodes) })).default({}) });
 type Stored = z.infer<typeof storedSchema>;
+const sConnection = (s: Stored, id: string, revision: string) => s.connections[id]?.revision === revision ? s.connections[id] : null;
 
 /** Durable control journal is outside every native container. Profiles cannot edit their app binding. */
 export class DockerBroker {
@@ -26,11 +31,11 @@ export class DockerBroker {
   authorize(owner: string, canCreate: boolean) {
     ownerId.parse(owner); this.leases.set(owner, { until: Date.now() + 60000, canCreate });
     const s = this.states.get(owner);
-    if (!canCreate && s && this.jobs.has(owner)) void this.stop(owner).catch(() => {});
+    if (!canCreate && s && this.jobs.has(owner) && !this.maintaining.has(owner)) void this.stop(owner).catch(() => {});
   }
   owners() { return [...this.states.keys()]; }
   async expireLeases() {
-    for (const [owner, s] of this.states) if (!['disabled', 'stopped', 'stopping'].includes(s.phase) && ((this.leases.get(owner)?.until ?? 0) <= Date.now() || s.cleanupRequired))
+    for (const [owner, s] of this.states) if (s.phase !== 'stopping' && (!['disabled', 'stopped'].includes(s.phase) || this.maintaining.has(owner)) && ((this.leases.get(owner)?.until ?? 0) <= Date.now() || s.cleanupRequired))
       await this.stop(owner).catch(() => {});
     for (const [owner, s] of this.states) {
       const pending = this.pendingLogin(owner);
@@ -53,7 +58,9 @@ export class DockerBroker {
       try { writeFileSync(fd, JSON.stringify(config)); fsyncSync(fd); } finally { closeSync(fd); }
       const directory = openSync(config.stateDir, 'r'); try { fsyncSync(directory); } finally { closeSync(directory); }
     } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
-    if (lstatSync(deployment).isSymbolicLink() || JSON.stringify(BrokerConfig.parse(JSON.parse(readFileSync(deployment, 'utf8')))) !== JSON.stringify(config))
+    const pinned = JSON.parse(readFileSync(deployment, 'utf8'));
+    pinned.network ??= 'none'; // legacy deployments predate Standard Internet
+    if (lstatSync(deployment).isSymbolicLink() || JSON.stringify(BrokerConfig.parse(pinned)) !== JSON.stringify(config))
       throw new Error('Broker configuration changed. Stop retained runtimes with their original configuration before an operator-planned migration.');
     for (const name of readdirSync(config.stateDir)) {
       if (!/^[a-f0-9]{64}$/.test(name)) continue;
@@ -65,6 +72,9 @@ export class DockerBroker {
         for (const login of Object.values(state.logins)) if (login.state === 'pending') login.state = 'interrupted';
         state.phase = 'interrupted'; state.cleanupRequired = true; state.error = 'Broker restarted. Retry to reconcile the retained runtime and profiles; uncertain chat work is not replayed.';
       }
+      state.network ??= config.network;
+      state.onlineMode ??= state.network === 'proxy' ? 'proxy' : 'internet';
+      this.driver.setNetwork?.(state.owner, state.network);
       this.states.set(state.owner, state);
     }
   }
@@ -74,9 +84,9 @@ export class DockerBroker {
     let s = this.states.get(owner);
     if (!s && create) {
       if (this.states.size >= this.config.maxUsers) throw new LocalError(409, 'Personal runtime capacity reached.');
-      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {} };
+      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {} };
       const dir = path.join(this.config.stateDir, runtimeKey(owner));
-      mkdirSync(dir, { mode: 0o700 }); this.states.set(owner, s); this.save(s);
+      mkdirSync(dir, { mode: 0o700 }); this.driver.setNetwork?.(owner, s.network!); this.states.set(owner, s); this.save(s);
     }
     return s;
   }
@@ -109,11 +119,157 @@ export class DockerBroker {
     }
     const unlinked = s.phase === 'ready' && !this.maintaining.has(owner) ? (await this.driver.profiles(owner)).filter(p => p.name !== 'default' &&
       !s.bindings.some(b => (b.profile === p.name || b.identity === p.identity) && s.confirmed.includes(b.bindingId)) && !Object.values(s.pending).some(b => b.profile === p.name)) : [];
-    return { network: this.config.network, phase: s.phase, error: s.error, generation: s.generation, bindings: s.bindings.filter(b => s.confirmed.includes(b.bindingId)), unlinked };
+    return { network: s.network!, phase: s.phase, error: s.error, generation: s.generation, bindings: s.bindings.filter(b => s.confirmed.includes(b.bindingId)), unlinked };
+  }
+  private unsettledNetwork(s: Stored) {
+    return Object.values(s.networks).find(m => ['pending', 'applied', 'failed'].includes(m.state));
+  }
+  async networkStatus(owner: string, inspect = true): Promise<NetworkStatus> {
+    const s = this.state(owner), mode = s?.network ?? this.config.network;
+    let actual: NetworkStatus['actual'] = 'unknown', running: boolean | null = null;
+    try { if (inspect && this.driver.networkStatus) ({ actual, running } = await this.driver.networkStatus(owner)); } catch {}
+    const latest = Object.values(s?.networks ?? {}).at(-1);
+    const receipt = latest ? networkReceipt.parse(Object.fromEntries(Object.keys(networkReceipt.shape).map(k => [k, latest[k as keyof NetworkMigration]]))) : null;
+    return { mode, onlineMode: s?.onlineMode ?? (mode === 'proxy' ? 'proxy' : 'internet'), actual, running, revision: s?.networkRevision ?? 0, changing: this.maintaining.has(owner), receipt,
+      error: s?.cleanupRequired || latest?.state === 'failed' ? 'Network recovery needs operator reconciliation. Native data is retained.' : latest?.state === 'rolled_back' ? s?.error ?? null : null };
+  }
+  /** Reconcile exact retained migration identities BEFORE opening IPC or cleanup completion. */
+  async recoverNetworks() {
+    const failed = new Set<string>();
+    // A failure for one owner must not leave another owner's native processes unsupervised.
+    // Stop every identity first; only then attempt restoration/backup removal and journal writes.
+    for (const s of this.states.values()) {
+      const m = Object.values(s.networks).at(-1);
+      try {
+        if (m && m.state !== 'rolled_back' && m.snapshotReady && m.originalId) {
+          if (!this.driver.stopNetwork) throw new Error('Missing recovery');
+          await this.driver.stopNetwork(s.owner, m);
+        } else await this.driver.stop(s.owner);
+      } catch { failed.add(s.owner); }
+    }
+    for (const s of this.states.values()) {
+      const m = Object.values(s.networks).at(-1);
+      try {
+        if (failed.has(s.owner)) throw new Error('Stop unconfirmed');
+        if (m?.state === 'committed' && m.originalId) {
+          if (!this.driver.finishNetwork) throw new Error('Missing recovery');
+          await this.driver.finishNetwork(s.owner, m);
+        } else if (m && !['committed', 'rolled_back'].includes(m.state)) {
+          if (m.snapshotReady && m.originalId) {
+            if (!this.driver.rollbackNetwork) throw new Error('Missing recovery');
+            await this.driver.rollbackNetwork(s.owner, m);
+          }
+          this.driver.setNetwork?.(s.owner, m.previous); s.network = m.previous; s.connections = {}; m.state = 'rolled_back';
+          s.error = 'An interrupted network change was rolled back. The retained runtime is stopped; review the policy and retry explicitly.';
+        }
+        s.phase = s.bindings.length ? 'stopped' : 'disabled'; s.cleanupRequired = false; this.save(s);
+      } catch {
+        failed.add(s.owner);
+        if (m && m.state !== 'committed') m.state = 'failed';
+        s.phase = 'error'; s.cleanupRequired = true;
+        s.error = 'Network recovery or retained-container cleanup needs operator reconciliation. Native storage is retained.';
+        try { this.save(s); } catch {} // All other owners have already received their stop attempt.
+      }
+    }
+    if (failed.size) throw new LocalError(503, 'Retained runtime cleanup is unconfirmed for one or more owners. IPC remains closed; native storage is retained.');
+  }
+  requestNetwork(owner: string, raw: unknown, actor: string) {
+    this.authorized(owner); ownerId.parse(actor);
+    const input = networkRequest.parse(raw), s = this.state(owner, true)!;
+    const prior = s.networks[input.requestId];
+    if (prior) {
+      if (prior.requested !== input.mode || prior.revision !== input.revision || prior.actor !== actor)
+        throw new LocalError(409, 'This network request already has different details.');
+      return; // An uncertain HTTP response never creates a second replacement.
+    }
+    if (s.networkRevision !== input.revision) throw new LocalError(409, 'Network policy changed. Reload before applying it.');
+    if (this.queues.has(owner) || this.jobs.has(owner) || this.maintaining.has(owner) || this.pendingLogin(owner) || s.cleanupRequired || this.unsettledNetwork(s))
+      throw new LocalError(409, 'Finish current runtime work or sign-in, then retry the network change.');
+    if (Object.keys(s.networks).length >= 128) throw new LocalError(409, 'Network receipt capacity reached. Ask the operator to archive settled receipts.');
+    if (!this.driver.snapshotNetwork || !this.driver.changeNetwork || !this.driver.rollbackNetwork || !this.driver.finishNetwork || !this.driver.stopNetwork)
+      throw new LocalError(503, 'Update the broker before changing network access.');
+    const release: (() => void)[] = [];
+    try {
+      // Synchronous admission fence: every sibling must be idle before acceptance.
+      for (const b of s.bindings) { const c = this.controllers.get(b.bindingId); if (c) release.push(c.holdForSettings()); }
+    } catch (e) { release.forEach(fn => fn()); throw e; }
+    const oldPhase = s.phase, generation = ++s.generation;
+    const m: NetworkMigration = { ...input, previous: s.network!, requested: input.mode, state: 'pending', checkedAt: new Date().toISOString(), actor,
+      wasRunning: s.phase === 'ready', originalId: null, replacementId: null, snapshotReady: false, profiles: [] };
+    // Browser-only confirmation is not a journal field.
+    delete (m as NetworkMigration & { mode?: string; confirmRestart?: boolean }).mode;
+    delete (m as NetworkMigration & { confirmRestart?: boolean }).confirmRestart;
+    s.networks[input.requestId] = m; this.maintaining.add(owner);
+    try { this.save(s); } catch (e) { release.forEach(fn => fn()); this.maintaining.delete(owner); throw e; }
+    const current = () => { this.authorized(owner); if (s.generation !== generation) throw new LocalError(409, 'Network change cancelled because runtime access changed.'); };
+    const task = this.exclusive(owner, async () => {
+      try {
+        current();
+        if (m.previous !== m.requested) {
+          const snapshot = await this.driver.snapshotNetwork!(owner, m.requestId); current();
+          Object.assign(m, snapshot, { snapshotReady: true });
+          const actual = await this.driver.networkStatus?.(owner); current();
+          m.wasRunning = actual?.running === true;
+          if (snapshot.originalId && s.bindings.some(b => !snapshot.profiles.some(p => p.name === b.profile && p.identity === b.identity)))
+            throw new LocalError(409, 'A retained profile binding changed. Reconcile it before changing the network.');
+          this.save(s); // Exact original ID and complete roster survive before rename/start.
+          if (m.originalId) {
+            await this.driver.stop(owner); current();
+            for (const b of s.bindings) { await this.controllers.get(b.bindingId)?.stop(); this.controllers.delete(b.bindingId); }
+            current(); m.replacementId = await this.driver.changeNetwork!(owner, m, current); current();
+            if (!m.wasRunning) { await this.driver.stop(owner); current(); }
+          } else this.driver.setNetwork?.(owner, m.requested);
+        }
+        current(); s.network = m.requested; s.connections = {}; m.state = 'applied'; this.save(s);
+        current(); ++s.networkRevision; if (m.requested !== 'none') s.onlineMode = m.requested; m.state = 'committed'; this.save(s); // Commit BEFORE deleting backup.
+        if (m.originalId) await this.driver.finishNetwork!(owner, m);
+        current();
+        s.phase = m.wasRunning ? 'ready' : oldPhase; s.error = null; s.cleanupRequired = false; this.save(s);
+      } catch (e) {
+        try {
+          if (m.state === 'committed') {
+            // Durable commit stands; leave the current runtime stopped, retry cleanup on restart.
+            if (m.originalId) await this.driver.stopNetwork!(owner, m); else await this.driver.stop(owner); s.phase = 'error'; s.cleanupRequired = true;
+            s.error = 'Network policy committed, but retained-container cleanup needs an operator restart. Native data is retained.';
+          } else {
+            if (m.snapshotReady && m.originalId) await this.driver.rollbackNetwork!(owner, m);
+            else { this.driver.setNetwork?.(owner, m.previous); await this.driver.stop(owner); }
+            s.network = m.previous; s.connections = {}; m.state = 'rolled_back';
+            s.phase = s.bindings.length ? 'stopped' : 'disabled'; s.cleanupRequired = false;
+            s.error = e instanceof LocalError ? e.message : 'Network change failed and was rolled back. Review the policy and retry explicitly.';
+          }
+        } catch { if (m.state !== 'committed') m.state = 'failed'; s.phase = 'error'; s.cleanupRequired = true; s.error = 'Network recovery is unconfirmed. Ask the operator to reconcile retained containers; native data is retained.'; }
+        this.save(s);
+      } finally { release.forEach(fn => fn()); this.maintaining.delete(owner); }
+    });
+    this.jobs.set(owner, task);
+    void task.finally(() => { this.jobs.delete(owner); }).catch(() => {});
+  }
+  async settleNetwork(owner: string) { await this.jobs.get(owner); return this.networkStatus(owner); }
+  async checkConnectivity(owner: string, id: string, raw: unknown): Promise<Connectivity> {
+    const input = z.object({ revision: z.string().regex(/^[a-f0-9]{64}$/) }).strict().parse(raw);
+    return this.exclusive(owner, async () => {
+      const s = await this.ready(owner), b = this.binding(owner, id), generation = s.generation;
+      if (!this.driver.settings || !this.driver.connectivity) throw new LocalError(503, 'Update the bridge before checking provider connectivity.');
+      const value = await this.driver.settings(owner, b.profile, b.identity);
+      if (value.revision !== input.revision) throw new LocalError(409, 'Saved provider settings changed. Reload before checking.');
+      if (!value.provider) throw new LocalError(409, 'Save a supported provider before checking connectivity.');
+      const blocker = providerBlocker(value, value.provider);
+      if (blocker) throw new LocalError(409, blocker);
+      const prior = sConnection(s, id, value.revision);
+      if (prior && Date.now() - Date.parse(prior.checkedAt) < 10000) return prior;
+      const result: Connectivity = { provider: value.provider, revision: value.revision, checkedAt: new Date().toISOString(), code: 'unavailable' };
+      if (s.network === 'none') result.code = 'offline';
+      else try { result.code = await this.driver.connectivity(owner, value.provider); } catch {}
+      this.authorized(owner);
+      if (s.generation !== generation || s.phase !== 'ready') throw new LocalError(409, 'Runtime access changed. Reload before checking again.');
+      s.connections[id] = connectivity.parse(result); this.save(s); return result;
+    });
   }
   enable(owner: string) {
     this.authorized(owner, true);
     const s = this.state(owner, true)!;
+    if (this.maintaining.has(owner) || this.unsettledNetwork(s)) throw new LocalError(409, 'Wait for the network change or ask the operator to reconcile it.');
     if (this.jobs.has(owner) || s.phase === 'ready') return;
     if (s.phase === 'stopping') throw new LocalError(409, 'Wait for cancellation to settle before retrying.');
     const generation = ++s.generation;
@@ -154,7 +310,7 @@ export class DockerBroker {
     // Return promptly: a slow Docker stop must not starve other owners' lease renewal.
     this.leases.delete(owner);
     const s = this.state(owner);
-    if (!s || ['disabled', 'stopped'].includes(s.phase)) return { stopped: true, failed: false };
+    if (!s || (['disabled', 'stopped'].includes(s.phase) && !this.maintaining.has(owner))) return { stopped: true, failed: false };
     const failed = s.cleanupRequired && s.phase === 'error';
     if (s.phase !== 'stopping') void this.stop(owner).catch(() => {});
     return { stopped: false, failed };
@@ -178,6 +334,7 @@ export class DockerBroker {
   private async ready(owner: string) {
     this.authorized(owner);
     const s = this.state(owner);
+    if (this.maintaining.has(owner)) throw new LocalError(409, 'Runtime maintenance is in progress. Reload after it settles.');
     if (!s || s.phase !== 'ready' || !await this.driver.running(owner)) throw new LocalError(409, 'Enable your Hermes runtime first.');
     return s;
   }
@@ -244,7 +401,7 @@ export class DockerBroker {
     if (!this.driver.settings) throw new LocalError(503, 'This runtime does not support profile settings.');
     const value = await this.driver.settings(owner, b.profile, b.identity);
     const lastTest = Object.values(this.state(owner)!.tests).filter(t => t.bindingId === id && t.revision === value.revision).at(-1);
-    return { ...value, lastTest: lastTest ? { code: lastTest.code, checkedAt: lastTest.checkedAt, revision: lastTest.revision } : null };
+    return { ...value, connectivity: sConnection(this.state(owner)!, id, value.revision), lastTest: lastTest ? { code: lastTest.code, checkedAt: lastTest.checkedAt, revision: lastTest.revision } : null };
     });
   }
   private async maintain<T>(owner: string, id: string, run: (s: Stored, b: DockerBinding, current: () => void) => Promise<T>, oauth = false) {
@@ -304,7 +461,7 @@ export class DockerBroker {
       if (Object.keys(s.tests).length >= 1000) throw new LocalError(409, 'Connection-test receipt capacity reached. Ask the operator to archive settled receipts.');
       const result = { bindingId: id, revision: input.revision, checkedAt: new Date().toISOString(), code: 'uncertain' as ProfileTestResult['code'] };
       s.tests[input.requestId] = result; this.save(s); // Never replay a possibly charged request after a crash.
-      if (this.config.network === 'none') result.code = 'network_blocked';
+      if (s.network === 'none') result.code = 'network_blocked';
       else {
         try { result.code = z.enum(testCodes).parse((await this.driver.testSettings(owner, b.profile, b.identity, input.revision)).code); }
         catch { result.code = 'uncertain'; }
@@ -339,7 +496,7 @@ export class DockerBroker {
           return codexStatus.parse(await this.driver.codex(owner, b.profile, b.identity, { action: 'read' }));
         }
         if (pending) throw new LocalError(409, 'Finish or cancel the existing sign-in first.');
-        if (this.config.network === 'none') return { state: 'blocked' };
+        if (s.network === 'none') return { state: 'blocked' };
         if (Object.keys(s.logins).length >= 128) throw new LocalError(409, 'Sign-in receipt capacity reached. Ask the operator to archive settled receipts.');
       } else if (input.action === 'poll' || input.action === 'cancel') {
         receipt = Object.values(s.logins).find(v => v.sessionId === input.sessionId && v.bindingId === id);
@@ -420,5 +577,5 @@ export class DockerBroker {
     return value;
     });
   }
-  async close() { await Promise.all([...this.states.keys()].map(owner => this.stop(owner))); }
+  async close() { await Promise.all([...this.states.keys()].map(owner => this.stop(owner))); await this.recoverNetworks(); }
 }

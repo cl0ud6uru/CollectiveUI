@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { HttpError } from '@/lib/authz';
 import { db } from '@/db';
 import { remoteHermesSessions } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import type { ClientOptions } from 'ws';
 import type { RequestOptions } from 'node:http';
 import { getSetting } from '@/lib/settings';
@@ -12,11 +12,12 @@ import { DashboardSocket, record, type NativeFrame, type RpcRecord } from './soc
 import { promptView, sessionView, answerFor, type NativeSessionView, type NativePrompt } from './view';
 
 type Session = typeof remoteHermesSessions.$inferSelect;
-type Cached = { row: Session; view: NativeSessionView; pending: Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>; refreshedAt: number; refreshing?: Promise<NativeSessionView> };
+type Cached = { row: Session; view: NativeSessionView; pending: Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>; refreshedAt: number; eventRevision: number };
 export class NativeHub {
   readonly changes = new EventEmitter();
   readonly socket: DashboardSocket;
   readonly sessions = new Map<string, Cached>();
+  private refreshing = new Map<string, Promise<NativeSessionView>>();
   private idle?: NodeJS.Timeout;
   constructor(readonly ownerId: string, readonly connectionId: string) {
     this.socket = new DashboardSocket(async () => {
@@ -40,7 +41,7 @@ export class NativeHub {
   touch() {
     clearTimeout(this.idle);
     this.idle = setTimeout(() => {
-      if ([...this.sessions.values()].some(c => c.view.running || c.pending.size)) { this.touch(); return; }
+      if (this.refreshing.size || [...this.sessions.values()].some(c => c.row.status !== 'idle' || c.row.queueRequestId || c.view.running || c.pending.size)) { this.touch(); return; }
       this.close(); hubs.delete(`${this.ownerId}:${this.connectionId}`);
     }, 5 * 60_000);
     this.idle.unref();
@@ -48,24 +49,29 @@ export class NativeHub {
   close() { clearTimeout(this.idle); this.socket.close(); this.sessions.clear(); }
   async refresh(row: Session): Promise<NativeSessionView> {
     this.touch();
+    const inFlight = this.refreshing.get(row.id);
+    if (inFlight) return inFlight;
     const previous = this.sessions.get(row.id);
     if (!previous && this.sessions.size >= 32) {
-      const evict = [...this.sessions.values()].find(c => c.row.status === 'idle' && !c.view.running && !c.pending.size && !c.refreshing);
+      const evict = [...this.sessions.values()].find(c => c.row.status === 'idle' && !c.row.queueRequestId && !c.view.running && !c.pending.size && !this.refreshing.has(c.row.id));
       if (!evict) throw new HttpError(429, 'Too many Hermes chats are active. Finish a turn before opening another.');
       this.sessions.delete(evict.row.id);
     }
-    if (previous?.refreshing) return previous.refreshing;
-    const operation = this.refreshInner(row);
-    if (previous) previous.refreshing = operation;
-    try { return await operation; } finally { const current = this.sessions.get(row.id); if (current) current.refreshing = undefined; }
+    // Register before starting work: cold opens have no cached entry yet.
+    const operation = Promise.resolve().then(() => this.refreshInner(row));
+    this.refreshing.set(row.id, operation);
+    try { return await operation; } finally { this.refreshing.delete(row.id); }
   }
   private async refreshInner(row: Session) {
+    const [observed] = await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id));
+    if (!observed) throw new HttpError(404, 'Native Hermes chat not found.');
+    row = observed;
+    const eventRevision = this.sessions.get(row.id)?.eventRevision ?? 0;
     const snapshot = await this.socket.call('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, inline_images: false, close_on_disconnect: false });
     const runtimeId = typeof snapshot.session_id === 'string' ? snapshot.session_id : '';
     const storedId = typeof snapshot.stored_session_id === 'string' ? snapshot.stored_session_id : row.storedId;
     if (!runtimeId) throw new HttpError(502, 'Hermes did not return a native session identity.');
     const view = sessionView(row.id, row.profile, snapshot, this.socket.state);
-    view.uncertain = !view.running && (row.status === 'uncertain' || row.status === 'admitting');
     const pending = new Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>();
     for (const raw of Array.isArray(snapshot.open_requests) ? snapshot.open_requests : []) {
       const request = record(raw);
@@ -81,12 +87,33 @@ export class NativeHub {
       pending.set(prompt.id, { nativeId: prompt.id, prompt, params: { ...approval, fallbackApproval: true } });
     }
     view.prompts = [...pending.values()].map(p => p.prompt);
-    // Preserve write-ahead uncertainty until the backend confirms a turn is actually running.
-    const status = view.running ? pending.size ? 'waiting' : 'running'
-      : ['admitting', 'uncertain'].includes(row.status) ? row.status : 'idle';
-    await db.update(remoteHermesSessions).set({ runtimeId, storedId, title: view.title, status, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, row.id));
-    const current = { ...row, runtimeId, storedId, title: view.title, status } as Session;
-    this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now() });
+    const current = await db.transaction(async tx => {
+      const [latest] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
+      if (!latest) throw new HttpError(404, 'Native Hermes chat not found.');
+      // Only a snapshot started after the last mutation can settle that mutation.
+      if (latest.revision !== row.revision || (this.sessions.get(row.id)?.eventRevision ?? 0) !== eventRevision) return latest;
+      const status = view.running ? pending.size ? 'waiting' : 'running'
+        : ['admitting', 'uncertain'].includes(latest.status) ? latest.status : 'idle';
+      // Unacknowledged queues remain reserved even if an idle snapshot arrives.
+      const queueStatus = view.queued && latest.queueRequestId ? 'queued' : latest.queueStatus;
+      const clearQueue = latest.queueStatus === 'queued' && !view.queued;
+      return (await tx.update(remoteHermesSessions).set({ runtimeId, storedId, title: view.title, status,
+        admissionRequestId: status === 'idle' ? null : latest.admissionRequestId,
+        queueRequestId: clearQueue ? null : latest.queueRequestId, queueStatus: clearQueue ? null : queueStatus,
+        revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, row.id)).returning())[0];
+    });
+    view.queuePending = !!current.queueRequestId;
+    view.uncertain = current.status === 'admitting' || current.status === 'uncertain' || current.queueStatus === 'uncertain';
+    view.running ||= current.status === 'running' || current.status === 'waiting' || !!current.queueRequestId;
+    const cached = this.sessions.get(row.id);
+    if (cached && cached.eventRevision !== eventRevision) {
+      // Keep events received while the snapshot was being read (deltas and native requests too).
+      if (current.revision >= cached.row.revision) cached.row = current;
+      cached.view.queuePending = view.queuePending;
+      cached.view.uncertain ||= view.uncertain;
+      return cached.view;
+    }
+    this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now(), eventRevision });
     this.changes.emit(row.id);
     return view;
   }
@@ -101,6 +128,7 @@ export class NativeHub {
     const cached = [...this.sessions.values()].find(c => c.row.runtimeId === p.session_id);
     // A resume can emit a request before returning its runtime id. The snapshot replays that request.
     if (!cached) return;
+    cached.eventRevision++;
     if (frame.id !== undefined && frame.method && frame.method !== 'event') {
       const prompt = promptView(frame.id, frame.method, p);
       if (!prompt) { try { this.socket.answer(frame.id); } catch {} return; }
@@ -114,8 +142,9 @@ export class NativeHub {
     switch (p.type) {
       case 'message.start':
         cached.view.running = true; cached.view.partial = ''; cached.row.status = 'running';
-        cached.view.queued = '';
-        void db.update(remoteHermesSessions).set({ status: 'running', updatedAt: new Date() }).where(eq(remoteHermesSessions.id, cached.row.id)).catch(() => { cached.view.uncertain = true; });
+        // A start event can belong to the existing turn while a queue RPC is in flight.
+        // Authoritative resume snapshots settle acknowledged queues.
+        void db.update(remoteHermesSessions).set({ status: 'running', revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, cached.row.id)).catch(() => { cached.view.uncertain = true; });
         break;
       case 'message.delta': if (typeof payload.text === 'string') cached.view.partial = (cached.view.partial + payload.text).slice(0, 128000); break;
       case 'tool.start': {
@@ -128,18 +157,21 @@ export class NativeHub {
       }
       case 'request.cancel': cached.pending.delete(String(payload.id)); cached.view.prompts = [...cached.pending.values()].map(v => v.prompt); break;
       case 'message.complete':
-        cached.view.running = !!cached.view.queued; cached.view.uncertain = false;
+        cached.view.running = !!cached.view.queued || !!cached.row.queueRequestId;
+        cached.view.uncertain = cached.row.queueStatus === 'uncertain';
         cached.pending.clear(); cached.view.prompts = [];
         // Terminal notification settles the admitted turn even if its acknowledgement was lost.
-        cached.row.status = cached.view.queued ? 'running' : 'idle';
-        void db.update(remoteHermesSessions).set({ status: cached.row.status, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, cached.row.id)).then(() => this.refresh(cached.row)).catch(() => { cached.view.uncertain = true; });
+        if (cached.row.status !== 'admitting') cached.row.status = cached.view.running ? 'running' : 'idle';
+        void db.update(remoteHermesSessions).set({ status: sql`case when ${remoteHermesSessions.queueRequestId} is null then 'idle' else 'running' end`, admissionRequestId: null, revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
+          .where(and(eq(remoteHermesSessions.id, cached.row.id), ne(remoteHermesSessions.status, 'admitting')))
+          .then(() => this.refresh(cached.row)).catch(() => { cached.view.uncertain = true; });
         break;
       case 'session.info':
         if (typeof payload.model === 'string') cached.view.model = payload.model;
         if (typeof payload.provider === 'string') cached.view.provider = payload.provider;
         if (typeof payload.stored_session_id === 'string' && payload.stored_session_id && payload.stored_session_id !== cached.row.storedId) {
           cached.row.storedId = payload.stored_session_id;
-          void db.update(remoteHermesSessions).set({ storedId: payload.stored_session_id, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, cached.row.id)).catch(() => { cached.view.uncertain = true; });
+          void db.update(remoteHermesSessions).set({ storedId: payload.stored_session_id, revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, cached.row.id)).catch(() => { cached.view.uncertain = true; });
         }
         break;
     }
