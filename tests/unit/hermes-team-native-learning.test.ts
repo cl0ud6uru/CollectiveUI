@@ -81,6 +81,7 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   await db.update(schema.agentRuns).set({status:'running',holder:'crashed-worker'}).where(eq(schema.agentRuns.id,childId));
   expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe('queued');expect(await recoverTeamNativeLearning({routes})).toBe(0);
   await db.update(schema.agentRuns).set({status,holder:null}).where(eq(schema.agentRuns.id,childId));
+  if(status==='interrupted')vi.spyOn(Date,'now').mockReturnValue(Date.now()+16*60*1000);
   expect(await recoverTeamNativeLearning({routes})).toBe(0);expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe(status==='cancelled'?'cancelled':'needs_attention');
   expect(await recoverTeamNativeLearning({routes})).toBe(0);expect(fixture.enqueue).toHaveBeenCalledOnce();expect((await db.select().from(schema.agentRuns)).filter(r=>r.background)).toHaveLength(1);
  });

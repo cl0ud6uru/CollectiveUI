@@ -98,6 +98,12 @@ export async function scheduleTeamNativeLearning(contextId:string,dependencies:{
     await lockHandoff(tx,receipt);
     const [row]=await tx.select().from(hermesTeamLearningHandoffs).where(eq(hermesTeamLearningHandoffs.id,receipt.id));
     if(!row || !['pending','queued'].includes(row.state))return null;
+    // Classify an already terminal child before TTL/route checks can hide uncertain execution as expiry.
+    if(row.childRunId){const [child]=await tx.select().from(agentRuns).where(eq(agentRuns.id,row.childRunId));
+      if(!child || child.cancelRequestedAt || ['succeeded','failed','cancelled','interrupted'].includes(child.status)){
+        await tx.update(hermesTeamLearningHandoffs).set({state:child?.status==='cancelled' || child?.cancelRequestedAt?'cancelled':'needs_attention',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));return null;
+      }
+    }
     const [source]=await tx.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,row.sourceContextId));
     const [parent]=source?await tx.select().from(agentRuns).where(eq(agentRuns.id,source.runId)):[];
     if(parent && ['queued','running','waiting','waiting_tasks'].includes(parent.status) && !parent.cancelRequestedAt && row.expiresAt.getTime()>Date.now())return null;
