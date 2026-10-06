@@ -284,6 +284,20 @@ body {
   }
 }
 
+/* A delegate's card avatar floats while it waits (see DelegationCard). */
+.delegate-bob {
+  animation: delegate-bob 6s ease-in-out infinite;
+}
+@keyframes delegate-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .delegate-bob {
+    animation: none;
+  }
+}
+
 /* Long titles fade out at the row's edge (only text that reaches it fades, like ChatGPT). */
 .fade-end {
   mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
