@@ -29,4 +29,28 @@ describe('native paged browsing and history projections', () => {
     expect(await new DashboardClient('https://example.com',fetcher).sessions('default',100)).toEqual([{id:'old',title:'Old chat'}]);
     expect(new URL(String(fetcher.mock.calls[0][0])).searchParams.get('offset')).toBe('100');
   });
+  it('pages by the native window and total, independently of appended pinned chats', async () => {
+    const fetcher = vi.fn<typeof fetch>(async input => {
+      const offset = Number(new URL(String(input)).searchParams.get('offset'));
+      const page = Array.from({ length: Math.min(100, Math.max(0, 201 - offset)) }, (_, i) => ({ id: `chat-${offset + i}` }));
+      // Mirrors pinned Hermes list_sessions_rich(include_pinned=True): all pins
+      // absent from the SQL page are appended without consuming its offset.
+      if (!page.some(s => s.id === 'chat-200')) page.push({ id: 'chat-200' });
+      return Response.json({ sessions: page, total: 201, limit: 100, offset });
+    });
+    const client = new DashboardClient('https://example.com', fetcher);
+    const first = await client.sessionPage('default', 0);
+    expect(first.sessions).toHaveLength(101); expect(first.nextOffset).toBe(100); expect(first.hasMore).toBe(true);
+    const second = await client.sessionPage('default', first.nextOffset);
+    expect(second.sessions).toHaveLength(101); expect(second.sessions[0].id).toBe('chat-100'); expect(second.nextOffset).toBe(200); expect(second.hasMore).toBe(true);
+    const last = await client.sessionPage('default', second.nextOffset);
+    expect(last.sessions.map(s => s.id)).toEqual(['chat-200']); expect(last.hasMore).toBe(false);
+  });
+  it('keeps bounded pin backfill selectable but fails closed when pagination metadata is absent', async () => {
+    const client = new DashboardClient('https://example.com', async () => Response.json({ sessions: Array.from({ length: 101 }, (_, i) => ({ id: String(i) })) }));
+    expect(await client.sessions('default')).toHaveLength(101);
+    await expect(client.sessionPage('default')).rejects.toThrow('does not support paged');
+    const oversized = new DashboardClient('https://example.com', async () => Response.json({ sessions: Array.from({ length: 2001 }, (_, i) => ({ id: String(i) })), total: 2001 }));
+    await expect(oversized.sessionPage('default')).rejects.toThrow();
+  });
 });

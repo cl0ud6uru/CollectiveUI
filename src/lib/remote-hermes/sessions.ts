@@ -31,10 +31,10 @@ export async function browseNativeSessions(ownerId: string, connectionId: string
   const profile = profileName.parse(rawProfile);
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(p => p.name === profile)) throw new HttpError(404, 'Hermes profile not found.');
-  const sessions = await access.client.sessions(profile, offset);
+  const page = await access.client.sessionPage(profile, offset);
   const linked = await db.select({ id: remoteHermesSessions.id, storedId: remoteHermesSessions.storedId, title: remoteHermesSessions.title, profile: remoteHermesSessions.profile, status: remoteHermesSessions.status }).from(remoteHermesSessions)
     .where(and(eq(remoteHermesSessions.connectionId, connectionId), eq(remoteHermesSessions.profile, profile))).orderBy(desc(remoteHermesSessions.updatedAt));
-  return { sessions, linked, nextOffset: offset + sessions.length, hasMore: sessions.length === 100 };
+  return { ...page, linked };
 }
 export async function openNativeSession(ownerId: string, connectionId: string, rawProfile: string, storedId?: string, offset = 0) {
   pageOffset.parse(offset);

@@ -61,9 +61,20 @@ export class DashboardClient {
   async websocketTicket() {
     return z.object({ ticket: text }).parse(await this.call('/api/auth/ws-ticket', {})).ticket;
   }
-  async sessions(profile: string, offset = 0) {
+  private async readSessionPage(profile: string, offset: number) {
     const query = new URLSearchParams({ profile, limit: '100', offset: String(offset), archived: 'include', order: 'recent' });
-    return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(100) }).parse(await this.call(`/api/sessions?${query}`)).sessions;
+    // Native pages append pinned sessions outside the requested 100-row window.
+    // Keep the foundation's bounded backfill support; never count pins as page rows.
+    return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(2000), total: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).parse(await this.call(`/api/sessions?${query}`));
+  }
+  async sessions(profile: string, offset = 0) {
+    return (await this.readSessionPage(profile, offset)).sessions;
+  }
+  async sessionPage(profile: string, offset = 0) {
+    const result = await this.readSessionPage(profile, offset);
+    if (result.total === undefined) throw new HttpError(501, 'This Hermes version does not support paged conversations.');
+    const nextOffset = offset + 100;
+    return { sessions: result.sessions, nextOffset, hasMore: nextOffset < result.total };
   }
   async history(profile: string, storedId: string, offset: number) {
     if (!storedId || storedId === '.' || storedId === '..') throw new HttpError(400, 'Invalid Hermes session identity.');
