@@ -11,6 +11,7 @@ sessions_file = home / 'fixture-sessions.json'
 sessions = json.loads(sessions_file.read_text()) if sessions_file.exists() else {}
 live = {}
 pending = {}
+queued = {}
 def send(v):
     print(json.dumps(dict(jsonrpc='2.0', **v)), flush=True)
 def event(sid, kind, payload):
@@ -29,7 +30,7 @@ for line in sys.stdin:
     if method == 'ping':
         reply(rid, pong=True)
     elif method == 'client.capabilities':
-        reply(rid, server_requests=['approval', 'clarify'])
+        reply(rid, server_requests=['approval', 'clarify', 'secret', 'sudo', 'vault.unlock_prompt', 'vault.save_login', 'vault.code'])
     elif method == 'gateway.capabilities':
         reply(rid, per_session_exclusive_submit=True)
     elif method == 'session.create':
@@ -50,8 +51,37 @@ for line in sys.stdin:
             sid = 'resumed-' + stored
             live[sid] = stored
             reply(rid, session_id=sid, session_key=stored, status='idle', running=False, info=dict(desktop_contract=8, stored_session_id=stored))
+    elif method == 'collective.session.settled':
+        reply(rid, session_id=sid, settled=sid in live and not pending and not queued)
+    elif method == 'session.activate':
+        if queued.get(sid) == 'Race fixture queue' and not pending:
+            queued.pop(sid)
+            event(sid, 'message.start', {})
+            pending['srq-input'] = (sid, 'protected')
+            send(dict(id='srq-input', method='secret', params=dict(session_id=sid, prompt='Enter synthetic protected value')))
+        if sid not in live:
+            send(dict(id=rid, error=dict(code=4008, message='No such session')))
+        else:
+            reply(rid, session_id=sid, running=bool(pending), info=dict(model='fixture-model', provider='fixture', usage=dict(input=12, output=3, context_used=200, context_max=1000, context_percent=20)))
+    elif method in ('image.attach_bytes', 'pdf.attach', 'file.attach'):
+        with (home / 'fixture-attachments.jsonl').open('a') as log:
+            log.write(json.dumps(dict(method=method, name=p.get('filename') or p.get('name'), content=p.get('content_base64') or p.get('data_url'))) + '\n')
+        if p.get('filename') == 'slow.png':
+            time.sleep(0.25)
+        reply(rid, attached=True, ref_text='@fixture.txt' if method == 'file.attach' else '', path='fixture-image' if method == 'image.attach_bytes' else '')
+    elif method == 'session.steer':
+        with (home / 'fixture-controls.jsonl').open('a') as log:
+            log.write(json.dumps(dict(method=method, text=p.get('text'))) + '\n')
+        if p.get('text') == 'followup correction':
+            queued[sid] = p.get('text')
+        reply(rid, status='rejected' if p.get('text') == 'rejected correction' else 'queued')
     elif method == 'session.usage':
         reply(rid, input=2, output=1)
+    elif method == 'prompt.submit' and p.get('queued'):
+        with (home / 'fixture-controls.jsonl').open('a') as log:
+            log.write(json.dumps(dict(method=method, text=p.get('text'), queued=True)) + '\n')
+        queued[sid] = p.get('text', '')
+        reply(rid, status='queued')
     elif method == 'prompt.submit':
         text = p.get('text', '')
         with (home / 'fixture-prompts.jsonl').open('a') as log:
@@ -61,8 +91,18 @@ for line in sys.stdin:
             event(sid, 'tool.start', dict(tool_id='native-tool', name='terminal', args=dict(command='echo approved')))
             pending['srq-1'] = sid
             send(dict(id='srq-1', method='approval', params=dict(session_id=sid, command='echo approved', description='Fixture approval', request_id='native-request', choices=['once', 'deny'])))
+        elif text in ('clarify', 'single', 'protected'):
+            pending['srq-input'] = (sid, text)
+            params = dict(session_id=sid)
+            if text == 'clarify':
+                params['questions'] = [dict(qid='q-one', question='Which fixture?', choices=['One', 'Two'])]
+            elif text == 'single':
+                params.update(question='Which single fixture?', choices=['One', 'Two'])
+            else:
+                params.update(prompt='Enter synthetic protected value', env_var='FIXTURE_KEY')
+            send(dict(id='srq-input', method='clarify' if text in ('clarify', 'single') else 'secret', params=params))
         elif text == 'unsupported':
-            send(dict(id='srq-unsupported', method='secret', params=dict(session_id=sid)))
+            send(dict(id='srq-unsupported', method='window.read', params=dict(session_id=sid)))
         elif text == 'slow':
             pass
         elif text in ('descendant', 'orphan'):
@@ -88,12 +128,25 @@ for line in sys.stdin:
         # Deliberately no completion: native deferred cancellation may emit only an error.
         event(sid, 'error', dict(message='Turn cancelled before agent ready'))
     elif method is None and rid in pending:
-        sid = pending.pop(rid)
+        item = pending.pop(rid)
+        if isinstance(item, tuple):
+            sid, kind = item
+            result = f.get('result', {})
+            valid = (result.get('answers') == {'q-one': 'One'} if kind == 'clarify' else result.get('answer') == 'One' if kind == 'single' else result.get('value') == 'synthetic-protected')
+            event(sid, 'request.cancel', dict(id=rid, method='clarify' if kind in ('clarify', 'single') else 'secret', reason='resolved'))
+            complete(sid, 'Native input accepted' if valid else 'Native input skipped')
+            continue
+        sid = item
         choice = f.get('result', {}).get('choice', 'unsupported')
         with (home / 'fixture-approvals.jsonl').open('a') as log:
             log.write(json.dumps(dict(id=rid, choice=choice)) + '\n')
         event(sid, 'request.cancel', dict(id=rid, method='approval', reason='resolved'))
         event(sid, 'tool.complete', dict(tool_id='native-tool', name='terminal', result=dict(output=choice)))
         complete(sid, 'Tool ' + choice)
+        if sid in queued:
+            queued.pop(sid)
+            event(sid, 'message.start', {})
+            pending['srq-input'] = (sid, 'protected')
+            send(dict(id='srq-input', method='secret', params=dict(session_id=sid, prompt='Enter synthetic protected value')))
     elif method:
         send(dict(id=rid, error=dict(code=-32601, message='Unknown fixture method')))
