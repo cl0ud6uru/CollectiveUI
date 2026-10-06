@@ -573,6 +573,8 @@ export const bots = pgTable("bots", {
   enabled: boolean("enabled").notNull().default(true),
   /** Service bots are admin-managed, MCP-only and usable only in direct chats after publication. */
   executionMode: text("execution_mode").$type<"caller" | "service">().notNull().default("caller"),
+  /** Admin-managed native Team Bot definition, never a personal broker binding. */
+  hermesTeam: boolean("hermes_team").notNull().default(false),
   /** Explicit opt-in to discovery by the installation coordinator; never an audience or tool grant. */
   coordinatorEligible: boolean("coordinator_eligible").notNull().default(false),
   /** Suggested delegator for new bots; never an audience or tool grant. */
@@ -1407,3 +1409,81 @@ export const liveActivities = pgTable("live_activities", {
   uniqueIndex("live_activities_run_idx").on(t.sessionId, t.runId),
   index("live_activities_due_idx").on(t.nextAttemptAt),
 ]);
+
+// ---------------------------------------------------------------------------
+// Hermes Team Bots: definitions reuse the existing bot/audience catalog.
+// Retained runtime records intentionally restrict deletion; offboarding is a tombstone.
+// ---------------------------------------------------------------------------
+export const hermesTeamDefinitions = pgTable('hermes_team_definitions', {
+  botId: text('bot_id').primaryKey().references(() => bots.id, { onDelete: 'restrict' }),
+  enabled: boolean('enabled').notNull().default(false),
+  version: integer('version').notNull().default(1),
+  publishedRevision: integer('published_revision').notNull().default(0),
+  modelPolicy: jsonb('model_policy').$type<import('../lib/hermes-team/types').TeamModelPolicy>().notNull(),
+  toolPolicy: jsonb('tool_policy').$type<import('../lib/hermes-team/types').TeamToolPolicy>().notNull().default({ capabilities: [] }),
+  updatedBy: text('updated_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [check('hermes_team_definition_version_check', sql`${t.version} > 0 and ${t.publishedRevision} >= 0`)]);
+export const hermesTeamMaintainers = pgTable('hermes_team_maintainers', {
+  botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+}, t => [primaryKey({ columns: [t.botId, t.userId] })]);
+export const hermesTeamProfiles = pgTable('hermes_team_profiles', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  /** NULL for shared admin working state; members retain their server-derived owner. */
+  userId: text('user_id').references(() => users.id, { onDelete: 'restrict' }),
+  mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
+  ownerKey: text('owner_key').notNull(),
+  requestId: text('request_id').notNull(),
+  binding: jsonb('binding').$type<Record<string, unknown>>(),
+  state: text('state').$type<import('../lib/hermes-team/types').TeamProfileState>().notNull().default('preparing'),
+  installedRevision: integer('installed_revision'),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_profile_member_idx').on(t.botId, t.userId).where(sql`${t.mode} = 'member'`),
+  uniqueIndex('hermes_team_profile_admin_idx').on(t.botId).where(sql`${t.mode} = 'admin'`),
+  check('hermes_team_profile_mode_check', sql`(${t.mode} = 'member' and ${t.userId} is not null and ${t.ownerKey} = ${t.userId}) or (${t.mode} = 'admin' and ${t.userId} is null and ${t.ownerKey} = 'team-admin:' || ${t.botId})`),
+  check('hermes_team_profile_state_check', sql`${t.state} in ('preparing','connection_needed','ready','updating','needs_attention','revoked')`)]);
+export const hermesTeamChats = pgTable('hermes_team_chats', {
+  conversationId: text('conversation_id').primaryKey().references(() => conversations.id, { onDelete: 'cascade' }),
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
+}, t => [check('hermes_team_chat_mode_check', sql`${t.mode} in ('member','admin')`)]);
+export const hermesTeamRevisions = pgTable('hermes_team_revisions', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  revision: integer('revision').notNull(), manifestHash: text('manifest_hash').notNull(),
+  /** Immutable bounded resources only; no native profile/auth/history/memory clone. */
+  manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull(),
+  releaseNote: text('release_note').notNull(), publishedBy: text('published_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: createdAt(),
+}, t => [uniqueIndex('hermes_team_revision_idx').on(t.botId, t.revision), check('hermes_team_revision_positive_check', sql`${t.revision} > 0`)]);
+export const hermesTeamCaptures = pgTable('hermes_team_captures', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  capturedBy: text('captured_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  expectedRevision: integer('expected_revision').notNull(), definitionVersion: integer('definition_version').notNull(),
+  manifestHash: text('manifest_hash').notNull(), manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(),
+});
+export const hermesTeamResourceStates = pgTable('hermes_team_resource_states', {
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  packageId: text('package_id').notNull(), installedHash: text('installed_hash'),
+  override: text('override').$type<'modified' | 'deleted' | 'keep' | null>(),
+  conflictRevision: integer('conflict_revision'), updatedAt: updatedAt(),
+}, t => [primaryKey({ columns: [t.profileId, t.packageId] }), check('hermes_team_override_check', sql`${t.override} is null or ${t.override} in ('modified','deleted','keep')`)]);
+export const hermesTeamOperations = pgTable('hermes_team_operations', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  profileId: text('profile_id').references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  actorId: text('actor_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  requestId: text('request_id').notNull(), kind: text('kind').$type<'provision' | 'publish' | 'update' | 'revoke' | 'resolve' | 'rollback'>().notNull(),
+  digest: text('digest').notNull(), state: text('state').$type<'pending' | 'complete' | 'needs_attention'>().notNull().default('pending'),
+  result: jsonb('result').$type<Record<string, unknown>>(), createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_operation_receipt_idx').on(t.botId, t.actorId, t.requestId),
+  check('hermes_team_operation_kind_check', sql`${t.kind} in ('provision','publish','update','revoke','resolve','rollback')`),
+  check('hermes_team_operation_state_check', sql`${t.state} in ('pending','complete','needs_attention')`)]);
+export const hermesTeamRunAttribution = pgTable('hermes_team_run_attribution', {
+  runId: text('run_id').primaryKey().references(() => agentRuns.id, { onDelete: 'cascade' }),
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  botId: text('bot_id').notNull(), actorId: text('actor_id').notNull(),
+  definitionVersion: integer('definition_version').notNull(), teamRevision: integer('team_revision'),
+  mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
+  modelSource: text('model_source').$type<'admin' | 'personal'>().notNull(),
+});

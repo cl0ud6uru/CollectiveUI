@@ -71,6 +71,8 @@ export async function authorizeDockerStream(p: Principal, botId: string) {
 /** Historical/synthetic share tokens cannot turn private native transcripts into shared snapshots. */
 export async function isPersonalHermesConversation(conv: { botId: string | null; appId: string | null }) {
   if (conv.botId) {
+    const [team] = await db.select({ team: bots.hermesTeam }).from(bots).where(eq(bots.id, conv.botId));
+    if (team?.team) return true;
     const [row] = await db.select({ app: aiApps }).from(bots).innerJoin(aiApps, eq(aiApps.id, bots.appId)).where(eq(bots.id, conv.botId));
     if (row && isDockerHermes(row.app)) return true;
   }

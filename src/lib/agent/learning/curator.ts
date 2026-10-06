@@ -1,9 +1,10 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { agentRuns, aiApps, botLearnings, bots, routines } from "@/db/schema";
+import { agentRuns, aiApps, botLearnings, bots, hermesTeamDefinitions, routines } from "@/db/schema";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { getSetting } from "@/lib/settings";
 import { learningIsEnabled, recordLearningRevision } from "./store";
+import { botUsesNativeLearning } from "@/lib/hermes-team/learning";
 
 /** Deterministic maintenance: no inference, deletion, or changes to authored skills/policies. */
 export async function curateLearnedSkills(now = new Date()) {
@@ -12,16 +13,26 @@ export async function curateLearnedSkills(now = new Date()) {
     if (settings.learningEnabled === false || settings.learningMaintenanceEnabled === false || settings.learningRequireApproval === true || settings.disabledTools.includes("skills")) return 0;
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('native-learning-curator'))`);
     const cutoff = new Date(now.getTime() - 30 * 86400000);
-    const candidates = await tx.select().from(botLearnings).where(and(
+    const eligible = and(
       eq(botLearnings.status, "active"), eq(botLearnings.kind, "procedure"), eq(botLearnings.pinned, false),
       ...(settings.learningConsolidationEnabled ? [] : [lt(botLearnings.createdAt, cutoff), lt(botLearnings.updatedAt, cutoff), sql`(${botLearnings.lastUsedAt} is null or ${botLearnings.lastUsedAt} < ${cutoff})`]),
-    )).orderBy(sql`${botLearnings.lastCuratedAt} asc nulls first`).limit(100).for("update", { skipLocked: true });
+    );
+    // Filter known native contexts before the bounded scan so retained Team lessons cannot
+    // starve ordinary maintenance. Recheck after locking the bot before any lesson mutation.
+    const candidates = await tx.select({ id: botLearnings.id, botId: botLearnings.botId }).from(botLearnings)
+      .innerJoin(bots, eq(bots.id, botLearnings.botId)).innerJoin(aiApps, eq(aiApps.id, bots.appId))
+      .where(and(eligible, eq(bots.enabled, true), eq(bots.hermesTeam, false), ne(bots.executionMode, "service"), ne(aiApps.provider, "hermes"),
+        sql`not exists (select 1 from ${hermesTeamDefinitions} where ${hermesTeamDefinitions.botId} = ${bots.id})`))
+      .orderBy(sql`${botLearnings.lastCuratedAt} asc nulls first`).limit(100);
     let archived = 0;
-    for (const row of candidates) {
-      await tx.update(botLearnings).set({ lastCuratedAt: now }).where(eq(botLearnings.id, row.id));
-      const [bot] = await tx.select().from(bots).where(eq(bots.id, row.botId));
+    for (const candidate of candidates) {
+      const [bot] = await tx.select().from(bots).where(eq(bots.id, candidate.botId)).for("share");
+      if (!bot?.enabled || bot.executionMode === "service" || await botUsesNativeLearning(candidate.botId, tx)) continue;
       const [app] = bot?.appId ? await tx.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
-      if (!bot?.enabled || bot.executionMode === "service" || !app || app.provider === "hermes") continue;
+      if (!app || app.provider === "hermes") continue;
+      const [row] = await tx.select().from(botLearnings).where(and(eq(botLearnings.id, candidate.id), eligible)).for("update", { skipLocked: true });
+      if (!row) continue;
+      await tx.update(botLearnings).set({ lastCuratedAt: now }).where(eq(botLearnings.id, row.id));
       if (row.userId) {
         const p = await loadPrincipal(row.userId, tx);
         if (!p || !(await learningIsEnabled(p, tx))) continue;

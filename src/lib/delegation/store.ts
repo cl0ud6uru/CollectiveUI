@@ -26,6 +26,7 @@ async function authorizePath(userId: string, sessionVersion: number, path: Deleg
     if (edge.mode === "coordinator" && (index !== 0 || edge.from !== source.botId)) throw new HttpError(403, "Invalid coordinator task ancestry.");
     const from = await getUsableBot(principal, edge.from, q);
     const to = await getUsableBot(principal, edge.to, q);
+    if (from.hermesTeam || to.hermesTeam) throw new HttpError(403, "Team Bots support direct native chats only.");
     if (from.executionMode === "service" || to.executionMode === "service") throw new HttpError(403, "Service bots can only run in direct chats.");
     for (const bot of [from, to]) {
       const [app] = bot.appId ? await q.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];

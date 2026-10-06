@@ -20,4 +20,4 @@ export { capabilitiesFor, providerContextFor, resolveEmbeddingModel, resolveMode
 export type { InstructionStyle, ModelCapabilities, ResolvedModel, ResolveModelOptions } from "./resolve";
 export { testConnection, type ConnectionTestInput, type ConnectionTestResult } from "./test-connection";
 export { generateTitle, type TitleContext } from "./title";
-export { newUsageScope, type UsageScope } from "./usage";
+export { newUsageScope, restoreUsageAfterRollback, type UsageScope } from "./usage";

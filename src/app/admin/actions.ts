@@ -259,7 +259,14 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
 
 export async function setBotEnabled(botId: string, enabled: boolean) {
   const p = await requireAdmin();
-  await db.update(bots).set({ enabled, revision: sql`${bots.revision} + 1`, publishedRevision: null, publishedConfigHash: null }).where(eq(bots.id, botId));
+  await db.transaction(async tx => {
+    const [bot] = await tx.select().from(bots).where(eq(bots.id, botId)).for('update');
+    if (bot?.hermesTeam) {
+      const { authorizeTeam } = await import('@/lib/hermes-team/store');
+      await authorizeTeam(p, botId, 'admin', tx, true);
+    }
+    await tx.update(bots).set({ enabled, revision: sql`${bots.revision} + 1`, publishedRevision: null, publishedConfigHash: null }).where(eq(bots.id, botId));
+  });
   await audit(p.user.id, enabled ? "bot.enable" : "bot.disable", botId);
   done();
 }

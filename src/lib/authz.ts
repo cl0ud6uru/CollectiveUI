@@ -129,7 +129,8 @@ export async function listAccessibleBots(p: Principal, q: DbOrTx = db): Promise<
     .from(bots)
     .where(and(eq(bots.enabled, true), botVisibleTo(p, false)))
     .orderBy(asc(bots.name));
-  return withoutUnavailablePlanBots(p, rows, q);
+  const { teamBotsEnabled } = await import('@/lib/hermes-team/policy');
+  return withoutUnavailablePlanBots(p, rows.filter(b => !b.hermesTeam || teamBotsEnabled()), q);
 }
 
 /**
@@ -161,6 +162,10 @@ export async function getAccessibleBot(p: Principal, botId: string, q: DbOrTx = 
 export async function getUsableBot(p: Principal, botId: string, q: DbOrTx = db): Promise<Bot> {
   const bot = await getAccessibleBot(p, botId, q);
   if (!bot.enabled) throw forbidden("This bot is disabled");
+  if (bot.hermesTeam) {
+    const { authorizeTeam } = await import('@/lib/hermes-team/store');
+    await authorizeTeam(p, bot.id, 'member', q);
+  }
   await assertServicePublished(bot, q);
   return bot;
 }
@@ -207,5 +212,10 @@ export async function getOwnedConversation(p: Principal, conversationId: string,
     .from(conversations)
     .where(and(eq(conversations.id, conversationId), eq(conversations.userId, p.user.id)));
   if (!conv) throw notFound("Conversation not found");
+  const { teamUsesNativeLearning } = await import('@/lib/hermes-team/learning');
+  if (await teamUsesNativeLearning(conv.id, q)) {
+    const { authorizeTeamConversation } = await import('@/lib/hermes-team/conversations');
+    await authorizeTeamConversation(p, conv.id, q);
+  }
   return conv;
 }

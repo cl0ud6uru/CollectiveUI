@@ -267,6 +267,13 @@
       "when": 1791322905381,
       "tag": "0037_learning_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791323598537,
+      "tag": "0038_hermes_team_bots",
+      "breakpoints": true
     }
   ]
 }
