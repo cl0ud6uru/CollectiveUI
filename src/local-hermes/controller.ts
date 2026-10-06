@@ -24,7 +24,7 @@ type LocalRun = { id: string; receipt: string; sessionKey: string; nativeId?: st
   output?: string; error?: string; events: LocalEvent[]; bytes: number; seq: number;
   inputs: Map<string, { nativeId: string | number; prompt: ManagedPrompt }>; queued?: string; queueClaim?: boolean; waitingQueuedStart?: boolean; submitted?: boolean;
   approvals: Map<string, { nativeId: string | number; toolId?: string }>; tools: Map<string, string>; syntheticApproval?: string;
-  terminalCandidate?: { epoch: number; usage: RpcObject }; terminalEpoch?: number; settling?: boolean; controlAdmissions?: number;
+  terminalCandidate?: { epoch: number; status: "completed" | "failed" | "cancelled"; error?: string; usage: RpcObject }; terminalEpoch?: number; settling?: boolean; controlAdmissions?: number;
   usageBefore?: RpcObject; runtime: RpcObject; timer?: NodeJS.Timeout; cancelTimer?: NodeJS.Timeout };
 
 export class LocalError extends Error { constructor(public status: number, message: string) { super(message); } }
@@ -351,13 +351,12 @@ export class LocalController {
         }
         if (string(usage.model)) r.runtime.model = usage.model;
         if (r.syntheticApproval) { this.emit(r, { event: "tool.completed", tool: "approval", tool_id: r.syntheticApproval, preview: JSON.stringify({ status: "settled", note: "Native approval interaction ended. See Hermes tool results for execution outcome." }) }); r.syntheticApproval = undefined; }
-        if (payload.status === "complete" && !payload.partial) {
-          if (r.queued || r.queueClaim) r.waitingQueuedStart = true;
-          r.terminalCandidate = { epoch: r.terminalEpoch ?? 0, usage: counts };
-          void this.settleNative(r); // message.complete precedes native cleanup and follow-up admission.
-        }
-        else if (payload.status === "interrupted") this.finish(r, "cancelled");
-        else this.finish(r, "failed", "The native Hermes turn did not complete. Check its profile logs and provider configuration.");
+        const status = payload.status === "complete" && !payload.partial ? "completed" : payload.status === "interrupted" ? "cancelled" : "failed";
+        if (r.queued || r.queueClaim) r.waitingQueuedStart = true;
+        r.terminalCandidate = { epoch: r.terminalEpoch ?? 0, status, usage: counts,
+          ...(status === "failed" ? { error: "The native Hermes turn did not complete. Check its profile logs and provider configuration." } : {}) };
+        // Failed and interrupted turns can also dispatch accepted native follow-ups after this event.
+        void this.settleNative(r);
         break;
       }
     }
@@ -372,8 +371,12 @@ export class LocalController {
         if (!candidate) break;
         const proof = await rpc.call('collective.session.settled', { session_id: r.nativeId }, 5000);
         if (proof.session_id !== r.nativeId || typeof proof.settled !== 'boolean') throw new Error('Invalid settlement proof');
-        if (proof.settled && r.terminalCandidate === candidate && !r.cancel && !r.controlAdmissions && !r.queueClaim) {
-          this.finish(r, 'completed', undefined, { usage: candidate.usage }); break;
+        if (proof.settled && r.terminalCandidate === candidate && !r.controlAdmissions) {
+          // Hermes may acknowledge a queued self-copy without retaining it. A fresh worker proof
+          // confirms there is no successor; the local admission claim must not outlive that proof.
+          r.queued = undefined; r.queueClaim = false; r.waitingQueuedStart = false;
+          const status = r.cancel ? 'cancelled' : candidate.status;
+          this.finish(r, status, r.cancel ? undefined : candidate.error, status === 'completed' ? { usage: candidate.usage } : {}); break;
         }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
