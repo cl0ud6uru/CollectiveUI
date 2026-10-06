@@ -33,6 +33,8 @@ export async function recordTeamRunAdmission(p: Principal, runId: string, purpos
     }, routes);
     if (decision.status !== 'ready') throw new HttpError(decision.status === 'blocked' ? 403 : 409, decision.message);
     if (!profile.binding || profile.state !== 'ready') throw new HttpError(409, 'Finish preparing or recovering this private Team profile before starting model work.');
+    if (decision.attribution.billing === 'admin' && (!receipts.usageReceiptId || !receipts.gatewayGrantId))
+      throw new HttpError(409, 'An attributed usage reservation and server gateway grant are required before starting admin-provided model work.');
     const values = { runId, profileId: profile.id, botId: run.botId, actorId: auth.principal.user.id, definitionVersion: auth.definition.version,
       teamRevision: profile.installedRevision, mode: profile.mode, modelSource: decision.attribution.billing };
     const route = routes.find(r => r.id === decision.attribution.routeId)!;

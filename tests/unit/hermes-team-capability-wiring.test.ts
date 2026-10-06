@@ -270,6 +270,9 @@ describe('Team Bot server capability policy persistence and lifecycle wiring', (
     await configureTeam(admin, 'team', { ...config, expectedVersion: 1, modelPolicy: { mode: 'admin_provided', adminRouteId: route.id } });
     await runFor(alice, 'admitted');
     await db.update(schema.hermesTeamProfiles).set({ state: 'ready', binding: { runtimeId: 'synthetic-private-runtime', profile: 'server-derived-alice' } }).where(eq(schema.hermesTeamProfiles.userId, 'alice'));
+    for (const missingReceipt of [{}, { usageReceiptId: 'synthetic-reply-usage' }, { gatewayGrantId: 'synthetic-gateway-grant' }])
+      await expect(recordTeamRunAdmission(alice, 'admitted', 'reply', [route], missingReceipt)).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(schema.hermesTeamRunAttribution)).toEqual([]);
     for (let n = 0; n < 2; n++) expect(await recordTeamRunAdmission(alice, 'admitted', 'reply', [route], { usageReceiptId: 'synthetic-reply-usage', gatewayGrantId: 'synthetic-gateway-grant' })).toMatchObject({ userId: 'alice', botId: 'team', billing: 'admin', policyVersion: 2 });
     await recordTeamRunAdmission(alice, 'admitted', 'learning', [route], { usageReceiptId: 'synthetic-learning-usage', gatewayGrantId: 'synthetic-gateway-grant' });
     expect(await db.select().from(schema.hermesTeamRunAttribution)).toHaveLength(1);
