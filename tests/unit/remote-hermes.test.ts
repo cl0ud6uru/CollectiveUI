@@ -120,3 +120,20 @@ describe('Hermes native dashboard authentication', () => {
     await expect(new DashboardClient('https://example.com', transport).status()).rejects.toThrow('page instead of JSON');
   });
 });
+
+
+describe('Hermes pinned conversation backfill', () => {
+  it('preserves older pinned entries appended beyond the requested recent page', async () => {
+    const sessions = Array.from({ length: 101 }, (_, i) => ({ id: `session-${i}`, title: `Synthetic ${i}` }));
+    const transport = vi.fn(async (input: RequestInfo | URL) => {
+      expect(new URL(String(input)).searchParams.get('limit')).toBe('100');
+      return Response.json({ sessions });
+    }) as unknown as typeof fetch;
+    const result = await new DashboardClient('https://example.com', transport, { mode: 'sessionToken', sessionToken: 'synthetic' }).sessions('default');
+    expect(result).toEqual(sessions); expect(result.at(-1)?.id).toBe('session-100');
+  });
+  it('still bounds oversized session collections', async () => {
+    const transport = (async () => Response.json({ sessions: Array.from({ length: 2001 }, (_, i) => ({ id: `session-${i}` })) })) as typeof fetch;
+    await expect(new DashboardClient('https://example.com', transport).sessions('default')).rejects.toThrow();
+  });
+});

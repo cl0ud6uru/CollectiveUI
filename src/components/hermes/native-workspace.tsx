@@ -26,6 +26,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   const [error, setError] = useState(initialError); const [busy, setBusy] = useState(false);
   const [details, setDetails] = useState<{ title: string; text: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const selection = useRef(0);
   const endpoint = `/api/hermes/${encodeURIComponent(connectionId)}`;
   const enabled = snapshot?.admissionAllowed ?? allowed;
   const request = useCallback(async (input: Operation, attachments: File[] = []) => {
@@ -41,9 +42,10 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   }, [endpoint]);
   const loadBrowse = useCallback(async (signal?: AbortSignal, offset = 0) => {
     if (!allowed) return;
+    const generation = selection.current;
     const response = await fetch(`${endpoint}?${new URLSearchParams({ operation: 'browse', profile, offset: String(offset) })}`, { cache: 'no-store', signal });
     const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not load Hermes conversations.');
-    setBrowse(previous => ({ ...data, sessions: offset ? [...previous.sessions, ...data.sessions.filter((item: { id: string }) => !previous.sessions.some(s => s.id === item.id)).map((item: { id: string }) => ({ ...item, offset }))] : data.sessions.map((item: { id: string }) => ({ ...item, offset })) }));
+    if (!signal?.aborted && generation === selection.current) setBrowse(previous => ({ ...data, sessions: offset ? [...previous.sessions, ...data.sessions.filter((item: { id: string }) => !previous.sessions.some(s => s.id === item.id)).map((item: { id: string }) => ({ ...item, offset }))] : data.sessions.map((item: { id: string }) => ({ ...item, offset })) }));
   }, [allowed, endpoint, profile]);
   useEffect(() => {
     const abort = new AbortController();
@@ -52,27 +54,35 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   }, [loadBrowse]);
   useEffect(() => {
     if (!sessionId) return;
+    const generation = selection.current;
     const abort = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
         const response = await fetch(`${endpoint}?${new URLSearchParams({ operation: 'snapshot', sessionId: sessionId! })}`, { cache: 'no-store', signal: abort.signal });
         const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not recover this Hermes conversation.');
-        if (!abort.signal.aborted) setSnapshot(data);
-      } catch (e) { if (!abort.signal.aborted) setError(e instanceof Error ? e.message : 'Connection interrupted.'); }
-      finally { if (!abort.signal.aborted) timer = setTimeout(poll, document.hidden ? 5000 : 1000); }
+        if (!abort.signal.aborted && generation === selection.current) setSnapshot(data);
+      } catch (e) { if (!abort.signal.aborted && generation === selection.current) setError(e instanceof Error ? e.message : 'Connection interrupted.'); }
+      finally { if (!abort.signal.aborted && generation === selection.current) timer = setTimeout(poll, document.hidden ? 5000 : 1000); }
     }
     void poll(); return () => { abort.abort(); clearTimeout(timer); };
   }, [endpoint, sessionId]);
   async function action(input: Operation, attachments: File[] = []) {
     if (busy) return;
+    const generation = selection.current;
     setBusy(true); setError('');
-    try { return await request({ sessionId, ...input }, attachments); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Hermes operation failed.'); }
+    try { const result = await request({ sessionId, ...input }, attachments); return generation === selection.current ? result : undefined; }
+    catch (e) { if (generation === selection.current) setError(e instanceof Error ? e.message : 'Hermes operation failed.'); }
     finally { setBusy(false); }
   }
-  function select(id: string, selectedProfile = profile) {
-    setOlder([]); setHistoryOffset(0); setHistoryMore(true); setSnapshot(null); setSessionId(id); setProfile(selectedProfile); setDetails(null);
-    const url = new URL(location.href); url.searchParams.set('session', id); history.replaceState(null, '', url);
+  function select(id: string | null, selectedProfile = profile) {
+    selection.current++;
+    setOlder([]); setHistoryOffset(0); setHistoryMore(true); setHistoryBusy(false);
+    setSnapshot(null); setSessionId(id); setProfile(selectedProfile); setDetails(null); setError('');
+    setText(''); setFiles([]); if (fileInput.current) fileInput.current.value = '';
+    if (selectedProfile !== profile) setBrowse({ sessions: [], linked: saved });
+    const url = new URL(location.href);
+    if (id) url.searchParams.set('session', id); else url.searchParams.delete('session');
+    history.replaceState(null, '', url);
   }
   async function open(storedId?: string, offset = 0) {
     const result = await action({ operation: 'open', profile, storedId, offset });
@@ -89,39 +99,37 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   async function loadOlder() {
     if (!sessionId || historyBusy) return;
     setHistoryBusy(true); setError('');
-    const selected = sessionId;
+    const generation = selection.current;
     try {
       const response = await fetch(`${endpoint}?${new URLSearchParams({ operation: 'history', sessionId, offset: String(historyOffset) })}`, { cache: 'no-store' });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Could not load older messages.');
-      // Ignore a page requested for a chat the user has since left.
-      if (new URL(location.href).searchParams.get('session') !== selected) return;
+      // A returned-to chat is a new selection too; discard its departed request.
+      if (generation !== selection.current) return;
       setOlder(previous => [...data.messages.filter((m: { id: string }) => !previous.some(p => p.id === m.id)), ...previous]);
       setHistoryOffset(data.nextOffset); setHistoryMore(data.hasMore);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not load older messages.'); }
-    finally { setHistoryBusy(false); }
+    } catch (e) { if (generation === selection.current) setError(e instanceof Error ? e.message : 'Could not load older messages.'); }
+    finally { if (generation === selection.current) setHistoryBusy(false); }
   }
   async function inspect(operation: 'catalog' | 'context') {
     if (!sessionId) return;
+    const generation = selection.current;
     setBusy(true); setError('');
     try {
       const response = await fetch(`${endpoint}?${new URLSearchParams({ operation, sessionId })}`, { cache: 'no-store' });
       const data = await response.json(); if (!response.ok) throw new Error(data.error || 'This Hermes feature is unavailable.');
-      setDetails({ title: operation === 'catalog' ? 'Hermes commands and skills' : 'Hermes context', text: JSON.stringify(data, null, 2) });
-    } catch (e) { setError(e instanceof Error ? e.message : 'Could not load Hermes information.'); }
+      if (generation === selection.current) setDetails({ title: operation === 'catalog' ? 'Hermes commands and skills' : 'Hermes context', text: JSON.stringify(data, null, 2) });
+    } catch (e) { if (generation === selection.current) setError(e instanceof Error ? e.message : 'Could not load Hermes information.'); }
     finally { setBusy(false); }
   }
   return <div className="grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
     <aside className="space-y-3">
       <Link href="/hermes" className="text-sm text-muted underline">All Hermes connections</Link>
-      <Select aria-label="Hermes profile" value={profile} disabled={busy || !enabled} onChange={e => {
-        setProfile(e.target.value); setSessionId(null); setSnapshot(null); setOlder([]); setHistoryOffset(0); setHistoryMore(true); setDetails(null);
-        const url = new URL(location.href); url.searchParams.delete('session'); history.replaceState(null, '', url);
-      }}>
+      <Select aria-label="Hermes profile" value={profile} disabled={busy || !enabled} onChange={e => select(null, e.target.value)}>
         {(profiles.length ? profiles : [...new Set(saved.map(s => s.profile))].map(name => ({ name, botTitle: '' }))).map(p => <option key={p.name} value={p.name}>{p.botTitle || p.name}</option>)}
       </Select>
       <Button disabled={busy || !enabled} onClick={() => void open()}>New Hermes chat</Button>
       <nav aria-label="Hermes conversations" className="max-h-[65vh] space-y-1 overflow-y-auto">
-        {browse.linked.filter(s => s.profile === profile).map(s => <button key={s.id} className={`block w-full rounded-lg p-2 text-left text-sm hover:bg-hover ${sessionId === s.id ? 'bg-surface-2' : ''}`} onClick={() => select(s.id, s.profile)}>{s.title || 'Hermes chat'}{s.status !== 'idle' && <span className="block text-xs text-muted">In progress</span>}</button>)}
+        {browse.linked.filter(s => s.profile === profile).map(s => <button key={s.id} disabled={busy} className={`block w-full rounded-lg p-2 text-left text-sm hover:bg-hover ${sessionId === s.id ? 'bg-surface-2' : ''}`} onClick={() => select(s.id, s.profile)}>{s.title || 'Hermes chat'}{s.status !== 'idle' && <span className="block text-xs text-muted">In progress</span>}</button>)}
         {browse.sessions.filter(s => !browse.linked.some(l => l.storedId === s.id)).map(s => <button key={s.id} disabled={busy || !enabled} className="block w-full rounded-lg p-2 text-left text-sm hover:bg-hover disabled:opacity-50" onClick={() => void open(s.id, s.offset ?? 0)}>{s.title || 'Saved Hermes chat'}</button>)}
       </nav>
       {browse.hasMore && <Button size="sm" variant="outline" disabled={busy || !enabled} onClick={() => {
@@ -149,13 +157,14 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
         </div>
         {snapshot.prompts.map(p => <PromptCard key={p.id} prompt={p} busy={busy} answer={async answer => { await action({ operation: 'answer', requestId: p.id, answer }); }} />)}
         {snapshot.queued && <p className="text-sm text-muted">Queued: {snapshot.queued}</p>}
+        {snapshot.queuePending && !snapshot.queued && <p role="status" className="text-sm text-muted">Checking the next-message reservation…</p>}
         {details && <details open className="rounded-lg border border-border p-3"><summary>{details.title}</summary><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs">{details.text}</pre></details>}
         <form className="space-y-3 rounded-xl border border-border p-4" onSubmit={e => { e.preventDefault(); void send(text.startsWith('/') && !files.length ? 'command' : 'submit'); }}>
           <Textarea aria-label="Message Hermes" value={text} maxLength={64000} rows={3} placeholder={snapshot.running ? 'A correction or your next message…' : 'Message Hermes, or enter a /command…'} onChange={e => setText(e.target.value)} disabled={busy || !enabled || snapshot.uncertain} />
           <input ref={fileInput} aria-label="Attach files to Hermes" type="file" multiple disabled={busy || !enabled || snapshot.running || snapshot.uncertain} onChange={e => setFiles(Array.from(e.target.files ?? []))} className="text-sm" />
           {files.length > 0 && <p className="text-xs text-muted">{files.map(f => f.name).join(', ')}</p>}
           <div className="flex flex-wrap gap-2">
-            {snapshot.running ? <><Button variant="outline" disabled={busy || !enabled || !text.trim() || files.length > 0} onClick={() => void send('steer')}>Steer current turn</Button><Button disabled={busy || !enabled || !text.trim() || files.length > 0 || !!snapshot.queued} onClick={() => void send('queue')}>Queue next message</Button></> : <Button type="submit" disabled={busy || !enabled || snapshot.uncertain || (!text.trim() && !files.length)}>{busy ? 'Sending…' : text.startsWith('/') && !files.length ? 'Run command' : 'Send'}</Button>}
+            {snapshot.running ? <><Button variant="outline" disabled={busy || !enabled || snapshot.uncertain || !text.trim() || files.length > 0} onClick={() => void send('steer')}>Steer current turn</Button><Button disabled={busy || !enabled || snapshot.uncertain || !text.trim() || files.length > 0 || !!snapshot.queued || snapshot.queuePending} onClick={() => void send('queue')}>Queue next message</Button></> : <Button type="submit" disabled={busy || !enabled || snapshot.uncertain || (!text.trim() && !files.length)}>{busy ? 'Sending…' : text.startsWith('/') && !files.length ? 'Run command' : 'Send'}</Button>}
           </div>
         </form>
       </>}

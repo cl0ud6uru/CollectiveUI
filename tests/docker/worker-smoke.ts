@@ -30,7 +30,7 @@ async function main() {
   const shippedDev = Object.entries(lock.packages).filter(([file, pkg]) =>
     (pkg.dev || (pkg.devOptional && !declarationPeers.has(file))) && existsSync(file));
   assert.deepEqual(shippedDev, [], "no dev-only/optional development tooling may be shipped");
-  for (const name of ["vitest", "eslint", "drizzle-kit", "typescript", "@playwright/test"]) {
+  for (const name of ["vitest", "eslint", "drizzle-kit", "typescript", "@playwright/test", "@electric-sql/pglite"]) {
     assert.throws(() => runtimeRequire.resolve(`${name}/package.json`), { code: "MODULE_NOT_FOUND" });
   }
   for (const directory of ["/app/tests", "/app/dev", "/app/.github"]) assert(!existsSync(directory));

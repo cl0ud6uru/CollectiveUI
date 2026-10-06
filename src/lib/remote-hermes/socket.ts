@@ -5,12 +5,19 @@ export type RpcRecord = Record<string, unknown>;
 export type NativeFrame = { jsonrpc: '2.0'; id?: string | number; method?: string; params?: RpcRecord; result?: RpcRecord; error?: { code?: number } };
 export const record = (v: unknown): RpcRecord => v && typeof v === 'object' && !Array.isArray(v) ? v as RpcRecord : {};
 export type SocketState = 'connecting' | 'connected' | 'reconnecting' | 'auth_required' | 'disconnected';
+/** A remote JSON-RPC rejection is distinct from a lost transport acknowledgement. */
+export class NativeRpcError extends HttpError {
+  constructor(readonly code: number | undefined) {
+    super(code === -32601 ? 501 : 502, code === -32601 ? 'This Hermes version does not support that feature.' : 'Hermes refused this operation. Check its native settings.');
+  }
+}
 
 /** One server-owned native socket. RPCs are never resent after an uncertain transport failure. */
 export class DashboardSocket {
   private ws?: WebSocket;
   private connecting?: Promise<void>;
   private ready = false;
+  private transportReady = false;
   private wanted = false;
   private everConnected = false;
   private sequence = 0;
@@ -46,7 +53,7 @@ export class DashboardSocket {
           clearTimeout(timeout);
           reject(new HttpError(code === 4401 ? 401 : 502, code === 4401 ? 'Sign into Hermes again.' : 'The Hermes socket disconnected.'));
           if (this.ws !== ws) return;
-          this.ready = false; this.ws = undefined; clearInterval(this.heartbeat);
+          this.ready = false; this.transportReady = false; this.ws = undefined; clearInterval(this.heartbeat);
           this.rejectPending();
           if (code === 4401 || code === 4403) { this.wanted = false; this.setState('auth_required'); }
           else { this.setState(this.wanted ? 'reconnecting' : 'disconnected'); this.schedule(); }
@@ -57,27 +64,30 @@ export class DashboardSocket {
           try { f = JSON.parse(data.toString()); } catch { ws.terminate(); return; }
           if (!f || f.jsonrpc !== '2.0') { ws.terminate(); return; }
           if (f.method === 'event' && f.params?.type === 'gateway.ready') {
-            clearTimeout(timeout); this.ready = true; resolve(); return;
+            clearTimeout(timeout); this.transportReady = true; resolve(); return;
           }
           if (f.method) { this.frame(f); return; }
           if (typeof f.id !== 'number') return;
           const pending = this.pending.get(f.id);
           if (!pending) return;
           this.pending.delete(f.id); clearTimeout(pending.timer);
-          if (f.error) pending.reject(new HttpError(f.error.code === -32601 ? 501 : 502, f.error.code === -32601 ? 'This Hermes version does not support that feature.' : 'Hermes refused this operation. Check its native settings.'));
+          if (f.error) pending.reject(new NativeRpcError(f.error.code));
           else pending.resolve(record(f.result));
         });
       });
-      const capabilities = await this.call('client.capabilities', { server_requests: true });
+      const capabilities = await this.send('client.capabilities', { server_requests: true }, 30_000);
       this.serverRequests = Array.isArray(capabilities.server_requests) ? capabilities.server_requests.filter((v): v is string => typeof v === 'string') : [];
       if (!this.serverRequests.includes('approval')) throw new HttpError(501, 'This Hermes version does not support native approval prompts. Update Hermes before chatting.');
+      this.ready = true;
       const wasReconnect = this.everConnected;
       this.everConnected = true; this.attempt = 0; this.setState('connected');
       this.heartbeat = setInterval(() => { void this.call('ping', {}, 10_000).catch(() => ws.terminate()); }, 20_000);
       this.heartbeat.unref();
-      if (wasReconnect) await this.reconnected();
+      // Recovery may join a refresh already waiting on this connect(). Do not make
+      // completion of the connection depend on completion of that same refresh.
+      if (wasReconnect) void this.reconnected().catch(() => {});
     } catch (e) {
-      this.ready = false; this.ws?.terminate();
+      this.ready = false; this.transportReady = false; this.ws?.terminate();
       if (e instanceof HttpError && [401, 403, 501].includes(e.status)) { this.wanted = false; this.setState(e.status === 501 ? 'disconnected' : 'auth_required'); }
       else this.schedule();
       throw e;
@@ -92,6 +102,10 @@ export class DashboardSocket {
   async call(method: string, params: RpcRecord = {}, timeoutMs = 30_000): Promise<RpcRecord> {
     await this.connect();
     if (!this.ws || !this.ready) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
+    return this.send(method, params, timeoutMs);
+  }
+  private send(method: string, params: RpcRecord, timeoutMs: number): Promise<RpcRecord> {
+    if (!this.ws || !this.transportReady || this.ws.readyState !== WebSocket.OPEN) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
     if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
@@ -111,5 +125,5 @@ export class DashboardSocket {
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new HttpError(502, 'Hermes disconnected. The operation may have been accepted; refresh instead of resending it.')); }
     this.pending.clear();
   }
-  close() { this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.ws?.terminate(); this.setState('disconnected'); }
+  close() { this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
 }

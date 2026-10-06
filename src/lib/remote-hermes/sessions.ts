@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, type Tx } from '@/db';
 import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, settings } from '@/db/schema';
@@ -9,7 +9,7 @@ import { getSetting } from '@/lib/settings';
 import { assertRemoteHermesAdmission } from './policy';
 import { remoteAccess } from './store';
 import { nativeHub } from './hub';
-import { record, type RpcRecord } from './socket';
+import { NativeRpcError, record, type RpcRecord } from './socket';
 
 export const profileName = z.string().min(1).max(200).regex(/^[a-zA-Z0-9_.-]+$/);
 export type NativeUpload = { name: string; type: string; bytes: Buffer };
@@ -98,14 +98,13 @@ export async function submitNativePrompt(ownerId: string, connectionId: string, 
       if (receipt.digest !== contentDigest) throw new HttpError(409, 'This message receipt belongs to different content.');
       return false;
     }
-    if (!current || active(current.status) || view.running) throw new HttpError(409, 'Finish or stop the native turn before sending another message. Use steering to correct an active turn.');
+    if (!current || active(current.status) || current.queueRequestId || view.running) throw new HttpError(409, 'Finish or stop the native turn before sending another message. Use steering to correct an active turn.');
     await tx.insert(remoteHermesTurns).values({ id: newId(), sessionId, requestId, digest: contentDigest });
-    await tx.update(remoteHermesSessions).set({ status: 'admitting', admissionAt: new Date(), updatedAt: new Date() }).where(eq(remoteHermesSessions.id, sessionId));
-    return true;
+    return (await tx.update(remoteHermesSessions).set({ status: 'admitting', admissionRequestId: requestId, revision: sql`${remoteHermesSessions.revision} + 1`, admissionAt: new Date(), updatedAt: new Date() }).where(eq(remoteHermesSessions.id, sessionId)).returning())[0];
   });
   if (!accepted) return { accepted: true, duplicate: true };
   const cached = hub.sessions.get(row.id)!;
-  cached.row.status = 'admitting'; cached.view.uncertain = true;
+  cached.row = accepted; cached.view.uncertain = true;
   const params = { profile: row.profile, session_id: cached.row.runtimeId };
   let outgoing = text;
   const imagePaths: string[] = [];
@@ -126,15 +125,22 @@ export async function submitNativePrompt(ownerId: string, connectionId: string, 
     }
     const result = await hub.socket.call('prompt.submit', { ...params, text: outgoing });
     if (!['streaming', 'queued'].includes(String(result.status))) throw new HttpError(409, 'Hermes did not confirm turn admission. Refresh this session before continuing.');
-    await db.update(remoteHermesSessions).set({ status: 'running', updatedAt: new Date() }).where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.status, 'admitting')));
-    if (cached.row.status === 'admitting') cached.row.status = 'running';
-    cached.view.uncertain = false;
+    await settlePrompt('running');
     return { accepted: true, duplicate: false };
   } catch (error) {
     for (const imagePath of imagePaths) { try { await hub.socket.call('image.detach', { ...params, path: imagePath }); } catch {} }
-    await db.update(remoteHermesSessions).set({ status: 'uncertain', updatedAt: new Date() }).where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.status, 'admitting')));
-    if (cached.row.status === 'admitting') { cached.row.status = 'uncertain'; cached.view.uncertain = true; }
+    await settlePrompt('uncertain');
     throw error;
+  }
+  async function settlePrompt(status: 'running' | 'uncertain') {
+    const [updated] = await db.update(remoteHermesSessions).set({ status, revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
+      .where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.status, 'admitting'), eq(remoteHermesSessions.admissionRequestId, requestId))).returning();
+    const current = hub.sessions.get(row.id);
+    if (updated && current && current.row.admissionRequestId === requestId && updated.revision >= current.row.revision) {
+      current.row = updated; current.view.uncertain = status === 'uncertain';
+    }
+    // message.start may have confirmed this request before its RPC reply arrived.
+    if (status === 'running' && current?.row.admissionRequestId === requestId) current.view.uncertain = current.row.queueStatus === 'uncertain';
   }
 }
 export async function nativeControl(ownerId: string, connectionId: string, sessionId: string, operation: 'stop' | 'steer' | 'answer' | 'catalog' | 'context' | 'command' | 'queue', input: RpcRecord = {}) {
@@ -155,47 +161,77 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   if (operation === 'catalog') return hub.socket.call('commands.catalog', params);
   if (operation === 'context') return hub.socket.call('session.context_breakdown', params);
   if (operation === 'queue') {
-    if (!cached.view.running || cached.view.queued) throw new HttpError(409, 'Queue one message while a native turn is running.');
     const text = z.string().min(1).max(4000).parse(input.text);
     const requestId = z.string().uuid().parse(input.requestId);
     const digest = createHash('sha256').update('queue:').update(text).digest('hex');
-    const duplicate = await reserveControl(row.id, requestId, digest, false);
-    if (duplicate) return { accepted: true, duplicate: true };
-    const result = await hub.socket.call('prompt.submit', { ...params, text, queued: true });
-    if (!['queued', 'streaming'].includes(String(result.status))) throw new HttpError(409, 'Hermes did not confirm the queued message. Refresh before trying again.');
-    cached.view.queued = text;
-    return { accepted: true };
+    const reservation = await reserveControl(row.id, requestId, digest, false, cached.view.running && !cached.view.queued);
+    if (!reservation) return { accepted: true, duplicate: true };
+    cached.row = reservation; cached.view.queuePending = true;
+    try {
+      const result = await hub.socket.call('prompt.submit', { ...params, text, queued: true });
+      if (!['queued', 'streaming'].includes(String(result.status))) throw new HttpError(409, 'Hermes did not confirm the queued message. Refresh before trying again.');
+      if (await settleQueue('queued')) {
+        const current = hub.sessions.get(row.id)!;
+        if (current.row.queueRequestId === requestId && current.row.queueStatus === 'queued') current.view.queued = result.status === 'queued' ? text : '';
+      }
+      return { accepted: true };
+    } catch (error) {
+      // Only method-not-found proves dispatch never occurred. Other errors may follow side effects.
+      await settleQueue(error instanceof NativeRpcError && error.code === -32601 ? null : 'uncertain');
+      throw error;
+    }
+    async function settleQueue(queueStatus: 'queued' | 'uncertain' | null) {
+      const [updated] = await db.update(remoteHermesSessions).set({ queueStatus, queueRequestId: queueStatus ? requestId : null,
+        revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
+        .where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.queueRequestId, requestId))).returning();
+      const current = hub.sessions.get(row.id);
+      if (updated && current && current.row.queueRequestId === requestId && updated.revision >= current.row.revision) {
+        current.row = updated; current.view.queuePending = !!updated.queueRequestId; current.view.uncertain = queueStatus === 'uncertain'; return true;
+      }
+      return false;
+    }
   }
   const command = z.string().min(1).max(2000).parse(input.text).replace(/^\//, '');
-  if (cached.view.running || cached.row.status !== 'idle') throw new HttpError(409, 'Finish the native turn before running a command.');
   const requestId = z.string().uuid().parse(input.requestId);
-  if (await reserveControl(row.id, requestId, createHash('sha256').update('command:').update(command).digest('hex'), true)) return { output: 'This command was already submitted. Refresh its native session to see the outcome.' };
-  cached.row.status = 'admitting'; cached.view.uncertain = true;
+  const reservation = await reserveControl(row.id, requestId, createHash('sha256').update('command:').update(command).digest('hex'), true, !cached.view.running);
+  if (!reservation) return { output: 'This command was already submitted. Refresh its native session to see the outcome.' };
+  cached.row = reservation; cached.view.uncertain = true;
   // Native dispatch results that request inference are returned as composer prefills, never auto-submitted.
   let result: RpcRecord;
-  try { result = await hub.socket.call('slash.exec', { ...params, command }, 60_000); }
-  catch (error) {
-    if (!(error instanceof HttpError) || error.status !== 501) throw error;
-    const [name, ...words] = command.split(/\s+/);
-    result = await hub.socket.call('command.dispatch', { ...params, name, arg: words.join(' ') }, 60_000);
+  try {
+    try { result = await hub.socket.call('slash.exec', { ...params, command }, 60_000); }
+    catch (error) {
+      if (!(error instanceof NativeRpcError) || error.code !== -32601) throw error;
+      const [name, ...words] = command.split(/\s+/);
+      result = await hub.socket.call('command.dispatch', { ...params, name, arg: words.join(' ') }, 60_000);
+    }
+  } catch (error) {
+    await settleCommand(error instanceof NativeRpcError && error.code === -32601 ? 'idle' : 'uncertain');
+    throw error;
   }
-  const snapshot = await hub.refresh({ ...cached.row, status: 'running' });
-  await db.update(remoteHermesSessions).set({ status: snapshot.running ? 'running' : 'idle', updatedAt: new Date() }).where(eq(remoteHermesSessions.id, sessionId));
+  await settleCommand('idle');
+  await hub.refresh(hub.sessions.get(row.id)!.row);
   return { type: result.type, output: result.output ?? result.display ?? result.notice, prefill: ['send', 'skill', 'prefill'].includes(String(result.type)) ? result.message : undefined };
+  async function settleCommand(status: 'idle' | 'uncertain') {
+    const [updated] = await db.update(remoteHermesSessions).set({ status, admissionRequestId: status === 'idle' ? null : requestId, revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
+      .where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.status, 'admitting'), eq(remoteHermesSessions.admissionRequestId, requestId))).returning();
+    const current = hub.sessions.get(row.id);
+    if (updated && current && current.row.admissionRequestId === requestId && updated.revision >= current.row.revision) { current.row = updated; current.view.uncertain = status === 'uncertain'; }
+  }
 }
 
-async function reserveControl(sessionId: string, requestId: string, digest: string, requireIdle: boolean) {
+async function reserveControl(sessionId: string, requestId: string, digest: string, requireIdle: boolean, nativeAllows: boolean) {
   return db.transaction(async tx => {
     await admission(tx);
     const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, sessionId)).for('update');
     const [receipt] = await tx.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, sessionId), eq(remoteHermesTurns.requestId, requestId)));
     if (receipt) {
       if (receipt.digest !== digest) throw new HttpError(409, 'This receipt belongs to another native operation.');
-      return true;
+      return null;
     }
-    if (!current || (requireIdle && current.status !== 'idle')) throw new HttpError(409, 'This native session has unfinished work.');
+    if (!current || !nativeAllows || current.queueRequestId || (requireIdle ? current.status !== 'idle' : !['running', 'waiting'].includes(current.status))) throw new HttpError(409, 'This native session has unfinished work.');
     await tx.insert(remoteHermesTurns).values({ id: newId(), sessionId, requestId, digest });
-    if (requireIdle) await tx.update(remoteHermesSessions).set({ status: 'admitting', admissionAt: new Date(), updatedAt: new Date() }).where(eq(remoteHermesSessions.id, sessionId));
-    return false;
+    return (await tx.update(remoteHermesSessions).set({ ...(requireIdle ? { status: 'admitting' as const, admissionRequestId: requestId, admissionAt: new Date() }
+      : { queueRequestId: requestId, queueStatus: 'admitting' as const }), revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, sessionId)).returning())[0];
   });
 }
