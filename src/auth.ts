@@ -4,13 +4,19 @@ import { assertSecurityOrigin, readBinding } from "@/lib/auth/factors";
 import NextAuth, { CredentialsSignin, type NextAuthConfig } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
-import { authenticateLdap, normalizeUsername } from "@/lib/auth/ldap";
+import { authenticateLdapPassword } from "@/lib/auth/ldap-account";
+import { db } from "@/db";
+import { localSecurity, users } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { hasLocalFactors } from "@/lib/auth/factor-state";
+import { lockAccounts } from "@/lib/auth/local";
+import { randomToken } from "@/lib/crypto";
 import { syncUserOnSignIn } from "@/lib/auth/groups";
 import { fetchEntraGroupsViaGraph, saveEntraTokens } from "@/lib/auth/entra";
 
 import { entraEnabled, ldapEnabled, localEnabled } from "@/lib/auth/config";
 import { authenticateLocal } from "@/lib/auth/local";
-import { allowPasswordAttempt, allowAccountAttempt, allowSecurityRequest } from "@/lib/auth/throttle";
+import { allowSecurityRequest } from "@/lib/auth/throttle";
 import { sessionState, absoluteSessionDeadline } from "@/lib/auth/session-state";
 export { entraEnabled } from "@/lib/auth/config";
 
@@ -37,29 +43,28 @@ if (ldapEnabled()) {
     Credentials({
       id: "ldap",
       name: "Company account",
-      credentials: { username: { label: "Username" }, password: { label: "Password", type: "password" } },
+      credentials: { ticket: { label: "Verified sign-in ticket" }, username: { label: "Username" }, password: { label: "Password", type: "password" } },
       async authorize(credentials, request) {
         if (!ldapEnabled()) throw new InvalidLogin();
-        const username = String(credentials?.username ?? "");
-        const password = String(credentials?.password ?? "");
-        if (username.length > 254 || password.length > 512 || !await allowPasswordAttempt("ldap", normalizeUsername(username).toLowerCase(), request.headers)) throw new InvalidLogin();
-        let ldapUser;
         try {
-          ldapUser = await authenticateLdap(username, password, undefined, dn => allowAccountAttempt("ldap-dn", dn.toLowerCase()));
-        } catch {
-          console.warn("[auth] LDAP authentication failed");
-          throw new InvalidLogin();
-        }
-        if (!ldapUser) throw new InvalidLogin();
-        const user = await syncUserOnSignIn({
-          upn: ldapUser.upn,
-          name: ldapUser.name,
-          email: ldapUser.email,
-          source: "ldap",
-          groups: ldapUser.groups.map((g) => ({ externalId: g.dn, displayName: g.name })),
-        });
-        if (user.disabled) throw new InvalidLogin();
-        return { id: user.id, name: user.name, email: user.email, sessionVersion: user.sessionVersion };
+          assertSecurityOrigin(request.headers);
+          if (typeof credentials?.ticket === "string") {
+            if (!await allowSecurityRequest(request.headers)) throw new InvalidLogin();
+            return await consumeLoginTicket(credentials.ticket, readBinding(request.headers), "ldap");
+          }
+          const verified = await authenticateLdapPassword(String(credentials?.username ?? ""), String(credentials?.password ?? ""), request.headers);
+          if (!verified) throw new InvalidLogin();
+          return await db.transaction(async tx => {
+            await lockAccounts(tx);
+            const [user] = await tx.select().from(users).where(eq(users.id, verified.user.id));
+            if (!user || user.disabled || user.sessionVersion !== verified.user.sessionVersion || await hasLocalFactors(user.id, tx)) throw new InvalidLogin();
+            if (verified.identity.identity) {
+              await tx.insert(localSecurity).values({ userId: user.id, userHandle: randomToken(), ldapDn: verified.identity.dn, ldapIdentity: verified.identity.identity })
+                .onConflictDoUpdate({ target: localSecurity.userId, set: { ldapDn: verified.identity.dn, ldapIdentity: verified.identity.identity } });
+            }
+            return { id: user.id, name: user.name, email: user.email, sessionVersion: user.sessionVersion };
+          });
+        } catch { throw new InvalidLogin(); }
       },
     }),
   );

@@ -6,7 +6,10 @@ import { db, type DbOrTx, type Tx } from "@/db";
 import { auditLog, authFlows, localCredentials, localPasskeys, localRecoveryCodes, localSecurity, users } from "@/db/schema";
 import { randomToken, sha256Hex } from "@/lib/crypto";
 import { authenticateLocalPassword, lockAccounts } from "./local";
-import { localEnabled } from "./config";
+import { localEnabled, ldapEnabled } from "./config";
+import { authenticateLdapPassword } from "./ldap-account";
+import { readLdapIdentity, authenticateLdapAtBinding, type LdapUser } from "./ldap";
+import { syncUserOnSignIn } from "./groups";
 import { allowFactorAttempt, allowPasswordAttempt } from "./throttle";
 import { hasLocalFactors } from "./factor-state";
 import { hashPassword, validateNewPassword, verifyPassword } from "./password";
@@ -22,6 +25,13 @@ function crossOriginResponse(data: string) {
 function fail(): never { throw new SecurityError(); }
 function operation(value: string): asserts value is SecurityOperation { if (!operations.includes(value as SecurityOperation)) fail(); }
 const digestBinding = (value: string) => { if (value.length < 20 || value.length > 200) fail(); return sha256Hex(`binding|${value}`); };
+export type FactorProvider = "local" | "ldap";
+const enabled = (provider: FactorProvider) => provider === "ldap" ? ldapEnabled() : localEnabled();
+const providerOf = (flow: Flow): FactorProvider => flow.data.provider === "ldap" ? "ldap" : "local";
+const accountProvider = (user: { identityRealm: string }): FactorProvider => user.identityRealm === "local" ? "local" : "ldap";
+function ldapOperation(user: { identityRealm: string }, op: string) {
+  if (user.identityRealm !== "local" && ["password", "add-totp", "remove-totp"].includes(op)) fail();
+}
 type Account = { id: string; sessionVersion: number };
 type Flow = typeof authFlows.$inferSelect;
 
@@ -42,12 +52,23 @@ async function take(token: string, purpose: string, binding: string): Promise<Fl
   return flow;
 }
 async function account(tx: Tx, expected: Account, permanent = false) {
-  if (!localEnabled()) fail();
   const [row] = await tx.select({ user: users, credential: localCredentials }).from(users)
-    .innerJoin(localCredentials, eq(localCredentials.userId, users.id)).where(eq(users.id, expected.id));
-  if (!row || row.user.identityRealm !== "local" || row.user.disabled || row.user.sessionVersion !== expected.sessionVersion ||
-    (row.credential.temporaryExpiresAt && row.credential.temporaryExpiresAt <= new Date()) || (permanent && row.credential.mustChangePassword)) fail();
-  return row;
+    .leftJoin(localCredentials, eq(localCredentials.userId, users.id)).where(eq(users.id, expected.id));
+  if (!row || row.user.disabled || row.user.sessionVersion !== expected.sessionVersion) fail();
+  if (row.user.identityRealm === "local") {
+    if (!localEnabled() || !row.credential || (row.credential.temporaryExpiresAt && row.credential.temporaryExpiresAt <= new Date()) ||
+      (permanent && row.credential.mustChangePassword)) fail();
+    return { user: row.user, credential: row.credential };
+  }
+  if (!ldapEnabled()) fail();
+  const [p] = await tx.select().from(localSecurity).where(eq(localSecurity.userId, expected.id));
+  if (p?.ldapDn && p.ldapIdentity) {
+    const identity = await readLdapIdentity(p.ldapDn, p.ldapIdentity);
+    if (!identity || identity.upn !== row.user.upn) fail();
+    const synced = await syncUserOnSignIn({ ...identity, source: "ldap", groups: identity.groups.map(g => ({ externalId: g.dn, displayName: g.name })) }, tx);
+    if (synced.id !== row.user.id || synced.disabled) fail();
+  } else if (row.user.authSource !== "ldap") fail();
+  return { user: row.user, credential: null };
 }
 function flowAccount(flow: Flow): Account { if (!flow.userId || flow.sessionVersion === null) fail(); return { id: flow.userId, sessionVersion: flow.sessionVersion }; }
 async function locked<T>(expected: Account, fn: (tx: Tx, row: Awaited<ReturnType<typeof account>>) => Promise<T>, permanent = false) {
@@ -89,43 +110,54 @@ async function verifyCode(tx: Tx, id: string, code: string, recovery: boolean) {
   }
 }
 
-export async function beginPasswordLogin(username: string, password: string, headers: Headers, binding: string) {
-  const user = await authenticateLocalPassword(username, password, headers);
+export async function beginPasswordLogin(username: string, password: string, headers: Headers, binding: string, provider: FactorProvider = "local") {
+  const verified = provider === "ldap" ? await authenticateLdapPassword(username, password, headers) : null;
+  const user = provider === "ldap" ? verified?.user : await authenticateLocalPassword(username, password, headers);
   if (!user) fail();
   return locked(user, async (tx, { credential }) => {
-    if (!await hasLocalFactors(user.id, tx)) return { mustChangePassword: credential.mustChangePassword, ticket: await issue(tx, "login-ticket", binding, user, {}, 60) };
-    return { flow: await issue(tx, "password-factor", binding, user) };
+    if (verified?.identity.identity && !await hasLocalFactors(user.id, tx)) {
+      await profile(tx, user.id);
+      await tx.update(localSecurity).set({ ldapDn: verified.identity.dn, ldapIdentity: verified.identity.identity }).where(eq(localSecurity.userId, user.id));
+    }
+    if (!await hasLocalFactors(user.id, tx)) return { mustChangePassword: credential?.mustChangePassword ?? false, ticket: await issue(tx, "login-ticket", binding, user, { provider }, 60) };
+    return { flow: await issue(tx, "password-factor", binding, user, { provider }) };
   });
 }
-export async function finishPasswordLogin(token: string, code: string, recovery: boolean, binding: string) {
+export async function finishPasswordLogin(token: string, code: string, recovery: boolean, binding: string, provider: FactorProvider = "local") {
   const flow = await take(token, "password-factor", binding), expected = flowAccount(flow);
-  if (!await allowFactorAttempt(expected.id)) fail();
-  return locked(expected, async (tx, { credential }) => {
+  if (providerOf(flow) !== provider || !enabled(provider) || !await allowFactorAttempt(expected.id)) fail();
+  return locked(expected, async (tx, { credential, user }) => {
+    if (accountProvider(user) !== provider) fail();
     if (!await hasLocalFactors(expected.id, tx)) fail();
     await verifyCode(tx, expected.id, code, recovery);
     await audit(tx, expected.id, "password_factor_login");
     const codes = await replenishFinalRecoveryCode(tx, expected.id, recovery);
     const current = { id: expected.id, sessionVersion: expected.sessionVersion + (codes ? 1 : 0) };
-    return { codes, recoveryRotated: !!codes, mustChangePassword: credential.mustChangePassword, ticket: await issue(tx, "login-ticket", binding, current, {}, 60) };
+    return { codes, recoveryRotated: !!codes, mustChangePassword: credential?.mustChangePassword ?? false, ticket: await issue(tx, "login-ticket", binding, current, { provider }, 60) };
   });
 }
-export async function consumeLoginTicket(token: string, binding: string) {
+export async function consumeLoginTicket(token: string, binding: string, provider: FactorProvider = "local") {
   const flow = await take(token, "login-ticket", binding);
+  if (providerOf(flow) !== provider || !enabled(provider)) fail();
   return locked(flowAccount(flow), async (tx, { user }) => {
+    if (accountProvider(user) !== provider) fail();
     await tx.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
     return { id: user.id, name: user.name, email: user.email, sessionVersion: user.sessionVersion };
   });
 }
-export async function beginPasskey(binding: string, actor?: SecurityActor, op?: string) {
+export async function beginPasskey(binding: string, actor?: SecurityActor, op?: string, provider: FactorProvider = "local") {
   const config = securityConfig();
-  if (!localEnabled()) fail();
+  if (!actor && !enabled(provider)) fail();
   const options = await generateAuthenticationOptions({ rpID: config.rpID, userVerification: "required" });
-  const data = { challenge: options.challenge, origin: config.origin, rpID: config.rpID, op: op ?? "" };
+  const data = { challenge: options.challenge, origin: config.origin, rpID: config.rpID, op: op ?? "", provider };
   if (actor) {
     operation(op ?? "");
     // Destructive method removal must prove the remaining password path is usable.
     if (op === "disable" || op === "remove-passkey") fail();
-    return locked(actor, async tx => ({ options, flow: await issue(tx, "passkey-reauth", actor.sessionId, actor, data) }), op !== "password");
+    return locked(actor, async (tx, { user }) => {
+      ldapOperation(user, op!);
+      return { options, flow: await issue(tx, "passkey-reauth", actor.sessionId, actor, { ...data, provider: accountProvider(user) }) };
+    }, op !== "password");
   }
   return { options, flow: await issue(db, "passkey-login", binding, undefined, data) };
 }
@@ -141,8 +173,9 @@ async function assertion(tx: Tx, response: AuthenticationResponseJSON, flow: Flo
   if (!result.verified || result.authenticationInfo.credentialDeviceType !== key.deviceType) fail();
   await tx.update(localPasskeys).set({ counter: result.authenticationInfo.newCounter, backedUp: result.authenticationInfo.credentialBackedUp, lastUsedAt: new Date() }).where(eq(localPasskeys.id, key.id));
 }
-export async function finishPasskey(token: string, response: AuthenticationResponseJSON, binding: string, actor?: SecurityActor) {
+export async function finishPasskey(token: string, response: AuthenticationResponseJSON, binding: string, actor?: SecurityActor, provider: FactorProvider = "local") {
   const flow = await take(token, actor ? "passkey-reauth" : "passkey-login", actor?.sessionId ?? binding);
+  if (!actor && (providerOf(flow) !== provider || !enabled(provider))) fail();
   if (!response || typeof response.id !== "string" || response.id.length > 2048) fail();
   const [key] = await db.select({ userId: localPasskeys.userId }).from(localPasskeys).where(eq(localPasskeys.id, response.id));
   if (!key || !await allowFactorAttempt(key.userId)) fail();
@@ -153,19 +186,44 @@ export async function finishPasskey(token: string, response: AuthenticationRespo
   return locked(actor ?? user, async (tx, { credential, user: currentUser }) => {
     // Anonymous discovery cannot bind an account version until the credential is known.
     // Database-clock timestamps invalidate even an already signed, unsubmitted old assertion.
+    if (accountProvider(currentUser) !== providerOf(flow)) fail();
+    if (currentUser.identityRealm !== "local") {
+      const [p] = await tx.select().from(localSecurity).where(eq(localSecurity.userId, key.userId));
+      if (!p?.ldapIdentity || !p.ldapDn) fail();
+    }
+    if (actor) ldapOperation(currentUser, flow.data.op);
     if (currentUser.authChangedAt && flow.createdAt <= currentUser.authChangedAt) fail();
     await assertion(tx, response, flow, key.userId);
     await audit(tx, key.userId, actor ? "reauth_passkey" : "passkey_login");
     if (actor) return { proof: await issue(tx, `reauth:${flow.data.op}`, actor.sessionId, actor) };
-    return { mustChangePassword: credential.mustChangePassword, ticket: await issue(tx, "login-ticket", binding, user, {}, 60) };
+    return { mustChangePassword: credential?.mustChangePassword ?? false, ticket: await issue(tx, "login-ticket", binding, user, { provider }, 60) };
   }, !!actor && flow.data.op !== "password");
 }
 export async function reauthenticatePassword(actor: SecurityActor, op: string, password: string, code: string, recovery: boolean, headers: Headers) {
   operation(op);
   if (!await allowPasswordAttempt("security-reauth", actor.id, headers) || !await allowFactorAttempt(actor.id)) fail();
-  const [credential] = await db.select().from(localCredentials).where(eq(localCredentials.userId, actor.id));
-  if (!credential || !await verifyPassword(password, credential.passwordHash)) fail();
+  const [user] = await db.select().from(users).where(eq(users.id, actor.id));
+  if (!user) fail();
+  ldapOperation(user, op);
+  let identity: LdapUser | undefined;
+  if (user.identityRealm === "local") {
+    const [credential] = await db.select().from(localCredentials).where(eq(localCredentials.userId, actor.id));
+    if (!credential || !await verifyPassword(password, credential.passwordHash)) fail();
+  } else {
+    // Stored DN avoids ambiguity for directories whose uid filter does not accept a UPN.
+    const [p] = await db.select().from(localSecurity).where(eq(localSecurity.userId, actor.id));
+    const verified = p?.ldapDn && p.ldapIdentity
+      ? await authenticateLdapAtBinding(p.ldapDn, p.ldapIdentity, password)
+      : (await authenticateLdapPassword(user.upn, password, headers))?.identity;
+    if (!verified || verified.upn !== user.upn || !verified.identity) fail();
+    identity = verified;
+  }
   return locked(actor, async tx => {
+    if (identity) {
+      const p = await profile(tx, actor.id);
+      if (p.ldapIdentity && p.ldapIdentity !== identity.identity) fail();
+      await tx.update(localSecurity).set({ ldapDn: identity.dn, ldapIdentity: identity.identity }).where(eq(localSecurity.userId, actor.id));
+    }
     const protectedAccount = await hasLocalFactors(actor.id, tx);
     if (protectedAccount) await verifyCode(tx, actor.id, code, recovery);
     await audit(tx, actor.id, "reauth_password");
@@ -180,23 +238,25 @@ async function takeReauth(actor: SecurityActor, op: string, token: string) {
   return flow;
 }
 export async function securitySummary(actor: SecurityActor) {
-  return locked(actor, async tx => {
+  return locked(actor, async (tx, { user }) => {
     const [p] = await tx.select({ totp: localSecurity.totpSecretEnc }).from(localSecurity).where(eq(localSecurity.userId, actor.id));
     const passkeys = await tx.select({ id: localPasskeys.id, name: localPasskeys.name, createdAt: localPasskeys.createdAt, lastUsedAt: localPasskeys.lastUsedAt, deviceType: localPasskeys.deviceType, backedUp: localPasskeys.backedUp }).from(localPasskeys).where(eq(localPasskeys.userId, actor.id));
     const codes = await tx.select({ hash: localRecoveryCodes.hash }).from(localRecoveryCodes).where(eq(localRecoveryCodes.userId, actor.id));
-    return { totp: !!p?.totp, passkeys, recoveryCount: codes.length };
+    return { totp: !!p?.totp, passkeys, recoveryCount: codes.length, ldap: user.identityRealm !== "local" };
   });
 }
 export async function beginRegistration(actor: SecurityActor, proof: string, name: string) {
   const grant = await takeReauth(actor, "add-passkey", proof);
   if (!name.trim() || name.trim().length > 80) fail();
-  return locked(actor, async (tx, { credential }) => {
+  return locked(actor, async (tx, { credential, user }) => {
+    ldapOperation(user, "add-passkey");
     const p = await profile(tx, actor.id);
+    if (user.identityRealm !== "local" && (!p.ldapDn || !p.ldapIdentity)) fail();
     const keys = await tx.select().from(localPasskeys).where(eq(localPasskeys.userId, actor.id));
     if (keys.length >= 10) fail();
     const config = securityConfig();
     const options = await generateRegistrationOptions({ rpID: config.rpID, rpName: config.rpName, userID: new Uint8Array(Buffer.from(p.userHandle, "base64url")),
-      userName: credential.username, attestationType: "none", excludeCredentials: keys.map(k => ({ id: k.id, transports: k.transports })),
+      userName: credential?.username ?? user.upn, attestationType: "none", excludeCredentials: keys.map(k => ({ id: k.id, transports: k.transports })),
       authenticatorSelection: { residentKey: "required", userVerification: "required" } });
     return { options, flow: await issue(tx, "register", actor.sessionId, actor, { challenge: options.challenge, origin: config.origin, rpID: config.rpID, name: name.trim() }, (grant.expiresAt.getTime() - Date.now()) / 1000) };
   }, true);
@@ -223,9 +283,11 @@ export async function finishRegistration(actor: SecurityActor, token: string, re
 }
 export async function beginTotp(actor: SecurityActor, proof: string) {
   const grant = await takeReauth(actor, "add-totp", proof);
-  return locked(actor, async (tx, { credential }) => {
+  return locked(actor, async (tx, { credential, user }) => {
+    ldapOperation(user, "add-totp");
     const p = await profile(tx, actor.id);
     if (p.totpSecretEnc) fail();
+    if (!credential) fail();
     const totp = createTotp(actor.id, credential.username);
     return { secret: totp.secret, uri: totp.uri, flow: await issue(tx, "totp-enroll", actor.sessionId, actor, { totpEnc: totp.totpEnc }, (grant.expiresAt.getTime() - Date.now()) / 1000) };
   }, true);
@@ -233,7 +295,8 @@ export async function beginTotp(actor: SecurityActor, proof: string) {
 export async function finishTotp(actor: SecurityActor, token: string, code: string) {
   const flow = await take(token, "totp-enroll", actor.sessionId);
   if (flow.userId !== actor.id || flow.sessionVersion !== actor.sessionVersion || !await allowFactorAttempt(actor.id)) fail();
-  return locked(actor, async tx => {
+  return locked(actor, async (tx, { user }) => {
+    ldapOperation(user, "add-totp");
     const p = await profile(tx, actor.id);
     if (p.totpSecretEnc) fail();
     const step = await checkTotp(flow.data.totpEnc, actor.id, code);
@@ -251,7 +314,8 @@ export async function manageSecurity(actor: SecurityActor, op: string, proof: st
   if ((op === "disable" || op === "remove-passkey") && grant.data.passwordVerified !== "true") fail();
   let passwordHash: string | undefined;
   if (op === "password") { validateNewPassword(value); passwordHash = await hashPassword(value); }
-  return locked(actor, async tx => {
+  return locked(actor, async (tx, { user }) => {
+    ldapOperation(user, op);
     const protectedAccount = await hasLocalFactors(actor.id, tx);
     let codes: string[] | undefined;
     if (op === "remove-passkey") {

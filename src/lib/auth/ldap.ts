@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { Client } from "ldapts";
+import { Client, type Entry } from "ldapts";
+import { sha256Hex } from "@/lib/crypto";
 
 /**
  * On-prem Active Directory authentication over LDAP(S).
@@ -10,6 +11,7 @@ import { Client } from "ldapts";
 
 export type LdapUser = {
   dn: string;
+  identity?: string;
   upn: string;
   name: string;
   email?: string;
@@ -111,10 +113,11 @@ export async function authenticateLdap(
       scope: "sub",
       filter,
       sizeLimit: 2,
-      attributes: ["dn", "userPrincipalName", "sAMAccountName", "uid", "mail", "displayName", "cn", "memberOf"],
+      attributes: identityAttributes,
+      explicitBufferAttributes: ["objectGUID"],
     });
     if (searchEntries.length !== 1) return null;
-    const entry = searchEntries[0];
+    let entry = searchEntries[0];
     if (allowIdentity && !await allowIdentity(entry.dn)) return null;
 
     // Verify the password with a bind as the user.
@@ -127,30 +130,109 @@ export async function authenticateLdap(
       await userClient.unbind().catch(() => {});
     }
 
-    const account = first(entry.sAMAccountName) ?? first(entry.uid) ?? username;
-    let upn = first(entry.userPrincipalName);
-    if (!upn) upn = username.includes("@") ? username : `${account}${cfg.upnSuffix ? "@" + cfg.upnSuffix : ""}`;
-
-    let groupDns: string[] = [];
-    if (cfg.groupMode === "memberOf") {
-      groupDns = all(entry.memberOf);
-    } else {
-      const groupFilter =
-        cfg.groupMode === "ad"
-          ? `(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=${escapeFilterValue(entry.dn)}))`
-          : `(|(member=${escapeFilterValue(entry.dn)})(uniqueMember=${escapeFilterValue(entry.dn)}))`;
-      const res = await service.search(cfg.groupBaseDn, { scope: "sub", filter: groupFilter, attributes: ["dn", "cn"] });
-      groupDns = res.searchEntries.map((g) => g.dn);
+    // Read AD constructed account status at the entry itself, including in memberOf mode.
+    if (cfg.groupMode === "ad" || hasAdGuid(entry)) {
+      const status = await service.search(entry.dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
+        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
+      if (status.searchEntries.length !== 1) return null;
+      entry = status.searchEntries[0];
     }
-
-    return {
-      dn: entry.dn,
-      upn: upn.toLowerCase(),
-      name: first(entry.displayName) ?? first(entry.cn) ?? account,
-      email: first(entry.mail),
-      groups: groupDns.map((dn) => ({ dn: dn.toLowerCase(), name: cnFromDn(dn) })),
-    };
+    if (!ldapAccountActive(entry, cfg)) return null;
+    return await resolveEntry(service, entry, username, cfg);
   } finally {
     await service.unbind().catch(() => {});
   }
+}
+
+const identityAttributes = ["dn", "userPrincipalName", "sAMAccountName", "uid", "mail", "displayName", "cn", "memberOf",
+  "objectGUID", "entryUUID", "userAccountControl", "msDS-User-Account-Control-Computed", "accountExpires", "pwdAccountLockedTime", "pwdStartTime", "pwdEndTime"];
+
+function hasAdGuid(entry: Entry) {
+  const value = Array.isArray(entry.objectGUID) ? entry.objectGUID[0] : entry.objectGUID;
+  return Buffer.isBuffer(value) && value.length === 16;
+}
+
+/** Stable identity prevents a deleted/recreated DN from inheriting an old passkey. */
+export function ldapEntryIdentity(entry: Entry, cfg: LdapConfig): string | undefined {
+  const guid = Array.isArray(entry.objectGUID) ? entry.objectGUID[0] : entry.objectGUID;
+  const id = Buffer.isBuffer(guid) && guid.length === 16 ? `ad:${guid.toString("hex")}` : first(entry.entryUUID);
+  return id ? sha256Hex(JSON.stringify([cfg.url, cfg.baseDn.toLowerCase(), id])) : undefined;
+}
+
+export function ldapAccountActive(entry: Entry, cfg: LdapConfig, now = Date.now()): boolean {
+  const flags = first(entry.userAccountControl), computed = first(entry["msDS-User-Account-Control-Computed"]);
+  // AD status must be readable; an unreadable disabled flag cannot become an allow.
+  if ((cfg.groupMode === "ad" || hasAdGuid(entry)) && (!flags || !computed)) return false;
+  for (const value of [flags, computed]) {
+    if (value !== undefined && (!/^\d{1,10}$/.test(value) || Number(value) > 4294967295 || (Number(value) & (2 | 16)) !== 0)) return false;
+  }
+  const expires = first(entry.accountExpires);
+  if (expires !== undefined) {
+    if (!/^\d+$/.test(expires)) return false;
+    const ticks = BigInt(expires);
+    if (ticks !== BigInt(0) && ticks !== BigInt("9223372036854775807") && ticks <= (BigInt(now) + BigInt("11644473600000")) * BigInt(10000)) return false;
+  }
+  // Conservatively deny ppolicy locks until the directory clears them.
+  if (first(entry.pwdAccountLockedTime)) return false;
+  for (const [attribute, before] of [["pwdStartTime", true], ["pwdEndTime", false]] as const) {
+    const value = first(entry[attribute]);
+    if (!value) continue;
+    const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})Z$/.exec(value);
+    if (!match) return false;
+    const time = Date.UTC(...[Number(match[1]), Number(match[2]) - 1, ...match.slice(3).map(Number)] as [number, number, number, number, number, number]);
+    if (before ? now < time : now >= time) return false;
+  }
+  return true;
+}
+
+async function resolveEntry(service: Client, entry: Entry, username: string, cfg: LdapConfig): Promise<LdapUser> {
+  const account = first(entry.sAMAccountName) ?? first(entry.uid) ?? username;
+  let upn = first(entry.userPrincipalName);
+  if (!upn) upn = username.includes("@") ? username : `${account}${cfg.upnSuffix ? "@" + cfg.upnSuffix : ""}`;
+
+  let groupDns: string[] = [];
+  if (cfg.groupMode === "memberOf") {
+    groupDns = all(entry.memberOf);
+  } else {
+    const groupFilter =
+      cfg.groupMode === "ad"
+        ? `(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=${escapeFilterValue(entry.dn)}))`
+        : `(|(member=${escapeFilterValue(entry.dn)})(uniqueMember=${escapeFilterValue(entry.dn)}))`;
+    const res = await service.search(cfg.groupBaseDn, { scope: "sub", filter: groupFilter, attributes: ["dn", "cn"] });
+    groupDns = res.searchEntries.map((g) => g.dn);
+  }
+
+  return {
+    dn: entry.dn,
+    identity: ldapEntryIdentity(entry, cfg),
+    upn: upn.toLowerCase(),
+    name: first(entry.displayName) ?? first(entry.cn) ?? account,
+    email: first(entry.mail),
+    groups: groupDns.map((dn) => ({ dn: dn.toLowerCase(), name: cnFromDn(dn) })),
+  };
+}
+
+/** Service-account lookup only; never store or reuse a user's directory password. */
+export async function readLdapIdentity(dn: string, identity: string, cfg = ldapConfigFromEnv()): Promise<LdapUser | null> {
+  const service = newClient(cfg);
+  try {
+    await service.bind(cfg.bindDn, cfg.bindPassword);
+    const { searchEntries } = await service.search(dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
+      attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
+    if (searchEntries.length !== 1) return null;
+    const entry = searchEntries[0];
+    if (ldapEntryIdentity(entry, cfg) !== identity || !ldapAccountActive(entry, cfg)) return null;
+    return await resolveEntry(service, entry, "", cfg);
+  } finally { await service.unbind().catch(() => {}); }
+}
+
+/** Recovery/enrollment still proves the actual company password against the bound entry. */
+export async function authenticateLdapAtBinding(dn: string, identity: string, password: string, cfg = ldapConfigFromEnv()) {
+  if (!password) return null;
+  const user = await readLdapIdentity(dn, identity, cfg);
+  if (!user) return null;
+  const client = newClient(cfg);
+  try { await client.bind(dn, password); return user; }
+  catch { return null; }
+  finally { await client.unbind().catch(() => {}); }
 }

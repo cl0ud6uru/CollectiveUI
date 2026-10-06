@@ -239,6 +239,13 @@
       "when": 1791258419235,
       "tag": "0033_delegated_workspace_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791298814375,
+      "tag": "0034_ldap_passkeys",
+      "breakpoints": true
     }
   ]
 }

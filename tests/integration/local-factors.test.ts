@@ -186,7 +186,8 @@ run("local factors on a disposable database", () => {
     // Local and directory rows sharing email never share security profiles.
     const [directory] = await db.insert(users).values({ upn: "mfa-fixture@example.invalid", name: "Directory fixture", authSource: "entra", email: "mfa-fixture@example.invalid" }).returning();
     await expect(securitySummary({ ...actor, id: directory.id, sessionVersion: 0 })).rejects.toThrow();
-    await expect(db.insert(localSecurity).values({ userId: directory.id, userHandle: randomToken() })).rejects.toThrow();
+    await db.insert(localSecurity).values({ userId: directory.id, userHandle: randomToken() });
+    await expect(securitySummary({ ...actor, id: directory.id, sessionVersion: 0 })).rejects.toThrow();
     expect(await hashPassword(password)).toBeTruthy();
   }, 15000);
 });

@@ -139,10 +139,12 @@ export const localCredentials = pgTable("local_credentials", {
 });
 /** Factor secrets and public credentials are never included in ordinary user projections. */
 export const localSecurity = pgTable("local_security", {
-  userId: text("user_id").primaryKey().references(() => localCredentials.userId, { onDelete: "cascade" }),
+  userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
   userHandle: text("user_handle").notNull().unique(),
   totpSecretEnc: text("totp_secret_enc"),
   totpLastStep: bigint("totp_last_step", { mode: "number" }),
+  ldapDn: text("ldap_dn"),
+  ldapIdentity: text("ldap_identity"),
 });
 export const localPasskeys = pgTable("local_passkeys", {
   id: text("id").primaryKey(),
@@ -167,7 +169,7 @@ export const authFlows = pgTable("auth_flows", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
   purpose: text("purpose").notNull(),
   bindingHash: text("binding_hash").notNull(),
-  userId: text("user_id").references(() => localCredentials.userId, { onDelete: "cascade" }),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   sessionVersion: integer("session_version"),
   data: jsonb("data").$type<Record<string, string>>().notNull().default({}),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
