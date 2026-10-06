@@ -151,7 +151,7 @@ describe("durable native workspace approvals with embedded PostgreSQL and real e
     await db.insert(schema.delegatedTasks).values(runs.map((run,i)=>({...task,id:`batch-task-${i}`,rootTaskId:`batch-task-${i}`,childRunId:run.id,childConversationId:run.conversationId,originToolCallId:`batch-call-${i}`,deadlineAt:i===100?new Date(0):new Date(Date.now()+60_000)})));
     await reconcileAsyncTasks();expect((await getRun("batch-run-100"))?.status).toBe("waiting");
     await reconcileAsyncTasks();expect((await getRun("batch-run-100"))?.status).toBe("failed");expect(fixture.exec).not.toHaveBeenCalled();
-  });
+  },30_000); // Two 100-row embedded Postgres batches exceed the default timeout in CI Docker.
 
   it("relays and executes the approved file write with its original bytes once",async()=>{
     const content='<svg xmlns="http://www.w3.org/2000/svg"><text>fixture</text></svg>';
