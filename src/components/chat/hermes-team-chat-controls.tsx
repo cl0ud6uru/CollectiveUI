@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { HermesTeamControls, type HermesTeamMode, type HermesTeamView } from "./hermes-team-controls";
+import type { HermesTeamUpdateInput, HermesTeamResolveInput, HermesTeamUpdateReview, HermesTeamUpdateResult } from "./hermes-team-updates";
+import type { HermesTeamRolloutStatus } from "./hermes-team-rollout";
 import type { HermesTeamCaptureInventory, HermesTeamCaptureSelection, HermesTeamPublishInput, HermesTeamReview } from "./hermes-team-publication";
 
 /** The server resolves all runtime/profile bindings from the current person and bot. */
@@ -15,6 +17,8 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
   const router = useRouter();
   const [status, setStatus] = useState<{ scope: string; view: HermesTeamView } | null>(null);
   const [error, setError] = useState("");
+  const [updateError, setUpdateError] = useState<{ scope: string; message: string } | null>(null);
+  const automaticAttempts = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
   const scope = `${botId}:${started ? conversationId : "new"}`;
   const base = `/api/bots/${encodeURIComponent(botId)}/team`;
@@ -72,8 +76,44 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
     return result;
   }
 
+  async function loadUpdates(targetRevision?: number): Promise<HermesTeamUpdateReview> {
+    return publicationRequest(`updates${targetRevision === undefined ? "" : `?targetRevision=${targetRevision}`}`) as Promise<HermesTeamUpdateReview>;
+  }
+  async function update(path: string, input: HermesTeamUpdateInput | HermesTeamResolveInput | { requestId: string }): Promise<HermesTeamUpdateResult> {
+    if (status?.scope === scope) automaticAttempts.current.add(`${scope}:${status.view.publishedRevision}`);
+    const result = await publicationRequest(path, input);
+    setAttempt(value => value + 1); setUpdateError(null);
+    return result;
+  }
   const view = status?.scope === scope ? status.view : null;
-  if (view) return <HermesTeamControls view={view} busy={busy} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish} />;
+  // Inventory capability and idle state must both be confirmed before an automatic member update.
+  useEffect(() => {
+    if (busy || !view?.enabled || view.mode !== "member" || !["ready", "connection_needed"].includes(view.state) || view.installedRevision === view.publishedRevision) return;
+    const key = `${scope}:${view.publishedRevision}`;
+    if (automaticAttempts.current.has(key)) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`${base}/updates`, { cache: "no-store", signal: controller.signal });
+        const preview = await response.json() as HermesTeamUpdateReview & { error?: string };
+        if (!response.ok) throw new Error(preview.error ?? "Native member updates are unavailable. Your content is preserved.");
+        if (controller.signal.aborted || !preview.nativeUpdatesSupported || preview.pendingRequestId || !["ready", "connection_needed"].includes(preview.state) || preview.installedRevision === preview.targetRevision) return;
+        automaticAttempts.current.add(key);
+        const applied = await fetch(`${base}/updates`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expectedInstalledRevision: preview.installedRevision, targetRevision: preview.targetRevision, requestId: crypto.randomUUID() }) });
+        const result = await applied.json();
+        if (!applied.ok) throw new Error(result.error ?? "Your update needs recovery. Open Team updates to resume its saved request.");
+        if (!controller.signal.aborted) { setAttempt(value => value + 1); setUpdateError(result.status === "needs_attention" ? { scope, message: "Your team update needs recovery. Open Team updates to resume its saved request." } : null); }
+      } catch (err) { if (!controller.signal.aborted) setUpdateError({ scope, message: err instanceof Error ? err.message : "Member updates are unavailable. Your content is preserved." }); }
+    })();
+    return () => controller.abort();
+  }, [base, scope, busy, view?.enabled, view?.mode, view?.state, view?.installedRevision, view?.publishedRevision]);
+  if (view) return <>
+    <HermesTeamControls view={view} busy={busy} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
+      onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>}
+      onLoadUpdates={loadUpdates} onApplyUpdate={input => update("updates", input)} onResolveUpdate={input => update("updates/resolve", input)}
+      onRollbackUpdate={input => update("updates/rollback", input)} onCancelUpdate={requestId => update("updates/cancel", { requestId })} />
+    {updateError?.scope === scope && view.mode === "member" && <p role="alert" className="mx-auto w-full max-w-3xl px-4 pb-2 text-xs text-danger">{updateError.message}</p>}
+  </>;
   return <section aria-label="Hermes Team Bot status" className="mx-auto w-full max-w-3xl px-4 py-2 text-sm text-muted">
     {error ? <div className="space-y-2 rounded-xl border border-border p-3"><p role="alert">{error}</p><button type="button" className="underline" onClick={() => setAttempt((value) => value + 1)}>Try again</button></div> : <p role="status">Preparing Team Bot controls…</p>}
   </section>;

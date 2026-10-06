@@ -43,11 +43,15 @@ function App() {
   const prepare = async () => ({available:true,selection:{skillPackages:['Useful procedure'],includeRole:true,documents:[]}});
   const capture = async () => { window.fixtureCalls.push({ operation: 'capture' }); return structuredClone(window.fixtureSource); };
   const publish = async input => { window.fixtureCalls.push({ operation: 'publish', ...input }); if (window.fixtureHoldPublish) await new Promise(resolve => { window.fixtureReleasePublish = resolve; }); if (window.fixtureFailPublish) { window.fixtureFailPublish = false; throw new Error('Publication result not confirmed.'); } return { revision: 3 }; };
-  const conflicts = async () => [{ id: 'deleted', name: 'Deleted procedure', memberDeleted: true, memberFiles: [], teamFiles: [{ path: 'SKILL.md', after: 'Team content' }] }, { id: 'modified', name: 'Changed procedure', teamRemoved: true, memberFiles: [{ path: 'SKILL.md', after: 'My private correction' }], teamFiles: [] }];
-  const resolve = async input => { window.fixtureCalls.push({ operation: 'resolve', ...input }); };
+  window.fixtureResolved ??= [];
+  const conflicts = async () => ({installedRevision:2,targetRevision:2,state:'ready',nativeUpdatesSupported:true,changes:[],conflicts:[
+    {packageId:'skills/Deleted procedure',recorded:true,expectedMemberHash:'d'.repeat(64),expectedTeamHash:'e'.repeat(64),memberResources:[],teamResources:[{...resource('SKILL.md','skills/Deleted procedure','Team content'),sha256:'e'.repeat(64)}]},
+    {packageId:'skills/Changed procedure',recorded:true,expectedMemberHash:'f'.repeat(64),expectedTeamHash:'a'.repeat(64),memberResources:[{...resource('SKILL.md','skills/Changed procedure','My private correction'),sha256:'f'.repeat(64)}],teamResources:[]}
+  ].filter(item=>!window.fixtureResolved.includes(item.packageId))});
+  const resolve = async input => { window.fixtureCalls.push({ operation: 'resolve', ...input }); window.fixtureResolved.push(input.packageId); return {status:'complete',installedRevision:2,conflictCount:2-window.fixtureResolved.length,requestId:input.requestId}; };
   return <main className="mx-auto max-w-3xl p-2">
     <div data-testid="conversation">{conversation}</div>
-    <HermesTeamControls key={conversation} view={view} busy={busy} onOpenMode={supported ? open : undefined} onPrepareCapture={supported ? prepare : undefined} onCapture={supported ? capture : undefined} onPublish={supported ? publish : undefined} onLoadConflicts={supported ? conflicts : undefined} onResolveConflict={supported ? resolve : undefined}/>
+    <HermesTeamControls key={conversation} view={view} busy={busy} onOpenMode={supported ? open : undefined} onPrepareCapture={supported ? prepare : undefined} onCapture={supported ? capture : undefined} onPublish={supported ? publish : undefined} onLoadUpdates={supported ? conflicts : undefined} onResolveUpdate={supported ? resolve : undefined}/>
     <HermesTeamPolicy value={policy} onChange={setPolicy} maintainers={[{id:'admin',name:'Fixture admin'}, {id:'disabled',name:'Disabled admin',disabled:true}]} modelOptions={[{value:'admin_provided',available:true},{value:'personal_required',available:false,reason:'Not verified'}]}/>
     <pre data-testid="policy" className="whitespace-pre-wrap break-all">{JSON.stringify(policy)}</pre>
   </main>;
@@ -119,8 +123,8 @@ try {
   await modified.getByText('Preview your version').click(); await modified.getByText('SKILL.md', { exact: true }).click();
   await expect(modified.getByText('My private correction', { exact: true })).toBeVisible();
   await modified.getByRole('button', { name: 'Use team version' }).click();
-  await expect(conflictDialog.getByText('All updates have been reviewed.')).toBeVisible(); await conflictDialog.getByRole('button', { name: 'Done' }).click();
-  expect((await page.evaluate(() => window.fixtureCalls)).filter(call => call.operation === 'resolve').map(call => [call.conflictId, call.choice])).toEqual([['deleted', 'keep_mine'], ['modified', 'use_team']]);
+  await expect(conflictDialog.getByText('Your team resources are current. Your personal learning stays in place.')).toBeVisible(); await conflictDialog.getByRole('button', { name: 'Done' }).click();
+  expect((await page.evaluate(() => window.fixtureCalls)).filter(call => call.operation === 'resolve').map(call => [call.packageId, call.choice])).toEqual([['skills/Deleted procedure', 'keep-member'], ['skills/Changed procedure', 'use-team']]);
   await page.evaluate(() => { window.fixtureSupported(false); window.fixtureStatus({ mode: 'admin', canMaintain: true }); });
   await expect(page.getByText('Publishing is not available in this version. Ask an admin to check resource review support.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Publish changes', exact: true })).toBeDisabled();
