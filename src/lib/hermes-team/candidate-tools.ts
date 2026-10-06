@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, inArray } from 'drizzle-orm';
 import { db, type DbOrTx } from '@/db';
 import { hermesTeamCandidateApprovals, hermesTeamCandidateContexts, hermesTeamCandidateRequests, agentRuns, mcpServers } from '@/db/schema';
 import { HttpError } from '@/lib/authz';
@@ -106,6 +106,12 @@ export async function executeCandidateTool(request:Request,contextId:string,name
         if(canonicalTeamToolInput(fresh.attribution)!==canonicalTeamToolInput(attribution))throw new HttpError(409,'Native tool authority changed.');
         const [prior]=await tx.select().from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,contextId),eq(hermesTeamCandidateRequests.kind,'tool'),eq(hermesTeamCandidateRequests.requestId,requestId))).for('update');
         if(prior){if(prior.inputHash!==inputHash)throw new HttpError(409,'The native tool UUID changed content.');if(prior.state==='complete' && prior.response)return {response:prior.response,id:prior.id};throw new HttpError(409,'The native action is unresolved.');}
+        // A lost process may leave its durable claim running. A fresh nonce must
+        // not turn unknown execution into a new action or consume another approval.
+        const unresolved=await tx.select({id:hermesTeamCandidateRequests.id}).from(hermesTeamCandidateRequests).where(and(
+          eq(hermesTeamCandidateRequests.contextId,contextId),eq(hermesTeamCandidateRequests.kind,'tool'),
+          inArray(hermesTeamCandidateRequests.state,['reserved','running','needs_attention'])));
+        if(unresolved.length)throw new HttpError(409,'Reconcile the unresolved native action before starting another.');
         const [approval]=approvedId ? await tx.select().from(hermesTeamCandidateApprovals).where(eq(hermesTeamCandidateApprovals.id,approvedId)).for('update') : [];
         if(attribution.requireApproval && (!approval || approval.contextId!==contextId || approval.requestId!==requestId || approval.state!=='approved'
           || approval.expiresAt.getTime()<=Date.now() || candidateObjectHash(approval.attribution)!==candidateObjectHash(attribution)))throw new HttpError(409,'The approval was consumed or changed.');

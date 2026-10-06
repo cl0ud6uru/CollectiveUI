@@ -306,6 +306,25 @@ describe('Concrete scoped native MCP bridge and approval continuation',()=>{
     expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0].state).toBe('consumed');
     await expect(executeCandidateTool(request(grant.toolToken,input,randomUUID()),grant.contextId,candidateToolName('documents'),input,approvalId,{routes,adapters,connect})).rejects.toMatchObject({status:409});
   });
+  describe('unresolved native tool claims',()=>{
+    it.each(['reserved','running','needs_attention'] as const)('blocks a fresh request ID after a persisted %s claim',async state=>{
+      const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      await db.insert(schema.hermesTeamCandidateRequests).values({contextId:grant.contextId,requestId:randomUUID(),kind:'tool',inputHash:'a'.repeat(64),state});
+      const input={resourceId:'document-a'},connect=vi.fn().mockResolvedValue({callTool:vi.fn().mockResolvedValue({content:[{type:'text',text:'must not repeat'}]}),close:vi.fn().mockResolvedValue(undefined)});
+      await expect(executeCandidateTool(request(grant.toolToken,input,randomUUID()),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).rejects.toMatchObject({status:409});
+      expect(connect).not.toHaveBeenCalled();expect(await db.select().from(schema.hermesTeamCandidateRequests)).toHaveLength(1);
+    });
+    it('preserves a newly approved action when an earlier process claim is still running',async()=>{
+      const adapters=await tools('write');await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      const input={resourceId:'document-a'},id=randomUUID(),connect=vi.fn();
+      const pending=JSON.parse((await executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).body);
+      const approvalId=pending._meta.collectiveApprovalId;await answerCandidateApproval(alice,approvalId,'approved',{routes,adapters});
+      await db.insert(schema.hermesTeamCandidateRequests).values({contextId:grant.contextId,requestId:randomUUID(),kind:'tool',inputHash:'a'.repeat(64),state:'running'});
+      await expect(executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,approvalId,{routes,adapters,connect})).rejects.toMatchObject({status:409});
+      expect(connect).not.toHaveBeenCalled();expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0].state).toBe('approved');
+      expect(await db.select().from(schema.hermesTeamCandidateRequests)).toHaveLength(1);
+    });
+  });
   describe('existing admin MCP controls',()=>{
     it('requires the server approval even when a Team read capability does not ask',async()=>{
       const adapters=await tools();
