@@ -123,6 +123,17 @@ describe("Protected native receipt authority", () => {
 
 
 describe("Strict protected journals and untouched abort", () => {
+  it("accepts a bounded write after many preserved deleted and independently learned package actions", async () => {
+    await rm(path.join(root, 'skills/support'), { recursive: true });
+    const old = Array.from({ length: 256 }, (_, index) => skill('old team package', 'SKILL.md', `a-${index.toString().padStart(3, '0')}`));
+    for (let index = 0; index < 256; index++) await file(`skills/b-${index.toString().padStart(3, '0')}/SKILL.md`, 'independent private learning');
+    const current = await inventoryMemberResources(root), release = createTeamResourceSnapshot([skill('new team package', 'SKILL.md', 'z-new')]);
+    const plan = planTeamResourceUpdate({ installed: createTeamResourceSnapshot(old), current, release });
+    expect(plan.actions.findIndex(action => action.action === 'install')).toBe(512);
+    await applyTeamResourcePlan(root, 'many-preserved', plan, { journalRoot: journals });
+    await assertResourceUpdatesSettled(journals);
+    expect(await readFile(path.join(root, 'skills/z-new/SKILL.md'), 'utf8')).toBe('new team package');
+  });
   it("persists an abort fence before the first native apply so a delayed request cannot write after cancellation", async () => {
     const plan = await nextPlan();
     await abortUnstartedResourceUpdate(root, 'cancel-before-apply', plan, { journalRoot: journals });
