@@ -7,7 +7,7 @@ import { HttpError } from '@/lib/authz';
 import { teamBotsEnabled, teamModeAllows, teamOwnerKey } from './policy';
 import { teamConfiguration, type TeamMode } from './types';
 import { OPEN_STATUSES } from '@/lib/runs/types';
-import { queueTeamAccessReconciliation, reconcileTeamAccess } from './revocation';
+import { queueTeamAccessReconciliation, readTeamRevocationTarget, reconcileTeamAccess } from './revocation';
 export async function freshTeamPrincipal(p: Principal, q: DbOrTx = db) {
   if (!teamBotsEnabled()) throw new HttpError(404, 'Team Bots are not enabled.');
   const fresh = await loadPrincipal(p.user.id, q);
@@ -27,7 +27,11 @@ export async function authorizeTeam(p: Principal, botId: string, mode: TeamMode,
     throw new HttpError(403, mode === 'admin' ? 'Admin status and permission to maintain this bot are required.' : 'You are outside this bot’s audience.');
   if (!allowDisabled) {
     const cleanup = await q.select().from(hermesTeamOperations).where(and(eq(hermesTeamOperations.botId, botId), eq(hermesTeamOperations.kind, 'revoke'), inArray(hermesTeamOperations.state, ['pending','needs_attention'])));
-    if (cleanup.some(r => r.result?.userId === fresh.user.id && r.result.mode === mode))
+    if (cleanup.some(r => {
+      const target = readTeamRevocationTarget(r);
+      // Unknown cleanup authority cannot safely renew any grant for this bot.
+      return !target || (target.userId === fresh.user.id && target.mode === mode);
+    }))
       throw new HttpError(409, 'Team runtime cleanup needs attention. Reconcile access before reopening this bot.');
   }
   return { principal: fresh, bot, definition };

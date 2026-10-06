@@ -1,6 +1,7 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
 import { groupMappings, groupMembers, groups, userExternalGroups, users, type User } from "@/db/schema";
+import { teamBotsEnabled } from "@/lib/hermes-team/policy";
 
 export type ExternalGroup = { externalId: string; displayName?: string };
 
@@ -26,6 +27,8 @@ const list = (v?: string) =>
 export async function syncUserOnSignIn(identity: SignInIdentity, transaction?: Tx): Promise<User> {
   const upn = identity.upn.trim().toLowerCase();
   const sync = async (tx: Tx) => {
+    const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
+    const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
     const [user] = await tx
       .insert(users)
       .values({
@@ -60,9 +63,16 @@ export async function syncUserOnSignIn(identity: SignInIdentity, transaction?: T
         })),
       );
     }
+    if (team) await team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, user.id, user.id);
     return user;
   };
-  return transaction ? sync(transaction) : db.transaction(sync);
+  if (transaction) return sync(transaction);
+  const user = await db.transaction(sync);
+  if (teamBotsEnabled()) {
+    const { reconcileTeamActorAccess } = await import('@/lib/hermes-team/revocation');
+    await reconcileTeamActorAccess(user.id);
+  }
+  return user;
 }
 
 export type Principal = {

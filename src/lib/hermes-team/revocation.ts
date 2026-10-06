@@ -10,6 +10,10 @@ import { teamModeAllows } from './policy';
 
 const target = z.object({ userId: z.string().min(1), mode: z.enum(['member','admin']), definitionVersion: z.number().int().positive(), reason: z.enum(['policy_changed','audience_changed','principal_changed','bot_disabled']), accessRevoked: z.boolean() });
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export function readTeamRevocationTarget(receipt: { result: unknown; digest: string }) {
+  const parsed = target.safeParse(receipt.result);
+  return parsed.success && digest(parsed.data) === receipt.digest ? parsed.data : null;
+}
 
 /** Called inside the audience/configuration mutation, under its bot lock. No broker I/O inside the transaction. */
 export async function queueTeamAccessReconciliation(q: DbOrTx, botId: string, actorId: string, options: {
@@ -70,17 +74,29 @@ export async function queueTeamPrincipalAccessReconciliation(q: DbOrTx, botIds: 
 export async function reconcileTeamAccess(botId: string) {
   const rows = await db.select().from(hermesTeamOperations).where(and(eq(hermesTeamOperations.botId, botId), eq(hermesTeamOperations.kind, 'revoke'), inArray(hermesTeamOperations.state, ['pending','needs_attention'])));
   for (const receipt of rows) {
-    const parsed = target.safeParse(receipt.result);
-    if (!parsed.success || digest(parsed.data) !== receipt.digest) {
-      await db.update(hermesTeamOperations).set({ state: 'needs_attention', updatedAt: new Date() }).where(eq(hermesTeamOperations.id, receipt.id));
-      continue;
-    }
-    try {
-      const response = await dockerControl<unknown>(parsed.data.userId, '/team/revoke', { teamBotId: botId, mode: parsed.data.mode }, 3000);
-      const result = z.object({ stopped: z.boolean(), interruption: z.enum(['none','runtime-wide']) }).strict().parse(response);
-      await db.update(hermesTeamOperations).set({ state: 'complete', result: { ...parsed.data, ...result }, updatedAt: new Date() }).where(eq(hermesTeamOperations.id, receipt.id));
-    } catch {
-      await db.update(hermesTeamOperations).set({ state: 'needs_attention', updatedAt: new Date() }).where(eq(hermesTeamOperations.id, receipt.id));
-    }
+    await db.transaction(async tx => {
+      // Re-read under a row lock: a caller that selected an old pending row cannot revoke a newly reopened grant.
+      const [current] = await tx.select().from(hermesTeamOperations).where(eq(hermesTeamOperations.id, receipt.id)).for('update');
+      if (!current || current.botId !== botId || current.kind !== 'revoke' || current.state === 'complete') return;
+      const currentTarget = readTeamRevocationTarget(current);
+      if (!currentTarget) {
+        await tx.update(hermesTeamOperations).set({ state: 'needs_attention', updatedAt: new Date() }).where(eq(hermesTeamOperations.id, current.id));
+        return;
+      }
+      try {
+        const response = await dockerControl<unknown>(currentTarget.userId, '/team/revoke', { teamBotId: botId, mode: currentTarget.mode, requestId: current.requestId, digest: current.digest }, 3000);
+        const result = z.object({ stopped: z.boolean(), interruption: z.enum(['none','runtime-wide']) }).strict().parse(response);
+        await tx.update(hermesTeamOperations).set({ state: 'complete', result: { ...currentTarget, ...result }, updatedAt: new Date() }).where(eq(hermesTeamOperations.id, current.id));
+      } catch {
+        await tx.update(hermesTeamOperations).set({ state: 'needs_attention', updatedAt: new Date() }).where(eq(hermesTeamOperations.id, current.id));
+      }
+    });
   }
+}
+
+/** Post-commit hook for directory/session mutations, including nested authentication transactions. */
+export async function reconcileTeamActorAccess(userId: string) {
+  const receipts = await db.select({ botId: hermesTeamOperations.botId, result: hermesTeamOperations.result }).from(hermesTeamOperations)
+    .where(and(eq(hermesTeamOperations.kind, 'revoke'), inArray(hermesTeamOperations.state, ['pending','needs_attention'])));
+  for (const botId of new Set(receipts.filter(r => r.result?.userId === userId).map(r => r.botId))) await reconcileTeamAccess(botId);
 }

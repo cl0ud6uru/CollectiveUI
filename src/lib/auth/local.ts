@@ -126,11 +126,18 @@ export async function resetLocalPassword(actor: AuthActor | "recover-admin", use
       // A reset makes a temporary credential; don't strand the only working local admin.
       if (user.isAdmin && !user.disabled) await ensureLocalAdminRemains(tx, userId);
     }
+    const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
+    const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
     await tx.update(localCredentials).set({ passwordHash, mustChangePassword: actor !== "recover-admin",
       temporaryExpiresAt: actor === "recover-admin" ? null : new Date(Date.now() + 86400000), updatedAt: new Date() }).where(eq(localCredentials.userId, userId));
     await tx.update(users).set({ sessionVersion: sql`${users.sessionVersion} + 1`, authChangedAt: sql`clock_timestamp()`, ...(actor === "recover-admin" ? { disabled: false } : {}) }).where(eq(users.id, userId));
     await auditTx(tx, actor === "recover-admin" ? null : actor.id, actor === "recover-admin" ? "local.operator_recovery" : "local.password_reset", userId);
+    if (team) await team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actor === 'recover-admin' ? userId : actor.id, userId, true);
   });
+  if (teamBotsEnabled()) {
+    const { reconcileTeamActorAccess } = await import('@/lib/hermes-team/revocation');
+    await reconcileTeamActorAccess(userId);
+  }
 }
 export async function changeOwnPassword(actor: AuthActor, current: unknown, password: unknown, headers: Headers) {
   enabled();
@@ -145,10 +152,17 @@ export async function changeOwnPassword(actor: AuthActor, current: unknown, pass
     const [user] = await tx.select().from(users).where(eq(users.id, actor.id));
     if (!user || user.disabled || user.identityRealm !== "local" || user.sessionVersion !== actor.sessionVersion) throw new HttpError(401, "Sign in again");
     if (await hasLocalFactors(actor.id, tx)) throw new HttpError(403, "Use Account Security to verify your factors before changing your password.");
+    const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
+    const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
     await tx.update(localCredentials).set({ passwordHash, mustChangePassword: false, temporaryExpiresAt: null, updatedAt: new Date() }).where(eq(localCredentials.userId, actor.id));
     await tx.update(users).set({ sessionVersion: sql`${users.sessionVersion} + 1`, authChangedAt: sql`clock_timestamp()` }).where(eq(users.id, actor.id));
     await auditTx(tx, actor.id, "local.password_changed", actor.id);
+    if (team) await team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actor.id, actor.id, true);
   });
+  if (teamBotsEnabled()) {
+    const { reconcileTeamActorAccess } = await import('@/lib/hermes-team/revocation');
+    await reconcileTeamActorAccess(actor.id);
+  }
 }
 
 /** Navigation after successful sign-in only; authorization independently reads sessionState on every request. */

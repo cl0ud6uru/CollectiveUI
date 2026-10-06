@@ -1482,4 +1482,13 @@ export const hermesTeamRunAttribution = pgTable('hermes_team_run_attribution', {
   definitionVersion: integer('definition_version').notNull(), teamRevision: integer('team_revision'),
   mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
   modelSource: text('model_source').$type<'admin' | 'personal'>().notNull(),
-});
+  /** NULL retains pre-capability historical attribution without fabricating verification evidence. */
+  admission: jsonb('admission').$type<import('../lib/hermes-team/run-attribution').TeamRunAdmissionDetails>(),
+}, t => [check('hermes_team_run_admission_check', sql`${t.admission} is null or (
+  jsonb_typeof(${t.admission}) = 'object' and octet_length(${t.admission}::text) <= 8192
+  and ${t.admission} ?& array['version','routeId','adapterId','integration','model','billing','connectionId','gatewayGrantId','evidence','purposes']
+  and ${t.admission}->>'version' = '1' and ${t.admission}->>'billing' = ${t.modelSource}
+  and jsonb_typeof(${t.admission}->'purposes') = 'object' and ${t.admission}->'purposes' <> '{}'::jsonb
+  and ((${t.admission}->'purposes') - array['reply','learning','utility','subagent']) = '{}'::jsonb
+  and (${t.admission} - array['version','routeId','adapterId','integration','model','billing','connectionId','gatewayGrantId','evidence','purposes']) = '{}'::jsonb
+) is true`)]);
