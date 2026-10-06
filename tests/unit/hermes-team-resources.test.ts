@@ -3,7 +3,7 @@ import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
-  assertSafeResourcePath, capturePublishableResources, createTeamResourceSnapshot,
+  assertCompatibleResourcePackageIds, assertSafeResourcePath, capturePublishableResources, createTeamResourceSnapshot,
   resourceBytes, resourceSha256, reviewTeamResourceChanges, selectTeamResourcePublication, validateTeamResourceSnapshot,
 } from "@/lib/hermes-team/resources";
 
@@ -145,6 +145,11 @@ describe("Hermes frozen publication review selection", () => {
 
 
 describe("Publication package boundary changes", () => {
+  it("detects ancestor boundaries even when sibling names sort between them", () => {
+    expect(() => assertCompatibleResourcePackageIds(["skills/a", "skills/a-ignored", "skills/a/b"])).toThrow("boundaries overlap");
+    expect(() => assertCompatibleResourcePackageIds(["skills/a-ignored", "skills/a/b", "skills/ab"])).not.toThrow();
+  });
+
   it("rejects a captured nested package that overlaps the previous publication boundary", async () => {
     await file("skills/support/child/SKILL.md", "nested child");
     const previous = await capture();

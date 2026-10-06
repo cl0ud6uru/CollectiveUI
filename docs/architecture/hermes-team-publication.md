@@ -29,10 +29,11 @@ administrator-reviewed team resources, never a member's private skills or memory
 Changes learned after capture belong to the next draft. Omitted prior resources
 are removal candidates and require explicit selection to be removed.
 
-The native broker has no verified volume capture helper in this increment. The
-real capture operation therefore reports an explicit unsupported capability
-response (503). Synthetic fixtures exercise persistence/publication without
-model calls, grants, production credentials or native container changes.
+The broker captures through a fixed, bounded helper with native writes stopped,
+network disabled and read-only access to the server-bound native volume. Older
+brokers without that adapter return an unsupported capability response (503).
+Synthetic fixtures exercise persistence/publication and the bundled helper
+without model calls, grants, production credentials or native container changes.
 
 ## Publication and retries
 
@@ -74,11 +75,12 @@ Errors contain no credential values or raw native contents.
 profile states, profiles needing an update, and conflict counts. It does not
 return member identities, profile IDs, private resource paths, contents or hashes.
 
-`nativeUpdatesSupported: false` explicitly reports that no native filesystem
-update adapter is shipped. Publishing does not claim installation and does not
-change member profile states. The separate pure three-way planner preserves
-member modifications/learning/deletions and supports rollback, but native
-application, durable per-profile update receipts, conflict-resolution writes and
-active runtime revocation require the verified volume helper and maintenance
-lease before they can be enabled. Model route and native connector verification
-remain separate gates; publication grants no model/tool capabilities.
+`nativeUpdatesSupported` describes whether the application ships its native
+resource adapter; the member preview must also successfully inventory through
+the bound broker before an automatic update. An older or unavailable broker
+returns a useful error and preserves the member's content. Publication does not
+claim installation or change member profile states. The member update service
+applies the three-way planner through durable, protected receipts and an idle
+runtime maintenance lease. Actual pinned-image smoke verification remains a
+rollout prerequisite. Model route and native connector verification remain
+separate gates; publication grants no model/tool capabilities.

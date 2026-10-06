@@ -20,6 +20,8 @@ import { HttpError } from '@/lib/authz';
 import { configureTeam, reserveTeamProfile } from '@/lib/hermes-team/store';
 import { createTeamResourceSnapshot, resourceSha256, type TeamResource, type TeamResourceSnapshot } from '@/lib/hermes-team/resources';
 import { createTeamPublicationService, teamCaptureRequestSchema, teamPublishRequestSchema } from '@/lib/hermes-team/publication';
+import { captureTeamRollback, teamRevisionHistory } from '@/lib/hermes-team/rollback';
+import { POST as rollbackRoute } from '@/app/api/bots/[id]/team/rollback/capture/route';
 import { POST as captureRoute, GET as inventoryRoute } from '@/app/api/bots/[id]/team/capture/route';
 import { POST as publishRoute, GET as rolloutRoute } from '@/app/api/bots/[id]/team/publish/route';
 let admin: Principal, otherAdmin: Principal, alice: Principal, clock: Date;
@@ -286,5 +288,38 @@ describe('Publication HTTP boundaries', () => {
     const input = publishInput('snapshot');
     for (const extra of [{ requestId: '../arbitrary' }, { requestId: undefined }, { selectedKeys: [] }, { selectedKeys: ['skills/support', 'skills/support'] },
       { profileId: 'foreign' }, { manifest: snapshot() }]) expect(teamPublishRequestSchema.safeParse({ ...input, ...extra }).success).toBe(false);
+  });
+});
+describe('shared rollback publishes a reviewed new revision', () => {
+  it('restores exact historical package bytes as revision 3 while retaining revisions 1 and 2', async () => {
+    const first = await captureThen('Version one'); await service.publish(admin, 'team', publishInput(first.snapshotId));
+    const second = await captureThen('Version two', 1); await service.publish(admin, 'team', publishInput(second.snapshotId, { expectedRevision: 1 }));
+    const restored = await captureTeamRollback(admin, 'team', { expectedRevision: 2, targetRevision: 1 });
+    expect(restored.changes[0]).toMatchObject({ packageId: 'skills/support', change: 'changed',
+      capturedResources: expect.arrayContaining([expect.objectContaining({ content: 'Version one' })]) });
+    expect((await service.publish(admin, 'team', publishInput(restored.snapshotId, { expectedRevision: 2 }))).revision).toBe(3);
+    const history = await teamRevisionHistory(admin, 'team');
+    expect(history.revisions.map(row => row.revision)).toEqual([3, 2, 1]);
+    expect(JSON.stringify(history)).not.toMatch(/publishedBy|profileId|ownerId|content|alice/);
+    const [definition] = await db.select().from(schema.hermesTeamDefinitions);
+    expect(definition.publishedRevision).toBe(3); expect(fixture.capture).toHaveBeenCalledTimes(2);
+  });
+  it('reviews restoring the empty baseline as explicit removals without deleting historical releases', async () => {
+    const first = await captureThen(); await service.publish(admin, 'team', publishInput(first.snapshotId));
+    const restored = await captureTeamRollback(admin, 'team', { expectedRevision: 1, targetRevision: 0 });
+    expect(restored.changes).toMatchObject([{ packageId: 'skills/support', change: 'removed' }]);
+    await service.publish(admin, 'team', publishInput(restored.snapshotId, { expectedRevision: 1, selectedKeys: [], removalKeys: ['skills/support'] }));
+    expect(await db.select().from(schema.hermesTeamRevisions)).toHaveLength(2);
+    expect((await db.select().from(schema.hermesTeamDefinitions))[0].publishedRevision).toBe(2);
+  });
+  it('keeps history/restore behind fresh maintainership, strict inputs and same-origin writes', async () => {
+    await expect(teamRevisionHistory(alice, 'team')).rejects.toMatchObject({ status: 403 });
+    await expect(captureTeamRollback(alice, 'team', { expectedRevision: 1, targetRevision: 0 })).rejects.toMatchObject({ status: 403 });
+    await expect(captureTeamRollback(admin, 'team', { expectedRevision: 1, targetRevision: 1 })).rejects.toBeDefined();
+    const response = await rollbackRoute(request('/api/bots/team/team/rollback/capture', { expectedRevision: 1, targetRevision: 0 }, 'https://attacker.test.invalid'), ctx);
+    expect(response.status).toBe(403);
+    const foreign = await rollbackRoute(request('/api/bots/team/team/rollback/capture', { expectedRevision: 1, targetRevision: 0, profileId: 'foreign' }), ctx);
+    expect(foreign.status).toBe(400);
+    expect(fixture.capture).not.toHaveBeenCalled();
   });
 });

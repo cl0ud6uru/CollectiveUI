@@ -1,14 +1,22 @@
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { readFile, realpath, stat, lstat, open, chmod, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { body, json, serveNative } from '../local-hermes/server';
 import { LocalError } from '../local-hermes/controller';
 import { DockerBroker } from './broker';
-import { BrokerConfig, DockerDriver, type RuntimeDriver } from './docker';
+import { BrokerConfig, DockerDriver, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver } from './docker';
 import { randomUUID } from 'node:crypto';
 import { networkMode } from './network';
-import { ownerId, teamAuthorization, teamEnsure, teamScope, teamBotId, teamMode } from './types';
+import { ownerId, teamAuthorization, teamEnsure, teamBotId, teamMode } from './types';
+
+async function teamBody(req: IncomingMessage, maxBytes: number) {
+  // Reject an explicitly oversized trusted IPC payload before allocating it or
+  // entering a stopped-volume operation. Streaming/chunked bodies keep the same bound.
+  const length = req.headers['content-length'];
+  if (length && (!/^\d+$/.test(length) || Number(length) > maxBytes)) throw new LocalError(413, 'Team resource request is too large.');
+  return body(req, maxBytes);
+}
 
 /** Omitted policy in an existing installation inherits the pinned deployment, never a new default. */
 export async function loadBrokerConfig(file: string): Promise<BrokerConfig> {
@@ -30,14 +38,20 @@ export async function listenBroker(broker: DockerBroker) {
     const url = req.url ?? '';
     if (req.method === 'GET' && url === '/admin/ready') return json(res, 200, { ready: true });
     if (req.method === 'POST' && url === '/team/authorize') return json(res, 200, broker.authorizeTeam(owner, teamAuthorization.parse(await body(req))));
-    if (req.method === 'POST' && url === '/team/revoke') return json(res, 200, await broker.revokeTeam(owner, teamScope.parse(await body(req))));
+    if (req.method === 'POST' && url === '/team/revoke') return json(res, 200, await broker.revokeTeam(owner, await body(req, 96 * 1024)));
     if (req.method === 'POST' && url === '/team/ensure') {
       const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
       return json(res, 200, await broker.ensureTeam(owner, teamEnsure.parse(await body(req)), grant));
     }
     if (req.method === 'POST' && url === '/team/capture') {
       const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
-      return json(res, 200, await broker.captureTeamResources(owner, await body(req), grant));
+      return json(res, 200, await broker.captureTeamResources(owner, await teamBody(req, 96 * 1024), grant));
+    }
+    if (req.method === 'POST' && ['/team/inventory', '/team/member-inventory', '/team/apply', '/team/abort-update'].includes(url)) {
+      const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      const input = await teamBody(req, ['/team/apply', '/team/abort-update'].includes(url) ? RESOURCE_PROTOCOL_BYTES : url === '/team/member-inventory' ? 2 * 1024 * 1024 : 96 * 1024);
+      return json(res, 200, url === '/team/inventory' ? await broker.inventoryTeamResources(owner, input, grant)
+        : url === '/team/member-inventory' ? await broker.inventoryTeamMemberResources(owner, input, grant) : url === '/team/apply' ? await broker.applyTeamMemberResources(owner, input, grant) : await broker.abortTeamMemberResources(owner, input, grant));
     }
     if (req.method === 'GET' && url === '/team/binding') {
       const bot = teamBotId.parse(req.headers['x-collective-team-bot']), mode = teamMode.parse(req.headers['x-collective-team-mode']);

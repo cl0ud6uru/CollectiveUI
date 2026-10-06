@@ -227,6 +227,16 @@ describe('disabled Team Bot schema and fresh authorization', () => {
     await ensureTeamPrivateInstance(admin, 'team', 'admin');
     expect(fixture.ensure.mock.calls[2][2]).toBe('admin');
   });
+  it('reopening retains an unfinished private update fence before native writes start', async () => {
+    const first = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    const [operation] = await db.insert(schema.hermesTeamOperations).values({ botId: 'team', profileId: first.id, actorId: 'alice',
+      kind: 'update', state: 'pending', requestId: '00000000-0000-4000-8000-000000000001', digest: 'a'.repeat(64) }).returning();
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('updating');
+    await db.update(schema.hermesTeamOperations).set({ state: 'needs_attention' }).where(eq(schema.hermesTeamOperations.id, operation.id));
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('needs_attention');
+    await db.update(schema.hermesTeamOperations).set({ state: 'complete' }).where(eq(schema.hermesTeamOperations.id, operation.id));
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('connection_needed');
+  });
   it('preserves preparing reservations after broker failure and rejects cross-user native binding responses', async () => {
     fixture.ensure.mockRejectedValueOnce(new Error('Synthetic unavailable broker'));
     const attention = await ensureTeamPrivateInstance(alice, 'team', 'member');

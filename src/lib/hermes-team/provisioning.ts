@@ -1,7 +1,7 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db';
-import { bots, hermesTeamProfiles } from '@/db/schema';
+import { bots, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
 import type { Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { authorizeTeam, reserveTeamProfile } from './store';
@@ -27,7 +27,11 @@ export async function ensureTeamPrivateInstance(p: Principal, botId: string, mod
       const [previous] = await tx.select().from(hermesTeamProfiles).where(eq(hermesTeamProfiles.id, profile.id)).for('update');
       if (previous.binding && immutableIdentity(binding.parse(previous.binding)) !== immutableIdentity(native)) throw new HttpError(409, 'The retained native mapping changed. No profile was reassigned.');
       // No gateway is enabled by this build. Login/configuration alone is not proof of model access.
-      const [ready] = await tx.update(hermesTeamProfiles).set({ binding: native, state: 'connection_needed', updatedAt: new Date() }).where(eq(hermesTeamProfiles.id, profile.id)).returning();
+      const [pending] = await tx.select({ state: hermesTeamOperations.state }).from(hermesTeamOperations)
+        .where(and(eq(hermesTeamOperations.profileId, profile.id), inArray(hermesTeamOperations.state, ['pending', 'needs_attention']))).limit(1);
+      // Reopening must retain recovery fencing even when a native plan has not begun yet.
+      const state = pending ? pending.state === 'needs_attention' || previous.state === 'needs_attention' ? 'needs_attention' : 'updating' : 'connection_needed';
+      const [ready] = await tx.update(hermesTeamProfiles).set({ binding: native, state, updatedAt: new Date() }).where(eq(hermesTeamProfiles.id, profile.id)).returning();
       return ready;
     });
   } catch (e) {

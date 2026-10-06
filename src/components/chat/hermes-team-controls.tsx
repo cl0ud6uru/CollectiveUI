@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Textarea } from "@/components/ui/input";
 import { publicationPackageFiles, publicationResourceKind, publicationResourceName, type HermesTeamCaptureInventory, type HermesTeamCaptureSelection, type HermesTeamCapturedResource, type HermesTeamReview, type HermesTeamPublishInput } from "./hermes-team-publication";
+import { HermesTeamMemberUpdates, type HermesTeamUpdateActions } from "./hermes-team-updates";
+import { HermesTeamRolloutSummary, type HermesTeamRolloutStatus } from "./hermes-team-rollout";
+import { HermesTeamRestorePicker, type HermesTeamRevision } from "./hermes-team-restore";
 export type { HermesTeamReview, HermesTeamPublishInput } from "./hermes-team-publication";
 
 export type HermesTeamMode = "member" | "admin";
@@ -17,10 +20,9 @@ export type HermesTeamView = {
   installedRevision: number | null;
   publishedRevision: number;
   conflictCount: number;
+  modelAccessAvailable?: boolean;
+  modelAccessReason?: string;
 };
-export type HermesTeamFilePreview = { path: string; before?: string | null; after?: string | null; diff?: string; binary?: boolean };
-export type HermesTeamConflict = { id: string; name: string; memberDeleted?: boolean; teamRemoved?: boolean; memberFiles: HermesTeamFilePreview[]; teamFiles: HermesTeamFilePreview[] };
-export type HermesTeamConflictInput = { conflictId: string; choice: "keep_mine" | "use_team"; requestId: string };
 
 const stateLabels: Record<HermesTeamView["state"], string> = {
   preparing: "Preparing your bot…",
@@ -33,16 +35,17 @@ const stateLabels: Record<HermesTeamView["state"], string> = {
 const changeLabels = { added: "Added", changed: "Changed", removed: "Removal" };
 
 /** Every callback uses server-derived bot/conversation identity; mode changes navigate to a new context. */
-export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCapture, onCapture, onPublish, onLoadConflicts, onResolveConflict }: {
+export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCapture, onCapture, onPublish, onLoadRollout, onLoadRevisions, onCaptureRollback, ...updateActions }: {
   view: HermesTeamView;
   busy?: boolean;
   onOpenMode?: (mode: HermesTeamMode) => Promise<void>;
   onPrepareCapture?: () => Promise<HermesTeamCaptureInventory>;
   onCapture?: (selection: HermesTeamCaptureSelection) => Promise<HermesTeamReview>;
   onPublish?: (input: HermesTeamPublishInput) => Promise<{ revision: number }>;
-  onLoadConflicts?: () => Promise<HermesTeamConflict[]>;
-  onResolveConflict?: (input: HermesTeamConflictInput) => Promise<void>;
-}) {
+  onLoadRollout?: () => Promise<HermesTeamRolloutStatus>;
+  onLoadRevisions?: () => Promise<HermesTeamRevision[]>;
+  onCaptureRollback?: (targetRevision: number) => Promise<HermesTeamReview>;
+} & HermesTeamUpdateActions) {
   const id = useId();
   const [operation, setOperation] = useState<string | null>(null);
   const operationRef = useRef(false);
@@ -57,10 +60,12 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
   const [releaseNote, setReleaseNote] = useState("");
   const publishAttempt = useRef<HermesTeamPublishInput | null>(null);
   const [attempted, setAttempted] = useState(false);
-  const [conflictsOpen, setConflictsOpen] = useState(false);
-  const [conflicts, setConflicts] = useState<HermesTeamConflict[]>([]);
-  const [resolved, setResolved] = useState<string[]>([]);
-  const conflictAttempts = useRef(new Map<string, string>());
+  const [rollout, setRollout] = useState<HermesTeamRolloutStatus | null>(null);
+  const [rolloutError, setRolloutError] = useState("");
+  const [revisions, setRevisions] = useState<HermesTeamRevision[]>([]);
+  const [revisionError, setRevisionError] = useState("");
+  const [restoreTarget, setRestoreTarget] = useState<number | null>(null);
+  const [rolloutOpen, setRolloutOpen] = useState(false);
 
   async function perform(name: string, action: () => Promise<void>) {
     if (operationRef.current || busy) return;
@@ -74,15 +79,24 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
     }
     finally { operationRef.current = false; setOperation(null); }
   }
-  function acceptReview(next: HermesTeamReview) {
+  function acceptReview(next: HermesTeamReview, targetRevision: number | null = null) {
+    setRestoreTarget(targetRevision);
     setReview(next); setSelected([]); setReleaseNote(""); setAttempted(false); setStaleReview(false); publishAttempt.current = null;
     setReviewOpen(true);
   }
   async function prepareCapture() {
     if (!onPrepareCapture || !onCapture || !view.canMaintain || view.mode !== "admin") return;
     await perform("capture", async () => {
-      const next = await onPrepareCapture();
-      setInventory(next); setDocuments([]); setReview(null); setStaleReview(false); setReviewOpen(true);
+      const [prepared, summary, history] = await Promise.allSettled([onPrepareCapture(), onLoadRollout?.(), onLoadRevisions?.()]);
+      if (history.status === "rejected" && history.reason?.status === 403) throw history.reason;
+      if (history.status === "fulfilled") { setRevisions(history.value ?? []); setRevisionError(""); }
+      else setRevisionError(history.reason instanceof Error ? history.reason.message : "Published versions could not be loaded.");
+      if (summary.status === "fulfilled") { setRollout(summary.value ?? null); setRolloutError(""); }
+      else setRolloutError(summary.reason instanceof Error ? summary.reason.message : "Rollout status could not be loaded.");
+      // Shared immutable history can still be reviewed when native working-profile capture is unavailable.
+      if (prepared.status === "rejected" && (prepared.reason?.status === 403 || history.status !== "fulfilled" || !history.value?.some(revision => revision.revision < view.publishedRevision))) throw prepared.reason;
+      const next: HermesTeamCaptureInventory = prepared.status === "fulfilled" ? prepared.value : { available: false, reason: prepared.reason instanceof Error ? prepared.reason.message : "Native resource review is unavailable.", selection: { skillPackages: [], includeRole: false, documents: [] } };
+      setInventory(next); setDocuments([]); setReview(null); setRestoreTarget(null); setStaleReview(false); setAttempted(false); publishAttempt.current = null; setSelected([]); setReleaseNote(""); setReviewOpen(true);
       if (next.available && !next.selection.documents.length) acceptReview(await onCapture({ ...next.selection, documents: [] }));
     });
   }
@@ -91,6 +105,10 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
     await perform("capture", async () => {
       acceptReview(await onCapture({ ...inventory.selection, documents }));
     });
+  }
+  async function captureRollback(targetRevision: number) {
+    if (!onCaptureRollback || !view.canMaintain || view.mode !== "admin" || attempted && !staleReview) return;
+    await perform("restore", async () => acceptReview(await onCaptureRollback(targetRevision), targetRevision));
   }
   async function publish() {
     if (!review || !onPublish || !selected.length || !releaseNote.trim() || !view.canMaintain || view.mode !== "admin") return;
@@ -104,31 +122,21 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
       setReviewOpen(false); setReview(null); setNotice(`Published team version ${result.revision}.`);
     });
   }
-  async function loadConflicts() {
-    if (!onLoadConflicts || view.mode !== "member") return;
-    await perform("conflicts", async () => { setConflicts(await onLoadConflicts()); setResolved([]); setConflictsOpen(true); });
-  }
-  async function resolve(conflict: HermesTeamConflict, choice: HermesTeamConflictInput["choice"]) {
-    if (!onResolveConflict || view.mode !== "member") return;
-    await perform(`resolve:${conflict.id}`, async () => {
-      const key = `${conflict.id}:${choice}`;
-      if (!conflictAttempts.current.has(key)) conflictAttempts.current.set(key, crypto.randomUUID());
-      await onResolveConflict({ conflictId: conflict.id, choice, requestId: conflictAttempts.current.get(key)! });
-      setResolved((ids) => [...ids, conflict.id]);
-      setNotice(choice === "keep_mine" ? `Kept your version of ${conflict.name}.` : `Selected the team version of ${conflict.name}. It will be applied when your bot is idle.`);
-    });
+  async function loadRollout() {
+    if (!onLoadRollout || !view.canMaintain || view.mode !== "admin") return;
+    await perform("rollout", async () => { setRollout(await onLoadRollout()); setRolloutError(""); setRolloutOpen(true); });
   }
   if (!view.enabled) return null;
   const locked = !!operation || busy || view.state === "revoked";
   const canCapture = view.state !== "preparing" && view.state !== "updating" && view.state !== "revoked";
   const admin = view.mode === "admin";
-  const visibleConflicts = conflicts.filter((conflict) => !resolved.includes(conflict.id));
+  const modelUnavailable = view.modelAccessAvailable === false;
   return <section className="mx-auto w-full max-w-3xl space-y-2 px-4 py-2" aria-label="Hermes Team Bot controls">
     <div className="space-y-2 rounded-xl border border-border bg-surface px-3 py-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
           <span className="rounded-full bg-surface-2 px-2 py-1 font-medium">{admin ? "Admin mode" : "Private chat"}</span>
-          <span className="flex items-center gap-1.5 text-muted" role="status">{(view.state === "preparing" || view.state === "updating") && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}{stateLabels[view.state]}</span>
+          <span className="flex items-center gap-1.5 text-muted" role="status">{(view.state === "preparing" || view.state === "updating") && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}{modelUnavailable && (view.state === "connection_needed" || view.state === "ready") ? "Model access unavailable" : stateLabels[view.state]}</span>
           {view.publishedRevision > 0 && <span className="text-muted">Team version {admin ? view.publishedRevision : view.installedRevision ?? "pending"}</span>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -140,23 +148,29 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
             Admin mode
           </label>}
           {admin && view.canMaintain && <Button size="sm" variant="outline" disabled={locked || !canCapture || !onPrepareCapture || !onCapture || !onPublish} onClick={() => void prepareCapture()}>{operation === "capture" && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}Publish changes</Button>}
-          {!admin && view.conflictCount > 0 && <Button size="sm" variant="outline" disabled={locked || !onLoadConflicts || !onResolveConflict} onClick={() => void loadConflicts()}>Review {view.conflictCount} {view.conflictCount === 1 ? "update" : "updates"}</Button>}
+          {admin && view.canMaintain && onLoadRollout && <Button size="sm" variant="outline" disabled={locked} onClick={() => void loadRollout()}>Team status</Button>}
+          {!admin && <HermesTeamMemberUpdates installedRevision={view.installedRevision} publishedRevision={view.publishedRevision} conflictCount={view.conflictCount} busy={locked} disabled={view.state === "preparing" || view.state === "updating" || view.state === "revoked"} {...updateActions} />}
         </div>
       </div>
       {view.canMaintain && <p id={`${id}-mode-description`} className="text-xs text-muted">Admin mode opens a separate conversation. Maintainers share this working bot’s skills and native memory. Your private chat and other maintainers’ conversations stay separate.</p>}
       {!admin && <p className="text-xs text-muted">Your chat history, memory and new skills stay private. Team updates preserve your own changes.</p>}
-      {view.state === "connection_needed" && <p className="text-sm">Connect or reconnect the required model account in <a href="/settings?tab=connected-accounts" className="underline">Settings</a> to continue.</p>}
+      {modelUnavailable && view.state !== "revoked" && <p className="text-sm">{view.modelAccessReason?.trim() || "Team model access is unavailable in this build. Ask an admin to configure a supported model connection."}</p>}
+      {view.state === "connection_needed" && !modelUnavailable && <p className="text-sm">Connect or reconnect the required model account in <a href="/settings?tab=connected-accounts" className="underline">Settings</a> to continue.</p>}
       {view.state === "needs_attention" && <p className="text-xs text-muted">This bot is paused. Ask an admin to check its configuration, or try again after the issue is resolved.</p>}
       {view.state === "revoked" && <p className="text-xs text-muted">Your access to this Team Bot was removed. Ask an admin if you need access again.</p>}
       {view.canMaintain && !onOpenMode && <p className="text-xs text-muted">Open this bot in a compatible web version to switch Admin mode.</p>}
       {admin && (!onPrepareCapture || !onCapture || !onPublish) && <p className="text-xs text-muted">Publishing is not available in this version. Ask an admin to check resource review support.</p>}
-      {!admin && view.conflictCount > 0 && (!onLoadConflicts || !onResolveConflict) && <p className="text-xs text-muted">Your changes are preserved. Open a compatible web version to review these updates.</p>}
+      {!admin && view.conflictCount > 0 && (!updateActions.onLoadUpdates || !updateActions.onResolveUpdate) && <p className="text-xs text-muted">Your changes are preserved. Open a compatible web version to review these updates.</p>}
     </div>
     {notice && <p role="status" className="text-xs text-muted">{notice}</p>}
-    {error && !reviewOpen && !conflictsOpen && <p role="alert" className="text-sm text-danger">{error}</p>}
+    {error && !reviewOpen && !rolloutOpen && <p role="alert" className="text-sm text-danger">{error}</p>}
 
     <Dialog open={reviewOpen && admin && view.canMaintain} onOpenChange={(open) => { if (!operationRef.current) { setReviewOpen(open); setError(""); } }}>
       <DialogContent title="Publish changes" description="Choose exactly what the team will receive from this snapshot." className="max-w-2xl" hideClose={operation === "publish"}>
+        {rollout && <HermesTeamRolloutSummary status={rollout} />}
+        {rolloutError && <p role="alert" className="text-xs text-danger">{rolloutError}</p>}
+        {revisionError && <p className="text-xs text-muted">{revisionError}</p>}
+        {onCaptureRollback && <HermesTeamRestorePicker key={`${view.publishedRevision}:${review?.snapshotId ?? "draft"}`} revisions={revisions} publishedRevision={view.publishedRevision} disabled={locked || attempted} onReview={targetRevision => void captureRollback(targetRevision)} />}
         {!review && inventory && <div className="space-y-4">
           {!inventory.available ? <><p role="status" className="text-sm">{inventory.reason ?? "Resource review is unavailable for this bot."}</p><p className="text-xs text-muted">Ask an admin to check native resource review, then try again.</p></> : <>
             <p className="text-sm">Review the working bot’s skills{inventory.selection.includeRole ? " and role instructions" : ""}. Select any shared documents to include.</p>
@@ -167,6 +181,7 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
           <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={locked} onClick={() => { setReviewOpen(false); setError(""); }}>Cancel</Button>{inventory.available ? <Button disabled={locked} onClick={() => void capture()}>{operation === "capture" && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}Capture changes</Button> : <Button disabled={locked} onClick={() => void prepareCapture()}>Review again</Button>}</div>
         </div>}
         {review && <div className="space-y-4">
+          {restoreTarget !== null && <p className="text-sm">Reviewing shared resources from team version {restoreTarget}. Publish only the changes you select as a new team version.</p>}
           <p className="text-xs text-muted">Based on team version {review.expectedRevision}. This captured snapshot stays fixed; later learning belongs to the next draft.</p>
           <p className="text-xs text-muted">Credentials, personal memory, conversations, browser sessions, logs and caches are excluded.</p>
           <p className="text-xs text-muted">Review expires {new Date(review.expiresAt).toLocaleString()}. Skills include their scripts and assets; publication does not run them.</p>
@@ -180,7 +195,7 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
               <div className="mt-2 space-y-2">{publicationPackageFiles(resource).map(file => <PackageFilePreview key={file.path} {...file} />)}</div>
               {resource.change === "removed" && <p className="mt-2 text-xs text-muted">Removes only an unchanged team-owned copy. Members keep their own changes.</p>}
             </div>)}
-          </fieldset> : <p className="text-sm">No publishable changes yet. Teach the bot in Admin mode, then review again.</p>}
+          </fieldset> : <p className="text-sm">{restoreTarget === null ? "No publishable changes yet. Teach the bot in Admin mode, then review again." : "This shared version has no differences to publish."}</p>}
           <Field label="Release note" hint="A short explanation for the people using this bot.">
             <Textarea aria-label="Team release note" rows={2} maxLength={500} value={releaseNote} disabled={locked || attempted} onChange={(event) => setReleaseNote(event.target.value)} placeholder="What changed and why?" />
           </Field>
@@ -188,43 +203,19 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
           {error && <p role="alert" className="text-sm text-danger">{error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" disabled={locked} onClick={() => { setReviewOpen(false); setError(""); }}>Cancel</Button>
-            {staleReview ? <Button disabled={locked} onClick={() => void prepareCapture()}>Review again</Button> : <Button disabled={locked || !selected.length || !releaseNote.trim()} onClick={() => void publish()}>{operation === "publish" && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}{attempted && error ? "Retry publish" : `Publish ${selected.length} ${selected.length === 1 ? "item" : "items"}`}</Button>}
+            {staleReview ? <Button disabled={locked} onClick={() => void (restoreTarget === null ? prepareCapture() : captureRollback(restoreTarget))}>Review again</Button> : <Button disabled={locked || !selected.length || !releaseNote.trim()} onClick={() => void publish()}>{operation === "publish" && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}{attempted && error ? "Retry publish" : `Publish ${selected.length} ${selected.length === 1 ? "item" : "items"}`}</Button>}
           </div>
         </div>}
       </DialogContent>
     </Dialog>
-    <Dialog open={conflictsOpen && !admin} onOpenChange={(open) => { if (!operationRef.current) { setConflictsOpen(open); setError(""); } }}>
-      <DialogContent title="Review team updates" description="Your changes have been preserved. Choose which version to keep for each item." className="max-w-2xl" hideClose={!!operation}>
-        <div className="space-y-4">
-          {visibleConflicts.map((conflict) => <section key={conflict.id} aria-label={`Update ${conflict.name}`} className="space-y-3 rounded-lg border border-border p-3">
-            <h3 className="text-sm font-medium wrap-anywhere">{conflict.name}</h3>
-            {conflict.memberDeleted && <p className="text-xs text-muted">You deleted this item. Keep my version preserves that choice.</p>}
-            {conflict.teamRemoved && <p className="text-xs text-muted">The team removed this item. Use team version accepts the removal.</p>}
-            <details className="text-xs"><summary className="cursor-pointer text-sm">Preview your version</summary><div className="mt-2 space-y-2">{conflict.memberDeleted ? <p>Deleted by you</p> : conflict.memberFiles.map((file) => <FilePreview key={file.path} file={file} />)}</div></details>
-            <details className="text-xs"><summary className="cursor-pointer text-sm">Preview team version</summary><div className="mt-2 space-y-2">{conflict.teamRemoved ? <p>Removed from the team</p> : conflict.teamFiles.map((file) => <FilePreview key={file.path} file={file} />)}</div></details>
-            <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={locked} onClick={() => void resolve(conflict, "keep_mine")}>Keep my version</Button><Button size="sm" disabled={locked} onClick={() => void resolve(conflict, "use_team")}>Use team version</Button></div>
-          </section>)}
-          {!visibleConflicts.length && <p className="text-sm">All updates have been reviewed.</p>}
-          {notice && <p role="status" className="text-xs text-muted">{notice}</p>}
-          {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-          <div className="flex justify-end"><Button variant="outline" disabled={locked} onClick={() => { setConflictsOpen(false); setError(""); }}>Done</Button></div>
-        </div>
+    <Dialog open={rolloutOpen && admin && view.canMaintain} onOpenChange={open => { if (!operationRef.current) { setRolloutOpen(open); setError(""); } }}>
+      <DialogContent title="Team status" description="Overall update status. Members review their own private content.">
+        {rollout && <HermesTeamRolloutSummary status={rollout} />}
+        {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+        <div className="mt-4 flex justify-end"><Button variant="outline" disabled={locked} onClick={() => setRolloutOpen(false)}>Done</Button></div>
       </DialogContent>
     </Dialog>
   </section>;
-}
-
-function FilePreview({ file }: { file: HermesTeamFilePreview }) {
-  return <details className="min-w-0 rounded-lg bg-surface-2/50 p-2 text-xs">
-    <summary className="cursor-pointer break-all font-mono">{file.path}</summary>
-    <div className="mt-2 min-w-0 space-y-2">
-      {file.binary ? <p>Binary asset included in the complete skill package.</p> : file.diff !== undefined ? <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono">{file.diff}</pre> : <>
-        {file.before != null && <div><p className="mb-1 text-muted">Previous content</p><pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono">{file.before}</pre></div>}
-        {file.after != null && <div><p className="mb-1 text-muted">Reviewed content</p><pre className="max-h-64 overflow-y-auto whitespace-pre-wrap break-all font-mono">{file.after}</pre></div>}
-        {file.before == null && file.after == null && <p>This file is removed in the selected team version.</p>}
-      </>}
-    </div>
-  </details>;
 }
 
 function PackageFilePreview({ path, before, after }: { path: string; before?: HermesTeamCapturedResource; after?: HermesTeamCapturedResource }) {

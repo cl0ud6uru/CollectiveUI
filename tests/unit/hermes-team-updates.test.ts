@@ -98,6 +98,13 @@ describe("Hermes resource update receipts and crash recovery", () => {
   const first = snapshot(skill("a", "a1"), skill("b", "b1"));
   const release = snapshot(skill("a", "a2"), skill("b", "b2"));
   const plan = planTeamResourceUpdate({ installed: first, release, current: first });
+  it("preserves plan hashes when JSONB reorders every persisted object key", () => {
+    const reorder = (value: unknown): unknown => Array.isArray(value) ? value.map(reorder)
+      : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).reverse().map(([key, child]) => [key, reorder(child)])) : value;
+    const withOverrides = planTeamResourceUpdate({ installed: first, release, current: first, overrides: { "skills/deleted-long-name": "deleted", "skills/c": "keep-member" } });
+    const persisted = reorder(withOverrides) as typeof withOverrides;
+    expect(beginResourceUpdate("jsonb-order", persisted)).toEqual(beginResourceUpdate("jsonb-order", withOverrides));
+  });
   it("handles double-clicks, JSON persistence, sequential completion and completed retries", () => {
     const started = beginResourceUpdate("operation-1", plan);
     expect(beginResourceUpdate("operation-1", plan, JSON.parse(JSON.stringify(started)))).toEqual(started);

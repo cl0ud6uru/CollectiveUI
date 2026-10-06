@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const f = vi.hoisted(() => ({ authorize: vi.fn(), control: vi.fn(), fetch: vi.fn() }));
 vi.mock('@/lib/hermes-team/store', () => ({ authorizeTeam: f.authorize }));
 vi.mock('@/lib/docker-hermes/client', () => ({ dockerControl: f.control, dockerFetch: () => f.fetch }));
-import { captureTeamResources, ensureTeamRuntime, inventoryTeamResources } from '@/lib/hermes-team/transport';
+import { captureTeamResources, ensureTeamRuntime, inventoryTeamResources, inventoryTeamMemberResources, applyTeamMemberResources, abortTeamMemberResources } from '@/lib/hermes-team/transport';
+import { createTeamResourceSnapshot } from '@/lib/hermes-team/resources';
+import { planTeamResourceUpdate, beginResourceUpdate } from '@/lib/hermes-team/updates';
 import { HttpError } from '@/lib/authz';
 import type { Principal } from '@/lib/auth/groups';
 const p = { user: { id: 'alice' } } as Principal;
@@ -10,7 +12,7 @@ const grantId = '11111111-1111-4111-8111-111111111111';
 describe('trusted Team broker adapter', () => {
   beforeEach(() => {
     vi.clearAllMocks(); f.authorize.mockResolvedValue({ bot: { name: 'Support' }, definition: { modelPolicy: { mode: 'personal_required' } } });
-    f.control.mockResolvedValue({ grantId, expiresAt: Date.now() + 60000 }); f.fetch.mockResolvedValue(Response.json({ accepted: true }));
+    f.control.mockResolvedValue({ grantId, expiresAt: Date.now() + 60000 }); f.fetch.mockImplementation(async () => Response.json({ accepted: true }));
   });
   it('builds a private scope from authenticated actor/bot/mode with a server-only grant', async () => {
     expect(await ensureTeamRuntime(p, 'team', 'member')).toEqual({ accepted: true });
@@ -44,6 +46,16 @@ describe('trusted Team broker adapter', () => {
     await expect(inventoryTeamResources(p, 'team')).rejects.toMatchObject({ status: 503 });
     expect(f.control).toHaveBeenCalledTimes(1);
     expect(f.control.mock.calls[0][1]).toBe('/team/authorize');
+  });
+  it('scopes member inventory/apply/cancel to the trusted actor/bot despite extra operation identity fields', async () => {
+    const empty = createTeamResourceSnapshot([]), plan = planTeamResourceUpdate({ installed: empty, release: empty, current: empty });
+    await inventoryTeamMemberResources(p, 'team', ['skills/support']);
+    expect(JSON.parse(f.fetch.mock.calls[0][1].body)).toEqual({ teamBotId: 'team', mode: 'member', trackedPackageIds: ['skills/support'] });
+    const operation = { operationId: 'operation', plan, receipt: beginResourceUpdate('operation', plan), teamBotId: 'foreign', mode: 'admin', profile: 'foreign' };
+    await applyTeamMemberResources(p, 'team', operation);
+    expect(JSON.parse(f.fetch.mock.calls[1][1].body)).toEqual({ teamBotId: 'team', mode: 'member', operationId: 'operation', plan, receipt: operation.receipt });
+    await abortTeamMemberResources(p, 'team', operation);
+    expect(JSON.parse(f.fetch.mock.calls[2][1].body)).toEqual({ teamBotId: 'team', mode: 'member', operationId: 'operation', plan });
   });
   it('rejects expired grants and hides upstream response/exception contents', async () => {
     f.control.mockResolvedValueOnce({ grantId, expiresAt: Date.now() - 1 });
