@@ -158,7 +158,7 @@ export async function retireStoredTeamCandidateRun(runId:string){
 /** Called by the worker after its terminal transition; never creates a visible synthetic chat message. */
 export async function settleTeamCandidateRun(runId:string,successful:boolean,routes:readonly VerifiedTeamModelRoute[]=VERIFIED_TEAM_MODEL_ROUTES){
   const [context]=await db.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.runId,runId));
-  if(!context)return;
+  if(!context){await finishTeamNativeLearning(runId,false);return;}
   if(context.retirementState!=='confirmed' || !context.nativeStoppedAt){await finishTeamNativeLearning(runId,false);return;}
   await finishTeamNativeLearning(runId,successful);
   if(successful)await scheduleTeamNativeLearning(context.id,{routes}).catch(()=>{});

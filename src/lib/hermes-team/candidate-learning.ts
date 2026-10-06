@@ -103,7 +103,12 @@ export async function scheduleTeamNativeLearning(contextId:string,dependencies:{
     if(parent && ['queued','running','waiting','waiting_tasks'].includes(parent.status) && !parent.cancelRequestedAt && row.expiresAt.getTime()>Date.now())return null;
     const authority=await learningAuthority(row,routes,tx);
     await lockUserRuns(tx,row.actorId);
-    if(row.childRunId){const [child]=await tx.select().from(agentRuns).where(eq(agentRuns.id,row.childRunId));return child?.status==='queued'&&!child.cancelRequestedAt?child:null;}
+    if(row.childRunId){
+      const [child]=await tx.select().from(agentRuns).where(eq(agentRuns.id,row.childRunId));
+      if(child?.status==='queued' && !child.cancelRequestedAt)return child;
+      if(!child || child.cancelRequestedAt || ['succeeded','failed','cancelled','interrupted'].includes(child.status))await tx.update(hermesTeamLearningHandoffs).set({state:child?.status==='cancelled' || child?.cancelRequestedAt?'cancelled':'needs_attention',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));
+      return null; // A live worker may be between claimRun and the immutable learning claim.
+    }
     const child=await insertRunTx(tx,{id:`team-learning-${row.id}`,userId:row.actorId,conversationId:authority.parent.conversationId,botId:row.botId,
       appId:authority.parent.appId,messageId:`team-learning-message-${row.id}`,parentMessageId:authority.parent.messageId,background:true,executionMode:'worker'});
     await tx.update(hermesTeamLearningHandoffs).set({childRunId:child.id,state:'queued',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));
@@ -140,8 +145,8 @@ export async function claimTeamNativeLearning(runId:string,holder:string,segment
 export async function finishTeamNativeLearning(runId:string,successful:boolean){
   const [run]=await db.select().from(agentRuns).where(eq(agentRuns.id,runId));
   if(successful && run && ['queued','running','waiting','waiting_tasks'].includes(run.status) && !run.cancelRequestedAt)return;
-  await db.update(hermesTeamLearningHandoffs).set({state:successful && run?.status==='succeeded' && !run.cancelRequestedAt?'complete':'needs_attention',updatedAt:new Date()})
-    .where(and(eq(hermesTeamLearningHandoffs.childRunId,runId),eq(hermesTeamLearningHandoffs.state,'running')));
+  await db.update(hermesTeamLearningHandoffs).set({state:successful && run?.status==='succeeded' && !run.cancelRequestedAt?'complete':run?.status==='cancelled' || run?.cancelRequestedAt?'cancelled':'needs_attention',updatedAt:new Date()})
+    .where(and(eq(hermesTeamLearningHandoffs.childRunId,runId),inArray(hermesTeamLearningHandoffs.state,['queued','running'])));
 }
 
 /** Queue loss is recoverable only before execution; no running/attention receipt is automatically repeated. */

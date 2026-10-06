@@ -75,6 +75,14 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   expect(await recoverTeamNativeLearning({routes})).toBe(1);expect((await db.select().from(schema.agentRuns)).filter(r=>r.background)).toHaveLength(1);
   expect(fixture.enqueue.mock.calls.map(c=>c[0].id)).toEqual([first.childRunId,first.childRunId]);
  });
+ it.each(['interrupted','failed','cancelled'] as const)('reconciles a persisted %s child after worker claim but before learning claim without replay',async(status)=>{
+  const {grant}=await foreground();await capture(grant);await settle(grant.contextId);const childId=(await scheduleTeamNativeLearning(grant.contextId,{routes}))!;
+  await db.update(schema.agentRuns).set({status:'running',holder:'crashed-worker'}).where(eq(schema.agentRuns.id,childId));
+  expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe('queued');expect(await recoverTeamNativeLearning({routes})).toBe(0);
+  await db.update(schema.agentRuns).set({status,holder:null}).where(eq(schema.agentRuns.id,childId));
+  expect(await recoverTeamNativeLearning({routes})).toBe(0);expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe(status==='cancelled'?'cancelled':'needs_attention');
+  expect(await recoverTeamNativeLearning({routes})).toBe(0);expect(fixture.enqueue).toHaveBeenCalledOnce();expect((await db.select().from(schema.agentRuns)).filter(r=>r.background)).toHaveLength(1);
+ });
  it('uses a fresh separately attributed child grant, denies terminal tokens and all child company/delegate routes',async()=>{
   const {grant}=await foreground();await capture(grant);await settle(grant.contextId);const childId=(await scheduleTeamNativeLearning(grant.contextId,{routes}))!;
   await expect(loadCandidateContext(grant.contextId,`Bearer ${grant.modelTokens.learning}`,'learning',routes)).rejects.toMatchObject({status:403});
