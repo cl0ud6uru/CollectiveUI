@@ -46,7 +46,7 @@ export class LocalController {
   private storageFailed = false;
   private stateFile: string;
   constructor(readonly config: ControllerConfig, private container?: { validate: () => Promise<void>; transport: () => RpcTransport; authorize?: () => void;
-    admission?:{sessionId:()=>string;receipt:()=>string} }) {
+    admission?:{sessionId:()=>string;receipt:()=>string;purpose?:()=> 'chat'|'learning'} }) {
     this.runtimeId = installationId(config);
     this.stateFile = path.join(config.stateDir, "bindings.json");
     try { this.stored = Stored.parse(JSON.parse(readFileSync(this.stateFile, "utf8"))); }
@@ -180,6 +180,16 @@ export class LocalController {
     this.assertStorage();
     const binding = this.assertBinding(bindingId);
     const input = z.object({ input: z.string().max(64000), session_id: id, instructions: z.string().max(128000).optional(), model: z.never().optional(), attachments: nativeAttachments.optional() }).strict().refine(v => !!v.input.trim() || !!v.attachments?.length, "Enter a message or attachment").parse(raw);
+    if(this.container?.admission?.purpose?.()==='learning')throw new LocalError(403,'Native learning contexts cannot submit ordinary chat.');
+    return this.admit(binding,input,receipt,false);
+  }
+  beginLearning(bindingId:string) {
+    this.container?.authorize?.();this.assertStorage();
+    const admission=this.container?.admission;
+    if(admission?.purpose?.()!=='learning' || this.settingsHold)throw new LocalError(403,'This context cannot start native learning.');
+    return this.admit(this.assertBinding(bindingId),{input:'native-learning',session_id:admission.sessionId()},admission.receipt(),true);
+  }
+  private admit(binding:LocalBinding,input:{input:string;session_id:string;attachments?:NativeAttachment[]},receipt:string,learning:boolean) {
     if(this.container?.admission && (input.session_id!==this.container.admission.sessionId() || receipt!==this.container.admission.receipt()))
       throw new LocalError(403,'This native admission belongs to another run or conversation.');
     const digest = createHash("sha256").update(JSON.stringify([input.input, input.attachments ?? []])).digest("hex");
@@ -202,7 +212,7 @@ export class LocalController {
     this.save(); // Write-ahead admission: an uncertain prompt is never silently resubmitted.
     r.timer = setTimeout(() => { this.error = "Local turn exceeded the 30-minute pilot limit."; this.halt(); }, 30 * 60_000);
     const admittedRpc = this.rpc;
-    void this.submit(r, input.input, binding, input.attachments ?? []).catch(() => {
+    void this.submit(r, input.input, binding, input.attachments ?? [],learning).catch(() => {
       // An old request can reject after Stop completed and a new gateway started.
       if (this.rpc !== admittedRpc || !active(r)) return;
       this.error = "Hermes could not admit or resume this turn. Check its native profile logs. Stop and Start before continuing; no automatic retry was made.";
@@ -211,7 +221,7 @@ export class LocalController {
     });
     return runId;
   }
-  private async submit(r: LocalRun, text: string, binding: LocalBinding, attachments: NativeAttachment[]) {
+  private async submit(r: LocalRun, text: string, binding: LocalBinding, attachments: NativeAttachment[],learning=false) {
     const rpc = this.rpc!;
     let runtime = this.liveSessions.get(r.sessionKey);
     if (!runtime) {
@@ -237,6 +247,13 @@ export class LocalController {
     r.usageBefore = object(await rpc.call("session.usage", { session_id: runtime }));
     if (!active(r)) return;
     if (r.cancel) { this.finish(r, "cancelled"); return; }
+    if(learning) {
+      const result=await rpc.call('collective.learning.run',{session_id:runtime},90000);
+      if(result.finished!==true)throw new Error('Native learning did not confirm completion');
+      if(!active(r) || r.cancel)return;
+      r.terminalCandidate={epoch:r.terminalEpoch??0,status:'completed',usage:{}};
+      await this.settleNative(r);return;
+    }
     let outgoing = text;
     let staged = false;
     const cancelStaging = () => {

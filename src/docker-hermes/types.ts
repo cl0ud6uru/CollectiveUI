@@ -25,10 +25,22 @@ const candidateToken=z.string().regex(/^[a-f0-9]{64}$/);
 export const teamCandidateScope=teamScope.extend({bindingId:z.string().regex(/^[a-f0-9]{32}$/),contextId:ownerId,runId:ownerId}).strict();
 export const teamCandidateStart=teamCandidateScope.extend({conversationId:ownerId}).strict();
 export type TeamCandidateScope=z.infer<typeof teamCandidateScope>;
+const boundedLearningJson=(value:unknown):boolean=>{
+  let nodes=0;
+  const check=(v:unknown,depth=0):boolean=>++nodes<=10000 && depth<=20 && (v===null || typeof v==='string' || typeof v==='boolean'
+    || (typeof v==='number' && Number.isFinite(v)) || (Array.isArray(v)?v.every(item=>check(item,depth+1))
+    :typeof v==='object' && Object.values(v).every(item=>check(item,depth+1))));
+  return check(value);
+};
+export const teamLearningSnapshot=z.object({version:z.literal(1),messagesSnapshot:z.array(z.record(z.string(),z.unknown())).min(1).max(256),
+  reviewMemory:z.boolean(),reviewSkills:z.boolean(),focus:z.string().max(2000).nullable(),explicit:z.boolean(),memoryEnabled:z.boolean(),userProfileEnabled:z.boolean()}).strict()
+  .refine(v=>(v.reviewMemory||v.reviewSkills) && boundedLearningJson(v) && Buffer.byteLength(JSON.stringify(v))<=64000,'Invalid bounded native learning snapshot');
 export const teamCandidateConfig=teamScope.extend({bindingId:z.string().regex(/^[a-f0-9]{32}$/),contextId:ownerId,runId:ownerId,
-  expiresAt:z.number().finite(),model:z.string().min(1).max(200),adapterId:z.enum(['collective-openai-chat-v1','collective-openai-responses-v1','collective-codex-responses-v1']),
+  expiresAt:z.number().finite(),model:z.string().min(1).max(200),adapterId:z.enum(['collective-openai-chat-v1','collective-openai-responses-v1','collective-codex-responses-v1','collective-official-plan-responses-v1']),
   modelBaseUrls:z.object({reply:candidateUrl,learning:candidateUrl,utility:candidateUrl,subagent:candidateUrl}).strict(),
-  modelTokens:z.object({reply:candidateToken,learning:candidateToken,utility:candidateToken,subagent:candidateToken}).strict(),toolUrl:candidateUrl,toolToken:candidateToken}).strict();
+  modelTokens:z.object({reply:candidateToken,learning:candidateToken,utility:candidateToken,subagent:candidateToken}).strict(),toolUrl:candidateUrl,toolToken:candidateToken,
+  runPurpose:z.enum(['chat','learning']).optional(),learningUrl:candidateUrl.optional(),learningToken:candidateToken.optional(),learningSnapshot:teamLearningSnapshot.optional()}).strict()
+  .refine(v=>v.runPurpose==='learning'?!!v.learningSnapshot&&!v.learningUrl&&!v.learningToken:!v.learningSnapshot&&!!v.learningUrl===!!v.learningToken,'Invalid native learning context');
 export type TeamCandidateConfig=z.infer<typeof teamCandidateConfig>;
 export type TeamGrant = { grantId: string; expiresAt: number };
 const safeRelativeResource = z.string().min(1).max(256).refine(value => new TextEncoder().encode(value).length <= 256

@@ -24,8 +24,23 @@ audience access ends. Confirmed duplicate retirement cannot stop a newer context
 Cancellation is currently runtime-wide. Startup refuses active siblings; unconfirmed
 cleanup fences further work and requires reconciliation rather than replay.
 
+The run worker constructs an in-memory Hermes target only after authoritative startup.
+The historical app ID stays attribution metadata; its provider configuration and
+credentials are never opened. Default flags and empty verification inventories still
+deny startup before native or provider work. A paused ordinary Hermes approval segment
+cannot regrant this one-time native context; that continuation remains disabled until
+its complete lifecycle has verification evidence.
+
+Chat post-turn review captures a bounded snapshot with a separate handoff token and
+waits for durable acknowledgement. It never launches the old native daemon thread.
+After parent success and confirmed writer shutdown, a durable child run starts the
+actual pinned review target with a fresh learning grant, native memory and skill tools,
+and no company MCP/delegation authority. Child execution has its own run lease and
+admission receipt. Native writers stop before child success is committed. Interrupted
+or uncertain children become attention receipts and are not automatically replayed.
+
 The synthetic broker regression suite exercises startup, stream admission, history
 scope, expiry, shared-admin revocation, sibling refusal, delayed startup and retirement
 replay. Actual pinned-source lifecycle fixtures provide distinct native source
-evidence. Original-image execution, a complete active background-learning handoff,
-and live model/auth/pilot verification are separate checks; none are claimed here.
+evidence. Original-image active gateway execution and live model/auth/pilot verification
+are separate checks; none are claimed by synthetic wire or pinned-source tests.

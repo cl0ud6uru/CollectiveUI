@@ -45,7 +45,7 @@ export async function listenBroker(broker: DockerBroker) {
     }
     if(req.method==='POST' && url==='/team/prepare-candidate'){
       const grant=z.string().uuid().parse(req.headers['x-collective-team-grant']);
-      return json(res,200,broker.prepareTeamCandidate(owner,await teamBody(req,32*1024),grant));
+      return json(res,200,broker.prepareTeamCandidate(owner,await teamBody(req,96*1024),grant));
     }
     if(req.method==='POST' && url==='/team/start-candidate'){
       const grant=z.string().uuid().parse(req.headers['x-collective-team-grant']);

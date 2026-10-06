@@ -8,6 +8,6 @@ import type { TeamCandidateConfig } from './types';
 export function candidateBootstrap(config: TeamCandidateConfig): string {
   const code = readFileSync(new URL('../local-hermes/team-candidate-native.py', import.meta.url), 'utf8');
   const line = JSON.stringify({ config, code, codeHash: createHash('sha256').update(code).digest('hex'), contract });
-  if (Buffer.byteLength(line) > 65536) throw new LocalError(503, 'The fixed native candidate bootstrap is oversized.');
+  if (Buffer.byteLength(line) > 128*1024) throw new LocalError(503, 'The fixed native candidate bootstrap is oversized.');
   return `${line}\n`;
 }

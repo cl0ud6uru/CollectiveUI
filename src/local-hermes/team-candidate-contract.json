@@ -23,6 +23,11 @@
     "tools/delegate_tool.py": "0cafc5163762c76da285050e4c8259996c8c3dac1b1a81cd5e262f8cb5156f22",
     "tools/mcp_tool_config.py": "d7bfd5c91ab15d1d14ef79e4b06412ecc38f9f96530e2ee82bba3d37ee8ec08f",
     "hermes_cli/runtime_provider.py": "8013320d5b8b393f1a21d7b7858b638772b9aaf1fe15718e9c85bc4a1c785d64",
-    "hermes_cli/config.py": "398bee1c8ab2f8647b7967f0ae3ca57477ed4dc29e67023f858db4c5656aaace"
+    "hermes_cli/config.py": "398bee1c8ab2f8647b7967f0ae3ca57477ed4dc29e67023f858db4c5656aaace",
+    "tui_gateway/server.py": "164ad8a1b43671c2a47829502f9a40f4355fc8060f2f6c2506b8aec44f1c0a51",
+    "tui_gateway/rpc_dispatch.py": "0a3119156f29273a98d6159468a5f7c18289b981d867692c7f5b61c92883c985",
+    "tui_gateway/method_ctx.py": "2f8b8098dc16bfecb6c31de15eca21ab426f48f7e18e8adb78492a0bb70d5514",
+    "hermes_cli/backend_retirement.py": "1122ace38dea6bd7cc298c2e1f59aefa757a7ed88d8a01dc7bddc14a47c55c55",
+    "agent/conversation_loop.py": "c93ee86e1da583abc7cc57417380cd71241ae028c04a4cb8456580b52ffbf3d8"
   }
 }

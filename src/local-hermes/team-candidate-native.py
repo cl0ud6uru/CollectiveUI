@@ -10,8 +10,46 @@ from functools import wraps
 from pathlib import Path
 import hashlib
 import uuid
+import json
+import math
+import re
 
 PURPOSES = ("reply", "learning", "utility", "subagent")
+
+
+def bounded_learning_snapshot(value):
+    keys = {"version", "messagesSnapshot", "reviewMemory", "reviewSkills", "focus", "explicit", "memoryEnabled", "userProfileEnabled"}
+    if not isinstance(value, dict) or set(value) != keys or type(value["version"]) is not int or value["version"] != 1:
+        raise ValueError("Invalid native learning snapshot")
+    if not isinstance(value["messagesSnapshot"], list) or not 1 <= len(value["messagesSnapshot"]) <= 256 or not all(isinstance(v, dict) for v in value["messagesSnapshot"]):
+        raise ValueError("Invalid native learning history")
+    if any(type(value[k]) is not bool for k in keys - {"version", "messagesSnapshot", "focus"}) or not (value["reviewMemory"] or value["reviewSkills"]):
+        raise ValueError("Invalid native learning scope")
+    if value["focus"] is not None and (not isinstance(value["focus"], str) or len(value["focus"].encode("utf-16-le")) // 2 > 2000):
+        raise ValueError("Invalid native learning focus")
+    nodes = 0
+    def check(item, depth=0):
+        nonlocal nodes
+        nodes += 1
+        if depth > 20 or nodes > 10000:
+            raise ValueError("Oversized native learning structure")
+        if isinstance(item, dict):
+            if not all(isinstance(k, str) for k in item):
+                raise ValueError("Invalid native learning keys")
+            for child in item.values():
+                check(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                check(child, depth + 1)
+        elif item is not None and type(item) not in (str, bool, int, float):
+            raise ValueError("Invalid native learning JSON")
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("Invalid native learning number")
+    check(value)
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) > 64000:
+        raise ValueError("Oversized native learning snapshot")
+    return json.loads(encoded)
 
 
 class CandidateNativeClients:
@@ -71,7 +109,8 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     """
     required = ("run_agent.py", "agent/agent_runtime_helpers.py", "agent/agent_init.py", "agent/auxiliary_client.py",
                 "agent/background_review.py", "tools/delegate_tool.py", "tools/delegate_tool_config.py", "hermes_cli/runtime_provider.py",
-                "tools/mcp_tool_config.py", "tools/mcp_tool.py", "tools/mcp_tool_transport.py", "hermes_cli/config.py")
+                "tools/mcp_tool_config.py", "tools/mcp_tool.py", "tools/mcp_tool_transport.py", "hermes_cli/config.py",
+                "tui_gateway/server.py", "tui_gateway/rpc_dispatch.py", "tui_gateway/method_ctx.py", "hermes_cli/backend_retirement.py", "agent/conversation_loop.py")
     source = Path(source)
     if not expected_sources or any(file not in expected_sources or hashlib.sha256((source / file).read_bytes()).hexdigest() != expected_sources[file] for file in required):
         raise RuntimeError("Native Team construction hooks do not match the pinned source")
@@ -82,7 +121,15 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     from hermes_cli import runtime_provider, config as native_config
     if getattr(run_agent.AIAgent, "_collective_team_candidate", False):
         raise RuntimeError("A native Team context is already installed in this process")
-    purpose_context = ContextVar("collective_native_purpose", default="reply")
+    learning = config.get("runPurpose", "chat") == "learning"
+    snapshot = bounded_learning_snapshot(config.get("learningSnapshot")) if learning else None
+    if learning and (config.get("learningToken") or config.get("learningUrl")):
+        raise RuntimeError("Native learning children cannot capture recursive work")
+    if config.get("learningUrl"):
+        clients._check_url(config["learningUrl"], allow_synthetic_loopback)
+        if not re.fullmatch(r"[a-f0-9]{64}", config.get("learningToken", "")):
+            raise RuntimeError("Invalid learning capture grant")
+    purpose_context = ContextVar("collective_native_purpose", default="learning" if learning else "reply")
     original_agent = run_agent.AIAgent
     api_mode = "chat_completions" if config["adapterId"] == "collective-openai-chat-v1" else "responses"
 
@@ -99,7 +146,7 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
             self._collective_team_purpose = purpose_context.get()
             kwargs.update(runtime(self._collective_team_purpose))
             kwargs.update(fallback_model=[], max_tokens=256, request_overrides={},
-                          enabled_toolsets=["memory", "skills", "delegation", "mcp-collective_team"], disabled_toolsets=None)
+                          enabled_toolsets=["memory", "skills"] if learning else ["memory", "skills", "delegation", "mcp-collective_team"], disabled_toolsets=None)
             # Failure escapes construction. No standard agent or credential-pool fallback is attempted.
             super().__init__(**kwargs)
 
@@ -108,6 +155,78 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
 
         def switch_model(self, *args, **kwargs):
             raise RuntimeError("Native Team model changes require a new server-owned context")
+
+        def run_conversation(self, *args, **kwargs):
+            result = super().run_conversation(*args, **kwargs)
+            if self._collective_team_purpose == "learning" and (not isinstance(result, dict) or result.get("completed") is not True or result.get("failed") or result.get("partial") or result.get("error")):
+                raise RuntimeError("Native Team learning did not complete")
+            return result
+
+        def _emit_auxiliary_failure(self, task, exc):
+            # Never return raw native errors, which may contain credentials or private history.
+            self._collective_learning_failed = True
+
+        def _spawn_background_review_now(self, messages_snapshot, review_memory=False, review_skills=False, focus=None, task_cfg=None, _requeue_attempts=0, explicit=False):
+            if learning or self._collective_team_purpose != "reply":
+                return
+            if not config.get("learningUrl") or not config.get("learningToken"):
+                raise RuntimeError("Native Team learning requires a durable handoff")
+            captured = bounded_learning_snapshot({"version": 1, "messagesSnapshot": messages_snapshot,
+                "reviewMemory": review_memory, "reviewSkills": review_skills, "focus": focus, "explicit": explicit,
+                "memoryEnabled": bool(self._memory_enabled), "userProfileEnabled": bool(self._user_profile_enabled)})
+            import httpx
+            # Exactly one dispatch. An uncertain acknowledgement is not retried or run locally.
+            with httpx.Client(trust_env=False, follow_redirects=False, timeout=10) as capture:
+                response = capture.post(config["learningUrl"], headers={"Authorization": "Bearer " + config["learningToken"]},
+                                        json={"reviewId": str(uuid.uuid4()), "snapshot": captured})
+                if response.status_code not in (200, 201, 202) or len(response.content) > 4096:
+                    raise RuntimeError("Native learning handoff was not acknowledged")
+                ack = response.json()
+                if not isinstance(ack, dict) or ack.get("captured") is not True:
+                    raise RuntimeError("Native learning handoff was not retained")
+
+        @staticmethod
+        def _collective_install_learning_rpc(server):
+            if not learning:
+                return
+            claimed = False
+            import threading
+            claim_lock = threading.Lock()
+            def review(rid, params):
+                nonlocal claimed
+                if not isinstance(params, dict) or set(params) != {"session_id"} or not isinstance(params["session_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", params["session_id"]):
+                    return server._err(rid, 4000, "Invalid native learning session")
+                with claim_lock:
+                    if claimed:
+                        return server._err(rid, 4090, "Native learning was already admitted")
+                    claimed = True
+                session = server._sessions.get(params["session_id"])
+                if not isinstance(session, dict) or server._wait_agent(session, rid, timeout=30):
+                    return server._err(rid, 4090, "Native learning parent unavailable")
+                agent = session.get("agent")
+                if not isinstance(agent, TeamAgent) or session.get("running") or session.get("_closing"):
+                    return server._err(rid, 4090, "Native learning parent not idle")
+                agent._memory_enabled = snapshot["memoryEnabled"]
+                agent._user_profile_enabled = snapshot["userProfileEnabled"]
+                agent._collective_learning_failed = False
+                review_run = background_review.prepare_background_review_run(agent)
+                if review_run is None:
+                    return server._err(rid, 4090, "Native learning parent has unfinished review")
+                try:
+                    target, _ = background_review.spawn_background_review_thread(agent, snapshot["messagesSnapshot"],
+                        review_memory=snapshot["reviewMemory"], review_skills=snapshot["reviewSkills"], focus=snapshot["focus"],
+                        explicit=snapshot["explicit"], task_cfg={"max_input_tokens":16000}, review_run=review_run)
+                    target()
+                    completed = review_run.request_done.is_set() and not review_run.cancel_requested.is_set() and not agent._collective_learning_failed
+                    return server._ok(rid, {"finished": bool(completed)})
+                except Exception:
+                    return server._err(rid, 4090, "Native learning did not confirm completion")
+                finally:
+                    background_review.finish_background_review_run(agent, review_run)
+            if "collective.learning.run" in server._methods:
+                raise RuntimeError("Native learning extension already installed")
+            server._methods["collective.learning.run"] = review
+            server._LONG_HANDLERS = server._LONG_HANDLERS | {"collective.learning.run"}
 
     def under(purpose, function):
         @wraps(function)
@@ -139,12 +258,12 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     @wraps(load_config)
     def team_config(*args, **kwargs):
         value = dict(load_config(*args, **kwargs))
-        value.update(mcp_servers={"collective_team": clients.mcp_configuration()}, fallback_providers=[], fallback_model=None)
+        value.update(mcp_servers={} if learning else {"collective_team": clients.mcp_configuration()}, fallback_providers=[], fallback_model=None)
         return value
     native_config.load_config = team_config
     # The MCP module's config accessor is dynamic in the pin. Force its sole connection
     # directly as well, so cached CLI config cannot expose a personal/company server list.
     if not hasattr(mcp_tool_config, "_load_mcp_config"):
         raise RuntimeError("Unsupported native MCP configuration hook")
-    mcp_tool_config._load_mcp_config = lambda: {"collective_team": clients.mcp_configuration()}
+    mcp_tool_config._load_mcp_config = lambda: {} if learning else {"collective_team": clients.mcp_configuration()}
     return TeamAgent

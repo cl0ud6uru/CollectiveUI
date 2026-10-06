@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {DockerBroker} from '@/docker-hermes/broker';
 import {BrokerConfig,runtimeKey,type RuntimeDriver,type Profile} from '@/docker-hermes/docker';
-import type {TeamCandidateConfig,TeamMode} from '@/docker-hermes/types';
+import {teamCandidateConfig,teamLearningSnapshot,type TeamCandidateConfig,type TeamMode} from '@/docker-hermes/types';
 import {stopOwnedGroup} from '@/local-hermes/process-group';
 import type {LocalController} from '@/local-hermes/controller';
 import {listenBroker} from '@/docker-hermes/main';
@@ -25,16 +25,21 @@ class Driver implements RuntimeDriver {
   createTeam(owner:string,name:string){return this.create(owner,name);}
   async resources(){return {skills:[],memories:[]};}
   transport(owner:string,profile:string){return {spawn:()=>{this.launches++;const child=spawn('/usr/bin/python3',['-u','-m','tui_gateway.entry'],{cwd:path.resolve('tests/fixtures/hermes-native'),detached:true,env:{NODE_ENV:'test',PATH:'/usr/bin:/bin',HERMES_HOME:path.join(this.root,runtimeKey(owner),profile)},stdio:['pipe','pipe','pipe']});const children=this.children.get(owner)??new Set();children.add(child);this.children.set(owner,children);return child;},stop:()=>this.stop(owner)};}
-  candidateTransport(owner:string,profile:string){return this.transport(owner,profile);}
+  candidateTransport(owner:string,profile:string,_identity:string,config:TeamCandidateConfig){
+    if(config.runPurpose!=='learning')return this.transport(owner,profile);
+    return {spawn:()=>{this.launches++;const child=spawn('/usr/bin/python3',['-u',path.resolve('tests/fixtures/hermes-team-learning-wire.py')],{detached:true,env:{NODE_ENV:'test',PATH:'/usr/bin:/bin',HERMES_HOME:path.join(this.root,runtimeKey(owner),profile)},stdio:['pipe','pipe','pipe']});const children=this.children.get(owner)??new Set();children.add(child);this.children.set(owner,children);return child;},stop:()=>this.stop(owner)};
+  }
 }
 let root:string,config:BrokerConfig,driver:Driver,broker:DockerBroker;
 beforeEach(async()=>{root=await mkdtemp(path.join(tmpdir(),'team-active-'));await mkdir(path.join(root,'state'));await mkdir(path.join(root,'ipc'));config=BrokerConfig.parse({stateDir:path.join(root,'state'),socketPath:path.join(root,'ipc/b.sock'),bridgePath:path.resolve('src/docker-hermes/bridge.py'),namespace:'cui-active-test',image:`nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`,network:'none',teamBotsEnabled:true,teamCandidateRuntimeEnabled:true});driver=new Driver(root);broker=new DockerBroker(config,driver);});
 afterEach(async()=>{vi.restoreAllMocks();driver.stopFailure=false;driver.reopenGate=undefined;await broker.close();await rm(root,{recursive:true,force:true});});
 const until=async(check:()=>boolean)=>{const end=Date.now()+8000;while(!check()){if(Date.now()>end)throw new Error('Timed out');await new Promise(r=>setTimeout(r,10));}};
-async function prepare(actor='alice',mode:TeamMode='member',runId='app-run',contextId='context'){
+async function prepare(actor='alice',mode:TeamMode='member',runId='app-run',contextId='context',purpose:'chat'|'learning'='chat'){
   const grant=broker.authorizeTeam(actor,{teamBotId:'bot',mode,modelPolicy:'personal_required'});
   const binding=await broker.ensureTeam(actor,{teamBotId:'bot',mode,name:'Team'},grant.grantId);
   const config:TeamCandidateConfig={teamBotId:'bot',mode,bindingId:binding.bindingId,runId,contextId,expiresAt:Date.now()+120000,model:'synthetic-model',adapterId:'collective-openai-chat-v1',modelBaseUrls:{reply:'https://fixture.invalid/reply',learning:'https://fixture.invalid/learning',utility:'https://fixture.invalid/utility',subagent:'https://fixture.invalid/subagent'},modelTokens:{reply:'a'.repeat(64),learning:'b'.repeat(64),utility:'c'.repeat(64),subagent:'d'.repeat(64)},toolUrl:'https://fixture.invalid/mcp',toolToken:'e'.repeat(64)};
+  if(purpose==='chat'){config.learningUrl='https://fixture.invalid/handoff';config.learningToken='f'.repeat(64);}
+  else {config.runPurpose='learning';config.learningSnapshot={version:1,messagesSnapshot:[{role:'user',content:'Synthetic private learning'}],reviewMemory:true,reviewSkills:true,focus:null,explicit:false,memoryEnabled:true,userProfileEnabled:true};}
   broker.prepareTeamCandidate(actor,config,grant.grantId);
   return {binding,grant,config,scope:{teamBotId:'bot',mode,bindingId:binding.bindingId,runId,contextId,conversationId:'conversation'}};
 }
@@ -66,5 +71,23 @@ describe('server-scoped active Team runtime',()=>{
   });
   it('refuses an unfinished sibling before any runtime-wide interruption',async()=>{const p=await prepare();const sibling={holdForSettings:()=>{throw new Error('unfinished sibling');},stop:vi.fn()} as unknown as LocalController;(broker as unknown as {controllers:Map<string,LocalController>}).controllers.set(p.binding.bindingId,sibling);const stops=driver.stops;await expect(broker.startTeamCandidate('alice',p.scope,p.grant.grantId)).rejects.toThrow('unfinished sibling');expect(driver.stops).toBe(stops);expect(driver.active.has('alice')).toBe(true);(broker as unknown as {controllers:Map<string,LocalController>}).controllers.delete(p.binding.bindingId);});
   it('closes generation while startup is waiting, cleans up after the delayed reopen and never spawns',async()=>{const p=await prepare();let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>{release=r;});const inside=new Promise<void>(r=>{entered=r;});driver.reopenGate=async()=>{entered();await gate;};const start=broker.startTeamCandidate('alice',p.scope,p.grant.grantId);const failed=expect(start).rejects.toThrow('interrupted');await inside;const stop=broker.stop('alice');release();await failed;await stop;expect(driver.launches).toBe(0);expect(driver.active.has('alice')).toBe(false);});
+  it('admits a learning child only through its derived native session and records no chat prompt',async()=>{
+    const p=await prepare('alice','member','learning-run','learning-context','learning');await broker.startTeamCandidate('alice',p.scope,p.grant.grantId);
+    const {controller,nativeBindingId}=await access(p);
+    expect(()=>begin(controller,nativeBindingId,p)).toThrow('ordinary chat');
+    const id=controller.beginLearning(nativeBindingId);await terminal(controller,id);expect(controller.getRun(id).status).toBe('completed');
+    expect(controller.beginLearning(nativeBindingId)).toBe(id);
+    const wire=await readFile(path.join(root,runtimeKey('alice'),p.binding.profile,'learning-wire.jsonl'),'utf8');
+    expect(wire.trim().split('\n')).toHaveLength(1);expect(JSON.parse(wire)).toEqual({session_id:'runtime-learning'});expect(wire).not.toContain('Synthetic private learning');
+    const retained=await readFile(path.join(config.stateDir,runtimeKey('alice'),'runtime.json'),'utf8');expect(retained).not.toContain('Synthetic private learning');
+  });
+  it('rejects recursive, malformed and oversized learning snapshots before native startup',()=>{
+    const snapshot={version:1,messagesSnapshot:[{role:'user',content:'synthetic'}],reviewMemory:true,reviewSkills:false,focus:null,explicit:false,memoryEnabled:true,userProfileEnabled:true};
+    expect(teamLearningSnapshot.safeParse(snapshot).success).toBe(true);
+    expect(teamLearningSnapshot.safeParse({...snapshot,messagesSnapshot:[{content:'x'.repeat(64000)}]}).success).toBe(false);
+    expect(teamLearningSnapshot.safeParse({...snapshot,messagesSnapshot:[{items:Array(10001).fill(0)}]}).success).toBe(false);
+    expect(teamLearningSnapshot.safeParse({...snapshot,profile:'/tmp/other'}).success).toBe(false);
+    expect(teamCandidateConfig.safeParse({runPurpose:'learning',learningSnapshot:snapshot,learningUrl:'https://fixture.invalid/recursive'}).success).toBe(false);
+  });
   it('routes only scoped startup/run calls through the protected Unix socket',async()=>{const listener=await listenBroker(broker);try{const p=await prepare();const fetch=socketFetch(config.socketPath),headers={'Content-Type':'application/json','x-collective-owner':'alice','x-collective-team-grant':p.grant.grantId};const start=await fetch(`${LOCAL_ORIGIN}/team/start-candidate`,{method:'POST',headers,body:JSON.stringify(p.scope)});expect(start.status).toBe(200);const scoped={...headers,'x-collective-team-bot':'bot','x-collective-team-mode':'member','x-collective-team-context':'context','x-collective-team-run':'app-run'};expect((await fetch(`${LOCAL_ORIGIN}/p/${p.binding.bindingId}/v1/capabilities`,{headers:scoped})).status).toBe(200);expect((await fetch(`${LOCAL_ORIGIN}/p/${p.binding.bindingId}/v1/capabilities`,{headers:{...scoped,'x-collective-team-context':'another'}})).status).toBe(409);expect((await fetch(`${LOCAL_ORIGIN}/p/${p.binding.bindingId}/v1/capabilities`,{headers:{...scoped,origin:'https://browser.invalid'}})).status).toBe(403);}finally{await listener.close();}});
 });

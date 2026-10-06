@@ -14,10 +14,14 @@ from types import SimpleNamespace
 repo = Path(__file__).resolve().parents[2]
 source = Path(os.environ["HERMES_SOURCE"])
 manifest = json.loads((repo / "tests/fixtures/hermes-team-source-contract.json").read_text())
+candidate_manifest = json.loads((repo / "src/local-hermes/team-candidate-contract.json").read_text())
+assert candidate_manifest["revision"] == manifest["revision"]
 assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == manifest["revision"]
 assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--untracked-files=no"], text=True).strip()
 for file in ("agent/agent_runtime_helpers.py", "agent/process_bootstrap.py", "agent/auxiliary_client.py", "tools/mcp_tool.py", "tools/mcp_tool_transport.py"):
     assert hashlib.sha256((source / file).read_bytes()).hexdigest() == manifest["sourceHashes"][file], file
+for file, expected in candidate_manifest["sourceHashes"].items():
+    assert hashlib.sha256((source / file).read_bytes()).hexdigest() == expected, file
 sys.path.insert(0, str(source))
 os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
 synthetic_home = tempfile.TemporaryDirectory(prefix="collective-candidate-native-")
@@ -66,7 +70,7 @@ bridge.SOURCE = source
 os.environ["HERMES_HOME"] = synthetic_home.name
 config["expiresAt"] = 4102444800000
 code = (repo / "src/local-hermes/team-candidate-native.py").read_text()
-payload = {"config": config, "code": code, "codeHash": hashlib.sha256(code.encode()).hexdigest(), "contract": manifest}
+payload = {"config": config, "code": code, "codeHash": hashlib.sha256(code.encode()).hexdigest(), "contract": candidate_manifest}
 try:
     bridge.install_candidate_bootstrap({**payload, "codeHash": "0" * 64})
 except ValueError:

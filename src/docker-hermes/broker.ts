@@ -76,7 +76,7 @@ export class DockerBroker {
       stateDir:dir,socketPath:this.config.socketPath,label:'Team Docker Hermes candidate'}, {
         validate:async()=>{this.candidateCurrent(entry);if(!await this.driver.running(binding.ownerId))throw new LocalError(409,'The native Team runtime stopped.');this.candidateCurrent(entry);},
         authorize:()=>this.candidateCurrent(entry),
-        admission:{sessionId:()=>`portal-${entry.conversationId}-${config.teamBotId}`,receipt:()=>`portal-${config.runId}`},
+        admission:{sessionId:()=>`portal-${entry.conversationId}-${config.teamBotId}`,receipt:()=>`portal-${config.runId}`,purpose:()=>config.runPurpose??'chat'},
         transport:()=>({spawn:()=>{this.candidateCurrent(entry);return transport.spawn();},stop:()=>{entry.phase='retiring';return transport.stop();}}),
       });
     Object.assign(entry,{actor,config,binding,controller,grantId,phase:'prepared',generation:this.state(binding.ownerId)!.generation,release:[]});
@@ -91,6 +91,7 @@ export class DockerBroker {
     const entry=this.candidateConfigs.get(binding.bindingId);
     if(!entry || entry.actor!==actor || entry.config.runId!==scope.runId || entry.config.contextId!==scope.contextId || scope.bindingId!==binding.bindingId)
       throw new LocalError(403,'This prepared native context belongs to another run or actor.');
+    if(entry.config.runPurpose!=='learning' && !entry.config.learningUrl)throw new LocalError(409,'Native Team chat requires a durable learning handoff.');
     entry.grantId=grantId;
     if(entry.start) {
       if(entry.conversationId!==scope.conversationId)throw new LocalError(409,'This native context belongs to another conversation.');

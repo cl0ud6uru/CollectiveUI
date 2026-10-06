@@ -148,6 +148,15 @@ function usageContext(
  * ledger. OpenAI-compatible apps send exactly the same requests as before the registry existed.
  */
 export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promise<ResolvedModel> {
+  const candidate=opts.run?.teamCandidate;
+  if(candidate){
+    if(opts.purpose!=='chat' || app.provider!=='hermes' || !opts.botId || !opts.conversationId || candidate.learningSnapshot)
+      throw new ProviderUnavailableError('This native Team context cannot dispatch this model purpose.');
+    await candidate.authorize();
+    return {model:new HermesLanguageModel(candidate.model,{target:candidate.target,sessionId:`portal-${opts.conversationId}-${opts.botId}`,
+      sessionKey:`portal-${opts.conversationId}-${opts.botId}`,interactive:opts.interactive===true,approvalTimeoutSec:90,run:opts.run}),
+      billing:{source:'hermes',credentialId:null,appId:app.id,providerKind:'hermes',modelId:candidate.model},capabilities:capabilitiesFor(app),replayKey:null};
+  }
   if (opts.run?.hermes && app.provider !== "hermes") throw new ProviderUnavailableError("This run's backend changed. Start a new chat with the updated bot.");
   if (app.provider === "chatgpt") return resolveChatGPT(app, opts);
   if (app.provider === "hermes") return resolveHermes(app, opts);

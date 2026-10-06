@@ -66,6 +66,11 @@ export async function serveNative(controller: LocalController, bindingId: string
       if (req.method === "GET" && route === "/v1/capabilities") {
         json(res, 200, { features: { run_submission: true, run_events_sse: true, run_stop: true, run_approval_response: true, approval_events: true, native_attachments: true, native_run_view: true, native_run_controls: true } }); return;
       }
+      if(req.method==='POST' && route==='/v1/learning') {
+        const input=await body(req,1024);
+        if(!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).length)throw new LocalError(400,'Invalid native learning admission.');
+        return json(res,202,{run_id:controller.beginLearning(bindingId)});
+      }
       // The first pilot does not proxy arbitrary native management/commands, profile config or model discovery.
       if (req.method === "POST" && route === "/v1/runs") {
         const runId = controller.begin(bindingId, await body(req, 24 * 1024 * 1024), String(req.headers["idempotency-key"] ?? ""));
