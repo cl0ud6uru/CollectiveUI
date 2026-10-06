@@ -14,6 +14,9 @@ export async function resolveTurnTarget(p: Principal, conv: { appId: string | nu
   let app: AiApp;
   if (conv.botId) {
     bot = await getUsableBot(p, conv.botId);
+    // Native model/utility/tool routes must be verified before admitting any team work.
+    // Never reuse the definition's previous app as a company-provider fallback.
+    if (bot.hermesTeam) throw new HttpError(409, 'Team Bot model access needs verification. Use the web Team Bot controls for setup.');
     if (!bot.appId) throw new HttpError(400, "This bot has no connection configured");
     const [a] = await db.select().from(aiApps).where(eq(aiApps.id, bot.appId));
     if (!a?.enabled) throw new HttpError(400, "This bot's connection is disabled");

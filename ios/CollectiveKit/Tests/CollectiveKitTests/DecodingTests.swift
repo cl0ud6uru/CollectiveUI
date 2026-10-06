@@ -6,6 +6,16 @@ final class DecodingTests: XCTestCase {
         return try JSONDecoder().decode(type, from: Data(json.utf8))
     }
 
+    func testTeamBotCompatibilityHintKeepsOlderTargetsCompatible() throws {
+        let team = try decode(TargetOption.self, #"{"kind":"bot","id":"team","name":"Team","hermes":true,"hermesTeam":true}"#)
+        XCTAssertTrue(team.hermes)
+        XCTAssertTrue(team.hermesTeam)
+        let personal = try decode(TargetOption.self, #"{"kind":"bot","id":"personal","name":"Personal","hermes":true}"#)
+        XCTAssertTrue(personal.hermes)
+        XCTAssertFalse(personal.hermesTeam)
+        XCTAssertFalse(TargetOption(kind: "bot", id: "native", name: "Native").hermesTeam)
+    }
+
     func testSnapshotDecodingAndThread() throws {
         let json = #"""
         {

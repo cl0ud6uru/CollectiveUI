@@ -5,8 +5,9 @@ import type { PGlite } from "@electric-sql/pglite";
 import type { Principal } from "@/lib/auth/groups";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import type { ReviewedLesson } from "@/lib/agent/learning/types";
+import type { Tx } from "@/db";
 
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, generate: vi.fn(), enqueue: vi.fn(async () => "job") }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, query: null as Tx | null, generate: vi.fn(), enqueue: vi.fn(async () => "job") }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", async () => {
   const { PGlite } = await import("@electric-sql/pglite");
@@ -18,6 +19,11 @@ vi.mock("@/db", async () => {
 vi.mock("ai", async original => ({ ...await original<typeof import("ai")>(), generateText: fixture.generate }));
 vi.mock("@/lib/jobs", () => ({ QUEUES: { learningReview: "learning.review" }, enqueue: fixture.enqueue }));
 vi.mock("@/lib/llm", async original => ({ ...await original<typeof import("@/lib/llm")>(), resolveModel: async () => ({ model: {} }) }));
+vi.mock("@/lib/hermes-team/learning", async original => {
+  const learning = await original<typeof import("@/lib/hermes-team/learning")>();
+  return { ...learning, withNonTeamLearning: <T>(id: string, skip: T, work: (q: Tx) => Promise<T>, onSkip?: (q: Tx) => Promise<void>) =>
+    learning.withNonTeamLearning(id, skip, async q => { fixture.query = q; try { return await work(q); } finally { fixture.query = null; } }, onSkip) };
+});
 
 import { db, schema } from "@/db";
 import { loadPrincipal } from "@/lib/auth/groups";
@@ -165,7 +171,8 @@ describe("native learning with real PostgreSQL migrations", () => {
     const [row] = await learningViews(owner, "bot");
     await db.update(schema.botLearningReviews).set({ completedAt: null });
     fixture.generate.mockImplementation(async () => {
-      await changeLearning(owner, row.id, 1, { content: { ...content, instructions: "Owner correction. Check all pages." } });
+      // Simulate the owner's concurrent committed correction through the fixture's single PGlite connection.
+      await fixture.query!.update(schema.botLearnings).set({ version: 2, content: { ...content, instructions: "Owner correction. Check all pages." } }).where(eq(schema.botLearnings.id, row.id));
       return { output: { lessons: [lesson({ baseVersion: 1, instructions: "Stale automatic rewrite." })] } };
     });
     expect(await reviewNativeRun("run")).toBe(0);
@@ -355,7 +362,7 @@ describe("native learning with real PostgreSQL migrations", () => {
 
   it("rechecks access and user opt-out after model generation", async () => {
     fixture.generate.mockImplementation(async () => {
-      await db.update(schema.users).set({ prefs: { learningEnabled: false } }).where(eq(schema.users.id, "member"));
+      await fixture.query!.update(schema.users).set({ prefs: { learningEnabled: false } }).where(eq(schema.users.id, "member"));
       return { output: { lessons: [lesson()] } };
     });
     expect(await reviewNativeRun("run")).toBe(0);

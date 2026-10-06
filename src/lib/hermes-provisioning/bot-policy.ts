@@ -33,6 +33,14 @@ export async function lockBot(tx: DbOrTx, botId: string) {
 
 export async function guardManagedBotMutation(tx: DbOrTx, p: Principal, botId: string, input: Partial<Bot> | null) {
   const bot = await lockBot(tx, botId);
+  if (bot.hermesTeam) {
+    const { authorizeTeam } = await import('@/lib/hermes-team/store');
+    await authorizeTeam(p, botId, 'admin', tx, true);
+    if (!input) throw new HttpError(409, 'Disable this Team Bot instead of deleting retained native profiles and revisions.');
+    if ((input.executionMode !== undefined && input.executionMode !== 'caller') || input.coordinatorEligible || input.isCoordinator ||
+      (input.appId !== undefined && input.appId !== bot.appId))
+      throw new HttpError(409, 'Team Bots retain their direct-chat definition. Configure native model access in Team Bot settings.');
+  }
   const [localApp] = bot.appId ? await tx.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
   if (localApp && isLocalHermes(localApp)) { if (!isDockerHermes(localApp)) assertAdmin(p); guardLocalBotMutation(localApp, bot.id, input); }
   const assignments = await tx.select({ specHash: hermesProvisions.specHash }).from(hermesProvisions).where(eq(hermesProvisions.botId, botId));

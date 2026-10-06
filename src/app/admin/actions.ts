@@ -1,6 +1,6 @@
 "use server";
 
-import { savePortalGroup, type GroupInput } from "@/lib/admin/groups";
+import { deletePortalGroup, savePortalGroup, type GroupInput } from "@/lib/admin/groups";
 
 import { nativeSearchSettingsSchema, NATIVE_SEARCH_DEFAULTS } from "@/lib/native-search-policy";
 
@@ -11,7 +11,7 @@ import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
-import { aiApps, appAccess, bots, groups, mcpServerAccess, mcpServers, providerConnections, auditLog } from "@/db/schema";
+import { aiApps, appAccess, bots, mcpServerAccess, mcpServers, providerConnections, auditLog } from "@/db/schema";
 import { getAccessibleModel, HttpError } from "@/lib/authz";
 import { assertDefaultBot } from "@/lib/chat/targets";
 import { saveLoginPet as storeLoginPet } from "@/lib/branding/login-pet";
@@ -213,14 +213,14 @@ export type { GroupInput } from "@/lib/admin/groups";
 
 export async function saveGroup(raw: GroupInput) {
   const p = await requireAdmin();
-  const groupId = await savePortalGroup(raw);
+  const groupId = await savePortalGroup(raw, p.user.id);
   await audit(p.user.id, raw.id ? "group.update" : "group.create", groupId, { name: raw.name, isAdmin: raw.isAdmin, mappings: raw.mappings.length, directMembers: raw.memberIds?.length });
   done();
 }
 
 export async function deleteGroup(id: string) {
   const p = await requireAdmin();
-  await db.delete(groups).where(eq(groups.id, id));
+  await deletePortalGroup(id, p.user.id);
   await audit(p.user.id, "group.delete", id);
   done();
 }
@@ -259,7 +259,24 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
 
 export async function setBotEnabled(botId: string, enabled: boolean) {
   const p = await requireAdmin();
-  await db.update(bots).set({ enabled, revision: sql`${bots.revision} + 1`, publishedRevision: null, publishedConfigHash: null }).where(eq(bots.id, botId));
+  let teamChanged = false;
+  await db.transaction(async tx => {
+    const [bot] = await tx.select().from(bots).where(eq(bots.id, botId)).for('update');
+    if (bot?.hermesTeam) {
+      teamChanged = true;
+      const { authorizeTeam } = await import('@/lib/hermes-team/store');
+      await authorizeTeam(p, botId, 'admin', tx, true);
+    }
+    await tx.update(bots).set({ enabled, revision: sql`${bots.revision} + 1`, publishedRevision: null, publishedConfigHash: null }).where(eq(bots.id, botId));
+    if (bot?.hermesTeam) {
+      const { queueTeamAccessReconciliation } = await import('@/lib/hermes-team/revocation');
+      await queueTeamAccessReconciliation(tx, botId, p.user.id, { reason: 'bot_disabled' });
+    }
+  });
+  if (teamChanged) {
+    const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
+    await reconcileTeamAccess(botId);
+  }
   await audit(p.user.id, enabled ? "bot.enable" : "bot.disable", botId);
   done();
 }

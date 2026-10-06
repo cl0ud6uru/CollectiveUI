@@ -130,6 +130,34 @@ describe('personal Docker Hermes durable broker', () => {
     expect(await broker.status('alice')).toMatchObject({ phase: 'stopped' });
     expect(controller.getRun(run).status).toBe('interrupted'); expect(driver.profilesByOwner.get('alice')).toHaveLength(1);
   });
+  it('reports sibling profile interruption when Stop must clean up the whole owner runtime', async () => {
+    await Promise.all([enable('alice'), enable('bob')]);
+    const create = driver.create.bind(driver);
+    driver.create = async (owner, name) => { await mkdir(path.join(root, owner, name), { recursive: true }); return create(owner, name); };
+    const first = (await broker.status('alice')).bindings[0];
+    const second = await broker.create('alice', { name: 'Sibling', requestId: randomUUID() });
+    const other = (await broker.status('bob')).bindings[0];
+    const [a, b, c] = await Promise.all([
+      broker.forRequest('alice', first.bindingId), broker.forRequest('alice', second.bindingId), broker.forRequest('bob', other.bindingId),
+    ]);
+    const one = a.controller.begin(a.nativeBindingId, { input: 'slow', session_id: 'same-visible-chat-id' }, 'first-profile');
+    const sibling = b.controller.begin(b.nativeBindingId, { input: 'approve', session_id: 'same-visible-chat-id' }, 'sibling-profile');
+    const anotherOwner = c.controller.begin(c.nativeBindingId, { input: 'slow', session_id: 'same-visible-chat-id' }, 'another-owner');
+    await until(async () => b.controller.getRun(sibling).status === 'waiting_for_approval');
+    const approval = b.controller.events(sibling, 0).events.find(e => e.event === 'approval.request')!;
+    // The synthetic gateway sends an error-only interruption, exercising the
+    // real controller's fail-closed cleanup through the owner's runtime driver.
+    await a.controller.cancel(one).catch(() => {});
+    await until(async () => a.controller.getRun(one).status === 'interrupted' && b.controller.getRun(sibling).status === 'interrupted');
+    expect(driver.active.has('alice')).toBe(false);
+    expect(driver.active.has('bob')).toBe(true);
+    expect(c.controller.getRun(anotherOwner).status).toBe('running');
+    expect(() => b.controller.approve(sibling, { request_id: approval.request_id, choice: 'once' })).toThrow('expired');
+    expect((await broker.status('alice')).bindings).toEqual([first, second]);
+    for (const profile of [first.profile, second.profile]) {
+      expect(await readFile(path.join(root, 'alice', profile, 'fixture-sessions.json'), 'utf8')).toContain('stored-1');
+    }
+  });
   it('does not publish an uncertain native handshake and reuses its durable profile/bot IDs on retry', async () => {
     await enable('alice');
     const create = driver.create.bind(driver);
@@ -254,6 +282,19 @@ describe('personal native profile settings transactions', () => {
     await until(async () => pair.controller.getRun(run).status === 'waiting_for_approval');
     await expect(broker.updateProfile('alice', b.bindingId, input)).rejects.toThrow('unfinished');
     expect(driver.active.has('alice')).toBe(true); expect(d.reopen).not.toHaveBeenCalled();
+    expect(pair.controller.getRun(run).status).toBe('waiting_for_approval');
+  });
+  it('refuses an idle profile update while a sibling profile has active native work', async () => {
+    const { b, d, input } = await fixture();
+    const create = driver.create.bind(driver);
+    driver.create = async (owner, name) => { await mkdir(path.join(root, owner, name), { recursive: true }); return create(owner, name); };
+    const sibling = await broker.create('alice', { name: 'Active sibling', requestId: randomUUID() });
+    const pair = await broker.forRequest('alice', sibling.bindingId);
+    const run = pair.controller.begin(pair.nativeBindingId, { input: 'approve', session_id: 'active-sibling' }, 'active-sibling-receipt');
+    await until(async () => pair.controller.getRun(run).status === 'waiting_for_approval');
+    const stop = vi.spyOn(driver, 'stop');
+    await expect(broker.updateProfile('alice', b.bindingId, input)).rejects.toThrow('unfinished');
+    expect(stop).not.toHaveBeenCalled(); expect(d.reopen).not.toHaveBeenCalled();
     expect(pair.controller.getRun(run).status).toBe('waiting_for_approval');
   });
   it('fences already-dispatched begin calls and serializes concurrent edits/readers', async () => {

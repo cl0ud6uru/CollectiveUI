@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { errorResponse, requirePrincipal } from "@/lib/session";
+import { filterTeamConversationViews } from '@/lib/hermes-team/conversations';
 
 /** Full-text search over the user's chat titles and messages. Snippets are HTML-escaped with <mark> highlights. */
 export async function GET(req: Request) {
@@ -32,7 +33,7 @@ export async function GET(req: Request) {
       limit 30
     `);
     return Response.json({
-      results: rows.map((r) => ({
+      results: (await filterTeamConversationViews(p, rows, r => r.conversation_id)).map((r) => ({
         conversationId: r.conversation_id,
         title: r.title,
         snippet: r.snippet,

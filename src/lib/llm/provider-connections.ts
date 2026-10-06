@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type DbOrTx } from "@/db";
 import { providerConnections } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
 import { ProviderUnavailableError } from "./errors";
@@ -36,8 +36,8 @@ export function assertConnectionTarget(c: ProviderConnection, provider: string, 
 }
 
 /** Throws a user-facing 409 (shown in chat and background runs instead of a generic error) when unusable. */
-export async function activeProviderConnection(id: string): Promise<ProviderConnection> {
-  const [connection] = await db.select().from(providerConnections).where(eq(providerConnections.id, id));
+export async function activeProviderConnection(id: string, q: DbOrTx = db): Promise<ProviderConnection> {
+  const [connection] = await q.select().from(providerConnections).where(eq(providerConnections.id, id));
   if (!connection || !connection.enabled) throw new ProviderUnavailableError("The saved provider connection is unavailable or disabled. Ask an admin to check it.");
   return connection;
 }
