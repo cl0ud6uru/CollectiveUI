@@ -146,3 +146,22 @@ describe("Hermes resource update receipts and crash recovery", () => {
     expect(resourceRolloutSummary(conflict).conflictGroups).toBe(1);
   });
 });
+
+
+describe("Cross-revision resource package boundaries", () => {
+  it("rejects moving a nested child out of a preserved modified parent package", () => {
+    const installed = snapshot(skill("parent", "parent"), skill("parent", "child original", "child/SKILL.md"));
+    const current = snapshot(skill("parent", "parent"), skill("parent", "member improved child", "child/SKILL.md"));
+    const release = snapshot(skill("parent/child", "team child"));
+    expect(() => planTeamResourceUpdate({ installed, release, current })).toThrow("boundaries overlap");
+  });
+  it("rejects moving a child package into a preserved member-modified ancestor", () => {
+    const installed = snapshot(skill("parent/child", "child original"));
+    const current = snapshot(skill("parent/child", "member improved child"));
+    const release = snapshot(skill("parent", "team parent"), skill("parent", "team child", "child/SKILL.md"));
+    expect(() => planTeamResourceUpdate({ installed, release, current })).toThrow("boundaries overlap");
+  });
+  it("rejects a new team ancestor overlapping an independently learned member child", () => {
+    expect(() => planTeamResourceUpdate({ installed: empty, release: snapshot(skill("parent", "team")), current: snapshot(skill("parent/child", "member")) })).toThrow("boundaries overlap");
+  });
+});

@@ -1,5 +1,5 @@
 import {
-  assertSafeResourcePath, resourcePackageHash, resourceSha256, validateTeamResourceSnapshot,
+  assertCompatibleResourcePackages, assertSafeResourcePath, resourcePackageHash, resourceSha256, validateTeamResourceSnapshot,
   type TeamResource, type TeamResourceSnapshot,
 } from "./resources";
 
@@ -67,6 +67,7 @@ export function planTeamResourceUpdate(input: {
   const installed = validateTeamResourceSnapshot(input.installed);
   const release = validateTeamResourceSnapshot(input.release);
   const current = validateTeamResourceSnapshot(input.current, { requireCompleteSkills: false });
+  assertCompatibleResourcePackages(installed, release, current);
   const previousGroups = groups(installed), teamGroups = groups(release), memberGroups = groups(current);
   const overrides: Record<string, MemberResourceOverride> = Object.create(null);
   for (const [id, value] of Object.entries(input.overrides ?? {}).sort(([a], [b]) => compare(a, b))) {
@@ -143,8 +144,9 @@ function verifyPlan(plan: TeamResourceUpdatePlan): void {
   // Content hashes and path bounds remain enforced after JSON persistence.
   const member = plan.actions.flatMap(action => [...action.memberResources]);
   const team = plan.actions.flatMap(action => [...action.teamResources]);
-  validateTeamResourceSnapshot({ format: 1, resources: member, manifestHash: plan.currentManifestHash }, { requireCompleteSkills: false });
-  validateTeamResourceSnapshot({ format: 1, resources: team, manifestHash: plan.toManifestHash });
+  const current = validateTeamResourceSnapshot({ format: 1, resources: member, manifestHash: plan.currentManifestHash }, { requireCompleteSkills: false });
+  const release = validateTeamResourceSnapshot({ format: 1, resources: team, manifestHash: plan.toManifestHash });
+  assertCompatibleResourcePackages(current, release);
   const seen = new Set<string>();
   for (const action of plan.actions) {
     assertGroupId(action.packageId);

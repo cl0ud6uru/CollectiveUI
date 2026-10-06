@@ -252,6 +252,12 @@ export interface TeamResourceReviewUnit {
   readonly previousResources: readonly TeamResource[];
   readonly capturedResources: readonly TeamResource[];
 }
+/** Package boundaries cannot move across a revision while overlapping member resources remain. */
+export function assertCompatibleResourcePackages(...snapshots: readonly TeamResourceSnapshot[]): void {
+  const packages = [...new Set(snapshots.flatMap(snapshot => snapshot.resources.map(resource => resource.packageId)))].sort(compare);
+  if (packages.some((group, index) => packages.slice(index + 1).some(other => other.startsWith(group + "/") || group.startsWith(other + "/"))))
+    fail("invalid-manifest", "Resource package boundaries overlap across snapshots; reconcile them before publishing or updating");
+}
 export const resourcePackageHash = (resources: readonly TeamResource[]): string => resourceSha256(JSON.stringify([...resources].sort((a, b) => compare(a.path, b.path)).map(resource => [resource.path, resource.sha256])));
 function snapshotPackages(snapshot: TeamResourceSnapshot): Map<string, readonly TeamResource[]> {
   const packages = new Map<string, TeamResource[]>();
@@ -260,8 +266,10 @@ function snapshotPackages(snapshot: TeamResourceSnapshot): Map<string, readonly 
 }
 /** Review units contain exact captured bytes; later profile learning is a different draft. */
 export function reviewTeamResourceChanges(previous: TeamResourceSnapshot, captured: TeamResourceSnapshot): readonly TeamResourceReviewUnit[] {
-  const before = snapshotPackages(validateTeamResourceSnapshot(previous));
-  const after = snapshotPackages(validateTeamResourceSnapshot(captured));
+  const validatedPrevious = validateTeamResourceSnapshot(previous), validatedCaptured = validateTeamResourceSnapshot(captured);
+  assertCompatibleResourcePackages(validatedPrevious, validatedCaptured);
+  const before = snapshotPackages(validatedPrevious);
+  const after = snapshotPackages(validatedCaptured);
   const units: TeamResourceReviewUnit[] = [];
   for (const packageId of [...new Set([...before.keys(), ...after.keys()])].sort(compare)) {
     const previousResources = before.get(packageId) ?? [], capturedResources = after.get(packageId) ?? [];

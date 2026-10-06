@@ -50,7 +50,11 @@ Partial package inventories cannot safely decide whether a member changed a
 script or deleted a file. Current snapshots can include an incomplete package
 when a member intentionally deleted its `SKILL.md` or another file.
 
-Skill packages reconcile atomically. An unchanged team copy receives the target
+Skill packages reconcile atomically. Ancestor/descendant package boundaries across
+previous, target, or current snapshots are rejected before review or planning. A
+member-modified parent therefore cannot be overwritten by a newly separated child
+package. Boundary changes require explicit reconciliation rather than an overlapping
+install or removal. An unchanged team copy receives the target
 version. A changed package produces a conflict if the team also changed or
 removed it. Independently learned packages remain untouched; a new team package
 colliding with one produces a conflict. Member-deleted packages receive durable

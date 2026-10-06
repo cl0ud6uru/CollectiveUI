@@ -142,3 +142,15 @@ describe("Hermes frozen publication review selection", () => {
     expect(() => selectTeamResourcePublication(noChanges)).toThrow("captured package");
   });
 });
+
+
+describe("Publication package boundary changes", () => {
+  it("rejects a captured nested package that overlaps the previous publication boundary", async () => {
+    await file("skills/support/child/SKILL.md", "nested child");
+    const previous = await capture();
+    const captured = await capture({ skillPackages: ["support/child"] });
+    expect(() => reviewTeamResourceChanges(previous, captured)).toThrow("boundaries overlap");
+    expect(() => selectTeamResourcePublication({ previous, captured, expectedPreviousHash: previous.manifestHash, expectedCapturedHash: captured.manifestHash,
+      selectedKeys: ["skills/support/child"], removalKeys: ["skills/support"] })).toThrow("boundaries overlap");
+  });
+});
