@@ -165,3 +165,13 @@ describe("Cross-revision resource package boundaries", () => {
     expect(() => planTeamResourceUpdate({ installed: empty, release: snapshot(skill("parent", "team")), current: snapshot(skill("parent/child", "member")) })).toThrow("boundaries overlap");
   });
 });
+
+
+describe("Deleted package boundary preservation", () => {
+  it("rejects a new team child/ancestor that overlaps a durable deleted-package choice", () => {
+    expect(() => planTeamResourceUpdate({ installed: empty, release: snapshot(skill("parent/child", "new team child")), current: empty,
+      overrides: { "skills/parent": "deleted" } })).toThrow("boundaries overlap");
+    expect(() => planTeamResourceUpdate({ installed: empty, release: snapshot(skill("parent", "new team parent")), current: empty,
+      overrides: { "skills/parent/child": "deleted" } })).toThrow("boundaries overlap");
+  });
+});

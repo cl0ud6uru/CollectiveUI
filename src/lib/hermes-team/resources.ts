@@ -253,10 +253,14 @@ export interface TeamResourceReviewUnit {
   readonly capturedResources: readonly TeamResource[];
 }
 /** Package boundaries cannot move across a revision while overlapping member resources remain. */
-export function assertCompatibleResourcePackages(...snapshots: readonly TeamResourceSnapshot[]): void {
-  const packages = [...new Set(snapshots.flatMap(snapshot => snapshot.resources.map(resource => resource.packageId)))].sort(compare);
+export function assertCompatibleResourcePackageIds(ids: readonly string[]): void {
+  const packages = [...new Set(ids)].sort(compare);
+  for (const id of packages) assertSafeResourcePath(id);
   if (packages.some((group, index) => packages.slice(index + 1).some(other => other.startsWith(group + "/") || group.startsWith(other + "/"))))
     fail("invalid-manifest", "Resource package boundaries overlap across snapshots; reconcile them before publishing or updating");
+}
+export function assertCompatibleResourcePackages(...snapshots: readonly TeamResourceSnapshot[]): void {
+  assertCompatibleResourcePackageIds(snapshots.flatMap(snapshot => snapshot.resources.map(resource => resource.packageId)));
 }
 export const resourcePackageHash = (resources: readonly TeamResource[]): string => resourceSha256(JSON.stringify([...resources].sort((a, b) => compare(a.path, b.path)).map(resource => [resource.path, resource.sha256])));
 function snapshotPackages(snapshot: TeamResourceSnapshot): Map<string, readonly TeamResource[]> {

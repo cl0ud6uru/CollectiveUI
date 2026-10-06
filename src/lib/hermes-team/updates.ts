@@ -1,5 +1,5 @@
 import {
-  assertCompatibleResourcePackages, assertSafeResourcePath, resourcePackageHash, resourceSha256, validateTeamResourceSnapshot,
+  assertCompatibleResourcePackageIds, assertCompatibleResourcePackages, assertSafeResourcePath, resourcePackageHash, resourceSha256, validateTeamResourceSnapshot,
   type TeamResource, type TeamResourceSnapshot,
 } from "./resources";
 
@@ -82,6 +82,7 @@ export function planTeamResourceUpdate(input: {
     resolutions.set(resolution.packageId, resolution);
   }
   const ids = [...new Set([...previousGroups.keys(), ...teamGroups.keys(), ...memberGroups.keys(), ...Object.keys(overrides)])].sort(compare);
+  assertCompatibleResourcePackageIds(ids);
   for (const id of resolutions.keys()) if (!ids.includes(id)) throw new Error("Conflict resolution references an unknown resource group");
   const actions: ResourceUpdateAction[] = [];
   for (const packageId of ids) {
@@ -147,6 +148,7 @@ function verifyPlan(plan: TeamResourceUpdatePlan): void {
   const current = validateTeamResourceSnapshot({ format: 1, resources: member, manifestHash: plan.currentManifestHash }, { requireCompleteSkills: false });
   const release = validateTeamResourceSnapshot({ format: 1, resources: team, manifestHash: plan.toManifestHash });
   assertCompatibleResourcePackages(current, release);
+  assertCompatibleResourcePackageIds([...current.resources.map(resource => resource.packageId), ...release.resources.map(resource => resource.packageId), ...Object.keys(plan.overrides)]);
   const seen = new Set<string>();
   for (const action of plan.actions) {
     assertGroupId(action.packageId);
