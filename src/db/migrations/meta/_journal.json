@@ -281,6 +281,13 @@
       "when": 1791323609308,
       "tag": "0039_hermes_team_revision_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791323615967,
+      "tag": "0040_hermes_team_admission",
+      "breakpoints": true
     }
   ]
 }

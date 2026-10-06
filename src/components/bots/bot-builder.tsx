@@ -217,7 +217,7 @@ export function BotBuilder({
 
   async function saveTeamSettings(id: string) {
     if (!team || !isAdmin || (engine !== "hermes" && !((teamConfig?.expectedVersion ?? 0) > 0)) || JSON.stringify(team) === JSON.stringify(savedTeam.current)) return;
-    const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: team.enabled, maintainerIds: team.maintainerIds, modelPolicy: { mode: team.modelPolicy }, expectedVersion: team.expectedVersion ?? 0 }) });
+    const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: team.enabled, maintainerIds: team.maintainerIds, modelPolicy: { ...team.modelRoutes, mode: team.modelPolicy }, ...(team.toolPolicy ? { toolPolicy: team.toolPolicy } : {}), expectedVersion: team.expectedVersion ?? 0 }) });
     const data = await response.json();
     if (!response.ok) {
       throw new Error(`Bot configuration saved, but Team Bot settings need attention: ${data.error ?? "save was not confirmed"}`);

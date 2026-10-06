@@ -82,13 +82,15 @@ export async function loadBuilderData(p: Principal, botId?: string) {
     : [];
   let teamConfig: HermesTeamPolicyValue | undefined;
   const teamMaintainers: {id: string; name: string}[] = [];
-  const teamModelOptions: HermesTeamModelOption[] = ['admin_provided', 'admin_default_personal_allowed', 'personal_required'].map(value => ({ value: value as HermesTeamModelOption['value'], available: false, reason: 'This route has not been verified. Team chat stays paused until a supported gateway is tested.' }));
+  const teamModelOptions: HermesTeamModelOption[] = [];
   if (p.isAdmin && teamBotsEnabled()) {
     const [definition] = botId ? await db.select().from(hermesTeamDefinitions).where(eq(hermesTeamDefinitions.botId, botId)) : [];
     const selected = definition ? await db.select().from(hermesTeamMaintainers).where(eq(hermesTeamMaintainers.botId, botId!)) : [];
     const candidates = await db.select({id:users.id,name:users.name}).from(users).where(eq(users.disabled,false));
     for (const candidate of candidates) if ((await loadPrincipal(candidate.id))?.isAdmin) teamMaintainers.push(candidate);
-    teamConfig = { enabled: definition?.enabled ?? false, modelPolicy: definition?.modelPolicy.mode ?? 'personal_required', maintainerIds: selected.length ? selected.map(m => m.userId) : [p.user.id], expectedVersion: definition?.version ?? 0 };
+    teamConfig = { enabled: definition?.enabled ?? false, modelPolicy: definition?.modelPolicy.mode ?? 'personal_required',
+      ...(definition ? { modelRoutes: { adminRouteId: definition.modelPolicy.adminRouteId, personalRouteId: definition.modelPolicy.personalRouteId }, toolPolicy: definition.toolPolicy } : {}),
+      maintainerIds: selected.length ? selected.map(m => m.userId) : [p.user.id], expectedVersion: definition?.version ?? 0 };
   }
   return {
     teamConfig, teamMaintainers, teamModelOptions,

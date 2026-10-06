@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn(), ensure: vi.fn(), pagePrincipal: vi.fn() }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn(), ensure: vi.fn(), revoke: vi.fn(), pagePrincipal: vi.fn() }));
 vi.mock('@/lib/session', () => ({ requirePagePrincipal: fixture.pagePrincipal }));
 vi.mock('@/components/chat/start-side-chat', () => ({ StartSideChat: () => null }));
 vi.mock('@/components/page-frame', async () => {
@@ -13,6 +13,7 @@ vi.mock('@/components/page-frame', async () => {
 vi.mock('@/lib/jobs', () => ({ scheduleMemoryExtraction: fixture.schedule, enqueue: fixture.enqueue, QUEUES: { learningReview: 'learning.review' } }));
 vi.mock('@/lib/llm', async original => ({ ...await original<typeof import('@/lib/llm')>(), utilityApp: fixture.utility }));
 vi.mock('@/lib/hermes-team/transport', () => ({ ensureTeamRuntime: fixture.ensure }));
+vi.mock('@/lib/docker-hermes/client', () => ({ dockerControl: fixture.revoke }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'); const { drizzle } = await import('drizzle-orm/pglite'); const schema = await import('@/db/schema');
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
@@ -45,6 +46,7 @@ beforeEach(async () => {
   fixture.enqueue.mockClear(); fixture.utility.mockReset();
   fixture.utility.mockImplementation(() => { throw new Error('Company utility access is forbidden in this Team fixture.'); });
   fixture.ensure.mockReset();
+  fixture.revoke.mockReset(); fixture.revoke.mockResolvedValue({ stopped: true, interruption: 'runtime-wide' });
   fixture.ensure.mockImplementation(async (p: Principal, botId: string, mode: 'member'|'admin') => ({ bindingId: 'a'.repeat(32), botId, appId: 'runtime-app', ownerId: mode === 'admin' ? `team-admin:${botId}` : p.user.id, runtimeId: 'native-runtime', profile: `cui-team-${'b'.repeat(32)}`, identity: 'native-identity', name: 'Team', purpose: `team-${mode}`, teamBotId: botId, modelPolicy: 'personal_required' }));
   vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1');
   await fixture.client!.exec('TRUNCATE users, ai_apps, settings CASCADE');

@@ -14,6 +14,7 @@ import { allowFactorAttempt, allowPasswordAttempt } from "./throttle";
 import { hasLocalFactors } from "./factor-state";
 import { hashPassword, validateNewPassword, verifyPassword } from "./password";
 import { checkTotp, createRecoveryCodes, createTotp, recoveryHash, securityConfig, SecurityError } from "./factors";
+import { teamBotsEnabled } from "@/lib/hermes-team/policy";
 
 export type SecurityActor = { id: string; sessionVersion: number; sessionId: string };
 export type SecurityOperation = "add-passkey" | "add-totp" | "remove-passkey" | "remove-totp" | "recovery" | "disable" | "password";
@@ -72,7 +73,19 @@ async function account(tx: Tx, expected: Account, permanent = false) {
 }
 function flowAccount(flow: Flow): Account { if (!flow.userId || flow.sessionVersion === null) fail(); return { id: flow.userId, sessionVersion: flow.sessionVersion }; }
 async function locked<T>(expected: Account, fn: (tx: Tx, row: Awaited<ReturnType<typeof account>>) => Promise<T>, permanent = false) {
-  return db.transaction(async tx => { await lockAccounts(tx); return fn(tx, await account(tx, expected, permanent)); });
+  const result = await db.transaction(async tx => {
+    await lockAccounts(tx);
+    if (teamBotsEnabled()) {
+      const { lockTeamAccessBots } = await import('@/lib/hermes-team/revocation');
+      await lockTeamAccessBots(tx);
+    }
+    return fn(tx, await account(tx, expected, permanent));
+  });
+  if (teamBotsEnabled()) {
+    const { reconcileTeamActorAccess } = await import('@/lib/hermes-team/revocation');
+    await reconcileTeamActorAccess(expected.id);
+  }
+  return result;
 }
 async function profile(tx: Tx, id: string) {
   await tx.insert(localSecurity).values({ userId: id, userHandle: randomToken() }).onConflictDoNothing();
@@ -83,6 +96,10 @@ async function changed(tx: Tx, userId: string, action: string) {
   await tx.update(users).set({ sessionVersion: sql`${users.sessionVersion} + 1`, authChangedAt: sql`clock_timestamp()` }).where(eq(users.id, userId));
   await tx.delete(authFlows).where(eq(authFlows.userId, userId));
   await audit(tx, userId, action);
+  if (teamBotsEnabled()) {
+    const { lockTeamAccessBots, queueTeamPrincipalAccessReconciliation } = await import('@/lib/hermes-team/revocation');
+    await queueTeamPrincipalAccessReconciliation(tx, await lockTeamAccessBots(tx), userId, userId, true);
+  }
 }
 async function recoveryCodes(tx: Tx, id: string) {
   const codes = createRecoveryCodes();

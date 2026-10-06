@@ -39,14 +39,14 @@ run("individual portal group and bot audiences", () => {
   });
   it("combines directory and direct memberships without duplicates and preserves direct memberships on sign-in", async () => {
     const input = { ...groupInput(`Hybrid ${newId()}`, [member.user.id, local.user.id, member.user.id]), mappings: [{ source: "ldap" as const, externalId: "CN=Fixture,DC=example" }] };
-    const id = await savePortalGroup(input); groupIds.push(id);
+    const id = await savePortalGroup(input, owner.user.id); groupIds.push(id);
     await db.insert(userExternalGroups).values([{ userId: member.user.id, source: "ldap", externalId: "cn=fixture,dc=example" }, { userId: stranger.user.id, source: "ldap", externalId: "cn=fixture,dc=example" }, { userId: local.user.id, source: "ldap", externalId: "cn=fixture,dc=example" }]);
     expect((await loadPrincipal(member.user.id))?.groupIds.filter(g => g === id)).toHaveLength(1);
     expect((await loadPrincipal(local.user.id))?.groupIds).toContain(id);
     expect((await usersInGroups([id])).map(u => u.userId).sort()).toEqual([member.user.id, stranger.user.id, local.user.id].sort());
     expect((await syncUserOnSignIn({ upn: member.user.upn, name: "member", source: "ldap", groups: [] })).id).toBe(member.user.id);
     expect((await loadPrincipal(member.user.id))?.groupIds).toContain(id);
-    await savePortalGroup({ ...input, id, memberIds: [] });
+    await savePortalGroup({ ...input, id, memberIds: [] }, owner.user.id);
     expect((await loadPrincipal(member.user.id))?.groupIds).not.toContain(id);
     expect((await loadPrincipal(local.user.id))?.groupIds).not.toContain(id);
     expect((await loadPrincipal(stranger.user.id))?.groupIds).toContain(id);
@@ -54,16 +54,16 @@ run("individual portal group and bot audiences", () => {
   });
   it("applies permissions immediately, preserves members for older editors, and rolls invalid edits back", async () => {
     const input = { ...groupInput(`Direct admins ${newId()}`, [member.user.id]), isAdmin: true };
-    const id = await savePortalGroup(input); groupIds.push(id);
+    const id = await savePortalGroup(input, owner.user.id); groupIds.push(id);
     expect(await loadPrincipal(member.user.id)).toMatchObject({ isAdmin: true, canCreateBots: true });
     await db.insert(appAccess).values({ appId, groupId: id });
     expect((await getAccessibleApp((await loadPrincipal(member.user.id))!, appId)).id).toBe(appId);
     const legacy = { ...input, memberIds: undefined };
-    await savePortalGroup({ ...legacy, id });
+    await savePortalGroup({ ...legacy, id }, owner.user.id);
     expect(await db.select().from(groupMembers).where(eq(groupMembers.groupId, id))).toHaveLength(1);
-    await expect(savePortalGroup({ ...input, id, name: "Should not commit", memberIds: ["missing-user"] })).rejects.toMatchObject({ status: 400 });
+    await expect(savePortalGroup({ ...input, id, name: "Should not commit", memberIds: ["missing-user"] }, owner.user.id)).rejects.toMatchObject({ status: 400 });
     expect((await db.select().from(groups).where(eq(groups.id, id)))[0].name).toBe(input.name);
-    await savePortalGroup({ ...input, id, memberIds: [] });
+    await savePortalGroup({ ...input, id, memberIds: [] }, owner.user.id);
     expect((await loadPrincipal(member.user.id))?.isAdmin).toBe(false);
     await expect(getAccessibleApp((await loadPrincipal(member.user.id))!, appId)).rejects.toMatchObject({ status: 403 });
   });
@@ -86,7 +86,7 @@ run("individual portal group and bot audiences", () => {
     await expect(getAccessibleBot(local, id)).rejects.toMatchObject({ status: 403 });
   });
   it("combines group and individual bot audiences and refuses unknown users or empty audiences", async () => {
-    const groupId = await savePortalGroup(groupInput(`Bot users ${newId()}`, [stranger.user.id])); groupIds.push(groupId);
+    const groupId = await savePortalGroup(groupInput(`Bot users ${newId()}`, [stranger.user.id]), owner.user.id); groupIds.push(groupId);
     const input = botInput([member.user.id], [groupId]);
     const { id } = await createBot(input); botIds.push(id);
     expect((await getAccessibleBot((await loadPrincipal(stranger.user.id))!, id)).id).toBe(id);

@@ -4,7 +4,17 @@ import { useId } from "react";
 import { Field, Select } from "@/components/ui/input";
 
 export type HermesTeamModelPolicy = "admin_provided" | "admin_default_personal_allowed" | "personal_required";
-export type HermesTeamPolicyValue = { enabled: boolean; modelPolicy: HermesTeamModelPolicy; maintainerIds: string[]; expectedVersion?: number };
+export type HermesTeamToolCapability = {
+  capabilityId: string;
+  connectionMode: "approved_team_connection" | "member_connection" | "disabled";
+  connectionId?: string; adapterId?: string; action?: string; resourceIds: string[];
+  effect: "read" | "write"; requireApproval: boolean;
+};
+export type HermesTeamPolicyValue = {
+  enabled: boolean; modelPolicy: HermesTeamModelPolicy; maintainerIds: string[]; expectedVersion?: number;
+  modelRoutes?: { adminRouteId?: string; personalRouteId?: string };
+  toolPolicy?: { capabilities: HermesTeamToolCapability[] };
+};
 export type HermesTeamModelOption = { value: HermesTeamModelPolicy; available: boolean; reason?: string };
 
 const policies: Record<HermesTeamModelPolicy, { label: string; description: string }> = {
@@ -23,6 +33,7 @@ export function HermesTeamPolicy({ value, onChange, maintainers, modelOptions, d
 }) {
   const id = useId();
   const option = modelOptions.find((item) => item.value === value.modelPolicy);
+  const verifiedModels = modelOptions.some(item => item.available);
   return <fieldset disabled={disabled} className="min-w-0 space-y-4 rounded-xl border border-border p-3" aria-label="Hermes Team Bot configuration">
     <legend className="px-1 text-sm font-medium">Team Bot</legend>
     <label className="flex items-start gap-3 text-sm" htmlFor={`${id}-enabled`}>
@@ -31,11 +42,16 @@ export function HermesTeamPolicy({ value, onChange, maintainers, modelOptions, d
     </label>
     {value.enabled && <>
       <Field label="Model access" hint={policies[value.modelPolicy].description}>
-        <Select aria-label="Team Bot model access" value={value.modelPolicy} onChange={(event) => onChange({ ...value, modelPolicy: event.target.value as HermesTeamModelPolicy })}>
+        {verifiedModels ? <Select aria-label="Team Bot model access" value={value.modelPolicy} onChange={(event) => onChange({ ...value, modelPolicy: event.target.value as HermesTeamModelPolicy })}>
           {(Object.keys(policies) as HermesTeamModelPolicy[]).map((policy) => <option key={policy} value={policy} disabled={!modelOptions.some((item) => item.value === policy && item.available)}>{policies[policy].label}</option>)}
-        </Select>
+        </Select> : <p className="text-sm">{policies[value.modelPolicy].label}</p>}
       </Field>
       {(!option?.available || option.reason) && <p role="status" className="text-xs text-muted">{option?.reason ?? "This model route has not been verified. Chat will stay paused until an admin configures a supported connection."}</p>}
+      <section aria-label="Team Bot tool connections" className="space-y-1 rounded-lg bg-surface-2/40 p-3">
+        <h3 className="text-sm font-medium">Tools and company connections</h3>
+        <p className="text-xs text-muted">Team tool connections are unavailable until a native adapter is verified.</p>
+        {!!value.toolPolicy?.capabilities.length && <p className="text-xs text-muted">Saved connection rules are preserved. Connection changes are unavailable in this version.</p>}
+      </section>
       <fieldset className="space-y-2">
         <legend className="mb-1 text-sm font-medium">Who can maintain it</legend>
         <p className="text-xs text-muted">Only selected admins can enter Admin mode. Maintainers share the working bot’s skills and native memory. Each maintainer has a separate Admin mode conversation.</p>
