@@ -8,6 +8,7 @@ import { hashPassword, validateNewPassword, validPasswordInput, verifyPassword }
 import { allowPasswordAttempt } from "./throttle";
 import { hasLocalFactors } from "./factor-state";
 import { HttpError } from "@/lib/authz";
+import { teamBotsEnabled } from "@/lib/hermes-team/policy";
 
 export type AuthActor = { id: string; sessionVersion: number };
 export const LocalUserInput = z.object({
@@ -90,16 +91,24 @@ async function ensureLocalAdminRemains(tx: Tx, userId: string) {
   if (!rows.length) throw new HttpError(400, "Keep another enabled local administrator with a permanent password before changing this account.");
 }
 export async function changeUserAccess(actor: AuthActor, userId: string, change: { isAdmin?: boolean; disabled?: boolean; revoke?: boolean }) {
-  await db.transaction(async tx => {
+  const teamBotIds = await db.transaction(async tx => {
     await lockAccounts(tx);
     await assertActor(tx, actor);
+    const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
+    const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
     const [user] = await tx.select().from(users).where(eq(users.id, userId));
     if (!user) throw new HttpError(404, "User not found");
     if (actor.id === userId && (change.isAdmin === false || change.disabled === true)) throw new HttpError(400, "You can't remove your own access here");
     if (user.identityRealm === "local" && user.isAdmin && !user.disabled && (change.isAdmin === false || change.disabled === true)) await ensureLocalAdminRemains(tx, userId);
     await tx.update(users).set({ ...(change.isAdmin === undefined ? {} : { isAdmin: change.isAdmin }), ...(change.disabled === undefined ? {} : { disabled: change.disabled }), sessionVersion: sql`${users.sessionVersion} + 1`, authChangedAt: sql`clock_timestamp()` }).where(eq(users.id, userId));
     await auditTx(tx, actor.id, change.revoke ? "user.revoke_sessions" : "user.access_changed", userId);
+    // Even a still-authorized actor must lose grants issued to the old session version.
+    return team ? team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actor.id, userId, true) : [];
   });
+  if (teamBotIds.length) {
+    const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
+    for (const botId of teamBotIds) await reconcileTeamAccess(botId);
+  }
 }
 export async function resetLocalPassword(actor: AuthActor | "recover-admin", userId: string, password: string) {
   enabled();

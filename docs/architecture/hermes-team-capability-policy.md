@@ -28,6 +28,16 @@ The adapter validates the actual native arguments and derives their action/resou
 
 The connector service alone holds company credentials. Its dispatch adapter must atomically consume the approved continuation, recheck current authority and enforce durable idempotent execution. Secret redaction, company connection storage, adapter-specific argument validation, and cancellation are responsibilities of the supported server connector implementation. This increment does not place secrets in profiles, connect any account or execute a native tool.
 
+## Saved policy and revocation integration
+
+The existing Team configuration API saves the validated model and tool policies under the bot lock and expected definition version. Older editors may omit `toolPolicy`; that omission retains the saved configuration. Policies contain only identifiers and scopes. No verified adapter inventory is currently available, so the editor must present an unavailable state rather than offering arbitrary native routes or connection identifiers.
+
+Changing a definition invalidates retained grants. Editing the bot audience, removing group membership or mappings, deleting a portal group, disabling a bot or changing an account's access queues server-derived revocation operations in the same database transaction. Queued replies and waiting approvals receive cancellation requests before commit. Group/account writes acquire the existing Team bot locks in order before changing permissions. The broker cleanup runs after commit, records any runtime-wide interruption and retains all profile and conversation data.
+
+Broker failures leave durable `needs_attention` receipts. Fresh authorization fences the affected person/mode until cleanup succeeds; reopening authorized work retries the same receipts. Retained profile ownership cannot bypass the current audience. These receipts are cleanup records and do not replace the gateway's atomic dispatch and usage settlement requirements.
+
+`recordTeamRunAdmission` derives the actor, bot, profile, conversation and policy version from stored records, rejects stale/cancelled work, and records one immutable attribution after verified policy admission. The production route inventory remains empty, so normal calls reject every inference purpose and never record a false successful admission. This helper is a gateway integration boundary; Team native execution remains independently blocked and no live gateway is installed.
+
 ## Verification and enablement
 
 The unit fixtures use synthetic people, connections, models, evidence and approvals at the currently pinned Hermes commit. They cover deny defaults, exact evidence mismatch, every model work category, no personal-to-company fallback, expiry, usage-limit failure, queued revocation, forged tool scope, approval binding and continuation revocation. They make no paid model calls and no OAuth grants.

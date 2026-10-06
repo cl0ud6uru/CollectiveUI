@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, type DbOrTx } from '@/db';
-import { agentRuns, aiApps, botAccess, botUserAccess, bots, hermesTeamDefinitions, hermesTeamMaintainers, hermesTeamProfiles } from '@/db/schema';
+import { agentRuns, aiApps, botAccess, botUserAccess, bots, hermesTeamDefinitions, hermesTeamMaintainers, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
 import { loadPrincipal, type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { teamBotsEnabled, teamModeAllows, teamOwnerKey } from './policy';
 import { teamConfiguration, type TeamMode } from './types';
 import { OPEN_STATUSES } from '@/lib/runs/types';
+import { queueTeamAccessReconciliation, reconcileTeamAccess } from './revocation';
 export async function freshTeamPrincipal(p: Principal, q: DbOrTx = db) {
   if (!teamBotsEnabled()) throw new HttpError(404, 'Team Bots are not enabled.');
   const fresh = await loadPrincipal(p.user.id, q);
@@ -24,18 +25,23 @@ export async function authorizeTeam(p: Principal, botId: string, mode: TeamMode,
   const audienceUsers = await q.select().from(botUserAccess).where(eq(botUserAccess.botId, botId));
   if (!teamModeAllows(fresh, bot, { groupIds: audienceGroups.map(r => r.groupId), userIds: audienceUsers.map(r => r.userId) }, maintainers.map(r => r.userId), mode))
     throw new HttpError(403, mode === 'admin' ? 'Admin status and permission to maintain this bot are required.' : 'You are outside this bot’s audience.');
+  if (!allowDisabled) {
+    const cleanup = await q.select().from(hermesTeamOperations).where(and(eq(hermesTeamOperations.botId, botId), eq(hermesTeamOperations.kind, 'revoke'), inArray(hermesTeamOperations.state, ['pending','needs_attention'])));
+    if (cleanup.some(r => r.result?.userId === fresh.user.id && r.result.mode === mode))
+      throw new HttpError(409, 'Team runtime cleanup needs attention. Reconcile access before reopening this bot.');
+  }
   return { principal: fresh, bot, definition };
 }
 /** Existing catalog/editor identity is retained; personal Hermes bindings cannot become shared definitions. */
 export async function configureTeam(p: Principal, botId: string, raw: unknown) {
   const input = teamConfiguration.parse(raw);
-  return db.transaction(async tx => {
+  const result = await db.transaction(async tx => {
     const fresh = await freshTeamPrincipal(p, tx);
     if (!fresh.isAdmin) throw new HttpError(403, 'Admin only');
     const [bot] = await tx.select().from(bots).where(eq(bots.id, botId)).for('update');
     if (!bot) throw new HttpError(404, 'Bot not found');
     const [active] = await tx.select({ id: agentRuns.id }).from(agentRuns).where(and(eq(agentRuns.botId, botId), inArray(agentRuns.status, [...OPEN_STATUSES]))).limit(1);
-    if (active) throw new HttpError(409, 'Finish active bot work and approvals before changing its Team configuration.');
+    if (active && input.enabled) throw new HttpError(409, 'Finish active bot work and approvals before changing its Team configuration.');
     if (bot.executionMode !== 'caller' || bot.coordinatorEligible || bot.isCoordinator) throw new HttpError(400, 'Team Bots support direct chats only.');
     const [app] = bot.appId ? await tx.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
     if (app && (app.providerConfig.docker !== undefined || app.providerConfig.local !== undefined || app.providerConfig.managed !== undefined))
@@ -49,24 +55,37 @@ export async function configureTeam(p: Principal, botId: string, raw: unknown) {
       const maintainer = await loadPrincipal(id, tx);
       if (!maintainer?.isAdmin) throw new HttpError(400, 'Every maintainer must be an active administrator.');
     }
-    const values = { enabled: input.enabled, modelPolicy: input.modelPolicy, version: (previous?.version ?? 0) + 1, updatedBy: fresh.user.id, updatedAt: new Date() };
+    const previousMaintainers = await tx.select().from(hermesTeamMaintainers).where(eq(hermesTeamMaintainers.botId, botId));
+    const values = { enabled: input.enabled, modelPolicy: input.modelPolicy, toolPolicy: input.toolPolicy ?? previous?.toolPolicy ?? { capabilities: [] }, version: (previous?.version ?? 0) + 1, updatedBy: fresh.user.id, updatedAt: new Date() };
     if (previous) await tx.update(hermesTeamDefinitions).set(values).where(eq(hermesTeamDefinitions.botId, botId));
     else await tx.insert(hermesTeamDefinitions).values({ botId, ...values });
     await tx.delete(hermesTeamMaintainers).where(eq(hermesTeamMaintainers.botId, botId));
     await tx.insert(hermesTeamMaintainers).values(maintainerIds.map(userId => ({ botId, userId })));
     await tx.update(bots).set({ hermesTeam: true, updatedAt: new Date() }).where(eq(bots.id, botId));
+    await queueTeamAccessReconciliation(tx, botId, fresh.user.id, { reason: 'policy_changed', force: true, previousMaintainerIds: previousMaintainers.map(r => r.userId) });
     return { version: values.version };
   });
+  await reconcileTeamAccess(botId);
+  return result;
 }
 /** Caller locks bot first. A durable user×bot reservation never derives identity from a chat or browser path. */
 export async function reserveTeamProfile(p: Principal, botId: string, mode: TeamMode) {
+  // Reopening retries durable cleanup before renewing any grant; a failed broker request cannot strand access forever.
+  await authorizeTeam(p, botId, mode, db, true);
+  await reconcileTeamAccess(botId);
   return db.transaction(async tx => {
     await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, botId)).for('update');
     await authorizeTeam(p, botId, mode, tx);
     const userId = mode === 'member' ? p.user.id : null;
     const where = and(eq(hermesTeamProfiles.botId, botId), eq(hermesTeamProfiles.mode, mode), userId ? eq(hermesTeamProfiles.userId, userId) : isNull(hermesTeamProfiles.userId));
     const [existing] = await tx.select().from(hermesTeamProfiles).where(where);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.state === 'revoked') {
+        const [reopened] = await tx.update(hermesTeamProfiles).set({ state: 'preparing', updatedAt: new Date() }).where(eq(hermesTeamProfiles.id, existing.id)).returning();
+        return reopened;
+      }
+      return existing;
+    }
     const [profile] = await tx.insert(hermesTeamProfiles).values({ botId, userId, mode, ownerKey: teamOwnerKey(p.user.id, botId, mode), requestId: randomUUID() }).returning();
     return profile;
   });
