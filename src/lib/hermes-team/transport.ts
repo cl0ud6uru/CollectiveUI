@@ -4,6 +4,7 @@ import type { Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { authorizeTeam } from './store';
 import type { TeamMode } from './types';
+import type { ResourceUpdateReceipt, TeamResourceUpdatePlan } from './updates';
 export type TeamResourceSelection = { skillPackages?: readonly string[]; includeRole?: boolean; documents?: readonly string[] };
 export type TeamPublishableInventory = { selection: TeamResourceSelection; available: boolean; reason?: string };
 /** Only this trusted server adapter constructs broker scopes and grant headers. */
@@ -28,7 +29,19 @@ export async function inventoryTeamResources(p: Principal, botId: string): Promi
   const { teamResourceSelectionSchema } = await import('./publication');
   return { selection: teamResourceSelectionSchema.parse(selection), available: true };
 }
-async function teamRequest(p: Principal, botId: string, mode: TeamMode, grantId: string, action: '/team/ensure' | '/team/capture' | '/team/inventory', body: unknown) {
+export async function inventoryTeamMemberResources(p: Principal, botId: string, trackedPackageIds: readonly string[]): Promise<unknown> {
+  const { grant } = await grantTeam(p, botId, 'member');
+  return teamRequest(p, botId, 'member', grant.grantId, '/team/member-inventory', { teamBotId: botId, mode: 'member', trackedPackageIds });
+}
+export async function applyTeamMemberResources(p: Principal, botId: string, operation: { operationId: string; plan: TeamResourceUpdatePlan; receipt: ResourceUpdateReceipt }): Promise<unknown> {
+  const { grant } = await grantTeam(p, botId, 'member');
+  return teamRequest(p, botId, 'member', grant.grantId, '/team/apply', { teamBotId: botId, mode: 'member', operationId: operation.operationId, plan: operation.plan, receipt: operation.receipt });
+}
+export async function abortTeamMemberResources(p: Principal, botId: string, operation: { operationId: string; plan: TeamResourceUpdatePlan }): Promise<unknown> {
+  const { grant } = await grantTeam(p, botId, 'member');
+  return teamRequest(p, botId, 'member', grant.grantId, '/team/abort-update', { teamBotId: botId, mode: 'member', operationId: operation.operationId, plan: operation.plan });
+}
+async function teamRequest(p: Principal, botId: string, mode: TeamMode, grantId: string, action: '/team/ensure' | '/team/capture' | '/team/inventory' | '/team/member-inventory' | '/team/apply' | '/team/abort-update', body: unknown) {
   let permissionDenied = false;
   const freshAuthorization = async () => {
     try { await authorizeTeam(p, botId, mode); }
