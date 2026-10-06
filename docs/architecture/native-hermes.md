@@ -18,7 +18,9 @@ The workspace shows the latest 200 native transcript rows, with bounded display 
 
 ## Setup
 
-Apply migrations `0029_remote_hermes_connections`, `0030_remote_hermes_sessions` and `0031_remote_hermes_reservations` using the normal deployment migration process. This implementation does not migrate the deployed database or publish/deploy the app.
+Apply migrations `0030_remote_hermes_connections`, `0031_remote_hermes_sessions` and `0032_remote_hermes_reservations` using the normal deployment migration process. This implementation does not migrate the deployed database or publish/deploy the app.
+
+These migrations follow the merged Live Activities migration `0029_live_activities`. Disposable databases that applied earlier, unmerged PR34 migration numbers must be rebuilt; a database that retained that preview schema needs a separate migration bridge before using this sequence.
 
 1. Enable personal remote Hermes in Admin → Settings; approve a private dashboard base if required.
 2. Sign in under Settings → Connected accounts → Remote Hermes.

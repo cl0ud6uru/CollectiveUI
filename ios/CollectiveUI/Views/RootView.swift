@@ -6,6 +6,18 @@ struct RootView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
+            #if DEBUG
+            if DemoMode.isEnabled && DemoMode.screen == "liveactivity" {
+                DemoActivityPreview()
+            } else { appContent }
+            #else
+            appContent
+            #endif
+            BannerOverlay()
+        }
+    }
+    private var appContent: some View {
+        Group {
             switch model.phase {
             case .setup:
                 ServerSetupView()
@@ -14,7 +26,6 @@ struct RootView: View {
             case .main:
                 MainView()
             }
-            BannerOverlay()
         }
     }
 }
