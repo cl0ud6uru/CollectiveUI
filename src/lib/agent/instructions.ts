@@ -70,7 +70,7 @@ export function buildInstructionSections(opts: InstructionOptions): InstructionS
       `## Workspace\n${opts.workspace}\n` +
         "- Paths are relative to /home/agent/workspace. Look around with workspace_list, workspace_read and workspace_grep before changing things.\n" +
         "- The user approves every command (workspace_bash) and file change, so batch related steps into one command and explain what it does.\n" +
-        "- Change files with workspace_edit (exact text) or workspace_write (whole files). There is no network: nothing can be downloaded or installed.",
+        "- Change files with workspace_edit (exact text) or workspace_write (whole files). File results include downloadUrl: share that exact URL, never a bare workspace path. Read command-created files to obtain their download links. There is no network: nothing can be downloaded or installed.",
     );
   }
   if (opts.memories.length) {

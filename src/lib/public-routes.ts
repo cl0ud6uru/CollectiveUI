@@ -20,6 +20,7 @@ const MOBILE_API = [
   /^\/api\/chat$/,
   /^\/api\/chat\/[A-Za-z0-9_-]+(?:\/(?:stream|stop))?$/,
   /^\/api\/files(?:\/[A-Za-z0-9]+)?$/,
+  /^\/api\/workspace\/files$/,
   /^\/api\/search$/,
 ];
 export const MOBILE_ONLY_PREFIX = "/api/mobile/v1/";

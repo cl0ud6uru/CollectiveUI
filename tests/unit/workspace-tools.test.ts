@@ -123,7 +123,7 @@ describe("workspace_read", () => {
     const r = await execute(ws, "workspace_read", { path: "a.txt", start_line: 7 });
     expect(r).toMatchObject({ ok: true, path: "a.txt", truncated: false });
     expect((r as { content: string }).content).toBe("    7  one\n    8  key=[redacted]");
-    expect(await execute(ws, "workspace_read", { path: "b.bin" })).toEqual({ ok: true, path: "b.bin", binary: true, size: 3 });
+    expect(await execute(ws, "workspace_read", { path: "b.bin" })).toEqual({ ok: true, path: "b.bin", binary: true, size: 3, downloadUrl: "/api/workspace/files?path=b.bin" });
     expect(await execute(ws, "workspace_read", { path: "missing" })).toMatchObject({ ok: false, reason: "not_found" });
   });
 
@@ -137,7 +137,7 @@ describe("workspace_read", () => {
 describe("workspace_write and workspace_edit", () => {
   it("writes raw content and reports whether the file was created", async () => {
     const { ws, store } = fakeWorkspace();
-    expect(await execute(ws, "workspace_write", { path: "n.txt", content: "héllo" })).toEqual({ ok: true, path: "n.txt", bytes: 6, created: true });
+    expect(await execute(ws, "workspace_write", { path: "n.txt", content: "héllo" })).toEqual({ ok: true, path: "n.txt", bytes: 6, created: true, downloadUrl: "/api/workspace/files?path=n.txt" });
     expect(new TextDecoder().decode(store.get("n.txt"))).toBe("héllo");
     expect(await execute(ws, "workspace_write", { path: "n.txt", content: "x" })).toMatchObject({ ok: true, created: false });
   });
@@ -153,8 +153,8 @@ describe("workspace_write and workspace_edit", () => {
     const { ws, store } = fakeWorkspace({ "a.ts": "let a = 1;\nlet a = 1;\nconst b = 2;\n" });
     expect(await execute(ws, "workspace_edit", { path: "a.ts", old_string: "nope", new_string: "x" })).toMatchObject({ ok: false, reason: "no_match" });
     expect(await execute(ws, "workspace_edit", { path: "a.ts", old_string: "let a = 1;", new_string: "x" })).toMatchObject({ ok: false, reason: "ambiguous" });
-    expect(await execute(ws, "workspace_edit", { path: "a.ts", old_string: "const b = 2;", new_string: "const b = '$&$1';" })).toEqual({ ok: true, path: "a.ts", replacements: 1 });
-    expect(await execute(ws, "workspace_edit", { path: "a.ts", old_string: "let a = 1;", new_string: "let a = 3;", replace_all: true })).toEqual({ ok: true, path: "a.ts", replacements: 2 });
+    expect(await execute(ws, "workspace_edit", { path: "a.ts", old_string: "const b = 2;", new_string: "const b = '$&$1';" })).toEqual({ ok: true, path: "a.ts", replacements: 1, downloadUrl: "/api/workspace/files?path=a.ts" });
+    expect(await execute(ws, "workspace_edit", { path: "a.ts", old_string: "let a = 1;", new_string: "let a = 3;", replace_all: true })).toEqual({ ok: true, path: "a.ts", replacements: 2, downloadUrl: "/api/workspace/files?path=a.ts" });
     expect(new TextDecoder().decode(store.get("a.ts"))).toBe("let a = 3;\nlet a = 3;\nconst b = '$&$1';\n");
   });
 
