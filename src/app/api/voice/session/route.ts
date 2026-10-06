@@ -17,7 +17,8 @@ function assertSameOrigin(req: Request) {
   const origin = req.headers.get("origin");
   if (!origin) return;
   try {
-    if (new URL(origin).origin !== new URL(req.url).origin) throw new HttpError(403, "Cross-origin request denied.");
+    const expectedOrigin = new URL(process.env.AUTH_URL || req.url).origin;
+    if (new URL(origin).origin !== expectedOrigin) throw new HttpError(403, "Cross-origin request denied.");
   } catch (err) {
     if (err instanceof HttpError) throw err;
     throw new HttpError(403, "Invalid request origin.");
