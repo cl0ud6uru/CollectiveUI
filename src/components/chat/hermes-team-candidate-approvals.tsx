@@ -42,12 +42,12 @@ function ActiveCandidateApprovals({ conversationId }: { conversationId: string }
     } catch (err) { setError(err instanceof Error ? err.message : "The approval was not confirmed."); }
     finally { held.current = false; setAnswering(null); }
   }
-  return <section aria-label="Team action approvals" className="mx-auto w-full max-w-3xl px-4">
-    {approvals.map(row => <div key={row.id} className="my-2 rounded-xl border border-border p-3 text-sm">
+  return <section aria-label="Team action approvals" className="mx-auto min-w-0 w-full max-w-3xl px-4">
+    {approvals.map(row => <div key={row.id} className="my-2 min-w-0 wrap-anywhere rounded-xl border border-border p-3 text-sm">
       <p className="font-medium">Allow {row.action}?</p>
       <p className="text-muted">Resources: {row.resourceIds.join(", ")}</p>
       <pre className="my-2 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(row.input, null, 2)}</pre>
-      <p className="mb-2 text-xs text-muted">Allow once resumes this exact action. Unanswered requests expire.</p>
+      <p className="mb-2 text-xs text-muted">Approve this action once. Unanswered requests expire. Approval does not confirm completion.</p>
       <div className="flex gap-2"><Button disabled={answering !== null} onClick={() => void answer(row.id, "approved")}>Allow once</Button>
         <Button variant="outline" disabled={answering !== null} onClick={() => void answer(row.id, "rejected")}>Deny</Button></div>
     </div>)}
