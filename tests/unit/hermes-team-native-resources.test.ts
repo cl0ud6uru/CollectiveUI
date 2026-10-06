@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createTeamResourceSnapshot, resourceSha256, type TeamResource } from '@/lib/hermes-team/resources';
-import { applyTeamResourcePlan, assertResourceUpdatesSettled, inventoryMemberResources, inventoryPublishableResourceSelection } from '@/lib/hermes-team/native-resources';
+import { abortUnstartedResourceUpdate, applyTeamResourcePlan, assertResourceUpdatesSettled, inventoryMemberResources, inventoryPublishableResourceSelection } from '@/lib/hermes-team/native-resources';
 import { beginResourceUpdate, planTeamResourceUpdate } from '@/lib/hermes-team/updates';
 let home: string, root: string, journals: string;
 const skill = (content: string, file = 'SKILL.md', name = 'support'): TeamResource => ({ path: `skills/${name}/${file}`, packageId: `skills/${name}`, kind: 'skill', encoding: 'utf8', content, size: Buffer.byteLength(content), sha256: resourceSha256(content) });
@@ -118,5 +118,39 @@ describe("Protected native receipt authority", () => {
     await applyTeamResourcePlan(root, 'forged-prefix', plan, { journalRoot: journals, receipt: forged });
     expect(await readFile(path.join(root, 'skills/second/SKILL.md'), 'utf8')).toBe('new second');
     expect(await readFile(path.join(root, 'skills/support/SKILL.md'), 'utf8')).toBe('v2');
+  });
+});
+
+
+describe("Strict protected journals and untouched abort", () => {
+  it("rejects incomplete complete receipts, wrong filename identity and invalid recovery names", async () => {
+    const plan = await nextPlan(); await applyTeamResourcePlan(root, 'journal-format', plan, { journalRoot: journals });
+    const saved = JSON.parse(await readFile(path.join(journals, 'journal-format.json'), 'utf8'));
+    for (const corrupt of [
+      { ...saved, receipt: { status: 'complete' } },
+      { ...saved, operationId: 'another-operation' },
+      { ...saved, receipt: { ...saved.receipt, completedGroups: [] } },
+      { ...saved, inFlight: { packageId: 'skills/support', stage: '../outside', backup: 'x' } },
+    ]) {
+      await writeFile(path.join(journals, 'journal-format.json'), JSON.stringify(corrupt));
+      await expect(assertResourceUpdatesSettled(journals)).rejects.toThrow();
+    }
+  });
+  it("allows safely aborting an attention state that never began native replacement", async () => {
+    const plan = await nextPlan(); await file('skills/support/SKILL.md', 'new member correction');
+    expect((await applyTeamResourcePlan(root, 'untouched', plan, { journalRoot: journals })).status).toBe('needs-attention');
+    await abortUnstartedResourceUpdate(root, 'untouched', plan, { journalRoot: journals });
+    await assertResourceUpdatesSettled(journals);
+    expect(await readFile(path.join(root, 'skills/support/SKILL.md'), 'utf8')).toBe('new member correction');
+    await expect(applyTeamResourcePlan(root, 'untouched', plan, { journalRoot: journals })).rejects.toThrow('aborted');
+  });
+  it("discards staged-only resources but rejects abort once the old package has been parked", async () => {
+    const plan = await nextPlan();
+    await expect(applyTeamResourcePlan(root, 'stage-abort', plan, { journalRoot: journals, checkpoint: async phase => { if (phase === 'staged') throw new Error('crash'); } })).rejects.toThrow();
+    await abortUnstartedResourceUpdate(root, 'stage-abort', plan, { journalRoot: journals }); await assertResourceUpdatesSettled(journals);
+    expect(await readFile(path.join(root, 'skills/support/SKILL.md'), 'utf8')).toBe('v1');
+    await expect(applyTeamResourcePlan(root, 'parked-abort', plan, { journalRoot: journals, checkpoint: async phase => { if (phase === 'parked') throw new Error('crash'); } })).rejects.toThrow();
+    await expect(abortUnstartedResourceUpdate(root, 'parked-abort', plan, { journalRoot: journals })).rejects.toThrow('begun');
+    await expect(assertResourceUpdatesSettled(journals)).rejects.toThrow('unfinished');
   });
 });

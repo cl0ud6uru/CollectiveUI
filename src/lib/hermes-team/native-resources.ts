@@ -134,17 +134,42 @@ async function groupResources(root: FileHandle, id: string, strict = true): Prom
     return createTeamResourceSnapshot([await fileResource(parent, name, id, id, budget())]).resources;
   });
 }
-interface NativeJournal { format: 1; operationId: string; planHash: string; receipt: ResourceUpdateReceipt; inFlight?: { packageId: string; stage: string; backup: string } }
+interface NativeJournal { format: 1; operationId: string; planHash: string; writes: { packageId: string; index: number; beforeHash: string; afterHash: string }[]; receipt: ResourceUpdateReceipt; aborted?: true; inFlight?: { packageId: string; stage: string; backup: string } }
 async function readJournal(fd: FileHandle, name: string): Promise<NativeJournal | null> {
   let file: FileHandle;
   try { file = await open(fdPath(fd, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
   try {
     const stat = await file.stat(); if (!stat.isFile() || stat.nlink !== 1 || stat.size > 128 * 1024) unsafe('Unsafe resource operation journal.');
-    const value = JSON.parse(await file.readFile('utf8')) as NativeJournal;
+    const buffer = Buffer.alloc(stat.size + 1); let length = 0;
+    while (length < buffer.length) { const read = await file.read(buffer, length, buffer.length - length, length); if (!read.bytesRead) break; length += read.bytesRead; }
+    if (length !== stat.size || fingerprint(stat) !== fingerprint(await file.stat())) unsafe('Resource journal changed during read.');
+    let value: NativeJournal;
+    try { value = JSON.parse(buffer.subarray(0, length).toString('utf8')) as NativeJournal; } catch { unsafe('Invalid resource operation journal.'); }
     if (value.format !== 1 || !/^[A-Za-z0-9_-]{1,128}$/.test(value.operationId) || !/^[a-f0-9]{64}$/.test(value.planHash) || !value.receipt) unsafe('Invalid resource operation journal.');
+    if (name !== value.operationId + '.json' || !Array.isArray(value.writes) || value.writes.length > 512
+      || Object.keys(value).some(key => !['format', 'operationId', 'planHash', 'writes', 'receipt', 'inFlight', 'aborted'].includes(key))) unsafe('Invalid resource journal identity.');
+    const writes = value.writes;
+    if (new Set(writes.map(item => item.packageId)).size !== writes.length || writes.some((item, index) => !item || !allowed(item.packageId)
+      || !Number.isSafeInteger(item.index) || item.index < 0 || item.index > 511 || (index > 0 && writes[index - 1].index >= item.index)
+      || !/^[a-f0-9]{64}$/.test(item.beforeHash) || !/^[a-f0-9]{64}$/.test(item.afterHash)
+      || Object.keys(item).some(key => !['packageId', 'index', 'beforeHash', 'afterHash'].includes(key)))) unsafe('Invalid resource journal write groups.');
+    const receipt = value.receipt;
+    if (receipt.format !== 1 || receipt.operationId !== value.operationId || receipt.planHash !== value.planHash
+      || !['applying', 'complete', 'needs-attention'].includes(receipt.status) || !Array.isArray(receipt.completedGroups)
+      || receipt.completedGroups.length > writes.length || receipt.completedGroups.some((id, index) => writes[index]?.packageId !== id)
+      || (receipt.status === 'complete' && receipt.completedGroups.length !== writes.length)
+      || (receipt.status === 'needs-attention' ? receipt.blockedGroup !== writes[receipt.completedGroups.length]?.packageId : receipt.blockedGroup !== undefined)
+      || Object.keys(receipt).some(key => !['format', 'operationId', 'planHash', 'status', 'completedGroups', 'blockedGroup'].includes(key))) unsafe('Invalid protected native receipt.');
+    if (value.aborted !== undefined && (value.aborted !== true || receipt.completedGroups.length !== 0 || value.inFlight)) unsafe('Invalid aborted resource update.');
     if (value.inFlight && (!allowed(value.inFlight.packageId) || !new RegExp(`^\\.collective-team-stage-${value.operationId}-[0-9]+$`).test(value.inFlight.stage)
       || !new RegExp(`^\\.collective-team-backup-${value.operationId}-[0-9]+$`).test(value.inFlight.backup))) unsafe('Invalid resource staging journal.');
+    if (value.inFlight) {
+      const pending = writes[receipt.completedGroups.length];
+      if (!pending || value.inFlight.packageId !== pending.packageId || value.inFlight.stage !== `.collective-team-stage-${value.operationId}-${pending.index}`
+        || value.inFlight.backup !== `.collective-team-backup-${value.operationId}-${pending.index}` || receipt.status === 'complete'
+        || Object.keys(value.inFlight).some(key => !['packageId', 'stage', 'backup'].includes(key))) unsafe('Invalid resource journal recovery group.');
+    }
     return value;
   } finally { await file.close(); }
 }
@@ -164,7 +189,7 @@ export async function assertResourceUpdatesSettled(journalRoot: string): Promise
   try { for (const name of await entries(root, budget())) {
     if (!/^[A-Za-z0-9_-]{1,128}\.json$/.test(name)) continue;
     const journal = await readJournal(root, name);
-    if (journal && (journal.inFlight || journal.receipt.status !== 'complete')) unsafe('A resource update is unfinished. Keep the native runtime stopped until it is recovered.');
+    if (journal && !journal.aborted && (journal.inFlight || journal.receipt.status !== 'complete')) unsafe('A resource update is unfinished. Keep the native runtime stopped until it is recovered.');
   } } finally { await root.close(); }
 }
 async function removeStage(root: FileHandle, name: string): Promise<void> {
@@ -210,12 +235,15 @@ export async function applyTeamResourcePlan(profileRoot: string, operationId: st
     for (const name of await entries(journals, budget())) {
       if (name === operationId + '.json' || !/^[A-Za-z0-9_-]{1,128}\.json$/.test(name)) continue;
       const other = await readJournal(journals, name);
-      if (other && (other.inFlight || other.receipt.status !== 'complete')) unsafe('Another resource update must be recovered first.');
+      if (other && !other.aborted && (other.inFlight || other.receipt.status !== 'complete')) unsafe('Another resource update must be recovered first.');
     }
     let journal = await readJournal(journals, operationId + '.json');
     if (journal && (journal.operationId !== operationId || journal.planHash !== plan.planHash)) unsafe('Resource operation changed after it began.');
+    if (journal?.aborted) unsafe('This resource update was safely aborted. Start a new request.');
+    const writes = plan.actions.flatMap((action, index) => action.action === 'install' || action.action === 'remove' ? [{ packageId: action.packageId, index, beforeHash: action.beforeHash, afterHash: action.afterHash }] : []);
+    if (journal && JSON.stringify(journal.writes) !== JSON.stringify(writes)) unsafe('Resource journal does not match its immutable plan.');
     const initial = beginResourceUpdate(operationId, plan, journal?.receipt ?? freshReceipt);
-    journal ??= { format: 1, operationId, planHash: plan.planHash, receipt: initial };
+    journal ??= { format: 1, operationId, planHash: plan.planHash, writes, receipt: initial };
     await saveJournal(journals, journal);
     for (;;) {
       if (journal.inFlight) {
@@ -284,4 +312,30 @@ async function backupGroupResources(root: FileHandle, packageId: string, name: s
     try { return createTeamResourceSnapshot(await walkPackage(fd, packageId, packageId, budget(), true), { requireCompleteSkills: false }).resources; } finally { await fd.close(); }
   }
   return createTeamResourceSnapshot([await fileResource(root, name, packageId, packageId, budget())]).resources;
+}
+
+
+/** Only an untouched attempt can be discarded; partial/applied updates retain their recovery fence. */
+export async function abortUnstartedResourceUpdate(profileRoot: string, operationId: string, plan: TeamResourceUpdatePlan, options: { journalRoot: string }): Promise<{ aborted: true }> {
+  beginResourceUpdate(operationId, plan);
+  if (active.has(profileRoot)) unsafe('Another resource update is active.');
+  if (!path.isAbsolute(options.journalRoot) || options.journalRoot === profileRoot || options.journalRoot.startsWith(profileRoot + path.sep)) unsafe('Resource journals must be outside the writable native profile.');
+  if (await realpath(path.dirname(options.journalRoot)) !== path.dirname(options.journalRoot)) unsafe('Journal parent must be canonical protected storage.');
+  const root = await rootHandle(profileRoot); let journals: FileHandle;
+  try { journals = await rootHandle(options.journalRoot); }
+  catch (error) { await root.close(); if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { aborted: true }; throw error; }
+  try {
+    const journal = await readJournal(journals, operationId + '.json');
+    if (!journal) return { aborted: true };
+    if (journal.planHash !== plan.planHash || journal.receipt.completedGroups.length) unsafe('An applied resource update must be recovered, not discarded.');
+    if (journal.aborted) return { aborted: true };
+    if (journal.inFlight) {
+      const flight = journal.inFlight, action = plan.actions.find(candidate => candidate.packageId === flight.packageId); if (!action) unsafe();
+      const backupExists = await lstat(fdPath(root, flight.backup)).then(() => true, error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; });
+      if (backupExists || resourceGroupHash(await groupResources(root, action.packageId, false)) !== action.beforeHash) unsafe('A native replacement has begun. Recover it with the same request.');
+      await removeStage(root, flight.stage); delete journal.inFlight;
+    }
+    journal.aborted = true; await saveJournal(journals, journal);
+    return { aborted: true };
+  } finally { await root.close(); await journals.close(); }
 }
