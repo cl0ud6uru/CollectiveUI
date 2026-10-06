@@ -45,7 +45,7 @@ function LearningCard({ row }: { row: LearningView }) {
       <p className="text-muted"><strong>Evidence: </strong>{row.verification}</p>
       {row.canManage && <div className="flex flex-wrap gap-2">
         {row.status === "pending" && <Button size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, status: "active" })}>Approve</Button>}
-        <Button variant="outline" size="sm" disabled={pending} onClick={() => { setContent(row.content); setEditing(true); }}>Edit lesson</Button>
+        <Button variant="outline" size="sm" disabled={pending} onClick={() => { setContent(row.content); setEditing(true); }}>Edit</Button>
         <Button variant="outline" size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, status: row.status === "archived" ? "active" : "archived" })}>{row.status === "archived" ? "Restore" : row.status === "pending" ? "Reject" : "Archive"}</Button>
         <Button variant="ghost" size="sm" disabled={pending} onClick={() => start(async () => {
           try { setHistory(await getLearningHistory(row.id)); }
