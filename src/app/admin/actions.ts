@@ -1,5 +1,7 @@
 "use server";
 
+import { savePortalGroup, type GroupInput } from "@/lib/admin/groups";
+
 import { nativeSearchSettingsSchema, NATIVE_SEARCH_DEFAULTS } from "@/lib/native-search-policy";
 
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
@@ -9,7 +11,7 @@ import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db";
-import { aiApps, appAccess, bots, groupMappings, groups, mcpServerAccess, mcpServers, providerConnections, auditLog } from "@/db/schema";
+import { aiApps, appAccess, bots, groups, mcpServerAccess, mcpServers, providerConnections, auditLog } from "@/db/schema";
 import { getAccessibleModel, HttpError } from "@/lib/authz";
 import { assertDefaultBot } from "@/lib/chat/targets";
 import { saveLoginPet as storeLoginPet } from "@/lib/branding/login-pet";
@@ -207,32 +209,12 @@ export async function testAppConnection(raw: ConnectionTestInput) {
 // Groups
 // ---------------------------------------------------------------------------
 
-const GroupInput = z.object({
-  id: z.string().optional(),
-  name: z.string().trim().min(1).max(100),
-  description: z.string().max(500).nullable().optional(),
-  isAdmin: z.boolean(),
-  canCreateBots: z.boolean(),
-  mappings: z
-    .array(z.object({ source: z.enum(["entra", "ldap"]), externalId: z.string().trim().min(1).max(500), displayName: z.string().max(200).nullable().optional() }))
-    .max(100),
-});
-export type GroupInput = z.infer<typeof GroupInput>;
+export type { GroupInput } from "@/lib/admin/groups";
 
 export async function saveGroup(raw: GroupInput) {
   const p = await requireAdmin();
-  const input = GroupInput.parse(raw);
-  let groupId = input.id;
-  const values = { name: input.name, description: input.description, isAdmin: input.isAdmin, canCreateBots: input.canCreateBots };
-  if (groupId) await db.update(groups).set(values).where(eq(groups.id, groupId));
-  else [{ id: groupId }] = await db.insert(groups).values(values).returning({ id: groups.id });
-  await db.delete(groupMappings).where(eq(groupMappings.groupId, groupId!));
-  const unique = new Map(input.mappings.map((m) => [`${m.source}:${m.externalId.toLowerCase()}`, m]));
-  if (unique.size)
-    await db.insert(groupMappings).values(
-      [...unique.values()].map((m) => ({ groupId: groupId!, source: m.source, externalId: m.externalId.toLowerCase(), displayName: m.displayName ?? null })),
-    );
-  await audit(p.user.id, input.id ? "group.update" : "group.create", groupId, { name: input.name, isAdmin: input.isAdmin, mappings: unique.size });
+  const groupId = await savePortalGroup(raw);
+  await audit(p.user.id, raw.id ? "group.update" : "group.create", groupId, { name: raw.name, isAdmin: raw.isAdmin, mappings: raw.mappings.length, directMembers: raw.memberIds?.length });
   done();
 }
 

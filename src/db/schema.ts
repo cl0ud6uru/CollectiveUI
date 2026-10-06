@@ -334,6 +334,12 @@ export const groupMappings = pgTable(
   (t) => [primaryKey({ columns: [t.groupId, t.source, t.externalId] })],
 );
 
+/** Explicit portal membership is independent of synchronized directory groups. */
+export const groupMembers = pgTable("group_members", {
+  groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+}, t => [primaryKey({ columns: [t.groupId, t.userId] }), index("group_members_user_idx").on(t.userId)]);
+
 // ---------------------------------------------------------------------------
 // AI apps (OpenAI-compatible endpoints)
 // ---------------------------------------------------------------------------
@@ -589,6 +595,12 @@ export const botAccess = pgTable(
   },
   (t) => [primaryKey({ columns: [t.botId, t.groupId] })],
 );
+
+/** Individually selected bot users receive audience access, never edit rights. */
+export const botUserAccess = pgTable("bot_user_access", {
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+}, t => [primaryKey({ columns: [t.botId, t.userId] }), index("bot_user_access_user_idx").on(t.userId)]);
 
 /** "smart": run without asking only when a trusted MCP server marks the tool read-only; otherwise ask. */
 export type ApprovalMode = "auto" | "ask" | "smart";

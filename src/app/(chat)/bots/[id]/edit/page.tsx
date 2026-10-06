@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { BotBuilder } from "@/components/bots/bot-builder";
 import { PageFrame } from "@/components/page-frame";
 import { db } from "@/db";
-import { botAccess, botDelegates, botTools } from "@/db/schema";
+import { botAccess, botUserAccess, botDelegates, botTools } from "@/db/schema";
 import { getEditableBot } from "@/lib/authz";
 import { loadBuilderData } from "@/lib/bots/builder-data";
 import { botOption } from "@/lib/chat/targets";
@@ -13,11 +13,12 @@ export default async function EditBotPage(props: PageProps<"/bots/[id]/edit">) {
   const p = await requirePagePrincipal();
   const { id } = await props.params;
   const bot = await getEditableBot(p, id);
-  const [data, tools, delegates, access] = await Promise.all([
+  const [data, tools, delegates, access, userAccess] = await Promise.all([
     loadBuilderData(p, bot.id),
     db.select().from(botTools).where(eq(botTools.botId, bot.id)),
     db.select().from(botDelegates).where(eq(botDelegates.botId, bot.id)),
     db.select().from(botAccess).where(eq(botAccess.botId, bot.id)),
+    db.select().from(botUserAccess).where(eq(botUserAccess.botId, bot.id)),
   ]);
   return (
     <PageFrame title={`Edit ${bot.name}`} wide>
@@ -38,6 +39,7 @@ export default async function EditBotPage(props: PageProps<"/bots/[id]/edit">) {
             appId: bot.appId ?? "",
             visibility: bot.visibility,
             groupIds: access.map((a) => a.groupId),
+            userIds: userAccess.map(a => a.userId),
             maxSteps: bot.maxSteps,
             starters: bot.starters,
             tools: tools.map((t) => ({ key: t.toolKey, approval: t.approval, config: t.config })),

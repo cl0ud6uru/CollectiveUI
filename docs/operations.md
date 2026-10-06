@@ -99,6 +99,9 @@ Enter an **existing local administrator's** username/email and a new hidden pass
 - Search filters are escaped against LDAP injection, and empty passwords (which some servers treat as anonymous binds) are rejected.
 - For passwordless company sign-in, apply migration **0034_ldap_passkeys** and enroll a passkey in Settings → Security. The read-only service account must read `objectGUID`, `userAccountControl`, `msDS-User-Account-Control-Computed`, `accountExpires`, identity and group attributes. Password-only LDAP login is blocked after enrollment; fallback requires company password plus a recovery code. See [directory checks and recovery](security/local-mfa.md#ldap-passkeys-2026-10-06).
 - Map portal groups to group **DNs**. They are compared in lower case, and the admin UI suggests DNs it has already seen at sign-in.
+- In **Admin → Groups**, select **Individual users** to add existing portal accounts directly. Direct membership survives directory synchronization and grants the same connection, bot-creation and admin permissions as mapped directory membership. Removing a direct member does not remove membership inherited through a directory group.
+- In the bot editor, **Who can use it → Specific groups or users** supports groups, individual accounts, or both. These grants permit bot use, not bot editing or extra connector access. Service bots must be published again after their audience changes.
+- Apply migration **0035_direct_user_permissions** before starting the updated web/worker; existing group mappings and bot audiences are preserved.
 
 You can enable both options at once. Hybrid users are matched by UPN, so either sign-in method reaches the same account. Set `AUTH_ENTRA_ENABLED=false` or `LDAP_ENABLED=false` to turn one off.
 
