@@ -1021,13 +1021,11 @@ def main():
             if len(raw.encode('utf-8')) > 131072 or not raw.endswith('\n'):
                 raise ValueError('Invalid bounded candidate bootstrap')
             payload = json.loads(raw)
-            install_candidate_bootstrap(payload)
+            _candidate_agent = install_candidate_bootstrap(payload)
         from tui_gateway import server as _collective_server
         if candidate:
             # Fixed app-owned hook; captures only the immutable trusted bootstrap snapshot.
-            _candidate_agent = _collective_server.AIAgent
-            if hasattr(_candidate_agent, '_collective_install_learning_rpc'):
-                _candidate_agent._collective_install_learning_rpc(_collective_server)
+            _candidate_agent._collective_install_learning_rpc(_collective_server)
 
         # The worker proof covers in-process native threads only. Refuse unsupported
         # isolation at startup instead of admitting work that cannot later settle.
