@@ -54,3 +54,4 @@ jobs:
           python tests/fixtures/docker-hermes-settings.py
           python tests/fixtures/docker-hermes-codex.py
           python tests/fixtures/hermes-native-queue-contract.py
+          python tests/fixtures/docker-hermes-network.py
