@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { HermesTeamControls, type HermesTeamMode, type HermesTeamView } from "./hermes-team-controls";
 import type { HermesTeamUpdateInput, HermesTeamResolveInput, HermesTeamUpdateReview, HermesTeamUpdateResult } from "./hermes-team-updates";
+import type { HermesTeamRevision } from "./hermes-team-restore";
 import type { HermesTeamRolloutStatus } from "./hermes-team-rollout";
 import type { HermesTeamCaptureInventory, HermesTeamCaptureSelection, HermesTeamPublishInput, HermesTeamReview } from "./hermes-team-publication";
 
@@ -70,6 +71,18 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
     if (!response.ok) throw Object.assign(new Error(data.error ?? "Could not confirm the current Team Bot version."), { status: response.status });
     return publicationRequest("capture", { expectedRevision: data.publishedRevision, selection }) as Promise<HermesTeamReview>;
   }
+  async function loadRevisions(): Promise<HermesTeamRevision[]> {
+    const result = await publicationRequest("revisions");
+    if (!Array.isArray(result.revisions)) throw new Error("The server did not confirm the published version list. Try again.");
+    return result.revisions;
+  }
+  async function captureRollback(targetRevision: number): Promise<HermesTeamReview> {
+    const query = started ? `?conversationId=${encodeURIComponent(conversationId)}` : "";
+    const response = await fetch(`${base}${query}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw Object.assign(new Error(data.error ?? "Could not confirm the current Team Bot version."), { status: response.status });
+    return publicationRequest("rollback/capture", { targetRevision, expectedRevision: data.publishedRevision }) as Promise<HermesTeamReview>;
+  }
   async function publish(input: HermesTeamPublishInput): Promise<{ revision: number }> {
     const result = await publicationRequest("publish", input);
     setAttempt(value => value + 1);
@@ -109,7 +122,7 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
   }, [base, scope, busy, view?.enabled, view?.mode, view?.state, view?.installedRevision, view?.publishedRevision]);
   if (view) return <>
     <HermesTeamControls view={view} busy={busy} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
-      onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>}
+      onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>} onLoadRevisions={loadRevisions} onCaptureRollback={captureRollback}
       onLoadUpdates={loadUpdates} onApplyUpdate={input => update("updates", input)} onResolveUpdate={input => update("updates/resolve", input)}
       onRollbackUpdate={input => update("updates/rollback", input)} onCancelUpdate={requestId => update("updates/cancel", { requestId })} />
     {updateError?.scope === scope && view.mode === "member" && <p role="alert" className="mx-auto w-full max-w-3xl px-4 pb-2 text-xs text-danger">{updateError.message}</p>}

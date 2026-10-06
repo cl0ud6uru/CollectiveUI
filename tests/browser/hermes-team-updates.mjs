@@ -40,6 +40,7 @@ const server=createServer(async(req,res)=>{
    if(previewFailure){res.statusCode=503;res.end(JSON.stringify({error:'Native member updates are unavailable on this connection.'}));return;}
    res.end(JSON.stringify(preview(url.searchParams.has('targetRevision')?Number(url.searchParams.get('targetRevision')):undefined)));return;
   }
+  if(url.pathname.endsWith('/revisions')){res.end(JSON.stringify({revisions:[]}));return;}
   if(url.pathname.endsWith('/publish')){res.end(JSON.stringify({publishedRevision:view.publishedRevision,nativeUpdatesSupported:false,profileCount:4,states:{ready:2,connection_needed:1,needs_attention:1},conflictCount:3,conflictedProfileCount:1,updatesNeeded:2}));return;}
   if(url.pathname.endsWith('/capture')){res.end(JSON.stringify({available:false,reason:'Native capture is unavailable.',selection:{skillPackages:[],includeRole:true,documents:[]}}));return;}
   res.end(JSON.stringify(view));return;

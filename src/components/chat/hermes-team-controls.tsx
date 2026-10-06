@@ -8,6 +8,7 @@ import { Field, Textarea } from "@/components/ui/input";
 import { publicationPackageFiles, publicationResourceKind, publicationResourceName, type HermesTeamCaptureInventory, type HermesTeamCaptureSelection, type HermesTeamCapturedResource, type HermesTeamReview, type HermesTeamPublishInput } from "./hermes-team-publication";
 import { HermesTeamMemberUpdates, type HermesTeamUpdateActions } from "./hermes-team-updates";
 import { HermesTeamRolloutSummary, type HermesTeamRolloutStatus } from "./hermes-team-rollout";
+import { HermesTeamRestorePicker, type HermesTeamRevision } from "./hermes-team-restore";
 export type { HermesTeamReview, HermesTeamPublishInput } from "./hermes-team-publication";
 
 export type HermesTeamMode = "member" | "admin";
@@ -32,7 +33,7 @@ const stateLabels: Record<HermesTeamView["state"], string> = {
 const changeLabels = { added: "Added", changed: "Changed", removed: "Removal" };
 
 /** Every callback uses server-derived bot/conversation identity; mode changes navigate to a new context. */
-export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCapture, onCapture, onPublish, onLoadRollout, ...updateActions }: {
+export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCapture, onCapture, onPublish, onLoadRollout, onLoadRevisions, onCaptureRollback, ...updateActions }: {
   view: HermesTeamView;
   busy?: boolean;
   onOpenMode?: (mode: HermesTeamMode) => Promise<void>;
@@ -40,6 +41,8 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
   onCapture?: (selection: HermesTeamCaptureSelection) => Promise<HermesTeamReview>;
   onPublish?: (input: HermesTeamPublishInput) => Promise<{ revision: number }>;
   onLoadRollout?: () => Promise<HermesTeamRolloutStatus>;
+  onLoadRevisions?: () => Promise<HermesTeamRevision[]>;
+  onCaptureRollback?: (targetRevision: number) => Promise<HermesTeamReview>;
 } & HermesTeamUpdateActions) {
   const id = useId();
   const [operation, setOperation] = useState<string | null>(null);
@@ -57,6 +60,9 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
   const [attempted, setAttempted] = useState(false);
   const [rollout, setRollout] = useState<HermesTeamRolloutStatus | null>(null);
   const [rolloutError, setRolloutError] = useState("");
+  const [revisions, setRevisions] = useState<HermesTeamRevision[]>([]);
+  const [revisionError, setRevisionError] = useState("");
+  const [restoreTarget, setRestoreTarget] = useState<number | null>(null);
   const [rolloutOpen, setRolloutOpen] = useState(false);
 
   async function perform(name: string, action: () => Promise<void>) {
@@ -71,19 +77,24 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
     }
     finally { operationRef.current = false; setOperation(null); }
   }
-  function acceptReview(next: HermesTeamReview) {
+  function acceptReview(next: HermesTeamReview, targetRevision: number | null = null) {
+    setRestoreTarget(targetRevision);
     setReview(next); setSelected([]); setReleaseNote(""); setAttempted(false); setStaleReview(false); publishAttempt.current = null;
     setReviewOpen(true);
   }
   async function prepareCapture() {
     if (!onPrepareCapture || !onCapture || !view.canMaintain || view.mode !== "admin") return;
     await perform("capture", async () => {
-      const [prepared, summary] = await Promise.allSettled([onPrepareCapture(), onLoadRollout?.()]);
+      const [prepared, summary, history] = await Promise.allSettled([onPrepareCapture(), onLoadRollout?.(), onLoadRevisions?.()]);
+      if (history.status === "rejected" && history.reason?.status === 403) throw history.reason;
+      if (history.status === "fulfilled") { setRevisions(history.value ?? []); setRevisionError(""); }
+      else setRevisionError(history.reason instanceof Error ? history.reason.message : "Published versions could not be loaded.");
       if (summary.status === "fulfilled") { setRollout(summary.value ?? null); setRolloutError(""); }
       else setRolloutError(summary.reason instanceof Error ? summary.reason.message : "Rollout status could not be loaded.");
-      if (prepared.status === "rejected") throw prepared.reason;
-      const next = prepared.value;
-      setInventory(next); setDocuments([]); setReview(null); setStaleReview(false); setReviewOpen(true);
+      // Shared immutable history can still be reviewed when native working-profile capture is unavailable.
+      if (prepared.status === "rejected" && (prepared.reason?.status === 403 || history.status !== "fulfilled" || !history.value?.some(revision => revision.revision < view.publishedRevision))) throw prepared.reason;
+      const next: HermesTeamCaptureInventory = prepared.status === "fulfilled" ? prepared.value : { available: false, reason: prepared.reason instanceof Error ? prepared.reason.message : "Native resource review is unavailable.", selection: { skillPackages: [], includeRole: false, documents: [] } };
+      setInventory(next); setDocuments([]); setReview(null); setRestoreTarget(null); setStaleReview(false); setAttempted(false); publishAttempt.current = null; setSelected([]); setReleaseNote(""); setReviewOpen(true);
       if (next.available && !next.selection.documents.length) acceptReview(await onCapture({ ...next.selection, documents: [] }));
     });
   }
@@ -92,6 +103,10 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
     await perform("capture", async () => {
       acceptReview(await onCapture({ ...inventory.selection, documents }));
     });
+  }
+  async function captureRollback(targetRevision: number) {
+    if (!onCaptureRollback || !view.canMaintain || view.mode !== "admin" || attempted && !staleReview) return;
+    await perform("restore", async () => acceptReview(await onCaptureRollback(targetRevision), targetRevision));
   }
   async function publish() {
     if (!review || !onPublish || !selected.length || !releaseNote.trim() || !view.canMaintain || view.mode !== "admin") return;
@@ -150,6 +165,8 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
       <DialogContent title="Publish changes" description="Choose exactly what the team will receive from this snapshot." className="max-w-2xl" hideClose={operation === "publish"}>
         {rollout && <HermesTeamRolloutSummary status={rollout} />}
         {rolloutError && <p role="alert" className="text-xs text-danger">{rolloutError}</p>}
+        {revisionError && <p className="text-xs text-muted">{revisionError}</p>}
+        {onCaptureRollback && <HermesTeamRestorePicker key={`${view.publishedRevision}:${review?.snapshotId ?? "draft"}`} revisions={revisions} publishedRevision={view.publishedRevision} disabled={locked || attempted} onReview={targetRevision => void captureRollback(targetRevision)} />}
         {!review && inventory && <div className="space-y-4">
           {!inventory.available ? <><p role="status" className="text-sm">{inventory.reason ?? "Resource review is unavailable for this bot."}</p><p className="text-xs text-muted">Ask an admin to check native resource review, then try again.</p></> : <>
             <p className="text-sm">Review the working bot’s skills{inventory.selection.includeRole ? " and role instructions" : ""}. Select any shared documents to include.</p>
@@ -160,6 +177,7 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
           <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={locked} onClick={() => { setReviewOpen(false); setError(""); }}>Cancel</Button>{inventory.available ? <Button disabled={locked} onClick={() => void capture()}>{operation === "capture" && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}Capture changes</Button> : <Button disabled={locked} onClick={() => void prepareCapture()}>Review again</Button>}</div>
         </div>}
         {review && <div className="space-y-4">
+          {restoreTarget !== null && <p className="text-sm">Reviewing shared resources from team version {restoreTarget}. Publish only the changes you select as a new team version.</p>}
           <p className="text-xs text-muted">Based on team version {review.expectedRevision}. This captured snapshot stays fixed; later learning belongs to the next draft.</p>
           <p className="text-xs text-muted">Credentials, personal memory, conversations, browser sessions, logs and caches are excluded.</p>
           <p className="text-xs text-muted">Review expires {new Date(review.expiresAt).toLocaleString()}. Skills include their scripts and assets; publication does not run them.</p>
@@ -173,7 +191,7 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
               <div className="mt-2 space-y-2">{publicationPackageFiles(resource).map(file => <PackageFilePreview key={file.path} {...file} />)}</div>
               {resource.change === "removed" && <p className="mt-2 text-xs text-muted">Removes only an unchanged team-owned copy. Members keep their own changes.</p>}
             </div>)}
-          </fieldset> : <p className="text-sm">No publishable changes yet. Teach the bot in Admin mode, then review again.</p>}
+          </fieldset> : <p className="text-sm">{restoreTarget === null ? "No publishable changes yet. Teach the bot in Admin mode, then review again." : "This shared version has no differences to publish."}</p>}
           <Field label="Release note" hint="A short explanation for the people using this bot.">
             <Textarea aria-label="Team release note" rows={2} maxLength={500} value={releaseNote} disabled={locked || attempted} onChange={(event) => setReleaseNote(event.target.value)} placeholder="What changed and why?" />
           </Field>
@@ -181,7 +199,7 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
           {error && <p role="alert" className="text-sm text-danger">{error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
             <Button variant="outline" disabled={locked} onClick={() => { setReviewOpen(false); setError(""); }}>Cancel</Button>
-            {staleReview ? <Button disabled={locked} onClick={() => void prepareCapture()}>Review again</Button> : <Button disabled={locked || !selected.length || !releaseNote.trim()} onClick={() => void publish()}>{operation === "publish" && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}{attempted && error ? "Retry publish" : `Publish ${selected.length} ${selected.length === 1 ? "item" : "items"}`}</Button>}
+            {staleReview ? <Button disabled={locked} onClick={() => void (restoreTarget === null ? prepareCapture() : captureRollback(restoreTarget))}>Review again</Button> : <Button disabled={locked || !selected.length || !releaseNote.trim()} onClick={() => void publish()}>{operation === "publish" && <Loader2 aria-hidden className="h-4 w-4 animate-spin" />}{attempted && error ? "Retry publish" : `Publish ${selected.length} ${selected.length === 1 ? "item" : "items"}`}</Button>}
           </div>
         </div>}
       </DialogContent>
