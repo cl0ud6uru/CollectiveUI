@@ -77,6 +77,47 @@ export const users = pgTable("users", {
 }, (t) => [uniqueIndex("users_realm_upn_idx").on(t.identityRealm, t.upn),
   check("users_identity_realm_check", sql`(${t.identityRealm} = 'local' and ${t.authSource} = 'local') or (${t.identityRealm} = 'directory' and ${t.authSource} in ('entra', 'ldap'))`)]);
 
+/** Personal remote dashboard sessions; no passwords or dashboard secrets in user projections. */
+export const remoteHermesConnections = pgTable('remote_hermes_connections', {
+  id: id(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  baseUrl: text('base_url').notNull(),
+  authMode: text('auth_mode').$type<'password' | 'sessionToken'>().notNull(),
+  secretEnc: text('secret_enc').notNull(),
+  version: text('version'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, t => [uniqueIndex('remote_hermes_owner_url_idx').on(t.userId, t.baseUrl),
+  check('remote_hermes_auth_mode_check', sql`${t.authMode} in ('password', 'sessionToken')`)]);
+
+export const remoteHermesSessions = pgTable('remote_hermes_sessions', {
+  id: id(),
+  connectionId: text('connection_id').notNull().references(() => remoteHermesConnections.id, { onDelete: 'cascade' }),
+  profile: text('profile').notNull(),
+  storedId: text('stored_id').notNull(),
+  runtimeId: text('runtime_id'),
+  title: text('title').notNull().default('New Hermes chat'),
+  status: text('status').$type<'idle' | 'admitting' | 'running' | 'waiting' | 'uncertain'>().notNull().default('idle'),
+  admissionAt: timestamp('admission_at', { withTimezone: true }),
+  admissionRequestId: text('admission_request_id'),
+  revision: integer('revision').notNull().default(0),
+  queueRequestId: text('queue_request_id'),
+  queueStatus: text('queue_status').$type<'admitting' | 'queued' | 'uncertain'>(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('remote_hermes_session_native_idx').on(t.connectionId, t.profile, t.storedId),
+  check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`),
+  check('remote_hermes_queue_check', sql`(${t.queueRequestId} is null) = (${t.queueStatus} is null) and (${t.queueStatus} is null or ${t.queueStatus} in ('admitting','queued','uncertain'))`)]);
+
+/** Write-ahead receipts prevent an HTTP retry from submitting the same prompt twice. No prompt text is stored. */
+export const remoteHermesTurns = pgTable('remote_hermes_turns', {
+  id: id(),
+  sessionId: text('session_id').notNull().references(() => remoteHermesSessions.id, { onDelete: 'cascade' }),
+  requestId: text('request_id').notNull(),
+  digest: text('digest').notNull(),
+  createdAt: createdAt(),
+}, t => [uniqueIndex('remote_hermes_turn_receipt_idx').on(t.sessionId, t.requestId)]);
+
 /** Application permission only; absence is denial. Runtime data remains in broker-owned storage. */
 export const dockerHermesEnrollments = pgTable("docker_hermes_enrollments", {
   userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),

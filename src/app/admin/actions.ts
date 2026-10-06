@@ -3,6 +3,7 @@
 import { nativeSearchSettingsSchema, NATIVE_SEARCH_DEFAULTS } from "@/lib/native-search-policy";
 
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
+import { remoteHermesSettingsSchema } from "@/lib/remote-hermes/policy";
 
 import { eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
@@ -43,6 +44,7 @@ import {
   type BrandingSettings,
   type ChatGPTSettings,
   type LimitsSettings,
+  type RemoteHermesSettings,
   type SandboxSettings,
   type ToolSettings,
 } from "@/lib/settings";
@@ -494,6 +496,14 @@ export async function saveLimits(value: LimitsSettings) {
   const v = z.object({ uploadMaxMb: z.number().int().min(1).max(500), maxAttachmentsPerMessage: z.number().int().min(1).max(50) }).parse(value);
   await setSetting("limits", v);
   await audit(p.user.id, "settings.limits", undefined, v);
+  done();
+}
+
+export async function saveRemoteHermesSettings(value: RemoteHermesSettings) {
+  const p = await requireAdmin();
+  const next = remoteHermesSettingsSchema.parse(value);
+  await setSetting('remoteHermes', next);
+  await audit(p.user.id, 'settings.remoteHermes', undefined, next);
   done();
 }
 

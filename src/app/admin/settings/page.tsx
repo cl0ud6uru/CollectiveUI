@@ -1,4 +1,5 @@
 import { CoordinatorForm } from "@/components/admin/coordinator-form";
+import { RemoteHermesSettingsCard } from "@/components/admin/remote-hermes-settings";
 import { logoUrl } from "@/lib/branding/store";
 import { and, count, eq, ne, or, isNull } from "drizzle-orm";
 import { ChatGPTSettingsCard } from "@/components/admin/chatgpt-settings";
@@ -12,6 +13,7 @@ import { getSetting } from "@/lib/settings";
 
 export default async function AdminSettingsPage() {
   const p = await requireAdminPage();
+  const remoteHermes = await getSetting('remoteHermes');
   const [branding, limits, apps, chatgpt, groupRows, [connections], logo, loginPet, petCatalog, sharedBots, coordinator, coordinatorBots, coordinatorModels] = await Promise.all([
     getSetting("branding"),
     getSetting("limits"),
@@ -36,6 +38,7 @@ export default async function AdminSettingsPage() {
       <AdminHeader title="Settings" />
       <div className="mb-6"><CoordinatorForm initial={coordinator} bots={coordinatorBots} models={coordinatorModels} /></div>
       <SettingsForm initialLogoUrl={logoUrl(logo.id)} branding={branding} limits={limits} apps={apps} bots={sharedBots} loginPet={loginPet} petCatalog={petCatalog} />
+      <div className="mt-6"><RemoteHermesSettingsCard initial={remoteHermes} /></div>
       <div className="mt-6">
         <ChatGPTSettingsCard initial={chatgpt} groups={groupRows} connections={connections?.n ?? 0} />
       </div>
