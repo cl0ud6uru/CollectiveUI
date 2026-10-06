@@ -30,7 +30,7 @@ jobs:
       - run: npm test
 
   native-hermes:
-    name: Pinned native Hermes settings and synthetic OAuth
+    name: Pinned native Hermes settings, Team profiles and synthetic OAuth
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -55,3 +55,5 @@ jobs:
           python tests/fixtures/docker-hermes-codex.py
           python tests/fixtures/hermes-native-queue-contract.py
           python tests/fixtures/docker-hermes-network.py
+          python tests/fixtures/hermes-team-native-contract.py
+          python tests/fixtures/hermes-team-pinned-bridge.py
