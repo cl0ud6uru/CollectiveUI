@@ -104,8 +104,8 @@ export async function scheduleTeamNativeLearning(contextId:string,dependencies:{
     const authority=await learningAuthority(row,routes,tx);
     await lockUserRuns(tx,row.actorId);
     if(row.childRunId){const [child]=await tx.select().from(agentRuns).where(eq(agentRuns.id,row.childRunId));return child?.status==='queued'&&!child.cancelRequestedAt?child:null;}
-    const child=await insertRunTx(tx,{id:`team-learning:${row.id}`,userId:row.actorId,conversationId:authority.parent.conversationId,botId:row.botId,
-      appId:authority.parent.appId,messageId:`team-learning-message:${row.id}`,parentMessageId:authority.parent.messageId,background:true,executionMode:'worker'});
+    const child=await insertRunTx(tx,{id:`team-learning-${row.id}`,userId:row.actorId,conversationId:authority.parent.conversationId,botId:row.botId,
+      appId:authority.parent.appId,messageId:`team-learning-message-${row.id}`,parentMessageId:authority.parent.messageId,background:true,executionMode:'worker'});
     await tx.update(hermesTeamLearningHandoffs).set({childRunId:child.id,state:'queued',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));
     return child;
   });
@@ -124,6 +124,7 @@ export async function claimTeamNativeLearning(runId:string,holder:string,segment
     const authority=await learningAuthority(row,routes,tx);
     const current=await candidateRun(authority.principal,runId,tx);
     if(current.run.status!=='running' || current.run.holder!==holder || current.run.segment!==segment)throw new HttpError(409,'The learning worker lease changed.');
+    if(!row.payloadEnc.startsWith('v2.'))throw new HttpError(409,'The captured review has no actor-bound encryption.');
     const snapshot=validateNativeTeamLearningSnapshot(JSON.parse(decrypt(row.payloadEnc,aad(row))));
     if(candidateObjectHash(snapshot)!==row.snapshotHash)throw new HttpError(409,'The captured native review was changed.');
     await tx.update(hermesTeamLearningHandoffs).set({state:'running',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));
