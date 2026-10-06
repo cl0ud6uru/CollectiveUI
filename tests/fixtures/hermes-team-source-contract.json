@@ -1,0 +1,24 @@
+{
+  "revision": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+  "image": "nousresearch/hermes-agent@sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283",
+  "modelAccess": {
+    "nativeCodexRoute": "https://chatgpt.com/backend-api/codex",
+    "officialChatgptPlanUsageVerified": false,
+    "enabledTeamRoutes": []
+  },
+  "sourceHashes": {
+    "hermes_cli/profiles.py": "47d01aff498b302905ce887e4b0a90907f107f32cbcdff380cf1ed5f01e3e23b",
+    "hermes_cli/auth.py": "01162deb40359f7fec5cd73896e7c2771227a556dbfb42e9434c9d29ef47ee7c",
+    "hermes_cli/auth_codex.py": "1580e163e4f29eb76303f6cac79fbe0b2dc3b07bca6215101bf78030581d0fca",
+    "hermes_constants.py": "3dd95a77b1a4956280f146e3b065789ca5d82921f69e6e2cae06d49a13f82405",
+    "agent/auxiliary_client.py": "e83807074f3577ac3980f43bfd578ffcc95efb591e38a9427d0e7d33ec7d8e4a",
+    "tools/delegate_tool_config.py": "6c8811894e8f6464af2040528023e2a653993980f1534a1bb9c22e167a6fb96e",
+    "tools/skill_manager_tool.py": "44b1744d535196b3d34ac06e9610e7b8d171516236d9cf506e278e59546f437f",
+    "tools/memory_tool.py": "214870bfcc4c67cc502459d16dda9bd4627e58ae521d73ee03e41afc598f6178",
+    "tools/memory_tool_store.py": "2a44cc0ea35066a4320395d63997f26011525c9ffe04183e562e16575837f488",
+    "plugins/model-providers/openai-codex/__init__.py": "a3d376285da5b39ae93d087fa1410e90e7a719170517ba314a068b81dfeef3e4",
+    "agent/background_review.py": "47a8ed4c09f7032c2a731e3fc946ca16e0b9388fee71c85f19908215eeb12f03",
+    "agent/skill_utils.py": "be192879ed2df6ef165c26e51293dddab131f24dc52bf85ce98714fea704c6ce",
+    "hermes_cli/fallback_config.py": "d593fee4db54c24233a3482de2b5178d3aba62dfea0f8bf4e4613f3a0e8880a3"
+  }
+}
