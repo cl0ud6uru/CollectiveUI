@@ -116,8 +116,11 @@ describe("Team Bot fixed native tool capability policy", () => {
     const accessor = Object.defineProperty({}, "documentId", { enumerable: true, get: getter });
     const arrayGetter = Object.defineProperty([], "0", { enumerable: true, get: getter });
     const nested: unknown[] = []; nested.push(nested);
+    const oversizedKeyWithAccessor = Object.defineProperty({}, "x".repeat(64000), { enumerable: true, get: getter });
+    const aggregateTooLarge = { first: "x".repeat(32000), second: "x".repeat(32000) };
     for (const invalid of [Object.create({ documentId: "approved-document" }), accessor, arrayGetter, nested,
-      JSON.parse('{"__proto__":{}}'), JSON.parse('{"constructor":{}}'), undefined, Infinity, new Date(), "x".repeat(64001), Array(2)])
+      JSON.parse('{"__proto__":{}}'), JSON.parse('{"constructor":{}}'), undefined, Infinity, new Date(), "x".repeat(64001), Array(2),
+      oversizedKeyWithAccessor, aggregateTooLarge])
       expect(() => canonicalTeamToolInput(invalid)).toThrow();
     expect(getter).not.toHaveBeenCalled();
   });

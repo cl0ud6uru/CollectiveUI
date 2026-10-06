@@ -98,11 +98,18 @@ const reject = (reason: TeamToolPolicyError["reason"], message: string): never =
 /** Canonical bounded data only, for a stable approval binding and safe server connector payload. */
 export function canonicalTeamToolInput(input: unknown): string {
   let nodes = 0;
+  let bytes = 0;
+  const consume = (size: number) => {
+    bytes += size;
+    if (bytes > 64000) return reject("out_of_scope", "Tool input exceeds the supported bounds.");
+  };
   const visit = (value: unknown, depth: number): unknown => {
     if (++nodes > 10000 || depth > 20) return reject("out_of_scope", "Tool input exceeds the supported bounds.");
-    if (value === null || typeof value === "boolean" || typeof value === "string") return value;
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") { consume(Buffer.byteLength(value, "utf8") + 2); return value; }
+    if (value === null || typeof value === "boolean") { consume(value === false ? 5 : 4); return value; }
+    if (typeof value === "number" && Number.isFinite(value)) { consume(String(value).length); return value; }
     if (Array.isArray(value)) {
+      consume(2 + Math.max(0, value.length - 1));
       const copied: unknown[] = [];
       for (let index = 0; index < value.length; index++) {
         const descriptor = Object.getOwnPropertyDescriptor(value, index);
@@ -114,7 +121,10 @@ export function canonicalTeamToolInput(input: unknown): string {
     if (typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype)
       return reject("out_of_scope", "Tool input must contain plain JSON data.");
     const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
+    const keys = Object.keys(value).sort();
+    consume(2 + Math.max(0, keys.length - 1));
+    for (const key of keys) {
+      consume(Buffer.byteLength(key, "utf8") + 3);
       if (["__proto__", "constructor", "prototype"].includes(key)) return reject("out_of_scope", "Unsafe tool input key.");
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !Object.hasOwn(descriptor, "value")) return reject("out_of_scope", "Tool input cannot contain accessors.");
