@@ -2,9 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { PanelLeft, Search, SquarePen } from "lucide-react";
 import { Sidebar } from "@/components/sidebar/sidebar";
-import { Tip } from "@/components/ui/tooltip";
+import { AvatarRail } from "@/components/sidebar/avatar-rail";
 import { SearchDialog } from "./search-dialog";
 import { useShell } from "./shell-context";
 
@@ -36,30 +35,12 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       <div
         inert={!sidebarOpen}
         aria-hidden={!sidebarOpen}
-        className={`hidden shrink-0 overflow-hidden transition-[width] duration-200 md:block ${sidebarOpen ? "w-[260px]" : "w-0"}`}
+        className={`hidden shrink-0 overflow-hidden transition-[width] duration-200 motion-reduce:transition-none md:block ${sidebarOpen ? "w-[260px]" : "w-0"}`}
       >
         <Sidebar />
       </div>
       {/* Collapsed rail */}
-      {!sidebarOpen && (
-        <div className="hidden w-[52px] shrink-0 flex-col items-center gap-1 border-r border-border bg-sidebar py-3 md:flex">
-          <Tip label="Open sidebar" side="right">
-            <button onClick={() => setSidebarOpen(true)} className="rounded-lg p-2 text-muted hover:bg-hover hover:text-fg" aria-label="Open sidebar">
-              <PanelLeft className="h-5 w-5" />
-            </button>
-          </Tip>
-          <Tip label="New chat" side="right">
-            <button onClick={() => router.push("/")} className="rounded-lg p-2 text-muted hover:bg-hover hover:text-fg" aria-label="New chat">
-              <SquarePen className="h-5 w-5" />
-            </button>
-          </Tip>
-          <Tip label="Search chats" side="right">
-            <button onClick={() => setSearchOpen(true)} className="rounded-lg p-2 text-muted hover:bg-hover hover:text-fg" aria-label="Search chats">
-              <Search className="h-5 w-5" />
-            </button>
-          </Tip>
-        </div>
-      )}
+      {!sidebarOpen && <AvatarRail />}
       {/* Mobile drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
