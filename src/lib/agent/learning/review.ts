@@ -117,6 +117,7 @@ export async function reviewNativeRun(runId: string) {
       const peers = await tx.select().from(botLearnings).where(and(eq(botLearnings.botId, bot.id), userId ? eq(botLearnings.userId, userId) : isNull(botLearnings.userId)));
       if (peers.some(peer => peer.id !== previous?.id && peer.kind === lesson.kind && normalized(peer.content) === normalized(content))) continue;
       if (previous?.pinned || previous?.status === "archived" || (previous?.version ?? 0) !== lesson.baseVersion) continue;
+      if (previous && previous.kind === lesson.kind && normalized(previous.content) === normalized(content)) continue;
       if (previous && JSON.stringify(previous.content) === JSON.stringify(content)) continue;
       // A pending proposal stays pending until a human explicitly approves it.
       const status = settings.learningRequireApproval === true || previous?.status === "pending" || previous?.kind === "policy" ? "pending" : disposition.status;

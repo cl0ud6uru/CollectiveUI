@@ -242,6 +242,15 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect(await db.select().from(schema.botLearnings)).toHaveLength(1);
   });
 
+  it("does not create a revision for a title-only rewrite", async () => {
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 1, name: "A cosmetic replacement title" })] } });
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
+    expect((await learnedSkillsForBot("bot", "boss"))[0].name).toBe(content.name);
+  });
+
   it("stages learned writes when the approval gate is enabled", async () => {
     await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningRequireApproval: true } });
     await reviewNativeRun("run");
