@@ -219,7 +219,7 @@ test("collapsed rail uses selected avatars, persists selection and has keyboard 
   await page.waitForURL("/hermes");
   await expect(rail(page).getByRole("link", { name: "Hermes", exact: true })).toHaveAttribute("aria-current", "page");
   await rail(page).getByRole("button", { name: "Open sidebar", exact: true }).press("Enter");
-  await expect(page.getByRole("navigation").getByRole("link", { name: "Hermes", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("navigation").getByRole("link", { name: "Hermes", exact: true })).toHaveClass(/(?:^|\s)bg-hover(?:\s|$)/);
 });
 
 test("overflow keeps saved order, searches and selects bots, restores focus on Escape and filters revoked access", async ({ page }) => {
