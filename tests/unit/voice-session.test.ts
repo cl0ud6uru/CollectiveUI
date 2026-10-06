@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiApp } from "@/db/schema";
 
 const deps = vi.hoisted(() => ({
@@ -34,9 +34,14 @@ const target = { app, bot: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("AUTH_URL", "https://portal.example");
   deps.requirePrincipal.mockResolvedValue(principal);
   deps.resolveTurnTarget.mockResolvedValue(target);
   deps.providerContextFor.mockResolvedValue(providerContext);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("voice session API", () => {
@@ -93,12 +98,54 @@ describe("voice session API", () => {
     expect(deps.resolveTurnTarget).not.toHaveBeenCalled();
   });
 
-  it("requires same-origin browser requests and bounds incoming JSON", async () => {
+  it("uses the configured public origin behind a reverse proxy", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "vs_1" }, transport: { type: "webrtc", sdp: "answer-sdp" } }));
+    const response = await POST(new Request("http://localhost/api/voice/session", {
+      method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" },
+      body: JSON.stringify({ appId: app.id, sdp: "offer" }),
+    }));
+    expect(response.status).toBe(200);
+    fetchSpy.mockRestore();
+  });
+
+  it("denies foreign origins even when forwarded headers claim the configured host", async () => {
     const crossOrigin = await POST(new Request("http://localhost/api/voice/session", {
-      method: "POST", headers: { origin: "https://elsewhere.example", "content-type": "application/json" },
+      method: "POST", headers: {
+        origin: "https://elsewhere.example", "x-forwarded-host": "portal.example", "x-forwarded-proto": "https",
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ appId: app.id, sdp: "offer" }),
     }));
     expect(crossOrigin.status).toBe(403);
+
+    const internalOrigin = await POST(new Request("http://localhost/api/voice/session", {
+      method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ appId: app.id, sdp: "offer" }),
+    }));
+    expect(internalOrigin.status).toBe(403);
+
+    for (const origin of ["null", "not a URL"]) {
+      const malformed = await POST(new Request("http://localhost/api/voice/session", {
+        method: "POST", headers: { origin, "content-type": "application/json" },
+        body: JSON.stringify({ appId: app.id, sdp: "offer" }),
+      }));
+      expect(malformed.status).toBe(403);
+    }
+  });
+
+  it("preserves local same-origin requests when AUTH_URL is unconfigured", async () => {
+    vi.stubEnv("AUTH_URL", "");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "vs_1" }, transport: { type: "webrtc", sdp: "answer-sdp" } }));
+    const response = await POST(new Request("http://localhost/api/voice/session", {
+      method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ appId: app.id, sdp: "offer" }),
+    }));
+    expect(response.status).toBe(200);
+    fetchSpy.mockRestore();
+  });
+
+  it("bounds incoming JSON", async () => {
+    vi.stubEnv("AUTH_URL", "");
     const oversized = await POST(new Request("http://localhost/api/voice/session", {
       method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ appId: app.id, sdp: "x".repeat(65_000) }),
@@ -109,7 +156,7 @@ describe("voice session API", () => {
   it("creates an official Live session with stored credentials and tool-free delegation", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "vs_1" }, transport: { type: "webrtc", sdp: "answer-sdp" } }));
     const response = await POST(new Request("http://localhost/api/voice/session", {
-      method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" },
+      method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" },
       body: JSON.stringify({ appId: app.id, sdp: "offer-sdp" }),
     }));
     expect(response.status).toBe(200);
@@ -131,7 +178,7 @@ describe("voice session API", () => {
     expect(await voiceEligibility(target)).toMatchObject({ supported: false });
     const failure = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("sensitive provider detail", { status: 429 }));
     const response = await POST(new Request("http://localhost/api/voice/session", {
-      method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify({ appId: app.id, sdp: "offer-sdp" }),
+      method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ appId: app.id, sdp: "offer-sdp" }),
     }));
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain("sensitive provider detail");
