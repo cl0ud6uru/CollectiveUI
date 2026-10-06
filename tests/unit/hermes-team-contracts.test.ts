@@ -29,4 +29,12 @@ describe('pinned Team Bot native contract', () => {
     expect(stderr).toMatch(/Ran \d+ tests/);
     expect(stderr).toContain('OK');
   });
+
+  it.skipIf(!process.env.HERMES_SOURCE)('runs the real blank Team bridge against clean pinned native profile and learning functions', async () => {
+    const { stderr } = await exec(process.env.HERMES_PYTHON ?? 'python3', [
+      path.join(root, 'tests/fixtures/hermes-team-pinned-bridge.py'),
+    ], { cwd: root, timeout: 30_000, env: process.env });
+    expect(stderr).toContain('Ran 5 tests');
+    expect(stderr).toContain('OK');
+  });
 });

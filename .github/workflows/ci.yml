@@ -29,8 +29,29 @@ jobs:
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.
       - run: npm test
 
+  hermes-team-web:
+    name: Synthetic Team Bot controls and mobile web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise real browser requests with synthetic accounts and no inference
+        run: |
+          node tests/browser/hermes-team-builder.mjs
+          node tests/browser/hermes-team-controls.mjs
+          node tests/browser/hermes-team-chat-controls.mjs
+          node tests/browser/hermes-team-publication.mjs
+          node tests/browser/hermes-team-updates.mjs
+          node tests/browser/hermes-team-restore.mjs
+
   native-hermes:
-    name: Pinned native Hermes settings and synthetic OAuth
+    name: Pinned native Hermes settings, Team profiles and synthetic OAuth
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -55,3 +76,29 @@ jobs:
           python tests/fixtures/docker-hermes-codex.py
           python tests/fixtures/hermes-native-queue-contract.py
           python tests/fixtures/docker-hermes-network.py
+          python tests/fixtures/hermes-team-native-contract.py
+          python tests/fixtures/hermes-team-pinned-bridge.py
+
+  hermes-team-image:
+    name: Official pinned image · offline Team resource helper
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Require efficient Linux amd64 Docker storage
+        run: |
+          test "$(docker info --format '{{.OSType}}')" = linux
+          case "$(docker info --format '{{.Driver}}')" in overlay2|overlayfs) ;; *) echo 'Efficient Docker storage required; VFS is refused.' >&2; exit 1 ;; esac
+          test "$(uname -m)" = x86_64
+          if test ! -x /usr/local/bin/docker; then sudo ln -s "$(command -v docker)" /usr/local/bin/docker; fi
+      - name: Pull the exact official amd64 image (no build or rootfs substitution)
+        run: docker pull --platform linux/amd64 nousresearch/hermes-agent@sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283
+      - name: Exercise production helpers with synthetic retained data and no inference
+        env:
+          DOCKER_HERMES_TEAM_IMAGE_TEST: '1'
+        run: npx vitest run --project sandbox tests/sandbox/docker-hermes-team-image.test.ts
