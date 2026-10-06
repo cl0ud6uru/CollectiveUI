@@ -53,7 +53,7 @@ beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'docker-hermes-'));
   for (const name of ['state', 'ipc', 'alice/default', 'bob/default']) await mkdir(path.join(root, name), { recursive: true, mode: 0o700 });
   config = BrokerConfig.parse({ stateDir: path.join(root, 'state'), socketPath: path.join(root, 'ipc/b.sock'), bridgePath: path.resolve('src/docker-hermes/bridge.py'),
-    namespace: 'cui-test', image: `nousresearch/hermes-agent@sha256:${'a'.repeat(64)}` });
+    namespace: 'cui-test', image: `nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`, network: 'none' });
   driver = new FixtureDriver(root); broker = new DockerBroker(config, driver);
 });
 afterEach(async () => { driver.stopFailure = false; await broker.close(); await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs(); });
@@ -73,6 +73,8 @@ describe('personal Docker Hermes durable broker', () => {
     expect(a.botId).not.toBe(b.botId); expect(a.runtimeId).not.toBe(b.runtimeId);
     await expect(broker.resources('bob', a.bindingId)).rejects.toThrow('belong');
     const running = await listenBroker(broker);
+    // Startup now reconciles/stops every retained owner before exposing IPC. Resume explicitly.
+    await Promise.all([enable('alice'), enable('bob')]);
     try {
       const fetch = socketFetch(config.socketPath);
       const response = await fetch(`${LOCAL_ORIGIN}/p/${a.bindingId}/v1/capabilities`, { headers: { 'x-collective-owner': 'bob' } });
@@ -202,7 +204,8 @@ describe('personal Docker Hermes durable broker', () => {
 describe('personal native profile settings transactions', () => {
   const revision = 'a'.repeat(64);
   const initial = () => ({ revision, provider: 'openai-api' as const, model: 'fixture-model', reasoningEffort: '' as const, maxTurns: null, advancedSupported: true, editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true }, credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': false } });
-  async function fixture() {
+  async function fixture(online = false) {
+    if (online) config.network = 'proxy';
     await enable('alice'); const b = (await broker.status('alice')).bindings[0];
     let saved: import('@/docker-hermes/settings').ProfileSettings = initial();
     const d: RuntimeDriver = driver;
@@ -298,9 +301,8 @@ describe('personal native profile settings transactions', () => {
     await expect(broker.testProfile('alice', b.bindingId, { ...input, revision: 'b'.repeat(64) })).rejects.toThrow('another');
   });
   it('proxy test failures are uncertain, durably recorded and not automatically replayed', async () => {
-    const { b, d } = await fixture();
+    const { b, d } = await fixture(true);
     // Fixture-only policy: no Docker networking or external requests are involved.
-    broker.config.network = 'proxy';
     d.testSettings = vi.fn(async () => { throw new Error('Timeout after possible inference'); });
     const input = { revision, requestId: randomUUID(), consent: true };
     expect((await broker.testProfile('alice', b.bindingId, input)).code).toBe('uncertain');
@@ -415,7 +417,7 @@ describe('native Codex subscription sessions', () => {
   });
   it('recovers unfinished native login on restart and never replays the old start', async () => {
     // config is persisted by the constructor; preserve network here for restart schema equality.
-    const { b, d, input } = await fixture(false); config.network = 'proxy';
+    const { b, d, input } = await fixture(true);
     const started = await broker.codexMutation('alice', b.bindingId, input);
     await broker.close(); config.network = 'none'; broker = new DockerBroker(config, driver); await enable('alice');
     expect(d.codex).toHaveBeenCalledWith('alice', b.profile, b.identity, { action: 'recover', sessionId: started.sessionId });
