@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import CollectiveKit
 
 /// Compact card for a tool call, with expandable input/output and approval controls.
@@ -12,6 +13,10 @@ struct ToolPartView: View {
     @State private var isExpanded: Bool = false
     @State private var showDenyPrompt: Bool = false
     @State private var denyReason: String = ""
+    @State private var downloading = false
+    @State private var artifactFile: URL?
+    @State private var showArtifact = false
+    @State private var artifactError: String?
 
     private static let maxDetailLength = 6000
 
@@ -57,6 +62,16 @@ struct ToolPartView: View {
             if isAwaitingApproval {
                 approvalControls
             }
+            if part.state == "output-available", let path = WorkspaceArtifact.path(toolName: part.toolName, output: part.output) {
+                Button {
+                    Task { await downloadArtifact(path) }
+                } label: {
+                    Label(downloading ? "Downloading…" : "Download \(path.split(separator: "/").last ?? "file")", systemImage: "square.and.arrow.down")
+                        .font(.footnote)
+                }
+                .disabled(downloading)
+                if let artifactError { Text(artifactError).font(.caption).foregroundStyle(PortalTheme.danger) }
+            }
         }
         .padding(10)
         .background(
@@ -76,6 +91,30 @@ struct ToolPartView: View {
         } message: {
             Text("The assistant will be told you declined.")
         }
+        .sheet(isPresented: $showArtifact, onDismiss: removeArtifact) {
+            if let artifactFile { ArtifactShareSheet(file: artifactFile) }
+        }
+    }
+
+    private func downloadArtifact(_ path: String) async {
+        guard let api = model.app.api else { return }
+        downloading = true
+        artifactError = nil
+        defer { downloading = false }
+        do {
+            let data = try await api.workspaceFile(path: path)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent(String(path.split(separator: "/").last ?? "file"))
+            try data.write(to: file, options: [.atomic, .completeFileProtection])
+            artifactFile = file
+            showArtifact = true
+        } catch { artifactError = error.localizedDescription }
+    }
+
+    private func removeArtifact() {
+        if let artifactFile { try? FileManager.default.removeItem(at: artifactFile.deletingLastPathComponent()) }
+        artifactFile = nil
     }
 
     @ViewBuilder
@@ -193,6 +232,12 @@ struct ToolPartView: View {
         }
         return String(text.prefix(maxDetailLength)) + "\n…"
     }
+}
+
+private struct ArtifactShareSheet: UIViewControllerRepresentable {
+    let file: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: [file], applicationActivities: nil) }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 @MainActor

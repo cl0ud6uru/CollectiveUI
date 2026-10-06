@@ -1,6 +1,7 @@
 "use client";
 
 import { isDelegationTool } from "@/lib/delegation/policy";
+import { workspaceArtifact } from "@/lib/chat/workspace-artifacts";
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -243,6 +244,7 @@ export function ToolPartView({
   const denied = part.state === "output-denied";
   const output = part.state === "output-available" ? part.output : undefined;
   const isDelegate = isDelegationTool(name);
+  const artifact = workspaceArtifact(name, output);
   const preliminary = part.state === "output-available" && !!(part as { preliminary?: boolean }).preliminary;
   // A turn that ended mid-tool (timeout, stop) leaves its last progress update behind: show it as interrupted.
   const preliminaryRunning = preliminary && live;
@@ -264,6 +266,7 @@ export function ToolPartView({
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
       {isDelegate && !!output && typeof output === "object" && <DelegationTrace output={output as DelegateOutput} />}
+      {artifact && <a href={artifact.downloadUrl} download className="mt-2 inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>}
       {open && (
         <div className="mt-2 space-y-2">
           <div className="text-xs font-medium text-subtle">Input</div>

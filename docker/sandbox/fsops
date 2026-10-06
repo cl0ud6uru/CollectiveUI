@@ -15,6 +15,7 @@ Output: one header line "PORTALFS1 <json>" on stdout, then (read only) the raw b
 """
 import json
 import os
+import stat
 import sys
 import tempfile
 
@@ -107,13 +108,29 @@ def cmd_read(argv):
         raise Fail("bad_request", "read takes one path")
     max_bytes = num(opts, "max-bytes")
     path = resolve(rest[0])
-    if os.path.isdir(path):
-        raise Fail("bad_request", "%s is a directory" % rest[0])
-    size = os.path.getsize(path)
     start = num(opts, "start-line", 1)
     end = num(opts, "end-line", 0)
     out, truncated = bytearray(), False
-    with open(path, "rb") as f:
+    # Resolve allowed internal symlinks, then walk with directory fds and O_NOFOLLOW. A command can change
+    # paths concurrently: checking realpath and subsequently opening by pathname would permit symlink races.
+    fd = os.open(WORKSPACE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        segments = rel(path).split("/")
+        for segment in segments[:-1]:
+            next_fd = os.open(segment, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        file_fd = os.open(segments[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    except OSError:
+        raise Fail("bad_request", "file path changed or is unavailable")
+    finally:
+        os.close(fd)
+    info = os.fstat(file_fd)
+    if not stat.S_ISREG(info.st_mode):
+        os.close(file_fd)
+        raise Fail("bad_request", "path must be a regular file")
+    size = info.st_size
+    with os.fdopen(file_fd, "rb") as f:
         if start == 1 and end == 0:
             out += f.read(max_bytes + 1)
         else:
