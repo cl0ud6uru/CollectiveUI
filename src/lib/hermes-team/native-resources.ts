@@ -10,7 +10,7 @@ import {
   type ResourceUpdateAction, type ResourceUpdateReceipt, type TeamResourceUpdatePlan,
 } from './updates';
 const fdPath = (fd: FileHandle, name?: string) => `/proc/self/fd/${fd.fd}${name ? '/' + name : ''}`;
-const unsafe = (message = 'Native resource storage needs attention.'): never => { throw new TeamResourceError('unsafe-file', message); };
+function unsafe(message = 'Native resource storage needs attention.'): never { throw new TeamResourceError('unsafe-file', message); }
 const fingerprint = (s: Awaited<ReturnType<FileHandle['stat']>>) => [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.nlink, s.mode].join(':');
 async function rootHandle(root: string): Promise<FileHandle> {
   if (process.platform !== 'linux' || !path.isAbsolute(root) || await realpath(root) !== root) unsafe('A canonical server-derived Linux root is required.');
