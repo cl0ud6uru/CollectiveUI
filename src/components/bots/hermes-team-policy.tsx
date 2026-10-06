@@ -47,7 +47,7 @@ export function HermesTeamPolicy({ value, onChange, maintainers, modelOptions, d
           {!maintainers.length && <p className="px-3 py-2 text-sm text-muted">No eligible admins are available.</p>}
         </div>
       </fieldset>
-      <p className="text-xs text-muted">CollectiveUI sign-in and the model connection are separate. Company connections are configured by an admin; a personal connection is requested only when the bot needs it.</p>
+      <p className="text-xs text-muted">CollectiveUI sign-in and the model connection are separate. Model routes and tool connections must be verified before this bot can use them.</p>
     </>}
   </fieldset>;
 }

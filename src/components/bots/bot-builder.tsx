@@ -158,6 +158,7 @@ export function BotBuilder({
   const router = useRouter();
   const [form, setForm] = useState<BotInput>(initial);
   const [team, setTeam] = useState(teamConfig);
+  const savedTeam = useRef(teamConfig);
   // A failed follow-up Team settings request must retry the already-created bot.
   const createdBotId = useRef<string | null>(null);
   const [tab, setTab] = useState<"create" | "configure">(botId ? "configure" : "create");
@@ -215,12 +216,16 @@ export function BotBuilder({
   }
 
   async function saveTeamSettings(id: string) {
-    if (!team || !isAdmin || engine !== "hermes" || JSON.stringify(team) === JSON.stringify(teamConfig)) return;
+    if (!team || !isAdmin || (engine !== "hermes" && !teamConfig?.enabled) || JSON.stringify(team) === JSON.stringify(savedTeam.current)) return;
     const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: team.enabled, maintainerIds: team.maintainerIds, modelPolicy: { mode: team.modelPolicy }, expectedVersion: team.expectedVersion ?? 0 }) });
+    const data = await response.json();
     if (!response.ok) {
-      const data = await response.json();
       throw new Error(`Bot configuration saved, but Team Bot settings need attention: ${data.error ?? "save was not confirmed"}`);
     }
+    if (!Number.isInteger(data.version) || data.version < 0) throw new Error("The server did not confirm the new Team settings version. Reload this editor before changing Team settings again.");
+    const confirmed = { ...team, expectedVersion: data.version as number };
+    savedTeam.current = confirmed;
+    setTeam(confirmed);
   }
 
   async function draft() {
@@ -440,7 +445,7 @@ export function BotBuilder({
                 </div>
               )}
 
-              {isAdmin && engine === "hermes" && !personalNew && team && <HermesTeamPolicy value={team} onChange={setTeam} maintainers={teamMaintainers} modelOptions={teamModelOptions} disabled={pending} />}
+              {isAdmin && (engine === "hermes" || teamConfig?.enabled) && !personalNew && team && <HermesTeamPolicy value={team} onChange={setTeam} maintainers={teamMaintainers} modelOptions={teamModelOptions} disabled={pending} />}
 
               {isAdmin && engine === "native" && (
                 <Field label="Connector permissions" hint="Service bots are managed by admins and grant only reviewed MCP capabilities through direct chats.">
