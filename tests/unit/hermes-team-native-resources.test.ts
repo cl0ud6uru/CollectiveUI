@@ -14,6 +14,11 @@ const nextPlan = async (content = 'v2') => {
   return planTeamResourceUpdate({ installed: createTeamResourceSnapshot([skill('v1')]), release: createTeamResourceSnapshot([skill(content)]), current });
 };
 describe('Broker-derived private resource inventory', () => {
+  it('keeps bounded historical missing package IDs without counting them as current files', async () => {
+    const tracked = Array.from({ length: 512 }, (_, index) => `skills/missing-${index}`);
+    expect((await inventoryMemberResources(root, tracked)).resources).toMatchObject([{ path: 'skills/support/SKILL.md' }]);
+    await expect(inventoryMemberResources(root, Array.from({ length: 1025 }, (_, index) => `skills/missing-${index}`))).rejects.toThrow('Too many tracked');
+  });
   it('discovers full independent packages, nested categories, documents and role while excluding private native state', async () => {
     await file('skills/category/learned/SKILL.md', 'learned'); await file('skills/support/scripts/run.py', 'script');
     await file('documents/shared.md', 'document'); await file('documents/auth.json', 'private'); await file('SOUL.md', 'role'); await file('memory/MEMORY.md', 'private');

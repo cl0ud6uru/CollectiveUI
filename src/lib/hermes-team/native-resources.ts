@@ -106,7 +106,8 @@ async function inventory(root: FileHandle, tracked: readonly string[]): Promise<
 }
 /** Full private inventory under a broker-held stopped-runtime lease. No member contents may reach an admin rollout. */
 export async function inventoryMemberResources(profileRoot: string, trackedPackageIds: readonly string[] = []): Promise<TeamResourceSnapshot> {
-  if (trackedPackageIds.length > DEFAULT_RESOURCE_LIMITS.maxFiles) throw new TeamResourceError('limit', 'Too many tracked packages.');
+  // Historical kept/deleted boundaries need no current files, so their metadata bound is separate.
+  if (trackedPackageIds.length > DEFAULT_RESOURCE_LIMITS.maxFiles * 4) throw new TeamResourceError('limit', 'Too many tracked packages.');
   for (const id of trackedPackageIds) assertSafeResourcePath(id);
   const root = await rootHandle(profileRoot);
   try {
