@@ -1,5 +1,6 @@
 #if DEBUG
 import Foundation
+import CollectiveKit
 
 /// A response from the in-memory demo server.
 enum DemoResponse {
@@ -11,6 +12,13 @@ enum DemoResponse {
 struct DemoStreamEvent {
     let delay: TimeInterval
     let payload: String
+    var record: DemoStreamRecord? = nil
+}
+
+struct DemoStreamRecord {
+    let conversationId: String
+    let messageId: String
+    let chunk: JSONValue
 }
 
 /// Delivers streamed chunks on the URL loading thread's run loop and remembers cancellation.
@@ -37,9 +45,25 @@ final class DemoDelivery: @unchecked Sendable {
         lock.unlock()
     }
 
-    func deliver(_ data: Data, finish: Bool) {
-        guard !isCancelled, let target else { return }
+    func deliver(_ data: Data, finish: Bool, record: DemoStreamRecord?) {
+        guard !isCancelled, let target else { cancel(); return }
+        if let record, !DemoServer.shared.recordDelivery(record) { cancel(); return }
         target.emit(data, finish: finish)
+    }
+
+    func schedule(_ events: [DemoStreamEvent], startingAt index: Int = 0) {
+        guard !isCancelled, events.indices.contains(index) else { return }
+        let event = events[index]
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + event.delay) { [weak self] in
+            guard let self, !self.isCancelled else { return }
+            CFRunLoopPerformBlock(self.runLoop, CFRunLoopMode.defaultMode.rawValue, {
+                // Schedule the next event only after this callback has reached the
+                // loading thread. Concurrent timers can otherwise reorder chunks.
+                self.deliver(Data(event.payload.utf8), finish: index == events.count - 1, record: event.record)
+                self.schedule(events, startingAt: index + 1)
+            })
+            CFRunLoopWakeUp(self.runLoop)
+        }
     }
 }
 
@@ -109,18 +133,7 @@ final class DemoURLProtocol: URLProtocol {
         // handed back to that thread's run loop after its delay.
         let delivery = DemoDelivery(target: self, runLoop: CFRunLoopGetCurrent())
         self.delivery = delivery
-        var time: TimeInterval = 0
-        for (index, event) in events.enumerated() {
-            time += event.delay
-            let data = Data(event.payload.utf8)
-            let isLast = index == events.count - 1
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + time) {
-                CFRunLoopPerformBlock(delivery.runLoop, CFRunLoopMode.defaultMode.rawValue, {
-                    delivery.deliver(data, finish: isLast)
-                })
-                CFRunLoopWakeUp(delivery.runLoop)
-            }
-        }
+        delivery.schedule(events)
     }
 }
 #endif

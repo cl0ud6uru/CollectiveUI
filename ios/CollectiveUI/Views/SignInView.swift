@@ -32,15 +32,17 @@ struct SignInView: View {
                 HStack(spacing: 8) {
                     if model.isSigningIn {
                         ProgressView()
-                            .tint(Color.white)
+                            .tint(PortalTheme.onInk)
                     }
                     Text("Sign in")
                 }
                 .font(.headline)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
+                .foregroundStyle(PortalTheme.onInk)
             }
             .buttonStyle(.borderedProminent)
+            .tint(PortalTheme.ink)
             .controlSize(.large)
             .disabled(model.isSigningIn)
 

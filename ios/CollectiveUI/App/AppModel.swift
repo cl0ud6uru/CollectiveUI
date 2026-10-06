@@ -43,6 +43,11 @@ final class AppModel {
     private let authenticator: WebAuthenticator
     /// Custom URLSession for every API client (used by the debug demo mode); nil uses the shared session.
     private let sessionOverride: URLSession?
+    private let credentials: any CredentialStore
+    private let defaults: UserDefaults
+    private let draftRoot: URL?
+    private(set) var isDemoSession = false
+    @ObservationIgnored private(set) var conversationStates: ConversationStateStore
 
     private enum Keys {
         static let token = "token"
@@ -50,21 +55,34 @@ final class AppModel {
         static let lastServerAddress = "lastServerAddress"
     }
 
-    init() {
+    init(credentials: any CredentialStore = KeychainCredentials(), defaults: UserDefaults = .standard,
+         draftRoot: URL? = ConversationStateStore.defaultRoot, session: URLSession? = nil,
+         launchDemo: Bool? = nil, resetDemoDrafts: Bool? = nil) {
         authenticator = WebAuthenticator()
+        self.credentials = credentials
+        self.defaults = defaults
+        self.draftRoot = draftRoot
+        conversationStates = ConversationStateStore(server: nil, token: nil, root: draftRoot)
         #if DEBUG
-        if DemoMode.isEnabled {
-            sessionOverride = DemoMode.session
+        if launchDemo ?? DemoMode.isEnabled {
+            isDemoSession = true
+            sessionOverride = session ?? DemoMode.session
             configureDemo()
+            rebuildConversationStates()
+            if resetDemoDrafts ?? ProcessInfo.processInfo.arguments.contains("--demo-reset-drafts") {
+                conversationStates.clear()
+                rebuildConversationStates()
+            }
             return
         }
         #endif
-        sessionOverride = nil
-        let stored = KeychainStore.string(for: Keys.baseURL) ?? UserDefaults.standard.string(forKey: Keys.baseURL)
+        sessionOverride = session
+        let stored = credentials.string(for: Keys.baseURL) ?? defaults.string(forKey: Keys.baseURL)
         if let stored, let url = APIClient.normalizeBaseURL(stored) {
             serverURL = url
-            token = KeychainStore.string(for: Keys.token)
+            token = credentials.string(for: Keys.token)
         }
+        rebuildConversationStates()
         rebuildClient()
     }
 
@@ -79,7 +97,7 @@ final class AppModel {
     }
 
     var lastServerAddress: String? {
-        return UserDefaults.standard.string(forKey: Keys.lastServerAddress)
+        return defaults.string(forKey: Keys.lastServerAddress)
     }
 
     var appName: String {
@@ -122,14 +140,17 @@ final class AppModel {
         liveActivities.app = self
         // AppModel lives as long as the app, so a strong reference here is fine.
         let model = self
-        let credential = token
-        let origin = serverURL
+        let clientToken = token
         api = APIClient(baseURL: serverURL, token: token, session: sessionOverride, onUnauthorized: {
             Task { @MainActor in
-                guard model.token == credential, model.serverURL == origin else { return }
+                guard model.serverURL == serverURL, model.token == clientToken else { return }
                 model.handleUnauthorized()
             }
         })
+    }
+
+    private func rebuildConversationStates() {
+        conversationStates = ConversationStateStore(server: serverURL, token: token, root: draftRoot)
     }
 
     // MARK: - Server setup
@@ -143,11 +164,25 @@ final class AppModel {
     }
 
     func useServer(_ url: URL, info: MobileInfo) {
+        conversationStates.clear()
+        #if DEBUG
+        isDemoSession = url.host?.lowercased() == DemoMode.host
+        #endif
         serverURL = url
         serverInfo = info
-        KeychainStore.set(url.absoluteString, for: Keys.baseURL)
-        UserDefaults.standard.set(url.absoluteString, forKey: Keys.baseURL)
-        UserDefaults.standard.set(url.absoluteString, forKey: Keys.lastServerAddress)
+        token = nil
+        shell = nil
+        sessionInfo = nil
+        selection = nil
+        if !isDemoSession {
+            // Demo startup deliberately preserves unrelated real credentials. Never pair
+            // an old token with this newly selected server if the app exits before sign-in.
+            credentials.remove(Keys.token)
+            credentials.set(url.absoluteString, for: Keys.baseURL)
+            defaults.set(url.absoluteString, forKey: Keys.baseURL)
+            defaults.set(url.absoluteString, forKey: Keys.lastServerAddress)
+        }
+        rebuildConversationStates()
         rebuildClient()
     }
 
@@ -159,14 +194,18 @@ final class AppModel {
             }
         }
         liveActivities.resetLogin()
-        KeychainStore.remove(Keys.baseURL)
-        KeychainStore.remove(Keys.token)
-        UserDefaults.standard.removeObject(forKey: Keys.baseURL)
+        if !isDemoSession {
+            credentials.remove(Keys.baseURL)
+            credentials.remove(Keys.token)
+            defaults.removeObject(forKey: Keys.baseURL)
+        }
+        conversationStates.clear()
         serverURL = nil
         serverInfo = nil
         token = nil
         shell = nil
         selection = nil
+        rebuildConversationStates()
         rebuildClient()
     }
 
@@ -212,12 +251,7 @@ final class AppModel {
             switch MobileAuth.parseCallback(callback, expectedState: state) {
             case .code(let code):
                 let response = try await publicClient(serverURL).exchangeToken(code: code, codeVerifier: verifier)
-                KeychainStore.set(response.token, for: Keys.token)
-                KeychainStore.set(serverURL.absoluteString, for: Keys.baseURL)
-                token = response.token
-                shell = nil
-                selection = nil
-                rebuildClient()
+                completeSignIn(token: response.token)
                 await refreshShell()
             case .denied:
                 showBanner("Sign-in was not approved.", isError: true)
@@ -230,6 +264,26 @@ final class AppModel {
             }
             showBanner(error.localizedDescription, isError: true)
         }
+    }
+
+    /// Used only after the server's PKCE token exchange succeeded. The current server/session,
+    /// rather than the process launch arguments, decides whether credentials are real.
+    func completeSignIn(token newToken: String) {
+        guard let serverURL else { return }
+        #if DEBUG
+        isDemoSession = serverURL.host?.lowercased() == DemoMode.host
+        #endif
+        conversationStates.clear()
+        if !isDemoSession {
+            credentials.set(newToken, for: Keys.token)
+            credentials.set(serverURL.absoluteString, for: Keys.baseURL)
+        }
+        token = newToken
+        shell = nil
+        sessionInfo = nil
+        selection = nil
+        rebuildConversationStates()
+        rebuildClient()
     }
 
     func signOut() async {
@@ -246,20 +300,17 @@ final class AppModel {
 
     private func clearSession() {
         liveActivities.resetLogin()
-        KeychainStore.remove(Keys.token)
+        if !isDemoSession { credentials.remove(Keys.token) }
+        conversationStates.clear()
         token = nil
         shell = nil
         sessionInfo = nil
         selection = nil
+        rebuildConversationStates()
         rebuildClient()
     }
 
     func handleUnauthorized() {
-        #if DEBUG
-        if DemoMode.isEnabled {
-            return
-        }
-        #endif
         guard token != nil else { return }
         clearSession()
         showBanner("Your session has ended. Please sign in again.", isError: true)
@@ -324,6 +375,7 @@ final class AppModel {
         deselect(conversation.id)
         await mutateConversation { api in
             try await api.deleteConversation(id: conversation.id)
+            conversationStates.remove(conversation.id)
         }
     }
 

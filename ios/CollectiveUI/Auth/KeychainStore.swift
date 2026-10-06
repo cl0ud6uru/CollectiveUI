@@ -1,23 +1,23 @@
 import Foundation
 import Security
 
+protocol CredentialStore {
+    func set(_ value: String, for account: String)
+    func string(for account: String) -> String?
+    func remove(_ account: String)
+}
+
+struct KeychainCredentials: CredentialStore {
+    func set(_ value: String, for account: String) { KeychainStore.set(value, for: account) }
+    func string(for account: String) -> String? { KeychainStore.string(for: account) }
+    func remove(_ account: String) { KeychainStore.remove(account) }
+}
+
 /// Minimal generic-password Keychain wrapper. Items are only available on this device after first unlock.
 enum KeychainStore {
     private static let service = "io.collectiveui.app"
 
-    /// The debug demo mode never reads or writes the Keychain.
-    private static var isDisabled: Bool {
-        #if DEBUG
-        return DemoMode.isEnabled
-        #else
-        return false
-        #endif
-    }
-
     static func set(_ value: String, for account: String) {
-        if isDisabled {
-            return
-        }
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -31,9 +31,6 @@ enum KeychainStore {
     }
 
     static func string(for account: String) -> String? {
-        if isDisabled {
-            return nil
-        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -50,9 +47,6 @@ enum KeychainStore {
     }
 
     static func remove(_ account: String) {
-        if isDisabled {
-            return
-        }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

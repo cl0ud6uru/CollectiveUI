@@ -27,6 +27,7 @@ final class DemoServer: @unchecked Sendable {
     private var chartPNG = Data()
     private var petAtlases: [String: Data] = [:]
     private var counter = 0
+    private var regressionStreams: [String: UIMessageStreamReducer] = [:]
 
     private init() {
         let now = Date()
@@ -189,7 +190,11 @@ final class DemoServer: @unchecked Sendable {
         if method == "GET", DemoServer.match(parts, ["api", "chat", "*", "stream"]) != nil {
             return noContent()
         }
-        if method == "POST", DemoServer.match(parts, ["api", "chat", "*", "stop"]) != nil {
+        if method == "POST", let captures = DemoServer.match(parts, ["api", "chat", "*", "stop"]) {
+            if var reducer = regressionStreams.removeValue(forKey: captures[0]) {
+                reducer.apply(.abort(reason: nil))
+                updateRegressionRow(captures[0], message: reducer.message)
+            }
             return json(.object([:]))
         }
         return failure("Not available in demo mode", status: 404)
@@ -367,6 +372,9 @@ final class DemoServer: @unchecked Sendable {
     private func streamAnswer(conversationId: String, parentId: String, question: String, newTitle: String?) -> DemoResponse {
         counter += 1
         let messageId = "demo-reply-\(counter)"
+        if let scenario = DemoMode.value(after: "--demo-stream-scenario"), ["long", "delayed"].contains(scenario) {
+            return regressionStream(conversationId: conversationId, parentId: parentId, messageId: messageId, scenario: scenario)
+        }
         let answer = DemoAnswer.answer(for: question)
         var chunks: [(JSONValue, TimeInterval)] = []
         chunks.append((.object(["type": .string("start"), "messageId": .string(messageId)]), 0.35))
@@ -398,6 +406,50 @@ final class DemoServer: @unchecked Sendable {
         appendRow(conversationId, MessageRow(id: messageId, parentId: parentId, createdAt: DemoServer.nowMillis(), message: reducer.message))
         touchSummary(conversationId)
         return .stream(DemoServer.events(chunks))
+    }
+
+    /// Slow offline streams for committed UI regressions. Their snapshots contain only
+    /// chunks actually delivered, so Stop and partial output exercise the real UI lifecycle.
+    private func regressionStream(conversationId: String, parentId: String, messageId: String, scenario: String) -> DemoResponse {
+        let reducer = UIMessageStreamReducer(messageId: messageId)
+        regressionStreams[conversationId] = reducer
+        appendRow(conversationId, MessageRow(id: messageId, parentId: parentId, message: reducer.message))
+        var chunks: [(JSONValue, TimeInterval)] = [
+            (.object(["type": "start", "messageId": .string(messageId)]), 0.05),
+            (.object(["type": "text-start", "id": "qa-text"]), scenario == "delayed" ? 6 : 0.05),
+        ]
+        let lines = scenario == "long"
+            // Leave time for accessibility queries on slower CI simulators while
+            // preserving the same incoming-chunk cadence and explicit Stop check.
+            ? (1...600).map { "QA line \($0): This deterministic offline reply keeps streaming while you read earlier messages.\n\n" }
+            : ["This delayed offline reply completed normally."]
+        for line in lines {
+            chunks.append((.object(["type": "text-delta", "id": "qa-text", "delta": .string(line)]), 0.2))
+        }
+        chunks.append((.object(["type": "text-end", "id": "qa-text"]), 0.05))
+        chunks.append((.object(["type": "finish", "finishReason": "stop"]), 0.05))
+        var events = chunks.map { chunk, delay in
+            DemoStreamEvent(delay: delay, payload: "data: " + chunk.compactString() + "\n\n",
+                record: DemoStreamRecord(conversationId: conversationId, messageId: messageId, chunk: chunk))
+        }
+        events.append(DemoStreamEvent(delay: 0.05, payload: "data: [DONE]\n\n"))
+        return .stream(events)
+    }
+
+    func recordDelivery(_ record: DemoStreamRecord) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var reducer = regressionStreams[record.conversationId], reducer.message.id == record.messageId else { return false }
+        reducer.apply(UIMessageChunk(json: record.chunk))
+        updateRegressionRow(record.conversationId, message: reducer.message)
+        if reducer.isFinished { regressionStreams.removeValue(forKey: record.conversationId) }
+        else { regressionStreams[record.conversationId] = reducer }
+        return true
+    }
+
+    private func updateRegressionRow(_ conversationId: String, message: UIMessage) {
+        guard let index = rows[conversationId]?.firstIndex(where: { $0.id == message.id }) else { return }
+        rows[conversationId]?[index].message = message
     }
 
     private func continueAfterApproval(conversationId: String, answered: UIMessage) -> DemoResponse {

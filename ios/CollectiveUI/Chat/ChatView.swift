@@ -10,7 +10,10 @@ struct ChatView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var model: ChatModel
     @State private var headerHeight: CGFloat = 90
-    @State private var scrollTarget: String? = chatBottomAnchor
+    @State private var scrollPolicy = ChatScrollPolicy()
+    @State private var userIsScrolling = false
+    @State private var distanceFromBottom: CGFloat = 0
+    @State private var userScrollSettlement: Task<Void, Never>?
     @State private var showHistory = false
     @State private var showDetails = false
     let onOpenSidebar: () -> Void
@@ -188,8 +191,76 @@ struct ChatView: View {
     }
 
     private var messageList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: model.usesBubbles ? 12 : 24) {
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    transcript(width: max(0, min(800, viewport.size.width - 32)))
+                        .frame(width: viewport.size.width)
+                        .background {
+                            GeometryReader { content in
+                                Color.clear.preference(key: TranscriptBottomPreference.self,
+                                    value: content.frame(in: .named("chat-viewport")).maxY)
+                            }
+                        }
+                }
+                .coordinateSpace(name: "chat-viewport")
+                .accessibilityIdentifier("chat.transcript")
+                .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(DragGesture().onChanged { _ in
+                    userScrollSettlement?.cancel()
+                    userIsScrolling = true
+                    scrollPolicy.observe(distanceFromBottom: Double(distanceFromBottom), userIsScrolling: true)
+                }.onEnded { _ in
+                    // Give the native scroll view time to report its final offset, including
+                    // the start of deceleration, before allowing chunks to follow again.
+                    userScrollSettlement = Task {
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        guard !Task.isCancelled else { return }
+                        userIsScrolling = false
+                        scrollPolicy.observe(distanceFromBottom: Double(distanceFromBottom), userIsScrolling: false)
+                    }
+                })
+                .onPreferenceChange(TranscriptBottomPreference.self) { bottom in
+                    guard let bottom else { return }
+                    distanceFromBottom = max(0, bottom - viewport.size.height)
+                    scrollPolicy.observe(distanceFromBottom: Double(distanceFromBottom), userIsScrolling: userIsScrolling)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !scrollPolicy.followsLatest && !model.messages.isEmpty {
+                        Button {
+                            userScrollSettlement?.cancel()
+                            userIsScrolling = false
+                            scrollPolicy.jumpToLatest()
+                            proxy.scrollTo(chatBottomAnchor, anchor: .bottom)
+                        } label: {
+                            Image(systemName: "chevron.down").font(.system(size: 18, weight: .semibold))
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain).modifier(ChatGlass(cornerRadius: 22))
+                        .accessibilityLabel("Scroll to latest message")
+                        .accessibilityIdentifier("chat.latest")
+                        .padding(.trailing, 16).padding(.bottom, 6)
+                    }
+                }
+                .onChange(of: model.scrollToken) { _, _ in
+                    if !userIsScrolling && scrollPolicy.shouldScroll(for: model.scrollReason) {
+                        proxy.scrollTo(chatBottomAnchor, anchor: .bottom)
+                    }
+                }
+                .onChange(of: viewport.size) { _, _ in
+                    if !userIsScrolling && scrollPolicy.shouldScroll(for: .layout) {
+                        proxy.scrollTo(chatBottomAnchor, anchor: .bottom)
+                    }
+                }
+                .onAppear { proxy.scrollTo(chatBottomAnchor, anchor: .bottom) }
+                .onDisappear { userScrollSettlement?.cancel() }
+            }
+        }
+    }
+
+    private func transcript(width: CGFloat) -> some View {
+            let latestMessageId = model.messages.last?.id
+            return VStack(alignment: .leading, spacing: model.usesBubbles ? 12 : 24) {
                 if model.isLoading {
                     ProgressView()
                         .frame(maxWidth: .infinity)
@@ -204,8 +275,11 @@ struct ChatView: View {
                     EmptyChatView(model: model)
                 }
 
+                // Measure every row: changing lazy estimates above the growing reply
+                // can move the reader even while automatic following is paused.
                 ForEach(model.messages) { message in
-                    MessageView(message: message, model: model)
+                    MessageView(message: message, model: model,
+                        marksLatestParagraph: message.role == .assistant && message.id == latestMessageId)
                         .id(message.id)
                 }
 
@@ -235,35 +309,10 @@ struct ChatView: View {
                     .frame(height: 1)
                     .id(chatBottomAnchor)
             }
-            .scrollTargetLayout()
-            .frame(maxWidth: 800)
-            .frame(maxWidth: .infinity)
+            .frame(width: width)
             .padding(.horizontal, 16)
             .padding(.bottom, compactHeader ? 0 : 12)
             .padding(.top, compactHeader ? 8 : headerHeight + 20)
-        }
-        // Keep the newest content reachable when the keyboard, draft height,
-        // or device orientation changes the available transcript space.
-        .defaultScrollAnchor(.bottom)
-        .scrollPosition(id: $scrollTarget, anchor: .bottom)
-        .scrollDismissesKeyboard(.interactively)
-        .overlay(alignment: .bottomTrailing) {
-            if scrollTarget != chatBottomAnchor && !model.messages.isEmpty {
-                Button { scrollTarget = chatBottomAnchor } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 18, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain).modifier(ChatGlass(cornerRadius: 22))
-                .accessibilityLabel("Scroll to latest message")
-                .padding(.trailing, 16).padding(.bottom, 6)
-            }
-        }
-        .onChange(of: model.scrollToken) { _, _ in
-            scrollTarget = chatBottomAnchor
-        }
-        .onAppear {
-            scrollTarget = chatBottomAnchor
-        }
     }
 
     @ViewBuilder
@@ -275,6 +324,13 @@ struct ChatView: View {
         } else {
             ComposerView(model: model)
         }
+    }
+}
+
+private struct TranscriptBottomPreference: PreferenceKey {
+    static var defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        if let next = nextValue() { value = next }
     }
 }
 

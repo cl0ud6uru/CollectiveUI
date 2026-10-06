@@ -61,6 +61,32 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | tail -100
 
+      - name: Test native draft and session behavior
+        shell: bash
+        run: |
+          DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime, entries in devices.items():
+              if ".iOS-" not in runtime:
+                  continue
+              for device in entries:
+                  if device.get("isAvailable", True) and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("No available iPhone simulator")
+          ')"
+          set -o pipefail
+          xcodebuild test \
+            -project ios/CollectiveUI.xcodeproj \
+            -scheme CollectiveUI \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -parallel-testing-enabled NO \
+            -only-testing:CollectiveUITests \
+            QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | tail -150
+
       - name: Show compiler errors
         if: failure()
         shell: bash
@@ -68,6 +94,65 @@ jobs:
           if [ -f "$RUNNER_TEMP/xcodebuild.log" ]; then
             grep -nE "error:|fatal error" "$RUNNER_TEMP/xcodebuild.log" | head -100 || true
           fi
+
+  regressions:
+    name: Native iOS regression tests
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        shell: bash
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
+
+      - name: Build separate QA app for fixtures
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project ios/CollectiveUI.xcodeproj \
+            -scheme CollectiveUI \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/qa-app" \
+            QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/qa-build.log" | tail -100
+
+      - name: Run offline UI regressions
+        shell: bash
+        run: |
+          bash ios/scripts/simulator-regressions.sh \
+            "$RUNNER_TEMP/qa-app/Build/Products/Debug-iphonesimulator/CollectiveUI.app" \
+            "$RUNNER_TEMP/ios-regressions"
+
+      - name: Export regression screenshots
+        if: always()
+        shell: bash
+        run: |
+          if [ -d "$RUNNER_TEMP/ios-regressions/Regression.xcresult" ]; then
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/ios-regressions/Regression.xcresult" \
+              --output-path "$RUNNER_TEMP/ios-regressions/screenshots"
+          fi
+
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-regressions
+          path: |
+            ${{ runner.temp }}/ios-regressions
+            ${{ runner.temp }}/qa-build.log
+          retention-days: 14
+          if-no-files-found: warn
 
   screenshots:
     name: Simulator screenshots
