@@ -3,11 +3,11 @@ import { errorResponse, requirePrincipal } from '@/lib/session';
 import { assertAuthOrigin } from '@/lib/auth/origin';
 import { getSetting } from '@/lib/settings';
 import { HttpError } from '@/lib/authz';
-import { browseNativeSessions, nativeControl, nativeSnapshot, openNativeSession, profileName, submitNativePrompt, type NativeUpload } from '@/lib/remote-hermes/sessions';
+import { browseNativeSessions, nativeHistory, nativeControl, nativeSnapshot, openNativeSession, profileName, submitNativePrompt, type NativeUpload } from '@/lib/remote-hermes/sessions';
 
 const id = z.string().min(1).max(200);
-const query = z.object({ operation: z.enum(['browse', 'snapshot', 'catalog', 'context']), profile: profileName.optional(), sessionId: id.optional() });
-const command = z.object({ operation: z.enum(['open', 'submit', 'stop', 'steer', 'answer', 'command', 'queue']), profile: profileName.optional(), storedId: id.optional(), sessionId: id.optional(), requestId: z.string().max(200).optional(), text: z.string().max(64000).optional(), answer: z.unknown().optional() }).strict();
+const query = z.object({ operation: z.enum(['browse', 'snapshot', 'history', 'catalog', 'context']), profile: profileName.optional(), sessionId: id.optional(), offset: z.coerce.number().int().min(0).max(100000).default(0) });
+const command = z.object({ operation: z.enum(['open', 'submit', 'stop', 'steer', 'answer', 'command', 'queue']), profile: profileName.optional(), storedId: id.optional(), offset: z.number().int().min(0).max(100000).optional(), sessionId: id.optional(), requestId: z.string().max(200).optional(), text: z.string().max(64000).optional(), answer: z.unknown().optional() }).strict();
 const fail = (e: unknown) => e instanceof z.ZodError ? Response.json({ error: 'Invalid Hermes request.' }, { status: 400 }) : errorResponse(e);
 const headers = { 'Cache-Control': 'private, no-store' };
 async function boundedBytes(req: Request, max: number) {
@@ -24,8 +24,9 @@ export async function GET(req: Request, ctx: RouteContext<'/api/hermes/[connecti
     const p = await requirePrincipal();
     const { connectionId } = await ctx.params;
     const input = query.parse(Object.fromEntries(new URL(req.url).searchParams));
-    if (input.operation === 'browse') return Response.json(await browseNativeSessions(p.user.id, connectionId, profileName.parse(input.profile)), { headers });
+    if (input.operation === 'browse') return Response.json(await browseNativeSessions(p.user.id, connectionId, profileName.parse(input.profile), input.offset), { headers });
     const sessionId = id.parse(input.sessionId);
+    if (input.operation === 'history') return Response.json(await nativeHistory(p.user.id, connectionId, sessionId, input.offset), { headers });
     const result = input.operation === 'snapshot' ? await nativeSnapshot(p.user.id, connectionId, sessionId)
       : await nativeControl(p.user.id, connectionId, sessionId, input.operation);
     return Response.json(result, { headers });
@@ -56,7 +57,7 @@ export async function POST(req: Request, ctx: RouteContext<'/api/hermes/[connect
     }
     const input = command.parse(raw);
     if (uploads.length && input.operation !== 'submit') throw new HttpError(400, 'Attach files to a message.');
-    if (input.operation === 'open') return Response.json(await openNativeSession(p.user.id, connectionId, profileName.parse(input.profile), input.storedId), { headers });
+    if (input.operation === 'open') return Response.json(await openNativeSession(p.user.id, connectionId, profileName.parse(input.profile), input.storedId, input.offset), { headers });
     const sessionId = id.parse(input.sessionId);
     const result = input.operation === 'submit'
       ? await submitNativePrompt(p.user.id, connectionId, sessionId, z.string().uuid().parse(input.requestId), input.text ?? '', uploads)
