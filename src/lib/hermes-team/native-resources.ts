@@ -136,12 +136,13 @@ async function groupResources(root: FileHandle, id: string, strict = true): Prom
   });
 }
 interface NativeJournal { format: 1; operationId: string; planHash: string; writes: { packageId: string; index: number; beforeHash: string; afterHash: string }[]; receipt: ResourceUpdateReceipt; aborted?: true; inFlight?: { packageId: string; stage: string; backup: string } }
+const MAX_NATIVE_JOURNAL_BYTES = 1024 * 1024;
 async function readJournal(fd: FileHandle, name: string): Promise<NativeJournal | null> {
   let file: FileHandle;
   try { file = await open(fdPath(fd, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
   try {
-    const stat = await file.stat(); if (!stat.isFile() || stat.nlink !== 1 || stat.size > 128 * 1024) unsafe('Unsafe resource operation journal.');
+    const stat = await file.stat(); if (!stat.isFile() || stat.nlink !== 1 || stat.size > MAX_NATIVE_JOURNAL_BYTES) unsafe('Unsafe resource operation journal.');
     const buffer = Buffer.alloc(stat.size + 1); let length = 0;
     while (length < buffer.length) { const read = await file.read(buffer, length, buffer.length - length, length); if (!read.bytesRead) break; length += read.bytesRead; }
     if (length !== stat.size || fingerprint(stat) !== fingerprint(await file.stat())) unsafe('Resource journal changed during read.');
@@ -176,13 +177,15 @@ async function readJournal(fd: FileHandle, name: string): Promise<NativeJournal 
   } finally { await file.close(); }
 }
 async function saveJournal(fd: FileHandle, journal: NativeJournal): Promise<void> {
+  const serialized = JSON.stringify(journal);
+  if (Buffer.byteLength(serialized) > MAX_NATIVE_JOURNAL_BYTES) unsafe('Resource operation journal exceeds its byte limit.');
   const name = journal.operationId + '.json', temporary = journal.operationId + '.tmp';
   try {
     const stat = await lstat(fdPath(fd, temporary)); if (!stat.isFile() || stat.nlink !== 1) unsafe();
     await rm(fdPath(fd, temporary));
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const file = await open(fdPath(fd, temporary), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await file.writeFile(JSON.stringify(journal)); await file.sync(); } finally { await file.close(); }
+  try { await file.writeFile(serialized); await file.sync(); } finally { await file.close(); }
   await rename(fdPath(fd, temporary), fdPath(fd, name)); await fd.sync();
 }
 /** journalRoot must be a helper-only broker volume, never mounted in a native/user container. */
@@ -293,8 +296,12 @@ export async function applyTeamResourcePlan(profileRoot: string, operationId: st
         await options.checkpoint?.('installed'); continue;
       }
       const hashes = new Map<string, string>();
-      for (const action of plan.actions.filter(action => action.action === 'install' || action.action === 'remove'))
-        if (!journal.receipt.completedGroups.includes(action.packageId)) hashes.set(action.packageId, resourceGroupHash(await groupResources(root, action.packageId)));
+      for (const action of plan.actions.filter(action => action.action === 'install' || action.action === 'remove')) {
+        if (journal.receipt.completedGroups.includes(action.packageId)) continue;
+        const hash = resourceGroupHash(await groupResources(root, action.packageId)); hashes.set(action.packageId, hash);
+        // The state machine stops at its first unchanged/blocked group. Later groups need no read yet.
+        if (hash !== action.afterHash) break;
+      }
       const step = nextResourceUpdateStep(plan, journal.receipt, id => hashes.get(id)!);
       journal.receipt = step.receipt;
       if (step.kind !== 'apply') { await saveJournal(journals, journal); return journal.receipt; }

@@ -45,6 +45,11 @@ export class TeamResourceError extends Error {
 const fail = (code: TeamResourceError["code"], message: string): never => { throw new TeamResourceError(code, message); };
 export const resourceSha256 = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+function hasAncestor(value: string, known: ReadonlySet<string>): boolean {
+  const segments = value.split("/");
+  for (let index = 1; index < segments.length; index++) if (known.has(segments.slice(0, index).join("/"))) return true;
+  return false;
+}
 
 /** These names are never publishable, even when nested in an otherwise selected skill. */
 function excludedSegment(segment: string): boolean {
@@ -123,15 +128,16 @@ export function createTeamResourceSnapshot(resources: readonly TeamResource[], o
     validateResource(resource, limits);
     return Object.freeze({ path: resource.path, kind: resource.kind, packageId: resource.packageId, sha256: resource.sha256, encoding: resource.encoding, content: resource.content, size: resource.size });
   }).sort((a, b) => compare(a.path, b.path));
-  const seen = new Set<string>(); let total = 0;
+  const seen = new Set<string>(), names = new Set(sorted.map(resource => resource.path)); let total = 0;
   for (const resource of sorted) {
     if (seen.has(resource.path)) fail("invalid-manifest", "Duplicate resource path");
-    if ([...seen].some(existing => existing.startsWith(resource.path + "/") || resource.path.startsWith(existing + "/"))) fail("invalid-manifest", "Resource paths overlap a file and directory");
+    if (hasAncestor(resource.path, names)) fail("invalid-manifest", "Resource paths overlap a file and directory");
     seen.add(resource.path); total += resource.size;
     if (total > limits.maxTotalBytes) fail("limit", "Publishable snapshot exceeds total size limit");
   }
   const packages = [...new Set(sorted.filter(resource => resource.kind === "skill").map(resource => resource.packageId))];
-  if (packages.some((group, index) => packages.slice(index + 1).some(other => group.startsWith(other + "/") || other.startsWith(group + "/")))) fail("invalid-manifest", "Overlapping skill packages");
+  const knownPackages = new Set(packages);
+  if (packages.some(group => hasAncestor(group, knownPackages))) fail("invalid-manifest", "Overlapping skill packages");
   if (options.requireCompleteSkills !== false && packages.some(group => !seen.has(group + "/SKILL.md"))) fail("invalid-manifest", "A skill package must include SKILL.md");
   return Object.freeze({ format: 1 as const, manifestHash: manifestHash(sorted), resources: Object.freeze(sorted) });
 }
@@ -256,7 +262,10 @@ export interface TeamResourceReviewUnit {
 export function assertCompatibleResourcePackageIds(ids: readonly string[]): void {
   const packages = [...new Set(ids)].sort(compare);
   for (const id of packages) assertSafeResourcePath(id);
-  if (packages.some((group, index) => packages.slice(index + 1).some(other => other.startsWith(group + "/") || group.startsWith(other + "/"))))
+  const known = new Set(packages);
+  // Each safe path has at most sixteen segments. Check its actual ancestors;
+  // sibling names can sort between a package and its descendants.
+  if (packages.some(id => hasAncestor(id, known)))
     fail("invalid-manifest", "Resource package boundaries overlap across snapshots; reconcile them before publishing or updating");
 }
 export function assertCompatibleResourcePackages(...snapshots: readonly TeamResourceSnapshot[]): void {

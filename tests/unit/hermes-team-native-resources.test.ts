@@ -128,6 +128,20 @@ describe("Protected native receipt authority", () => {
 
 
 describe("Strict protected journals and untouched abort", () => {
+  it("completes and replays 512 long safe write groups using the same bounded journal format", async () => {
+    await rm(path.join(root, 'skills/support'), { recursive: true });
+    const document = (prefix: string, index: number): TeamResource => {
+      const name = `documents/${prefix}-${'x'.repeat(200)}-${index}.md`, content = `${prefix} content ${index}`;
+      return { path: name, packageId: name, kind: 'document', encoding: 'utf8', content, size: Buffer.byteLength(content), sha256: resourceSha256(content) };
+    };
+    const old = Array.from({ length: 256 }, (_, index) => document('old', index)), next = Array.from({ length: 256 }, (_, index) => document('new', index));
+    for (const resource of old) await file(resource.path, resource.content);
+    const current = await inventoryMemberResources(root), plan = planTeamResourceUpdate({ installed: createTeamResourceSnapshot(old), current, release: createTeamResourceSnapshot(next) });
+    const receipt = await applyTeamResourcePlan(root, 'long-journal', plan, { journalRoot: journals }); expect(receipt.completedGroups).toHaveLength(512);
+    expect(Buffer.byteLength(await readFile(path.join(journals, 'long-journal.json')))).toBeGreaterThan(128 * 1024);
+    await assertResourceUpdatesSettled(journals); expect(await applyTeamResourcePlan(root, 'long-journal', plan, { journalRoot: journals })).toEqual(receipt);
+    expect(await readFile(path.join(root, next[0].path), 'utf8')).toBe(next[0].content);
+  }, 120000);
   it("keeps the maximum historical metadata bound consistent with native journal action indices", async () => {
     const overrides = Object.fromEntries(Array.from({ length: 1024 }, (_, index) => [`skills/a-deleted-${index}`, 'deleted' as const]));
     const current = await inventoryMemberResources(root), release = createTeamResourceSnapshot([skill('new', 'SKILL.md', 'z-new')]);
