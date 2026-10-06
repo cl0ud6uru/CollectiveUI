@@ -3,6 +3,7 @@ import { botDelegates, botTools, toolGrants, type AiApp, type Bot, type McpServe
 
 // A tiny stand-in for drizzle's query builder: select().from(table)[.innerJoin()].where() resolves to rows per table.
 const rows = new Map<unknown, unknown[]>();
+vi.mock("@/lib/agent/learning/store", () => ({ learningIsEnabled: async () => false, learnedSkillsForBot: async () => [] }));
 vi.mock("@/db", () => {
   const chain = (table: unknown) => {
     const q = { innerJoin: () => q, where: async () => rows.get(table) ?? [], then: undefined as never };

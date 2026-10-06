@@ -275,6 +275,7 @@ export async function updatePrefs(prefs: Omit<UserPrefs, "defaultAppId" | "defau
     .object({
       customInstructions: z.string().max(4000).optional(),
       memoryEnabled: z.boolean().optional(),
+      learningEnabled: z.boolean().optional(),
       defaultAppId: z.string().max(100).nullable().optional(),
       defaultBotId: z.string().max(100).nullable().optional(),
     })

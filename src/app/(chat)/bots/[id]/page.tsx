@@ -17,6 +17,8 @@ import { StartSideChat } from "@/components/chat/start-side-chat";
 import { ShareTemplateButton } from "@/components/bots/share-template";
 import { UseAsTemplateButton } from "@/components/bots/template-button";
 import { isLocalHermes } from "@/lib/local-hermes/config";
+import { LearningPanel } from "@/components/bots/learning-panel";
+import { learningViews } from "@/lib/agent/learning/store";
 
 export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
   const p = await requirePagePrincipal();
@@ -26,6 +28,7 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
   const docker = !!app && isDockerHermes(app);
   const local = !!app && isLocalHermes(app);
   const canEdit = canEditBot(p, bot);
+  const learned = app && app.provider !== "hermes" && bot.executionMode !== "service" ? await learningViews(p, bot.id) : null;
   const publication = bot.executionMode === "service" ? await servicePublicationStatus(bot) : null;
   const capabilities = bot.executionMode === "service" ? await activeServiceGrants(bot.id) : [];
   const [[owner], skills, myRoutines, mems, activity] = await Promise.all([
@@ -134,6 +137,7 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           createdAt: a.createdAt.toISOString(),
         }))}
       />}
+      {learned && <LearningPanel rows={learned} />}
     </PageFrame>
   );
 }

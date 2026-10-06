@@ -499,6 +499,7 @@ export async function saveToolSettings(value: Omit<ToolSettings, "webSearch"> & 
       fetchAllowlist: z.array(z.string().trim().toLowerCase()).transform((l) => l.filter(Boolean)),
       webSearch: z.object({ provider: z.enum(["none", "searxng", "brave", "bing"]), url: z.string().optional(), apiKey: z.string().optional() }),
       nativeSearch: nativeSearchSettingsSchema.optional(),
+      learningEnabled: z.boolean().optional(),
       maxStepsCap: z.number().int().min(1).max(100),
       botCreation: z.enum(["everyone", "groups", "admins"]),
       utilityAppId: z.string().optional(),
@@ -518,6 +519,7 @@ export async function saveToolSettings(value: Omit<ToolSettings, "webSearch"> & 
   const next: ToolSettings = {
     ...v,
     nativeSearch: v.nativeSearch ?? current.nativeSearch ?? NATIVE_SEARCH_DEFAULTS,
+    learningEnabled: v.learningEnabled ?? current.learningEnabled ?? true,
     utilityAppId: v.utilityAppId || undefined,
     embeddingAppId: v.embeddingAppId || undefined,
     webSearch: {
