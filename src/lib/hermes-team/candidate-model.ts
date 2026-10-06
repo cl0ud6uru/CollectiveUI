@@ -16,27 +16,52 @@ class CandidateResponseError extends HttpError {
 /** Decode before checking known secrets. Arbitrary encoded/external secrets are not claimed to be detected. */
 function safeNativeResponse(body:string,contentType:string,secrets:readonly string[]):string{
   const keys=secrets.filter(Boolean);let nodes=0;
+  const bounded=(depth:number)=>{if(++nodes>100000 || depth>32)throw new Error('Bounded native response structure exceeded.');};
+  // Native tools parse their arguments after the SDK decodes the outer response.
+  // Check that recognized JSON layer as well; redacting its serialized text alone
+  // would miss a credential represented by JSON escapes.
+  const checkArguments=(text:string,depth:number)=>{
+    if(Buffer.byteLength(text,'utf8')>CANDIDATE_MODEL_LIMITS.responseBytes)throw new Error('Bounded native arguments exceeded.');
+    let decoded:unknown;try{decoded=JSON.parse(text);}catch{return;}
+    const inspect=(value:unknown,level:number):void=>{
+      bounded(level);
+      if(typeof value==='string'){if(keys.some(secret=>value.includes(secret)))throw new Error('Unsafe native tool arguments.');return;}
+      if(Array.isArray(value)){for(const item of value)inspect(item,level+1);return;}
+      if(value && typeof value==='object')for(const [key,item] of Object.entries(value)){
+        if(keys.some(secret=>key.includes(secret)))throw new Error('Unsafe native argument key.');
+        if(key==='arguments' && typeof item==='string')checkArguments(item,level+1);
+        inspect(item,level+1);
+      }
+    };
+    inspect(decoded,depth);
+  };
   const sanitize=(value:unknown,depth=0):unknown=>{
-    if(++nodes>100000 || depth>32)throw new Error('Bounded native response structure exceeded.');
+    bounded(depth);
     if(typeof value==='string'){let clean=value;for(const secret of keys)clean=clean.split(secret).join('[redacted]');return clean;}
     if(Array.isArray(value))return value.map(item=>sanitize(item,depth+1));
     if(value && typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>{
-      if(keys.some(secret=>key.includes(secret)))throw new Error('Unsafe native response key.');return[key,sanitize(item,depth+1)];}));
+      if(keys.some(secret=>key.includes(secret)))throw new Error('Unsafe native response key.');
+      if(key==='arguments' && typeof item==='string')checkArguments(item,depth+1);
+      return[key,sanitize(item,depth+1)];}));
     return value;
   };
   if(!/^text\/event-stream/i.test(contentType))return JSON.stringify(sanitize(JSON.parse(body)));
-  const streams=new Map<string,string>();
-  const append=(id:string,text:unknown)=>{if(typeof text!=='string')return;const complete=(streams.get(id)??'')+text;streams.set(id,complete);
+  const streams=new Map<string,string>(),argumentStreams=new Set<string>();
+  const append=(id:string,text:unknown,argumentsJson=false)=>{if(typeof text!=='string')return;const complete=(streams.get(id)??'')+text;streams.set(id,complete);
+    if(argumentsJson)argumentStreams.add(id);
     if(keys.some(secret=>complete.includes(secret)))throw new Error('Unsafe native streamed response.');};
-  return body.split(/\r?\n\r?\n/).map(block=>{
+  const safe=body.split(/\r?\n\r?\n/).map(block=>{
     const lines=block.split(/\r?\n/);const data=lines.filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n');
     if(!data || data.trim()==='[DONE]')return block;
     const value=JSON.parse(data);
     for(const choice of value.choices??[]){append(`content:${choice.index}`,choice.delta?.content);append(`refusal:${choice.index}`,choice.delta?.refusal);
-      for(const call of choice.delta?.tool_calls??[])append(`args:${choice.index}:${call.index}`,call.function?.arguments);}
-    if(typeof value.delta==='string')append(`responses:${value.type}:${value.item_id??value.output_index??''}:${value.content_index??''}`,value.delta);
+      for(const call of choice.delta?.tool_calls??[])append(`args:${choice.index}:${call.index}`,call.function?.arguments,true);
+      append(`legacy-args:${choice.index}`,choice.delta?.function_call?.arguments,true);}
+    if(typeof value.delta==='string')append(`responses:${value.type}:${value.item_id??value.output_index??''}:${value.content_index??''}`,value.delta,value.type==='response.function_call_arguments.delta');
     return [...lines.filter(line=>!line.startsWith('data:')),`data: ${JSON.stringify(sanitize(value))}`].join('\n');
   }).join('\n\n');
+  for(const id of argumentStreams)checkArguments(streams.get(id)!,0);
+  return safe;
 }
 export function nativeRequestId(request: Request,payload?:unknown) {
   const id = request.headers.get('x-collective-request-id');

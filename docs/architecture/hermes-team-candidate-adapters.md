@@ -37,6 +37,8 @@ Model receipts reserve at most 8 requests, 512000 input bytes, 2048 output token
 
 Responses and approval arguments are private bounded replay data. Neither is returned in maintainer rollout views. A cached completed request only replays after fresh authorization. Unwrapped clients without a UUID use a conservative run/purpose/payload hash: identical payloads replay within that run, which can collapse legitimate repetitions. The trusted native shim's per-call UUID avoids this limitation for the tested model SDK path. MCP continuation retains the exact scoped request identity and consumes a matching human approval once. A timed-out wait retains pending approval data; it does not execute after disconnect, schedule work or promise automatic native resume. A later explicit matching call must independently recheck its still-current run and grant.
 
+Known server credentials are checked after decoding JSON responses and the separate JSON layer in native function arguments, including assembled streamed arguments. Unsafe arguments reject delivery and caching while retaining confirmed usage and the attention fence. This check has bounded size/depth and does not claim to detect arbitrary encodings or unknown secrets.
+
 Native work after an app run becomes terminal cannot borrow the old run's actor/token, including background learning. It pauses at this boundary; a separately attributed durable background run/startup integration is still needed before enabling post-turn native background work. Runtime-wide Stop remains the existing container behavior; sibling-profile concurrency is not enabled.
 
 ## Remaining implementation and verification gates

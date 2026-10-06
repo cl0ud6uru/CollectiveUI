@@ -17,7 +17,7 @@ import { openTeamConversation } from '@/lib/hermes-team/conversations';
 import { candidateModelHttp,candidateMcpHttp } from '@/lib/hermes-team/candidate-http';
 import { candidateWireMetadata } from '@/lib/hermes-team/candidate-wire-metadata';
 import { issueTeamCandidateContext,loadCandidateContext } from '@/lib/hermes-team/candidate-context';
-import { executeCandidateModel,nativeRequestId,nativeProviderUsage } from '@/lib/hermes-team/candidate-model';
+import { executeCandidateModel,readCandidateResponse,nativeRequestId,nativeProviderUsage } from '@/lib/hermes-team/candidate-model';
 import * as candidateToolServices from '@/lib/hermes-team/candidate-tools';
 import { GET as pendingGet } from '@/app/api/conversations/[id]/team/approvals/route';
 import { PUT as approvalPut } from '@/app/api/hermes-team/approvals/[id]/route';
@@ -154,6 +154,38 @@ describe('Concrete candidate native model handlers and durable admission',()=>{
     const usages=await db.select().from(schema.usageEvents);expect(usages).toHaveLength(1);expect(usages[0]).toMatchObject({inputTokens:2,outputTokens:3});
     if(kind!=='escaped-json'){expect(result.status).toBe(409);expect((await db.select().from(schema.hermesTeamCandidateRequests))[0].state).toBe('needs_attention');}
     else expect(result.status).toBe(200);
+  });
+  it.each(['chat-arguments','responses-arguments','nested-arguments','chat-stream-arguments','responses-stream-arguments'] as const)('rejects decoded %s credentials before native tool execution and keeps confirmed usage',async(kind)=>{
+    await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+    const argumentsText='{"content":"\\u0073ynthetic-company-secret"}';
+    let response:Response;
+    if(kind==='chat-arguments' || kind==='nested-arguments'){
+      const args=kind==='nested-arguments'?JSON.stringify({function:{arguments:argumentsText}}):argumentsText;
+      response=Response.json({choices:[{message:{tool_calls:[{type:'function',function:{name:'memory',arguments:args}}]}}],usage:{prompt_tokens:2,completion_tokens:3}});
+    }else if(kind==='responses-arguments')response=Response.json({output:[{type:'function_call',name:'memory',arguments:argumentsText}],usage:{input_tokens:2,output_tokens:3}});
+    else{
+      const parts=[argumentsText.slice(0,15),argumentsText.slice(15)];
+      const events=kind==='chat-stream-arguments'?
+        [...parts.map(text=>({choices:[{index:0,delta:{tool_calls:[{index:0,function:{arguments:text}}]}}]})),{choices:[],usage:{prompt_tokens:2,completion_tokens:3}}]:
+        [...parts.map(text=>({type:'response.function_call_arguments.delta',item_id:'memory-call',output_index:0,delta:text})),{type:'response.completed',response:{usage:{input_tokens:2,output_tokens:3}}}];
+      response=new Response(events.map(event=>'data: '+JSON.stringify(event)+'\n\n').join('')+'data: [DONE]\n\n',{headers:{'content-type':'text/event-stream'}});
+    }
+    const fetch=vi.fn<typeof globalThis.fetch>().mockResolvedValue(response);
+    const result=await candidateModelHttp(request(grant.modelTokens.reply,modelBody()),{contextId:grant.contextId,purpose:'reply',operation:['chat','completions']},{routes,fetch});
+    expect(result.status).toBe(409);expect(await result.text()).not.toContain('synthetic-company-secret');
+    expect((await db.select().from(schema.usageEvents))[0]).toMatchObject({inputTokens:2,outputTokens:3});
+    expect((await db.select().from(schema.hermesTeamCandidateRequests))[0]).toMatchObject({state:'needs_attention',response:null});
+    const repeat=await candidateModelHttp(request(grant.modelTokens.utility,modelBody(),randomUUID()),{contextId:grant.contextId,purpose:'utility',operation:['chat','completions']},{routes,fetch});
+    expect(repeat.status).toBe(409);expect(fetch).toHaveBeenCalledOnce();expect(await db.select().from(schema.usageEvents)).toHaveLength(1);
+  });
+  it('keeps safe native argument JSON intact, including fragmented escaped text',async()=>{
+    const args='{"content":"\\u0073afe personal procedure"}';
+    const json={choices:[{message:{tool_calls:[{type:'function',function:{name:'memory',arguments:args}}]}}]};
+    const result=await readCandidateResponse(Response.json(json),['synthetic-company-secret']);
+    expect(JSON.parse(result.body)).toEqual(json);expect(JSON.parse(JSON.parse(result.body).choices[0].message.tool_calls[0].function.arguments)).toEqual({content:'safe personal procedure'});
+    const events=[args.slice(0,15),args.slice(15)].map(text=>({type:'response.function_call_arguments.delta',item_id:'memory-call',delta:text}));
+    const stream=events.map(event=>'data: '+JSON.stringify(event)+'\n\n').join('')+'data: [DONE]\n\n';
+    expect((await readCandidateResponse(new Response(stream,{headers:{'content-type':'text/event-stream'}}),['synthetic-company-secret'])).body).toBe(stream);
   });
   it('blocks concurrent/restarted ambiguous dispatch and never repeats a request after a lost provider response',async()=>{
     await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
