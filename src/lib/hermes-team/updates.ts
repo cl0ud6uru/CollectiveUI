@@ -47,10 +47,13 @@ function assertGroupId(group: string): void {
   assertSafeResourcePath(group);
   if (group !== "SOUL.md" && !group.startsWith("skills/") && !group.startsWith("documents/")) throw new Error("Invalid resource group");
 }
+// PostgreSQL JSONB may reorder object keys. Hash the semantic fields in a fixed order.
+const resourceRecords = (resources: readonly TeamResource[]) => resources.map(resource => [resource.path, resource.packageId, resource.kind, resource.encoding, resource.sha256, resource.size, resource.content]);
 function planDigest(plan: Omit<TeamResourceUpdatePlan, "planHash">): string {
   return resourceSha256(JSON.stringify({ format: plan.format, fromManifestHash: plan.fromManifestHash, toManifestHash: plan.toManifestHash, currentManifestHash: plan.currentManifestHash,
     actions: plan.actions.map(action => ({ packageId: action.packageId, action: action.action, reason: action.reason, beforeHash: action.beforeHash, afterHash: action.afterHash, teamHash: action.teamHash,
-      memberResources: action.memberResources, teamResources: action.teamResources, writeResources: action.writeResources, removePaths: action.removePaths })), overrides: plan.overrides }));
+      memberResources: resourceRecords(action.memberResources), teamResources: resourceRecords(action.teamResources), writeResources: resourceRecords(action.writeResources), removePaths: action.removePaths })),
+    overrides: Object.entries(plan.overrides).sort(([a], [b]) => compare(a, b)) }));
 }
 /**
  * Whole-package three-way reconciliation. `installed` is the last offered team revision;
@@ -157,7 +160,7 @@ function verifyPlan(plan: TeamResourceUpdatePlan): void {
       || action.beforeHash !== resourceGroupHash(action.memberResources) || action.teamHash !== resourceGroupHash(action.teamResources)) throw new Error("Invalid resource update group hashes");
     const apply = action.action === "install" || action.action === "remove";
     if (!["install", "remove", "preserve", "conflict"].includes(action.action) || action.afterHash !== (apply ? action.teamHash : action.beforeHash)
-      || JSON.stringify(action.writeResources) !== JSON.stringify(apply ? action.teamResources : [])
+      || JSON.stringify(resourceRecords(action.writeResources)) !== JSON.stringify(resourceRecords(apply ? action.teamResources : []))
       || JSON.stringify(action.removePaths) !== JSON.stringify(apply ? action.memberResources.filter(resource => !action.teamResources.some(target => target.path === resource.path)).map(resource => resource.path) : [])) throw new Error("Invalid resource update writes");
   }
 }
