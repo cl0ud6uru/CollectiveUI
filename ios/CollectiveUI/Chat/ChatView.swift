@@ -348,7 +348,15 @@ struct ChatView: View {
 
     @ViewBuilder
     private var bottomBar: some View {
-        if model.isReadOnly {
+        if model.target?.hermesTeam == true {
+            VStack(spacing: 8) {
+                NoticeBar(text: model.unavailableReason ?? "Open this Team Bot in the web app.", systemImage: "globe")
+                if let baseURL = model.app.serverURL, let botId = model.target?.id {
+                    Link("Open Team Bot on the web", destination: baseURL.appendingPathComponent("bots").appendingPathComponent(botId))
+                        .font(.callout).padding(.bottom, 12)
+                }
+            }
+        } else if model.isReadOnly {
             NoticeBar(text: "Delegated task — read only", systemImage: "lock")
         } else if model.isUnavailable {
             NoticeBar(text: model.unavailableReason ?? "This chat can't continue.", systemImage: "exclamationmark.circle")
