@@ -27,7 +27,7 @@ import { formatDuration, needsAction, useElapsed } from "./steps";
 import { BotSidePanel } from "@/components/bots/bot-side-panel";
 import { BotChatNavigation } from "./bot-chat-navigation";
 import { parseHermesInput, type CommandResult, type HermesCommandCatalog } from "@/lib/chat/hermes-commands";
-import { composerCommands } from "@/lib/chat/composer-commands";
+import { buildCommandRequest, composerCommands } from "@/lib/chat/composer-commands";
 import { CommandResultCard } from "./command-result";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Tip } from "@/components/ui/tooltip";
@@ -407,7 +407,7 @@ export function Chat({
     try {
       const response = await fetch("/api/chat/commands", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, ...targetBody, text, revision: commandRevisions.current.get(commandScope) ?? 0, newConversationId: commandAttempt.current.nextId, messageId: lastMessageIdRef.current }),
+        body: JSON.stringify(buildCommandRequest({ conversationId, ...targetBody, text, revision: commandRevisions.current.get(commandScope) ?? 0, newConversationId: commandAttempt.current.nextId, messageId: lastMessageIdRef.current })),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Command failed. Your draft has been kept.");

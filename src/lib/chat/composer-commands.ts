@@ -36,3 +36,10 @@ export function insertCommandIntoDraft(draft: string, command: string): string {
   const rest = partial ? text.slice(partial[0].length) : text;
   return `${command} ${rest}`;
 }
+
+/** Command requests carry control fields only, never model-message settings. */
+export function buildCommandRequest({ conversationId, appId, botId, text, revision, newConversationId, messageId }: {
+  conversationId: string; appId?: string; botId?: string; text: string; revision?: number; newConversationId?: string; messageId?: string;
+}) {
+  return { conversationId, appId, botId, text, revision, newConversationId, messageId };
+}
