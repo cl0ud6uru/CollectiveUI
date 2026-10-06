@@ -13,7 +13,7 @@ export async function candidateWireMetadata(p:Principal,route:VerifiedTeamModelR
   let value:unknown;let providerKind:'openai'|'openai-compatible'|'chatgpt';
   if(route.integration==='hermes_native_codex'){
     const [row]=await q.select({id:userCredentials.id,userId:userCredentials.userId,provider:userCredentials.provider,status:userCredentials.status,
-      accountId:userCredentials.accountId,expiresAt:userCredentials.expiresAt,secretEnc:userCredentials.secretEnc})
+      accountId:userCredentials.accountId,expiresAt:userCredentials.expiresAt,credentialRevision:userCredentials.secretEnc})
       .from(userCredentials).where(and(eq(userCredentials.userId,p.user.id),eq(userCredentials.provider,'chatgpt'))).for('share');
     if(!row || row.status!=='active' || !row.expiresAt || row.expiresAt.getTime()<=Date.now())throw new HttpError(409,'The personal connection expired.');
     value={integration:route.integration,endpoint:chatgptBackendUrl(),model:route.model,credential:{...row,expiresAt:row.expiresAt.getTime()}};
