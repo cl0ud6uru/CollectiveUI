@@ -277,6 +277,8 @@ public struct TargetOption: Decodable, Hashable, Sendable, Identifiable {
     public var detail: String?
     public var supportsVision: Bool
     public var hermes: Bool
+    /// Team Bots use the compatible web flow until native support is available.
+    public var hermesTeam: Bool
     public var starters: [String]
     public var label: String?
     public var pinned: Bool
@@ -295,6 +297,7 @@ public struct TargetOption: Decodable, Hashable, Sendable, Identifiable {
         self.detail = detail
         self.supportsVision = false
         self.hermes = false
+        self.hermesTeam = false
         self.starters = starters
         self.label = nil
         self.pinned = false
@@ -309,7 +312,7 @@ public struct TargetOption: Decodable, Hashable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case kind, id, name, icon
         case detail = "description"
-        case supportsVision, hermes, starters, label, pinned, coordinator, hidden, preview, lastAt, status, members
+        case supportsVision, hermes, hermesTeam, starters, label, pinned, coordinator, hidden, preview, lastAt, status, members
     }
 
     public init(from decoder: Decoder) throws {
@@ -321,6 +324,7 @@ public struct TargetOption: Decodable, Hashable, Sendable, Identifiable {
         detail = c.lenient(String.self, .detail)
         supportsVision = c.lenient(Bool.self, .supportsVision) ?? false
         hermes = c.lenient(Bool.self, .hermes) ?? false
+        hermesTeam = c.lenient(Bool.self, .hermesTeam) ?? false
         starters = c.lenient([String].self, .starters) ?? []
         label = c.lenient(String.self, .label)
         pinned = c.lenient(Bool.self, .pinned) ?? false

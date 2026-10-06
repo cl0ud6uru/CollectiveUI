@@ -30,6 +30,7 @@ import { BotAvatar, randomBlob } from "./bot-avatar";
 import { createPersonalHermesBot } from "@/app/(chat)/settings/hermes-actions";
 import { ServiceGrantEditor } from "./service-grant-editor";
 import type { ServiceGrantInput } from "@/lib/bots/service-policy";
+import { HermesTeamPolicy, type HermesTeamPolicyValue, type HermesTeamModelOption } from "./hermes-team-policy";
 
 type Option = { id: string; name: string };
 type ToolChoice = BotInput["tools"][number];
@@ -128,6 +129,9 @@ export function BotBuilder({
   serviceGrants = [],
   petCatalog = [],
   personalHermesAvailable = false,
+  teamConfig,
+  teamMaintainers = [],
+  teamModelOptions = [],
 }: {
   botId?: string;
   initial: BotInput;
@@ -146,9 +150,14 @@ export function BotBuilder({
   serviceGrants?: ServiceGrantInput[];
   petCatalog?: CatalogPet[];
   personalHermesAvailable?: boolean;
+  /** Offered only by the server when this bot supports Team Bot configuration. */
+  teamConfig?: HermesTeamPolicyValue;
+  teamMaintainers?: { id: string; name: string; disabled?: boolean }[];
+  teamModelOptions?: HermesTeamModelOption[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<BotInput>(initial);
+  const [team, setTeam] = useState(teamConfig);
   const [tab, setTab] = useState<"create" | "configure">(botId ? "configure" : "create");
   const [pending, start] = useTransition();
   const [idea, setIdea] = useState("");
@@ -176,6 +185,7 @@ export function BotBuilder({
       try {
         if (botId) {
           await updateBot(botId, form);
+          await saveTeamSettings(botId);
           toast.success("Bot updated");
           router.refresh();
         } else {
@@ -189,6 +199,7 @@ export function BotBuilder({
             ({ id } = await createPersonalHermesBot(request));
             sessionStorage.removeItem(storageKey);
           } else ({ id } = await createBot(form));
+          await saveTeamSettings(id);
           toast.success("Bot created");
           router.push(`/bots/${id}/edit`);
         }
@@ -196,6 +207,15 @@ export function BotBuilder({
         toast.error(err instanceof Error ? err.message : "Save failed");
       }
     });
+  }
+
+  async function saveTeamSettings(id: string) {
+    if (!team || !isAdmin || engine !== "hermes" || JSON.stringify(team) === JSON.stringify(teamConfig)) return;
+    const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(team) });
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(`Bot configuration saved, but Team Bot settings need attention: ${data.error ?? "save was not confirmed"}`);
+    }
   }
 
   async function draft() {
@@ -414,6 +434,8 @@ export function BotBuilder({
                   </Field>
                 </div>
               )}
+
+              {isAdmin && engine === "hermes" && !personalNew && team && <HermesTeamPolicy value={team} onChange={setTeam} maintainers={teamMaintainers} modelOptions={teamModelOptions} disabled={pending} />}
 
               {isAdmin && engine === "native" && (
                 <Field label="Connector permissions" hint="Service bots are managed by admins and grant only reviewed MCP capabilities through direct chats.">
