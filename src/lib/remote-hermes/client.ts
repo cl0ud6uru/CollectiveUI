@@ -21,7 +21,7 @@ const tokenSchema = z.preprocess(nativeFields, z.object({ accessToken: text, ref
 const profileSchema = z.preprocess(nativeFields, z.object({ name: z.string().min(1).max(200), displayName: z.string().max(300).nullable().optional(), botTitle: z.string().max(300).nullable().optional(), description: z.string().max(2000).nullable().optional(), model: z.string().max(200).nullable().optional(), provider: z.string().max(200).nullable().optional() }));
 export type RemoteHermesProfile = z.infer<typeof profileSchema>;
 
-async function json(res: Response): Promise<unknown> {
+async function json(res: Response, maxBytes = 1024 * 1024): Promise<unknown> {
   if (!res.ok) {
     await res.body?.cancel();
     throw new HttpError(res.status === 401 || res.status === 403 ? 401 : 502,
@@ -34,7 +34,7 @@ async function json(res: Response): Promise<unknown> {
     for (;;) {
       const { done, value } = await reader.read(); if (done) break;
       size += value.byteLength;
-      if (size > 1024 * 1024) throw new HttpError(502, 'The Hermes response is too large.');
+      if (size > maxBytes) throw new HttpError(502, 'The Hermes response is too large.');
       chunks.push(value);
     }
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
@@ -42,11 +42,30 @@ async function json(res: Response): Promise<unknown> {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+/** Native multimodal history retains text and attachment markers, never payloads. */
+function historyDisplayText(value: unknown): string {
+  if (typeof value === 'string') return value.slice(0, 32000);
+  let text = '';
+  for (const raw of Array.isArray(value) ? value : [value]) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const part = raw as Record<string, unknown>;
+    const kind = typeof part.type === 'string' ? part.type : '';
+    const visible = ['text', 'input_text', 'output_text'].includes(kind) ? typeof part.text === 'string' ? part.text : typeof part.content === 'string' ? part.content : ''
+      : ['image_url', 'input_image', 'image'].includes(kind) ? '[image]'
+      : ['input_audio', 'audio'].includes(kind) ? '[audio]' : '';
+    if (!visible) continue;
+    const separator = text ? '\n' : '';
+    text += separator + visible.slice(0, Math.max(0, 32000 - text.length - separator.length));
+    if (text.length >= 32000) break;
+  }
+  return text;
+}
+
 /** Native dashboard auth, separate from API_SERVER_KEY and from model-provider authentication. */
 export class DashboardClient {
   readonly base: string;
   constructor(base: string, private transport: typeof fetch, private secrets?: DashboardSecrets) { this.base = dashboardBase(base); }
-  private async call(path: string, body?: unknown, headers: Record<string, string> = {}) {
+  private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number) {
     const auth: Record<string, string> = this.secrets?.mode === 'sessionToken'
       ? { 'X-Hermes-Session-Token': this.secrets.sessionToken! }
       : this.secrets ? { Authorization: `Bearer ${this.secrets.accessToken}` } : {};
@@ -54,18 +73,40 @@ export class DashboardClient {
       method: body === undefined ? 'GET' : 'POST', redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(15_000),
       headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...auth, ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }));
+    }), maxBytes);
   }
   async status() { return z.preprocess(nativeFields, z.object({ version: z.string().optional(), authRequired: z.boolean().optional() })).parse(await this.call('/api/status')); }
   async profiles(): Promise<RemoteHermesProfile[]> { return z.object({ profiles: z.array(profileSchema).max(2000) }).parse(await this.call('/api/profiles')).profiles; }
   async websocketTicket() {
     return z.object({ ticket: text }).parse(await this.call('/api/auth/ws-ticket', {})).ticket;
   }
-  async sessions(profile: string) {
-    const query = new URLSearchParams({ profile, limit: '100', archived: 'include', order: 'recent' });
-    // Hermes appends older pinned sessions after the requested recent page.
-    // Keep those selectable, within the existing byte limit and a bounded item limit.
-    return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(2000) }).parse(await this.call(`/api/sessions?${query}`)).sessions;
+  private async readSessionPage(profile: string, offset: number) {
+    const query = new URLSearchParams({ profile, limit: '100', offset: String(offset), archived: 'include', order: 'recent' });
+    // Native pages append pinned sessions outside the requested 100-row window.
+    // Keep the foundation's bounded backfill support; never count pins as page rows.
+    return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(2000), total: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).parse(await this.call(`/api/sessions?${query}`));
+  }
+  async sessions(profile: string, offset = 0) {
+    return (await this.readSessionPage(profile, offset)).sessions;
+  }
+  async sessionPage(profile: string, offset = 0) {
+    const result = await this.readSessionPage(profile, offset);
+    if (result.total === undefined) throw new HttpError(501, 'This Hermes version does not support paged conversations.');
+    const nextOffset = offset + 100;
+    return { sessions: result.sessions, nextOffset, hasMore: nextOffset < result.total };
+  }
+  async history(profile: string, storedId: string, offset: number) {
+    if (!storedId || storedId === '.' || storedId === '..') throw new HttpError(400, 'Invalid Hermes session identity.');
+    const query = new URLSearchParams({ profile, limit: '200', offset: String(offset), order: 'latest', include_compacted: 'true', inline_images: 'false' });
+    const result = z.object({ messages: z.array(z.record(z.string(), z.unknown())).max(200), pagination: z.unknown().optional() }).parse(await this.call(`/api/sessions/${encodeURIComponent(storedId)}/messages?${query}`, undefined, {}, 8 * 1024 * 1024));
+    // Older dashboards can silently ignore order and return an oldest-first page.
+    // Adopt only a bounded page that proves the requested native paging contract.
+    const page = z.object({ order: z.literal('latest'), offset: z.literal(offset), limit: z.literal(200) }).safeParse(result.pagination);
+    if (!page.success) throw new HttpError(501, 'This Hermes version does not support paged conversation history.');
+    return { messages: result.messages.filter(m => m.display_kind !== 'hidden').map(m => ({
+      id: String(m.id ?? m.row_id ?? ''), role: typeof m.role === 'string' ? m.role.slice(0, 30) : '',
+      text: historyDisplayText(m.display_content ?? m.content),
+    })).filter(m => m.id && m.text), nextOffset: offset + result.messages.length, hasMore: result.messages.length === 200 };
   }
   async passwordLogin(username: string, password: string): Promise<DashboardSecrets> {
     const providers = z.object({ providers: z.array(z.preprocess(nativeFields, z.object({ name: z.string(), supportsPassword: z.boolean().optional() }))).max(100) }).parse(await this.call('/api/auth/providers')).providers;

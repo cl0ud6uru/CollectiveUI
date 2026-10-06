@@ -6,7 +6,7 @@ vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, view: f.refresh, answer: f.answer, sessions: new Map([['session', { row: { id: 'session', status: f.status, runtimeId: 'runtime' }, view: { running: f.status === 'running', uncertain: false }, pending: new Map() }]]) }) }));
 vi.mock('@/db', () => ({ db: {
-  select: () => ({ from: () => ({ innerJoin: () => ({ where: (condition: unknown) => {
+  select: () => ({ from: () => ({ where: () => ({ orderBy: async () => [] }), innerJoin: () => ({ where: (condition: unknown) => {
     const { params } = new PgDialect().sqlToQuery(condition as Parameters<PgDialect['sqlToQuery']>[0]);
     return Promise.resolve(params.includes(f.owner) ? [{ session: { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: f.status } }] : []);
   } }) }) }),
@@ -21,12 +21,37 @@ vi.mock('@/db', () => ({ db: {
     update: () => ({ set: (values: Record<string, unknown>) => ({ where: () => { const result = Promise.resolve().then(() => { f.status = String(values.status ?? f.status); return [{ id: 'session', status: f.status, runtimeId: 'runtime', ...values }]; }); return Object.assign(result, { returning: () => result }); } }) }),
   }),
 } }));
-import { nativeControl, nativeSnapshot, submitNativePrompt } from '@/lib/remote-hermes/sessions';
+import { remoteAccess } from '@/lib/remote-hermes/store';
+import { browseNativeSessions, nativeHistory, nativeControl, nativeSnapshot, openNativeSession, submitNativePrompt } from '@/lib/remote-hermes/sessions';
 const receipt = '9fd64d53-084f-4898-96e0-59ea8fdc623f';
 describe('remote native session admission and continuity', () => {
   beforeEach(() => {
     vi.clearAllMocks(); f.enabled = true; f.owner = 'owner'; f.status = 'idle'; f.receipt = null; f.updates = []; f.admissions = 0; f.disableAtLock = false;
     f.refresh.mockResolvedValue({ running: false }); f.call.mockResolvedValue({ status: 'streaming' }); f.answer.mockResolvedValue({ answered: true });
+  });
+  it('preserves native page metadata and opens a listed pin using its recorded offset', async () => {
+    const page = { sessions: Array.from({ length: 100 }, (_, i) => ({ id: `chat-${100 + i}` })).concat({ id: 'older-pin' }), nextOffset: 200, hasMore: true };
+    const sessionPage = vi.fn().mockResolvedValue(page), sessions = vi.fn().mockResolvedValue(page.sessions);
+    vi.mocked(remoteAccess).mockResolvedValue({ client: { profiles: async () => [{ name: 'default' }], sessionPage, sessions } } as unknown as Awaited<ReturnType<typeof remoteAccess>>);
+    expect(await browseNativeSessions('owner', 'connection', 'default', 100)).toEqual({ ...page, linked: [] });
+    expect(sessionPage).toHaveBeenCalledWith('default', 100);
+    await openNativeSession('owner', 'connection', 'default', 'older-pin', 100);
+    expect(sessions).toHaveBeenCalledWith('default', 100);
+    await expect(openNativeSession('owner', 'connection', 'default', 'invented', 100)).rejects.toThrow('listed');
+    await expect(browseNativeSessions('owner', 'connection', 'not-owned', 100)).rejects.toThrow('not found');
+    expect(sessionPage).toHaveBeenCalledOnce();
+  });
+  it('authorizes history before contacting Hermes and permits only active continuation after disablement', async () => {
+    const history = vi.fn().mockResolvedValue({ messages: [], nextOffset: 200, hasMore: false });
+    vi.mocked(remoteAccess).mockResolvedValue({ client: { history } } as unknown as Awaited<ReturnType<typeof remoteAccess>>);
+    await expect(nativeHistory('intruder', 'connection', 'session', 0)).rejects.toThrow('not found');
+    expect(remoteAccess).not.toHaveBeenCalled();
+    f.enabled = false;
+    await expect(nativeHistory('owner', 'connection', 'session', 0)).rejects.toThrow('disabled');
+    expect(remoteAccess).not.toHaveBeenCalled();
+    f.status = 'running';
+    await nativeHistory('owner', 'connection', 'session', 200);
+    expect(history).toHaveBeenCalledWith('default', 'stored', 200);
   });
   it('rejects another owner before connecting or answering a native request', async () => {
     await expect(nativeControl('intruder', 'connection', 'session', 'answer', { requestId: 'ask', answer: { value: 'secret' } })).rejects.toThrow('not found');

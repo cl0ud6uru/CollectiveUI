@@ -21,6 +21,7 @@ const server = createServer(async (req,res) => {
  if (req.method === 'GET') {
   if (url.searchParams.get('operation') === 'browse' && url.searchParams.get('profile') === 'research') { res.end(JSON.stringify({sessions:[{id:'research-stored',title:'Research chat'}],linked:[]})); return; }
   if (url.searchParams.get('operation') === 'browse') res.end(JSON.stringify({sessions:[{id:'stored',title:'Fixture chat'}],linked:[{id:'session',storedId:'stored',title:'Fixture chat',profile:'default',status:running?'running':'idle'}]}));
+  else if (url.searchParams.get('operation') === 'history') res.end(JSON.stringify({messages:[{id:'older',role:'user',text:'Earlier native message'}],nextOffset:1,hasMore:false}));
   else res.end(JSON.stringify({id:'session',title:'Fixture chat',profile:'default',running,uncertain:false,connection:'connected',messages:[{id:'message',role:'assistant',text:'Recovered native history'}],partial:running?'Live native response':'',tools:[],prompts,model:'Fixture model',provider:'Fixture',usage:{context_used:100,context_max:1000},queued,admissionAllowed:allowed}));
   return;
  }
@@ -42,6 +43,9 @@ const browser = await chromium.launch({headless:true});
 try {
  const page = await browser.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.goto(`http://127.0.0.1:${server.address().port}/hermes/fixture?session=session`);
+ await expect(page.getByText('Recovered native history')).toBeVisible();
+ await page.getByRole('button',{name:'Load conversation history'}).click();
+ await expect(page.getByText('Earlier native message')).toBeVisible();
  await expect(page.getByText('Recovered native history')).toBeVisible();
  await page.getByRole('textbox',{name:'Message Hermes'}).fill('Analyze fixture attachment');
  await page.getByLabel('Attach files to Hermes').setInputFiles({name:'fixture.txt',mimeType:'text/plain',buffer:Buffer.from('Synthetic test content')});
