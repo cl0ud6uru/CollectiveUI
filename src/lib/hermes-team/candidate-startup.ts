@@ -88,7 +88,7 @@ export async function startTeamCandidateRun(p:Principal,botId:string,runId:strin
     const fresh=await checked();
     const grant=await dockerControl<{grantId:string}>(fresh.context.actorId,'/team/authorize',{teamBotId:botId,mode:fresh.context.mode,modelPolicy:fresh.run.definition.modelPolicy.mode});
     await checked();
-    const headers=new Headers(init.headers);headers.set('x-collective-team-grant',grant.grantId);headers.set('x-collective-team-context',identity.contextId);headers.set('x-collective-team-run',runId);
+    const headers=new Headers(init.headers);headers.set('x-collective-team-grant',grant.grantId);headers.set('x-collective-team-context',identity.contextId);headers.set('x-collective-team-run',runId);headers.set('x-collective-team-bot',botId);headers.set('x-collective-team-mode',fresh.context.mode);
     const abort=new AbortController();
     const signal=init.signal?AbortSignal.any([init.signal,abort.signal]):abort.signal;
     let renewing=false,closed=false;let abortBody:(()=>void)|undefined;
