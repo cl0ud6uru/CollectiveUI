@@ -37,6 +37,12 @@ function num(env: Env, key: string, def: number, min: number, max: number): numb
   return n;
 }
 
+function count(env: Env, key: string, def: number, min: number, max: number): number {
+  const n = num(env, key, def, min, max);
+  if (!Number.isInteger(n)) throw new Error(`${key} must be a whole number from ${min} to ${max}`);
+  return n;
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const secret = env.SANDBOXD_SECRET;
   assertSecret(secret);
@@ -67,7 +73,7 @@ export function loadConfig(env: Env = process.env): Config {
       shmMb: num(env, "SANDBOXD_SHM_MB", 64, 16, 4096),
     },
     idleMinutes: num(env, "SANDBOXD_IDLE_MINUTES", 20, 0.01, 1440),
-    maxRunning: num(env, "SANDBOXD_MAX_RUNNING", 10, 1, 1000),
+    maxRunning: count(env, "SANDBOXD_MAX_RUNNING", 10, 1, 1000),
     maxExecs: num(env, "SANDBOXD_MAX_EXECS", 4, 1, 64),
     maxExecSeconds: num(env, "SANDBOXD_MAX_EXEC_SECONDS", 600, 5, 3600),
     outputLimitBytes: num(env, "SANDBOXD_OUTPUT_LIMIT_MB", 16, 1, 1024) * 1024 * 1024,
