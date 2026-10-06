@@ -35,10 +35,12 @@ export async function openTeamConversation(p: Principal, botId: string, mode: Te
 export async function teamChatStatus(p: Principal, botId: string, conversationId?: string): Promise<TeamChatStatus> {
   const context = conversationId ? await authorizeTeamConversation(p, conversationId) : undefined;
   if (context && context.profile.botId !== botId) throw new HttpError(404, 'Team conversation not found.');
-  const mode = context?.chat.mode ?? 'member';
+  let mode = context?.chat.mode ?? 'member';
   const auth = context ?? await authorizeTeam(p, botId, mode).catch(async e => {
     if (!(e instanceof HttpError) || e.status !== 403 || conversationId) throw e;
-    return authorizeTeam(p, botId, 'admin');
+    const fallback = await authorizeTeam(p, botId, 'admin');
+    mode = 'admin';
+    return fallback;
   });
   let canMaintain = false;
   try { await authorizeTeam(p, botId, 'admin'); canMaintain = true; } catch (e) { if (!(e instanceof HttpError) || e.status !== 403) throw e; }
