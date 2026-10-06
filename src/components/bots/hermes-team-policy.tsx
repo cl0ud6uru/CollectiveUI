@@ -4,7 +4,7 @@ import { useId } from "react";
 import { Field, Select } from "@/components/ui/input";
 
 export type HermesTeamModelPolicy = "admin_provided" | "admin_default_personal_allowed" | "personal_required";
-export type HermesTeamPolicyValue = { enabled: boolean; modelPolicy: HermesTeamModelPolicy; maintainerIds: string[] };
+export type HermesTeamPolicyValue = { enabled: boolean; modelPolicy: HermesTeamModelPolicy; maintainerIds: string[]; expectedVersion?: number };
 export type HermesTeamModelOption = { value: HermesTeamModelPolicy; available: boolean; reason?: string };
 
 const policies: Record<HermesTeamModelPolicy, { label: string; description: string }> = {
@@ -38,7 +38,7 @@ export function HermesTeamPolicy({ value, onChange, maintainers, modelOptions, d
       {(!option?.available || option.reason) && <p role="status" className="text-xs text-muted">{option?.reason ?? "This model route has not been verified. Chat will stay paused until an admin configures a supported connection."}</p>}
       <fieldset className="space-y-2">
         <legend className="mb-1 text-sm font-medium">Who can maintain it</legend>
-        <p className="text-xs text-muted">Only selected admins can enter Admin mode. Maintainers share the working bot’s skills, memory and Admin mode conversations.</p>
+        <p className="text-xs text-muted">Only selected admins can enter Admin mode. Maintainers share the working bot’s skills and native memory. Each maintainer has a separate Admin mode conversation.</p>
         <div className="max-h-48 overflow-y-auto rounded-lg border border-border">
           {maintainers.map((admin) => <label key={admin.id} className="flex items-start gap-3 px-3 py-2 text-sm hover:bg-hover">
             <input type="checkbox" aria-label={`Maintainer: ${admin.name}`} checked={value.maintainerIds.includes(admin.id)} disabled={admin.disabled} onChange={(event) => onChange({ ...value, maintainerIds: event.target.checked ? [...value.maintainerIds, admin.id] : value.maintainerIds.filter((selected) => selected !== admin.id) })} className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" />

@@ -11,7 +11,7 @@ export type HermesTeamView = {
   enabled: boolean;
   mode: HermesTeamMode;
   canMaintain: boolean;
-  state: "preparing" | "connection_needed" | "ready" | "updating" | "needs_attention";
+  state: "preparing" | "connection_needed" | "ready" | "updating" | "needs_attention" | "revoked";
   installedRevision: number | null;
   publishedRevision: number;
   conflictCount: number;
@@ -29,6 +29,7 @@ const stateLabels: Record<HermesTeamView["state"], string> = {
   ready: "Ready",
   updating: "Updating team resources…",
   needs_attention: "Needs attention",
+  revoked: "Access removed",
 };
 const changeLabels: Record<HermesTeamResourcePreview["change"], string> = { added: "Added", changed: "Changed", removed: "Removal" };
 const kindLabels: Record<HermesTeamResourcePreview["kind"], string> = { skill: "Skill", instructions: "Role instructions", document: "Shared document" };
@@ -99,7 +100,7 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onCapture, 
     });
   }
   if (!view.enabled) return null;
-  const locked = !!operation || busy;
+  const locked = !!operation || busy || view.state === "revoked";
   const ready = view.state === "ready";
   const admin = view.mode === "admin";
   const visibleConflicts = conflicts.filter((conflict) => !resolved.includes(conflict.id));
@@ -123,10 +124,11 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onCapture, 
           {!admin && view.conflictCount > 0 && <Button size="sm" variant="outline" disabled={locked || !onLoadConflicts || !onResolveConflict} onClick={() => void loadConflicts()}>Review {view.conflictCount} {view.conflictCount === 1 ? "update" : "updates"}</Button>}
         </div>
       </div>
-      {view.canMaintain && <p id={`${id}-mode-description`} className="text-xs text-muted">Admin mode opens a separate conversation. Maintainers share this working bot’s skills, memory and Admin mode conversations. Your private chat stays separate.</p>}
+      {view.canMaintain && <p id={`${id}-mode-description`} className="text-xs text-muted">Admin mode opens a separate conversation. Maintainers share this working bot’s skills and native memory. Your private chat and other maintainers’ conversations stay separate.</p>}
       {!admin && <p className="text-xs text-muted">Your chat history, memory and new skills stay private. Team updates preserve your own changes.</p>}
       {view.state === "connection_needed" && <p className="text-sm">Connect or reconnect the required model account in <a href="/settings?tab=connected-accounts" className="underline">Settings</a> to continue.</p>}
       {view.state === "needs_attention" && <p className="text-xs text-muted">This bot is paused. Ask an admin to check its configuration, or try again after the issue is resolved.</p>}
+      {view.state === "revoked" && <p className="text-xs text-muted">Your access to this Team Bot was removed. Ask an admin if you need access again.</p>}
       {view.canMaintain && !onOpenMode && <p className="text-xs text-muted">Open this bot in a compatible web version to switch Admin mode.</p>}
       {admin && (!onCapture || !onPublish) && <p className="text-xs text-muted">Publishing is not available in this version. Native learning continues in the working bot.</p>}
       {!admin && view.conflictCount > 0 && (!onLoadConflicts || !onResolveConflict) && <p className="text-xs text-muted">Your changes are preserved. Open a compatible web version to review these updates.</p>}
