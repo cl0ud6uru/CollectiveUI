@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and,eq,inArray } from 'drizzle-orm';
+import { and,eq,inArray,sql } from 'drizzle-orm';
 import { db,type DbOrTx,type Tx } from '@/db';
 import { agentRuns,bots,hermesTeamCandidateContexts,hermesTeamCandidateRequests,hermesTeamChats,hermesTeamLearningHandoffs,hermesTeamProfiles } from '@/db/schema';
 import { encrypt,decrypt } from '@/lib/crypto';
@@ -145,7 +145,7 @@ export async function claimTeamNativeLearning(runId:string,holder:string,segment
 export async function finishTeamNativeLearning(runId:string,successful:boolean){
   const [run]=await db.select().from(agentRuns).where(eq(agentRuns.id,runId));
   if(successful && run && ['queued','running','waiting','waiting_tasks'].includes(run.status) && !run.cancelRequestedAt)return;
-  await db.update(hermesTeamLearningHandoffs).set({state:successful && run?.status==='succeeded' && !run.cancelRequestedAt?'complete':run?.status==='cancelled' || run?.cancelRequestedAt?'cancelled':'needs_attention',updatedAt:new Date()})
+  await db.update(hermesTeamLearningHandoffs).set({state:successful && run?.status==='succeeded' && !run.cancelRequestedAt?sql`case when ${hermesTeamLearningHandoffs.state} = 'running' then 'complete' else 'needs_attention' end`:run?.status==='cancelled' || run?.cancelRequestedAt?'cancelled':'needs_attention',updatedAt:new Date()})
     .where(and(eq(hermesTeamLearningHandoffs.childRunId,runId),inArray(hermesTeamLearningHandoffs.state,['queued','running'])));
 }
 

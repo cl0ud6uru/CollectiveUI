@@ -13,6 +13,7 @@ import { loadPrincipal } from '@/lib/auth/groups';
 import { configureTeam,reserveTeamProfile } from '@/lib/hermes-team/store';
 import { openTeamConversation } from '@/lib/hermes-team/conversations';
 import { candidateWireMetadata } from '@/lib/hermes-team/candidate-wire-metadata';
+import * as candidateContextServices from '@/lib/hermes-team/candidate-context';
 import { issueTeamCandidateContext,loadCandidateContext } from '@/lib/hermes-team/candidate-context';
 import { captureTeamNativeLearning,scheduleTeamNativeLearning,claimTeamNativeLearning,recoverTeamNativeLearning,finishTeamNativeLearning,nativeLearningHandoffHttp } from '@/lib/hermes-team/candidate-learning';
 import { startTeamCandidateRun,retireStoredTeamCandidateRun } from '@/lib/hermes-team/candidate-startup';
@@ -129,6 +130,21 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   fixture.control.mockImplementation(async(_actor,path,scope)=>{if(path==='/team/retire-candidate'){const [c]=await db.select().from(schema.hermesTeamCandidateContexts).where(eq(schema.hermesTeamCandidateContexts.id,scope.contextId));expect(c.revokedAt).not.toBeNull();return {confirmed:true,runtimeWide:true};}return {grantId:'renewed'};});
   await active.authorize();await db.update(schema.agentRuns).set({status:'succeeded',holder:null}).where(eq(schema.agentRuns.id,'parent'));expect(await active.retire()).toEqual({confirmed:true,runtimeWide:true});expect(await retireStoredTeamCandidateRun('parent')).toEqual({confirmed:true,runtimeWide:true});
   expect(fixture.control.mock.calls.filter(c=>c[1]==='/team/retire-candidate')).toHaveLength(1);expect((await db.select().from(schema.hermesTeamCandidateContexts))[0].retirementState).toBe('confirmed');expect(profile.id).toBeTruthy();
+ });
+ it('derives every native startup binding from the issued grant after a pre-issuance profile swap',async()=>{
+  const {profile}=await foreground();await db.delete(schema.hermesTeamCandidateContexts);const original=candidateContextServices.issueTeamCandidateContext;
+  vi.spyOn(candidateContextServices,'issueTeamCandidateContext').mockImplementation(async(...args)=>{
+   const [stored]=await db.select().from(schema.hermesTeamProfiles).where(eq(schema.hermesTeamProfiles.id,profile.id));
+   await db.update(schema.hermesTeamProfiles).set({binding:{...(stored.binding as object),bindingId:'c'.repeat(32)}}).where(eq(schema.hermesTeamProfiles.id,profile.id));return original(...args);
+  });
+  const active=await startTeamCandidateRun(alice,'team','parent',{holder:'foreground-worker',segment:0,routes});
+  expect(active.target.profile).toBe('c'.repeat(32));
+  for(const call of fixture.fetch.mock.calls.filter(c=>String(c[0]).endsWith('/team/prepare-candidate')||String(c[0]).endsWith('/team/start-candidate')))expect(JSON.parse(call[1].body).bindingId).toBe('c'.repeat(32));
+  expect((await db.select().from(schema.hermesTeamCandidateContexts))[0].bindingHash).toBe(candidateContextServices.candidateObjectHash((await db.select().from(schema.hermesTeamProfiles))[0].binding));await active.retire();
+ });
+ it('classifies a succeeded but never-claimed learning assignment as attention, never complete',async()=>{
+  const {grant}=await foreground();await capture(grant);await settle(grant.contextId);const childId=(await scheduleTeamNativeLearning(grant.contextId,{routes}))!;
+  await db.update(schema.agentRuns).set({status:'succeeded'}).where(eq(schema.agentRuns.id,childId));await finishTeamNativeLearning(childId,true);expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe('needs_attention');
  });
  it('detects stale worker after prepare, revokes the attempted grant and never starts native work',async()=>{
   await foreground();await db.delete(schema.hermesTeamCandidateContexts);fixture.fetch.mockImplementation(async(url)=>{if(String(url).endsWith('/team/ensure'))return Response.json((await db.select().from(schema.hermesTeamProfiles))[0].binding);if(String(url).endsWith('/team/prepare-candidate'))await db.update(schema.agentRuns).set({holder:'other-worker'}).where(eq(schema.agentRuns.id,'parent'));return Response.json({prepared:true});});

@@ -128,7 +128,7 @@ export async function startTeamCandidateRun(p:Principal,botId:string,runId:strin
   try{
     await checked();
     const response=await dockerFetch(p.user.id)(`${LOCAL_ORIGIN}/team/start-candidate`,{method:'POST',headers:{'Content-Type':'application/json','x-collective-team-grant':prepared.grant.grantId},
-      body:JSON.stringify({...identity,conversationId:current.run.conversationId}),signal:AbortSignal.timeout(45000)});
+      body:JSON.stringify({...identity,conversationId:prepared.current.run.conversationId}),signal:AbortSignal.timeout(45000)});
     if(!response.ok)throw new HttpError(409,'The native Team runtime refused startup.');
     const started=await response.json() as {started?:boolean};
     if(started.started!==true)throw new HttpError(409,'The native Team runtime did not confirm startup.');
