@@ -6,6 +6,8 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { PageFrame } from "@/components/page-frame";
 import { SettingsView } from "@/components/settings-view";
 import { SecurityPanel } from "@/components/settings/security-panel";
+import { HermesTeamSavedConnections } from "@/components/settings/hermes-team-connections";
+import { listOwnedMemberMcpConnections } from "@/lib/mcp/member-connections";
 import { db } from "@/db";
 import { bots, conversations, memories, toolGrants } from "@/db/schema";
 import { listAccessibleModels } from "@/lib/authz";
@@ -52,7 +54,7 @@ export default async function SettingsPage() {
             : null,
         }
       : null;
-  const [apps, startBots, mems, archived, grants, workspace] = await Promise.all([
+  const [apps, startBots, mems, archived, grants, workspace, teamConnections] = await Promise.all([
     listAccessibleModels(p),
     listStartBots(p),
     db.select().from(memories).where(and(eq(memories.userId, p.user.id), isNull(memories.botId))).orderBy(desc(memories.updatedAt)),
@@ -67,7 +69,9 @@ export default async function SettingsPage() {
       .innerJoin(bots, eq(bots.id, toolGrants.botId))
       .where(eq(toolGrants.userId, p.user.id)),
     workspaceView(p),
+    listOwnedMemberMcpConnections(p),
   ]);
+  const savedTeamConnections = { ...teamConnections, connections: teamConnections.connections.filter(row => row.id !== undefined) };
   return (
     <PageFrame title="Settings">
       <SettingsView
@@ -81,6 +85,7 @@ export default async function SettingsPage() {
         chatgpt={chatgpt}
         workspace={workspace}
         security={<SecurityPanel />}
+        teamConnections={savedTeamConnections.connections.length > 0 ? <HermesTeamSavedConnections key={`${p.user.id}:${p.user.sessionVersion}`} initial={savedTeamConnections} /> : null}
         hermes={hermes || remotePolicy.enabled || remoteConnections.length > 0 ? <>{hermes}{(remotePolicy.enabled || remoteConnections.length > 0) && <RemoteHermes allowed={remotePolicy.enabled} initial={remoteConnections} />}</> : null}
       />
     </PageFrame>

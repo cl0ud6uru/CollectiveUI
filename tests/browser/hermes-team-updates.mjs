@@ -33,6 +33,7 @@ const server=createServer(async(req,res)=>{
  if(url.pathname==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css.css);return;}
  if(!url.pathname.startsWith('/api/')){res.setHeader('Content-Type','text/html');res.end('<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>');return;}
  res.setHeader('Content-Type','application/json');
+ if(req.method==='GET'&&url.pathname.endsWith('/connections')){res.end(JSON.stringify({connections:[]}));return;}
  if(req.method==='GET'){
   gets.push(url.pathname+url.search);
   if(url.pathname.endsWith('/updates')){

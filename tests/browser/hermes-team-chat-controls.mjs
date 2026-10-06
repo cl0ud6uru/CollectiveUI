@@ -23,6 +23,7 @@ const server = createServer(async (req, res) => {
   if (!req.url.startsWith('/api/')) { res.setHeader('Content-Type', 'text/html'); res.end('<div id="root"></div><script src="/bundle.js"></script>'); return; }
   res.setHeader('Content-Type', 'application/json');
   const url = new URL(req.url, 'http://localhost');
+  if(req.method==='GET'&&url.pathname.endsWith('/connections')){res.end(JSON.stringify({connections:[]}));return;}
   if (req.method === 'GET') {
     requests.push({ method: 'GET', pathname: url.pathname, conversationId: url.searchParams.get('conversationId') });
     if (holdStatus) await new Promise(resolve => { releaseStatus = resolve; });

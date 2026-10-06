@@ -45,6 +45,7 @@ const server = createServer(async(req,res)=>{
   if(url.pathname==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css.css);return;}
   if(!url.pathname.startsWith('/api/')){res.setHeader('Content-Type','text/html');res.end('<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>');return;}
   res.setHeader('Content-Type','application/json');
+  if(req.method==='GET'&&url.pathname.endsWith('/connections')){res.end(JSON.stringify({connections:[]}));return;}
   if(req.method==='GET'){gets.push(url.pathname);if(url.pathname.endsWith('/capture')&&inventoryFailure){res.statusCode=503;res.end(JSON.stringify({error:'Native resource inventory is unavailable on this connection.'}));return;}res.end(JSON.stringify(url.pathname.endsWith('/capture')?inventory():url.pathname.endsWith('/revisions')?{revisions:[]}:url.pathname.endsWith('/publish')?{publishedRevision:view.publishedRevision,nativeUpdatesSupported:false,profileCount:2,states:{connection_needed:2},conflictCount:0,conflictedProfileCount:0,updatesNeeded:2}:view));return;}
   const bytes=[];for await(const chunk of req)bytes.push(chunk);const input=JSON.parse(Buffer.concat(bytes).toString());
   if(url.pathname.endsWith('/capture')){
