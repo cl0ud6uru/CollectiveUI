@@ -80,6 +80,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     const skills = await learnedSkillsForBot("bot", "boss");
     expect(renderSkill(skills[0])).toContain("A request to check does not authorize changes");
     expect(renderSkill(skills[0])).toContain("Never install");
+    expect(skills[0].slug).toBe("learned-shared-critical-update-check");
     expect(fixture.generate.mock.calls[0][0].tools).toBeUndefined();
   });
 
@@ -205,6 +206,27 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect(await db.select().from(schema.botLearnings)).toHaveLength(1);
     expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(2);
     expect((await learnedSkillsForBot("bot", "boss"))[0].version).toBe(2);
+  });
+
+  it("keeps readable slugs distinct across scopes and stable through edits", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson(), lesson({ scope: "user" })] } });
+    await reviewNativeRun("run");
+    const before = await learnedSkillsForBot("bot", "member");
+    expect(before.map(s => s.slug).sort()).toEqual(["learned-personal-critical-update-check", "learned-shared-critical-update-check"]);
+    const shared = before.find(s => s.ownerId === "")!;
+    await changeLearning(owner, shared.id, 1, { content: { ...content, name: "New display name" } });
+    const after = (await learnedSkillsForBot("bot", "member")).find(s => s.id === shared.id)!;
+    expect(after.slug).toBe(shared.slug);
+    expect(after.name).toBe("New display name");
+  });
+
+  it("saves nothing when a routine repeat has no new learning", async () => {
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [] } });
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect(await db.select().from(schema.botLearnings)).toHaveLength(1);
+    expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
   });
 
   it("rechecks access and user opt-out after model generation", async () => {

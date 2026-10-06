@@ -14,7 +14,7 @@ export const visibleLearningScope = (botId: string, userId: string) => and(
 export async function learnedSkillsForBot(botId: string, userId: string): Promise<Skill[]> {
   const rows = await db.select().from(botLearnings).where(and(visibleLearningScope(botId, userId), eq(botLearnings.status, "active"))).orderBy(botLearnings.topic);
   return rows.map(row => ({
-    id: row.id, botId, ownerId: row.userId ?? "", slug: `learned-${row.id}`,
+    id: row.id, botId, ownerId: row.userId ?? "", slug: `learned-${row.userId ? "personal" : "shared"}-${row.topic}`,
     ...row.content, version: row.version, createdAt: row.createdAt, updatedAt: row.updatedAt,
     description: `${row.userId ? "Personal" : "Shared bot"} learning: ${row.content.description}`,
   }));
