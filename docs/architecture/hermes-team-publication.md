@@ -60,7 +60,7 @@ The pending operation, immutable revision, definition's published-revision
 pointer and completed receipt commit in one database transaction. Concurrent
 identical clicks produce one release; different stale reviews cannot both publish
 against one base. A transaction failure rolls back all four mutations, allowing
-the same UUID to retry. Migration `0037_hermes_team_revision_immutability` prevents
+the same UUID to retry. Migration `0038_hermes_team_revision_immutability` prevents
 UPDATE and DELETE of published revision rows. Offboarding and rollback therefore
 retain historical releases.
 

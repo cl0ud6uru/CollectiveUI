@@ -70,8 +70,8 @@ async function publishedSnapshot(q: DbOrTx, botId: string, revision: number): Pr
 }
 /** Short mutation transaction; no native I/O while these locks are held. */
 async function lockedDefinition(p: Principal, botId: string, tx: Tx) {
-  await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
   await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, botId)).for('update');
+  await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
   await tx.select({ botId: hermesTeamDefinitions.botId }).from(hermesTeamDefinitions).where(eq(hermesTeamDefinitions.botId, botId)).for('update');
   await tx.select({ userId: hermesTeamMaintainers.userId }).from(hermesTeamMaintainers)
     .where(and(eq(hermesTeamMaintainers.botId, botId), eq(hermesTeamMaintainers.userId, p.user.id))).for('share');
