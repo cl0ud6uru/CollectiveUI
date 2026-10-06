@@ -2,9 +2,10 @@ import "server-only";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { and, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "@/db";
-import { mobileAuthCodes, mobileSessions } from "@/db/schema";
+import { liveActivities, mobileAuthCodes, mobileSessions } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { sessionState } from "@/lib/auth/session-state";
+import { mobileEnabled } from "@/lib/auth/config";
 import { randomToken, sha256Hex } from "@/lib/crypto";
 
 /**
@@ -20,7 +21,7 @@ const CODE_TTL_MS = 2 * 60 * 1000;
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Operator switch (server configuration only). Off by default, like other new sign-in surfaces. */
-export const mobileEnabled = () => process.env.MOBILE_APP_ENABLED === "true";
+export { mobileEnabled } from "@/lib/auth/config";
 
 export function mobileSessionTtlMs() {
   const days = Number(process.env.MOBILE_SESSION_DAYS ?? 30);
@@ -150,6 +151,10 @@ export async function listMobileSessions(p: Principal) {
 }
 
 export async function revokeMobileSession(userId: string, id?: string) {
-  await db.update(mobileSessions).set({ revokedAt: new Date() })
-    .where(and(eq(mobileSessions.userId, userId), isNull(mobileSessions.revokedAt), ...(id ? [eq(mobileSessions.id, id)] : [])));
+  await db.transaction(async (tx) => {
+    const revoked = await tx.update(mobileSessions).set({ revokedAt: new Date() })
+      .where(and(eq(mobileSessions.userId, userId), isNull(mobileSessions.revokedAt), ...(id ? [eq(mobileSessions.id, id)] : [])))
+      .returning({ id: mobileSessions.id });
+    for (const row of revoked) await tx.delete(liveActivities).where(eq(liveActivities.sessionId, row.id));
+  });
 }

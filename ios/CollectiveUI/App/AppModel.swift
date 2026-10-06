@@ -38,6 +38,8 @@ final class AppModel {
     var banner: Banner? = nil
     var isSigningIn: Bool = false
 
+    let liveActivities = LiveActivityCoordinator()
+
     private let authenticator: WebAuthenticator
     /// Custom URLSession for every API client (used by the debug demo mode); nil uses the shared session.
     private let sessionOverride: URLSession?
@@ -117,10 +119,14 @@ final class AppModel {
             api = nil
             return
         }
+        liveActivities.app = self
         // AppModel lives as long as the app, so a strong reference here is fine.
         let model = self
+        let credential = token
+        let origin = serverURL
         api = APIClient(baseURL: serverURL, token: token, session: sessionOverride, onUnauthorized: {
             Task { @MainActor in
+                guard model.token == credential, model.serverURL == origin else { return }
                 model.handleUnauthorized()
             }
         })
@@ -146,6 +152,13 @@ final class AppModel {
     }
 
     func changeServer() {
+        if token != nil, let oldAPI = api {
+            Task {
+                try? await oldAPI.sendIgnoringResponse("/api/mobile/v1/live-activities", method: "DELETE", body: .object([:]))
+                try? await oldAPI.revokeSession()
+            }
+        }
+        liveActivities.resetLogin()
         KeychainStore.remove(Keys.baseURL)
         KeychainStore.remove(Keys.token)
         UserDefaults.standard.removeObject(forKey: Keys.baseURL)
@@ -220,6 +233,7 @@ final class AppModel {
     }
 
     func signOut() async {
+        await liveActivities.clear(removeRemote: true)
         if let api, token != nil {
             do {
                 try await api.revokeSession()
@@ -231,6 +245,7 @@ final class AppModel {
     }
 
     private func clearSession() {
+        liveActivities.resetLogin()
         KeychainStore.remove(Keys.token)
         token = nil
         shell = nil
@@ -258,6 +273,7 @@ final class AppModel {
             let fresh = try await api.shell()
             shell = fresh
             shellError = nil
+            liveActivities.restore()
         } catch {
             if error.isUnauthorized || error.isCancellation {
                 return

@@ -4,6 +4,7 @@ import { reconcileDockerRuntimes } from "@/lib/docker-hermes/lifecycle";
  * memory extraction, MCP tool-list refresh, workspace cleanup. Run with `npm run worker` (tsx) alongside the web app;
  * chat needs it. Safe to run multiple instances.
  */
+import { startActivityDelivery } from "@/lib/live-activities/delivery";
 import { pool } from "@/db";
 import { getBoss, QUEUES, type AgentRunJob, type MemoryExtractJob, type RoutineRunJob } from "@/lib/jobs";
 import { extractMemoriesFromConversation } from "@/lib/agent/memory";
@@ -25,6 +26,7 @@ const BOSS_STOP_MS = 10_000;
 async function main() {
   const boss = await getBoss({ worker: true });
   console.log("[worker] started");
+  const stopActivityDelivery = startActivityDelivery();
   warnAboutVendorEnv("worker");
 
   // Durable runs: one job per segment. Stops and listener reconnects reach running segments through the host.
@@ -115,6 +117,7 @@ async function main() {
     if (stopping) return;
     stopping = true;
     console.log("[worker] shutting down");
+    stopActivityDelivery();
     clearInterval(timer);
     clearInterval(sweepTimer);
     clearInterval(hermesTimer);

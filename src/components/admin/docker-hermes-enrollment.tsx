@@ -1,12 +1,32 @@
 'use client';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { RefreshCw, Search } from 'lucide-react';
 import { updateDockerEnrollment } from '@/app/admin/hermes/enrollment-actions';
 import type { DockerReadiness } from '@/lib/docker-hermes/enrollment';
+import { Badge, Card, Table, Td } from '@/components/admin/ui';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+
 type Person = { id: string; name: string; upn: string; enabled: boolean; cleanup: string; error: string | null; changedBy: string | null; changedAt: string | null };
+
+const READINESS = {
+  'not-configured': { label: 'Not configured', dot: 'bg-subtle' },
+  unavailable: { label: 'Unavailable', dot: 'bg-danger' },
+  ready: { label: 'Ready', dot: 'bg-success' },
+} as const;
+const CLEANUP: Record<string, { label: string; tone: 'default' | 'amber' | 'red' } | undefined> = {
+  pending: { label: 'Stop pending', tone: 'amber' },
+  stopping: { label: 'Stopping', tone: 'amber' },
+  failed: { label: 'Stop failed', tone: 'red' },
+  stopped: { label: 'Stopped · data kept', tone: 'default' },
+};
+const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
 export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: { people: Person[]; readiness: DockerReadiness; legacyConfigured: boolean }) {
   const [pending, start] = useTransition();
   const [message, setMessage] = useState('');
+  const [query, setQuery] = useState('');
   const router = useRouter();
   function update(id: string, enabled: boolean) {
     start(async () => {
@@ -15,24 +35,69 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
       catch { setMessage('The request failed. Refresh the status before retrying.'); }
     });
   }
-  const readinessLabel = { 'not-configured': 'Not configured', unavailable: 'Unavailable', ready: 'Ready' }[readiness.status];
-  return <section aria-labelledby="personal-enrollment-title" className="max-w-4xl space-y-4 p-6">
-    <h2 id="personal-enrollment-title" className="text-lg font-semibold">Personal Docker Hermes enrollment</h2>
-    <div className="rounded-xl border border-border p-4 space-y-2 text-sm">
-      <p><strong>Broker readiness: {readinessLabel}</strong></p><p>{readiness.message}</p>
-      <p>Every user starts without permission, including administrators. Allowing personal Hermes does not create a runtime or configure provider authentication. Enrolled users choose Settings → Connected accounts → Personal Hermes → Enable.</p>
-      <p>Revoking permission immediately denies new setup, chat and profile access, invalidates broker leases and requests a runtime stop. Native volumes, sessions, skills, memory, bots and ownership mappings are retained. Failed stops are retried by the worker.</p>
-      {legacyConfigured && <p role="status">A legacy allowlist is configured and is no longer authoritative. An operator must review and explicitly import it using the documented migration command. Existing Admin revocations are never overwritten.</p>}
+  const status = READINESS[readiness.status];
+  const needle = query.trim().toLowerCase();
+  const shown = people.filter(person => `${person.name} ${person.upn}`.toLowerCase().includes(needle));
+  const allowed = people.filter(person => person.enabled).length;
+  return <section aria-labelledby="personal-enrollment-title" className="space-y-5">
+    <h2 id="personal-enrollment-title" className="sr-only">Personal Docker Hermes enrollment</h2>
+
+    <Card className="flex flex-wrap items-start gap-4">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="flex items-center gap-2 font-medium"><span aria-hidden="true" className={cn('h-2 w-2 shrink-0 rounded-full', status.dot)} />Broker readiness: {status.label}</p>
+        <p className="text-sm text-muted">{readiness.message}</p>
+      </div>
+      <Button variant="outline" size="sm" disabled={pending} onClick={() => router.refresh()} aria-label="Refresh enrollment and broker status">
+        <RefreshCw className={cn('h-4 w-4', pending && 'animate-spin')} aria-hidden="true" /> Refresh
+      </Button>
+    </Card>
+
+    {legacyConfigured && <p role="note" className="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+      A legacy allowlist (<code>DOCKER_HERMES_ALLOWED_USER_IDS</code>) is configured but no longer grants access. An operator must review it and import it with the documented migration command. Revocations made here are never overwritten.
+    </p>}
+
+    <details className="group rounded-2xl border border-border px-4 py-3 text-sm">
+      <summary className="cursor-pointer font-medium">How personal runtimes work</summary>
+      <ul className="mt-2 list-disc space-y-1.5 pl-5 text-muted">
+        <li>Nobody has access until you allow it here, administrators included.</li>
+        <li>Allowing doesn&apos;t create anything. The person turns Hermes on in Settings → Connected accounts → Personal Hermes, then sets up their model provider.</li>
+        <li>Revoking blocks setup, chat and profile access right away and stops their runtime. Their sessions, skills, memory and bots are kept. If a stop fails, the worker retries it.</li>
+      </ul>
+    </details>
+
+    <div className="flex flex-wrap items-center gap-3">
+      <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full bg-surface-2 px-4 sm:max-w-sm">
+        <Search className="h-4 w-4 shrink-0 text-subtle" aria-hidden="true" />
+        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search people" aria-label="Search people" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-subtle" />
+      </label>
+      <span className="text-sm text-muted tabular-nums">{allowed} of {people.length} allowed</span>
     </div>
-    <p role="status" aria-live="polite">{pending ? 'Saving permission and checking cleanup…' : message}</p>
-    <button type="button" className="rounded border border-border px-3 py-2 text-sm" disabled={pending} onClick={() => router.refresh()}>Refresh enrollment and broker status</button>
-    <ul className="space-y-3">{people.map(person => <li key={person.id} className="rounded-xl border border-border p-4 space-y-2 text-sm break-words">
-      <p className="font-medium">{person.name} <span className="text-muted font-normal">({person.upn})</span></p>
-      <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={person.enabled} disabled={pending || (!person.enabled && !['none', 'stopped'].includes(person.cleanup))} onChange={event => update(person.id, event.target.checked)} aria-label={`Allow personal Hermes for ${person.name} (${person.upn})`} />Allow personal Hermes</label>
-      <p>Permission: {person.enabled ? 'Allowed' : 'Disabled'} · Runtime cleanup: {({ none: 'Not requested', pending: 'Stop pending', stopping: 'Stopping', failed: 'Stop failed — retry required', stopped: 'Stopped — data retained' } as Record<string, string>)[person.cleanup]}</p>
-      {person.error && <p role="alert" className="text-danger">{person.error}</p>}
-      {!person.enabled && ['pending', 'stopping', 'failed'].includes(person.cleanup) && <button type="button" disabled={pending} className="min-h-11 rounded border border-border px-3 py-2" onClick={() => update(person.id, false)}>Retry runtime stop for {person.name}</button>}
-      {person.changedAt && <p className="text-xs text-muted">Last permission change: {person.changedBy ?? 'Deleted administrator'} · <time dateTime={person.changedAt}>{person.changedAt}</time></p>}
-    </li>)}</ul>
+    <p role="status" aria-live="polite" className={cn('text-sm', !pending && !message && 'sr-only')}>{pending ? 'Saving permission and checking cleanup…' : message}</p>
+
+    <Table head={['Person', 'Personal Hermes', 'Runtime', 'Last change']}>
+      {shown.map(person => {
+        const cleanup = CLEANUP[person.cleanup];
+        const stopping = !person.enabled && ['pending', 'stopping', 'failed'].includes(person.cleanup);
+        return <tr key={person.id} className="align-top">
+          <Td className="min-w-48"><div className="font-medium">{person.name}</div><div className="break-all text-xs text-muted">{person.upn}</div></Td>
+          <Td>
+            <label className="inline-flex min-h-11 items-center gap-2">
+              <input type="checkbox" className="h-4 w-4 accent-[var(--fg)]" checked={person.enabled} disabled={pending || (!person.enabled && !['none', 'stopped'].includes(person.cleanup))}
+                onChange={event => update(person.id, event.target.checked)} aria-label={`Allow personal Hermes for ${person.name} (${person.upn})`} />
+              <span className={person.enabled ? '' : 'text-muted'}>{person.enabled ? 'Allowed' : 'Off'}</span>
+            </label>
+          </Td>
+          <Td className="min-w-40">
+            {cleanup ? <Badge tone={cleanup.tone}>{cleanup.label}</Badge> : <span className="text-subtle">—</span>}
+            {person.error && <p role="alert" className="mt-1 text-xs text-danger">{person.error}</p>}
+            {stopping && <Button variant="outline" size="sm" className="mt-2" disabled={pending} onClick={() => update(person.id, false)} aria-label={`Retry runtime stop for ${person.name}`}>Retry stop</Button>}
+          </Td>
+          <Td className="min-w-40 text-xs text-muted">
+            {person.changedAt ? <>{person.changedBy ?? 'Deleted administrator'}<br /><time dateTime={person.changedAt} suppressHydrationWarning>{when(person.changedAt)}</time></> : <span className="text-subtle">Never</span>}
+          </Td>
+        </tr>;
+      })}
+      {!shown.length && <tr><Td colSpan={4} className="py-6 text-center text-muted">No one matches “{query.trim()}”.</Td></tr>}
+    </Table>
   </section>;
 }

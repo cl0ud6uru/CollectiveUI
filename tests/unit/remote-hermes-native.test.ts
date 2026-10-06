@@ -39,6 +39,28 @@ describe('native Hermes socket', () => {
     expect(methods).toEqual(['client.capabilities', 'session.resume']); expect(socket.state).toBe('connected');
     expect(frames.mock.calls[0][0]).toMatchObject({ id: 'ask-1', method: 'approval' });
   });
+  it.each([false, true])('holds concurrent work behind capability negotiation (supported=%s)', async supported => {
+    const { server, url } = await fixture(); const methods: string[] = [];
+    let reply!: () => void;
+    server.on('connection', ws => {
+      ws.send(ready);
+      ws.on('message', raw => {
+        const input = JSON.parse(String(raw)); methods.push(input.method);
+        if (input.method === 'client.capabilities') reply = () => ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: supported ? ['approval'] : [] } }));
+        else ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { status: 'streaming' } }));
+      });
+    });
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
+    const connection = socket.connect().then(() => null, error => error);
+    await vi.waitFor(() => expect(reply).toBeTypeOf('function'));
+    const prompt = socket.call('prompt.submit', { text: 'Synthetic only' }).then(value => value, error => error);
+    // Flush callers while the server intentionally withholds its capabilities.
+    await new Promise(resolve => setImmediate(resolve));
+    expect(methods).toEqual(['client.capabilities']);
+    reply();
+    if (supported) { expect(await connection).toBeNull(); expect(await prompt).toEqual({ status: 'streaming' }); expect(methods).toEqual(['client.capabilities', 'prompt.submit']); }
+    else { expect((await connection).message).toContain('does not support native approval'); expect((await prompt).message).toContain('does not support native approval'); expect(methods).toEqual(['client.capabilities']); }
+  });
   it('reconnects and recovers through snapshots without replaying an uncertain prompt', async () => {
     const { server, url } = await fixture(); let submits = 0; let connections = 0; const recovered = vi.fn(async () => {});
     server.on('connection', ws => {
@@ -53,6 +75,20 @@ describe('native Hermes socket', () => {
     await expect(socket.call('prompt.submit', { text: 'Only once' })).rejects.toThrow('may have been accepted');
     await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce(), { timeout: 2500 });
     expect(connections).toBe(2); expect(submits).toBe(1);
+  });
+  it('allows a warm recovery callback to join the refresh waiting on reconnection', async () => {
+    const { server, url } = await fixture(); let active: import('ws').WebSocket;
+    server.on('connection', ws => {
+      active = ws; ws.send(ready);
+      ws.on('message', raw => { const input = JSON.parse(String(raw)); ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: input.method === 'client.capabilities' ? { server_requests: ['approval'] } : { session_id: 'runtime' } })); });
+    });
+    const recovery = vi.fn(async () => { await refresh; });
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}, () => {}, recovery); resources.push(() => socket.close());
+    await socket.connect(); active!.terminate();
+    await vi.waitFor(() => expect(socket.state).toBe('reconnecting'));
+    const refresh = socket.call('session.resume', { session_id: 'stored' });
+    await expect(refresh).resolves.toEqual({ session_id: 'runtime' });
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
   });
   it('fails closed on unsupported approvals without exposing credentials in socket errors', async () => {
     const { server, url } = await fixture(); url.searchParams.set('ticket', 'synthetic-private-ticket');
