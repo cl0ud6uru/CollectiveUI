@@ -7,7 +7,7 @@ import type { CodexStatus } from './oauth';
 import type { RpcTransport } from '../local-hermes/rpc';
 import { HERMES_COMMIT } from '../local-hermes/config';
 import { LocalError } from '../local-hermes/controller';
-import { ownerId, type NativeResources } from './types';
+import { runtimeOwnerId, type NativeResources, type TeamResourceSelection, type TeamPublishableSnapshot } from './types';
 import type { ProfileSettings, ProfileUpdate, ProfileTestResult } from './settings';
 import { networkMode, connectivityCode, type NetworkMode, type Connectivity, type NetworkMigration } from './network';
 
@@ -22,11 +22,12 @@ export const BrokerConfig = z.object({
   maxUsers: z.number().int().min(1).max(1000).default(25),
   network: networkMode.default('internet'),
   maxProfiles: z.number().int().min(1).max(64).default(16),
+  teamBotsEnabled: z.boolean().default(false),
 }).strict();
 export type BrokerConfig = z.infer<typeof BrokerConfig>;
 const exec = promisify(execFile);
 const ENV = { NODE_ENV: 'production' as const, PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent', LANG: 'C.UTF-8' };
-export const runtimeKey = (owner: string) => createHash('sha256').update(ownerId.parse(owner)).digest('hex');
+export const runtimeKey = (owner: string) => createHash('sha256').update(runtimeOwnerId.parse(owner)).digest('hex');
 export type Profile = { name: string; identity: string };
 export interface RuntimeDriver {
   ensure(owner: string, stage: (phase: 'checking_image' | 'creating_storage' | 'starting_container' | 'checking_native') => void): Promise<void>;
@@ -34,6 +35,12 @@ export interface RuntimeDriver {
   stop(owner: string): Promise<void>;
   profiles(owner: string): Promise<Profile[]>;
   create(owner: string, name: string): Promise<Profile>;
+  /** Blank Team profiles never clone the default profile's settings, credentials or learning. */
+  createTeam?(owner: string, name: string): Promise<Profile>;
+  /** A bounded network-none helper reads the exact retained volume while this runtime is stopped.
+   * It derives profile root from name/identity and uses the publication engine, never arbitrary paths.
+   * The default driver deliberately has no capability until helper packaging is verified. */
+  capturePublishableResources?(owner: string, name: string, identity: string, selection: TeamResourceSelection): Promise<TeamPublishableSnapshot>;
   resources(owner: string, name: string, identity: string): Promise<NativeResources>;
   settings?(owner: string, name: string, identity: string, update?: ProfileUpdate): Promise<ProfileSettings>;
   testSettings?(owner: string, name: string, identity: string, revision: string): Promise<Pick<ProfileTestResult, 'code'>>;
@@ -60,7 +67,7 @@ export class DockerDriver implements RuntimeDriver {
     try { return (await exec('/usr/local/bin/docker', args, { env: ENV, timeout, maxBuffer: 8 * 1024 * 1024 })).stdout; }
     catch { throw new LocalError(503, 'Docker operation failed. Check broker diagnostics and storage; native data is retained.'); }
   }
-  setNetwork(owner: string, mode: NetworkMode) { this.modes.set(ownerId.parse(owner), networkMode.parse(mode)); }
+  setNetwork(owner: string, mode: NetworkMode) { this.modes.set(runtimeOwnerId.parse(owner), networkMode.parse(mode)); }
   private mode(owner: string) { return this.modes.get(owner) ?? this.config.network; }
   private networkName(owner: string, mode = this.mode(owner)) { return mode === 'none' ? 'none' : `${this.name(owner)}-${mode === 'proxy' ? 'egress' : 'internet'}`; }
   private async checkNetwork(owner: string, mode = this.mode(owner), create = false) {
@@ -196,6 +203,7 @@ export class DockerDriver implements RuntimeDriver {
   }
   profiles(owner: string) { return this.native<Profile[]>(owner, ['profiles']); }
   create(owner: string, name: string) { return this.native<Profile>(owner, ['create', name]); }
+  createTeam(owner: string, name: string) { return this.native<Profile>(owner, ['create-team', name]); }
   resources(owner: string, name: string, identity: string) { return this.native<NativeResources>(owner, ['resources', name, identity]); }
   reopen(owner: string) { return this.ensure(owner, () => {}, true); }
   private backupName(owner: string, requestId: string) { return `${this.name(owner)}-network-${z.string().uuid().parse(requestId).replaceAll('-', '')}`; }

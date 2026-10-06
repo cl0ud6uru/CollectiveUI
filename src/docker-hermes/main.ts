@@ -8,7 +8,7 @@ import { DockerBroker } from './broker';
 import { BrokerConfig, DockerDriver, type RuntimeDriver } from './docker';
 import { randomUUID } from 'node:crypto';
 import { networkMode } from './network';
-import { ownerId } from './types';
+import { ownerId, teamAuthorization, teamEnsure, teamScope, teamBotId, teamMode } from './types';
 
 /** Omitted policy in an existing installation inherits the pinned deployment, never a new default. */
 export async function loadBrokerConfig(file: string): Promise<BrokerConfig> {
@@ -29,6 +29,21 @@ export async function listenBroker(broker: DockerBroker) {
     const owner = ownerId.parse(req.headers['x-collective-owner']);
     const url = req.url ?? '';
     if (req.method === 'GET' && url === '/admin/ready') return json(res, 200, { ready: true });
+    if (req.method === 'POST' && url === '/team/authorize') return json(res, 200, broker.authorizeTeam(owner, teamAuthorization.parse(await body(req))));
+    if (req.method === 'POST' && url === '/team/revoke') return json(res, 200, await broker.revokeTeam(owner, teamScope.parse(await body(req))));
+    if (req.method === 'POST' && url === '/team/ensure') {
+      const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      return json(res, 200, await broker.ensureTeam(owner, teamEnsure.parse(await body(req)), grant));
+    }
+    if (req.method === 'POST' && url === '/team/capture') {
+      const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      return json(res, 200, await broker.captureTeamResources(owner, await body(req), grant));
+    }
+    if (req.method === 'GET' && url === '/team/binding') {
+      const bot = teamBotId.parse(req.headers['x-collective-team-bot']), mode = teamMode.parse(req.headers['x-collective-team-mode']);
+      const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      return json(res, 200, broker.teamBinding(owner, bot, mode, grant));
+    }
     if (req.method === 'POST' && url === '/control/revoke') return json(res, 200, broker.requestRevoke(owner));
     if (req.method === 'GET' && url === '/admin/networks') {
       const owners: Record<string, unknown> = {};
@@ -69,7 +84,9 @@ export async function listenBroker(broker: DockerBroker) {
     if (!match) throw new LocalError(404, 'Unknown operation.');
     const cleanup = (req.method === 'POST' && /^\/v1\/runs\/run_[a-z0-9]+\/stop$/.test(match[2])) ||
       (req.method === 'GET' && /^\/v1\/runs\/run_[a-z0-9]+$/.test(match[2]));
-    const { controller, nativeBindingId } = cleanup ? broker.forCleanup(owner, match[1]) : await broker.forRequest(owner, match[1]);
+    const team = req.headers['x-collective-team-bot'];
+    const { controller, nativeBindingId } = team !== undefined ? await broker.forTeamRequest(owner, teamBotId.parse(team), teamMode.parse(req.headers['x-collective-team-mode']),
+      match[1], z.string().uuid().parse(req.headers['x-collective-team-grant'])) : cleanup ? broker.forCleanup(owner, match[1]) : await broker.forRequest(owner, match[1]);
     await serveNative(controller, nativeBindingId, match[2], req, res);
   })().catch(e => {
     if (res.headersSent) return res.destroy();
