@@ -1,5 +1,5 @@
 {
-  "id": "7a68696a-f325-4bae-ad39-73549dd455a0",
+  "id": "e8acfe51-8119-4ac1-9510-e5cbb6427be2",
   "prevId": "8058e5db-b6d0-4625-b718-523793e070e7",
   "version": "7",
   "dialect": "postgresql",
@@ -6292,6 +6292,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "target_hash": {
+          "name": "target_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "headers_enc": {
           "name": "headers_enc",
           "type": "text",
@@ -6395,6 +6401,10 @@
         "mcp_member_connections_revision_check": {
           "name": "mcp_member_connections_revision_check",
           "value": "\"mcp_member_connections\".\"revision\" > 0"
+        },
+        "mcp_member_connections_target_check": {
+          "name": "mcp_member_connections_target_check",
+          "value": "\"mcp_member_connections\".\"target_hash\" ~ '^[a-f0-9]{64}$'"
         }
       },
       "isRLSEnabled": false
