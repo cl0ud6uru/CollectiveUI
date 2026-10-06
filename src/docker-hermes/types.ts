@@ -21,9 +21,11 @@ export const teamAuthorization = z.object({ teamBotId, mode: teamMode, modelPoli
 export const teamEnsure = z.object({ teamBotId, mode: teamMode, name: z.string().trim().min(1).max(80) }).strict();
 export const teamScope = z.object({ teamBotId, mode: teamMode }).strict();
 export type TeamGrant = { grantId: string; expiresAt: number };
-const safeRelativeResource = z.string().max(512).regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}(?:\/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}){0,5}$/);
-export const teamResourceSelection = z.object({ skillPackages: z.array(safeRelativeResource).max(128).optional(),
-  includeRole: z.boolean().optional(), documents: z.array(safeRelativeResource).max(128).optional() }).strict();
+const safeRelativeResource = z.string().min(1).max(256).refine(value => new TextEncoder().encode(value).length <= 256
+  && !/[\\%\x00-\x1f\x7f]/.test(value) && !value.startsWith('/') && !/^[A-Za-z]:/.test(value)
+  && value.split('/').length <= 15 && value.split('/').every(segment => !!segment && segment !== '.' && segment !== '..'));
+export const teamResourceSelection = z.object({ skillPackages: z.array(safeRelativeResource).max(256).optional(),
+  includeRole: z.boolean().optional(), documents: z.array(safeRelativeResource).max(256).optional() }).strict();
 export type TeamResourceSelection = z.infer<typeof teamResourceSelection>;
 /** Structural IPC contract of the publication engine; the app validates the immutable manifest before persistence. */
 export type TeamPublishableSnapshot = { readonly format: 1; readonly manifestHash: string; readonly resources: readonly {

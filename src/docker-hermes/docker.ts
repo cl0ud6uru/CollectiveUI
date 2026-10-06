@@ -1,15 +1,21 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import type { CodexStatus } from './oauth';
 import type { RpcTransport } from '../local-hermes/rpc';
 import { HERMES_COMMIT } from '../local-hermes/config';
 import { LocalError } from '../local-hermes/controller';
-import { runtimeOwnerId, type NativeResources, type TeamResourceSelection, type TeamPublishableSnapshot } from './types';
+import { runtimeOwnerId, teamResourceSelection, type NativeResources, type TeamResourceSelection, type TeamPublishableSnapshot } from './types';
 import type { ProfileSettings, ProfileUpdate, ProfileTestResult } from './settings';
 import { networkMode, connectivityCode, type NetworkMode, type Connectivity, type NetworkMigration } from './network';
+import { buildResourceHelper } from './resource-bundle';
+import type { ResourceHelperRequest } from './resource-helper';
+import { beginResourceUpdate, type TeamResourceUpdatePlan, type ResourceUpdateReceipt } from '../lib/hermes-team/updates';
+import { validateTeamResourceSnapshot } from '../lib/hermes-team/resources';
+export const RESOURCE_PROTOCOL_BYTES = 160 * 1024 * 1024;
+const RESOURCE_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 const absolute = z.string().refine(v => path.isAbsolute(v) && !/[\x00-\x1f,]/.test(v));
 export const BrokerConfig = z.object({
@@ -39,8 +45,12 @@ export interface RuntimeDriver {
   createTeam?(owner: string, name: string): Promise<Profile>;
   /** A bounded network-none helper reads the exact retained volume while this runtime is stopped.
    * It derives profile root from name/identity and uses the publication engine, never arbitrary paths.
-   * The default driver deliberately has no capability until helper packaging is verified. */
+   * The helper never imports or runs native skills. */
   capturePublishableResources?(owner: string, name: string, identity: string, selection: TeamResourceSelection): Promise<TeamPublishableSnapshot>;
+  inventoryPublishableResources?(owner: string, name: string, identity: string): Promise<TeamResourceSelection>;
+  inventoryMemberResources?(owner: string, name: string, identity: string, trackedPackageIds: readonly string[]): Promise<TeamPublishableSnapshot>;
+  applyTeamResourceUpdate?(owner: string, name: string, identity: string, operationId: string, plan: TeamResourceUpdatePlan, receipt?: ResourceUpdateReceipt): Promise<ResourceUpdateReceipt>;
+  abortTeamResourceUpdate?(owner: string, name: string, identity: string, operationId: string, plan: TeamResourceUpdatePlan): Promise<{ aborted: true }>;
   resources(owner: string, name: string, identity: string): Promise<NativeResources>;
   settings?(owner: string, name: string, identity: string, update?: ProfileUpdate): Promise<ProfileSettings>;
   testSettings?(owner: string, name: string, identity: string, revision: string): Promise<Pick<ProfileTestResult, 'code'>>;
@@ -61,6 +71,10 @@ export interface RuntimeDriver {
 export class DockerDriver implements RuntimeDriver {
   private stopping = new Map<string, Promise<void>>();
   private modes = new Map<string, NetworkMode>();
+  private helperBundle?: Promise<string>;
+  private helperGeneration = new Map<string, number>();
+  private helperCleanups = new Map<string, Promise<void>>();
+  private helpers = new Map<string, Set<{ name: string; created: Promise<string> }>>();
   constructor(readonly config: BrokerConfig) {}
   name(owner: string) { return `${this.config.namespace}-${runtimeKey(owner)}`; }
   protected async command(args: string[], timeout = 45000) {
@@ -139,6 +153,7 @@ export class DockerDriver implements RuntimeDriver {
   }
   async ensure(owner: string, stage: Parameters<RuntimeDriver['ensure']>[1], retained = false, migration?: { requestId: string; current: () => void }) {
     stage('checking_image');
+    await this.assertTeamResourceUpdatesSettled(owner);
     await this.checkNetwork(owner, this.mode(owner), !retained);
     // Pulling never builds from remote code or changes a moving tag.
     if (!retained && !migration) await this.command(['pull', this.config.image], 600000);
@@ -184,11 +199,16 @@ export class DockerDriver implements RuntimeDriver {
   }
   async running(owner: string) { await this.checkNetwork(owner); return !!(await this.inspect(owner))?.State.Running; }
   async stop(owner: string) {
+    // Invalidate helper admission before waiting on either native or helper Docker calls.
+    this.helperGeneration.set(owner, (this.helperGeneration.get(owner) ?? 0) + 1);
     const pending = this.stopping.get(owner); if (pending) return pending;
     const task = (async () => {
+      let helperFailed = false;
+      try { await this.stopResourceHelpers(owner); } catch { helperFailed = true; }
       const info = await this.inspect(owner);
       if (info?.State.Running) await this.command(['stop', '--time', '10', this.name(owner)]);
       if ((await this.inspect(owner))?.State.Running) throw new LocalError(503, 'Native runtime stop is unconfirmed.');
+      if (helperFailed) throw new LocalError(503, 'Owned resource helper cleanup is unconfirmed. Native data is retained.');
     })();
     this.stopping.set(owner, task);
     try { await task; } finally { this.stopping.delete(owner); }
@@ -204,6 +224,167 @@ export class DockerDriver implements RuntimeDriver {
   profiles(owner: string) { return this.native<Profile[]>(owner, ['profiles']); }
   create(owner: string, name: string) { return this.native<Profile>(owner, ['create', name]); }
   createTeam(owner: string, name: string) { return this.native<Profile>(owner, ['create-team', name]); }
+  private async updatesVolume(owner: string, create = false) {
+    const name = `${this.name(owner)}-team-updates`;
+    const known = (await this.command(['volume', 'ls', '--filter', `name=^${name}$`, '--format', '{{.Name}}'])).trim();
+    if (!known) {
+      if (!create) return null;
+      await this.command(['volume', 'create', '--label', `collective.owner=${runtimeKey(owner)}`, '--label', `collective.namespace=${this.config.namespace}`,
+        '--label', 'collective.purpose=team-resource-journals', name]);
+    }
+    const [volume] = JSON.parse(await this.command(['volume', 'inspect', name]));
+    if (volume.Name !== name || volume.Driver !== 'local' || Object.keys(volume.Options ?? {}).length
+      || volume.Labels?.['collective.owner'] !== runtimeKey(owner) || volume.Labels?.['collective.namespace'] !== this.config.namespace
+      || volume.Labels?.['collective.purpose'] !== 'team-resource-journals') throw new LocalError(409, 'Resource journal storage ownership changed.');
+    return name;
+  }
+  private async inspectResourceHelper(owner: string, id: string) {
+    const [info] = JSON.parse(await this.command(['inspect', id]));
+    const prefix = `${this.name(owner)}-resources-`, name = String(info.Name ?? '').replace(/^\//, '');
+    const source = info.Mounts?.find((mount: { Destination: string }) => mount.Destination === '/opt/collective-resource-helper.mjs');
+    const operation = info.Config.Labels?.['collective.helper-operation'];
+    const initialize = operation === 'initialize-journals', native = !['fence', 'initialize-journals'].includes(operation);
+    const journal = info.Mounts?.find((mount: { Destination: string }) => mount.Destination === '/run/collective-team-updates');
+    const data = info.Mounts?.find((mount: { Destination: string }) => mount.Destination === '/opt/data');
+    const mask = info.HostConfig.Mounts?.filter((mount: { Type: string }) => mount.Type === 'tmpfs') ?? [];
+    if (!['fence', 'initialize-journals', 'capture', 'discover', 'inventory', 'apply', 'abort'].includes(operation)
+      || !name.startsWith(prefix) || !/^[a-f0-9]{32}$/.test(name.slice(prefix.length)) || info.Config.Labels?.['collective.owner'] !== runtimeKey(owner)
+      || info.Config.Labels?.['collective.namespace'] !== this.config.namespace || info.Config.Labels?.['collective.purpose'] !== 'team-resource-helper'
+      || info.Config.Image !== this.config.image || JSON.stringify(info.Config.Entrypoint) !== JSON.stringify(['/usr/local/bin/node'])
+      || JSON.stringify(info.Config.Cmd) !== JSON.stringify(['/opt/collective-resource-helper.mjs', '--run']) || info.HostConfig.Privileged
+      || info.HostConfig.NetworkMode !== 'none' || !info.HostConfig.ReadonlyRootfs || info.Config.User !== (initialize ? '0:0' : '10000:10000')
+      || info.HostConfig.PidMode || !['private', ''].includes(info.HostConfig.IpcMode ?? '') || info.HostConfig.UTSMode || info.HostConfig.UsernsMode || info.HostConfig.ExtraHosts?.length
+      || JSON.stringify(Object.keys(info.NetworkSettings?.Networks ?? {}).sort()) !== JSON.stringify(['none']) || info.HostConfig.Devices?.length || info.HostConfig.DeviceRequests?.length
+      || info.HostConfig.Binds?.length || Object.keys(info.HostConfig.PortBindings ?? {}).length
+      || (initialize ? JSON.stringify(info.HostConfig.CapAdd) !== JSON.stringify(['CAP_CHOWN']) : info.HostConfig.CapAdd?.length)
+      || JSON.stringify(info.HostConfig.CapDrop) !== JSON.stringify(['ALL']) || JSON.stringify(info.HostConfig.SecurityOpt) !== JSON.stringify(['no-new-privileges:true'])
+      || info.HostConfig.PidsLimit !== 32 || info.HostConfig.Memory !== 512 * 1024 * 1024 || info.HostConfig.MemorySwap !== 512 * 1024 * 1024
+      || info.HostConfig.NanoCpus !== 1e9 || info.HostConfig.RestartPolicy?.Name !== 'no' || info.HostConfig.LogConfig?.Type !== 'none'
+      || !source || source.Type !== 'bind' || source.RW || path.dirname(source.Source) !== path.join(this.config.stateDir, 'resource-helpers')
+      || !/^[a-f0-9]{64}\.mjs$/.test(path.basename(source.Source))
+      || info.Mounts.length !== 2 + (journal ? 1 : 0) || Object.keys(info.HostConfig.Tmpfs ?? {}).length
+      || (native ? !data || data.RW !== ['apply', 'abort'].includes(operation) || mask.length
+        : !data || data.Type !== 'tmpfs' || data.Source || data.RW || mask.length !== 1 || mask[0].Target !== '/opt/data' || mask[0].ReadOnly !== true || mask[0].TmpfsOptions?.SizeBytes !== 4096 || mask[0].TmpfsOptions?.Mode !== 0o700)
+      || (journal && journal.RW !== (['apply', 'abort'].includes(operation) || initialize)) || (['apply', 'abort', 'initialize-journals', 'fence'].includes(operation) && !journal)
+      || info.Mounts.some((mount: { Type: string; Name: string; Destination: string; RW: boolean }) => mount.Destination !== '/opt/collective-resource-helper.mjs'
+        && !(!native && mount.Type === 'tmpfs' && mount.Destination === '/opt/data' && !mount.RW)
+        && !(mount.Type === 'volume' && ((!initialize && mount.Name === `${this.name(owner)}-data` && mount.Destination === '/opt/data')
+          || (mount.Name === `${this.name(owner)}-team-updates` && mount.Destination === '/run/collective-team-updates')))))
+      throw new LocalError(409, 'Resource helper ownership or isolation changed.');
+    return info;
+  }
+  private async stopResourceHelpers(owner: string) {
+    // A create admitted before cancellation may still be reaching the daemon. Await that
+    // bounded create before scanning; its generation check prevents a later start.
+    await Promise.all([...this.helpers.get(owner) ?? []].map(helper => helper.created.catch(() => '')));
+    const ids = (await this.command(['container', 'ls', '-a', '--filter', `label=collective.owner=${runtimeKey(owner)}`,
+      '--filter', `label=collective.namespace=${this.config.namespace}`, '--filter', 'label=collective.purpose=team-resource-helper', '--format', '{{.ID}}'])).trim().split(/\s+/).filter(Boolean);
+    const results = await Promise.allSettled(ids.map(async id => {
+      const info = await this.inspectResourceHelper(owner, id);
+      await this.cleanupResourceHelper(owner, String(info.Name).replace(/^\//, ''));
+    }));
+    if (results.some(result => result.status === 'rejected')) throw new LocalError(503, 'Resource helper cleanup could not be confirmed.');
+  }
+  private async cleanupResourceHelper(owner: string, name: string) {
+    const pending = this.helperCleanups.get(name); if (pending) return pending;
+    const task = (async () => {
+      const ids = (await this.command(['container', 'ls', '-a', '--filter', `name=^/${name}$`, '--format', '{{.ID}}'])).trim().split(/\s+/).filter(Boolean);
+      if (!ids.length) return;
+      if (ids.length !== 1) throw new LocalError(409, 'Resource helper identity is ambiguous.');
+      const info = await this.inspectResourceHelper(owner, ids[0]);
+      if (info.State.Running) await this.command(['stop', '--time', '0', info.Id]);
+      if ((await this.inspectResourceHelper(owner, info.Id)).State.Running) throw new LocalError(503, 'Resource helper stop is unconfirmed.');
+      await this.command(['container', 'rm', info.Id]);
+    })();
+    this.helperCleanups.set(name, task);
+    try { await task; } finally { this.helperCleanups.delete(name); }
+  }
+  /** JSON travels only on stdin/stdout. Helper output is never written to Docker logs. */
+  protected resourceCommand(args: string[], input: unknown): Promise<unknown> {
+    const payload = JSON.stringify(input);
+    if (Buffer.byteLength(payload) > RESOURCE_PROTOCOL_BYTES) throw new LocalError(413, 'The resource update exceeds the bounded helper protocol.');
+    return new Promise((resolve, reject) => {
+      const child = spawn('/usr/local/bin/docker', args, { env: ENV, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      let output = '', bytes = 0, settled = false;
+      const fail = () => { if (settled) return; settled = true; clearTimeout(timer); child.kill(); reject(new LocalError(503, 'Resource helper completion is unconfirmed. Retained data needs reconciliation.')); };
+      const timer = setTimeout(fail, 30000);
+      child.stderr.resume(); child.stdin.on('error', () => {}); child.on('error', fail);
+      child.stdout.setEncoding('utf8'); child.stdout.on('data', (part: string) => { bytes += Buffer.byteLength(part); if (bytes > RESOURCE_OUTPUT_BYTES) return fail(); output += part; });
+      child.on('close', code => {
+        if (settled) return;
+        if (code !== 0) return fail();
+        clearTimeout(timer); settled = true;
+        try {
+          const result = JSON.parse(output);
+          if (!result || result.ok !== true || !('value' in result)) throw new Error('Invalid helper result');
+          resolve(result.value);
+        } catch { reject(new LocalError(503, 'The resource helper refused an unsafe or changed resource.')); }
+      });
+      child.stdin.end(payload);
+    });
+  }
+  private async resourceHelper(owner: string, input: ResourceHelperRequest): Promise<unknown> {
+    runtimeOwnerId.parse(owner);
+    if (Buffer.byteLength(JSON.stringify(input)) > RESOURCE_PROTOCOL_BYTES) throw new LocalError(413, 'The resource update exceeds the bounded helper protocol.');
+    if (input.operation === 'apply' || input.operation === 'abort') beginResourceUpdate(input.operationId, input.plan, input.operation === 'apply' ? input.receipt : undefined);
+    if (input.operation === 'capture') teamResourceSelection.parse(input.selection);
+    const generation = this.helperGeneration.get(owner) ?? 0;
+    const current = () => { if ((this.helperGeneration.get(owner) ?? 0) !== generation) throw new LocalError(409, 'Resource helper admission was revoked.'); };
+    if ((await this.inspect(owner))?.State.Running) throw new LocalError(409, 'Stop the entire native runtime before accessing retained Team resources.');
+    const journal = await this.updatesVolume(owner, ['apply', 'abort', 'initialize-journals'].includes(input.operation)); current();
+    if (input.operation === 'fence' && !journal) return { settled: true };
+    if (['apply', 'abort'].includes(input.operation)) { await this.resourceHelper(owner, { operation: 'initialize-journals' }); current(); }
+    const native = input.operation === 'fence' || input.operation === 'initialize-journals' ? null : await this.volume(owner, true); current();
+    this.helperBundle ??= buildResourceHelper(this.config.stateDir).catch(error => { this.helperBundle = undefined; throw error; });
+    const source = await this.helperBundle; current();
+    const name = `${this.name(owner)}-resources-${randomUUID().replaceAll('-', '')}`;
+    const created = this.command(['create', '--pull', 'never', '--name', name, '--interactive',
+      '--label', `collective.owner=${runtimeKey(owner)}`, '--label', `collective.namespace=${this.config.namespace}`, '--label', 'collective.purpose=team-resource-helper',
+      '--label', `collective.helper-operation=${input.operation}`,
+      '--network', 'none', '--read-only', '--user', input.operation === 'initialize-journals' ? '0:0' : '10000:10000', '--cap-drop', 'ALL',
+      ...(input.operation === 'initialize-journals' ? ['--cap-add', 'CHOWN'] : []), '--security-opt', 'no-new-privileges:true', '--pids-limit', '32',
+      '--memory', '512m', '--memory-swap', '512m', '--cpus', '1', '--restart', 'no', '--log-driver', 'none',
+      ...(native ? ['--mount', `type=volume,src=${native},dst=/opt/data${['apply', 'abort'].includes(input.operation) ? '' : ',readonly'}`]
+        // The pinned image declares VOLUME /opt/data. Mask it explicitly so metadata-only
+        // helpers cannot acquire an anonymous native volume or run image initialization.
+        : ['--mount', 'type=tmpfs,dst=/opt/data,readonly,tmpfs-size=4096,tmpfs-mode=0700']),
+      ...(journal ? ['--mount', `type=volume,src=${journal},dst=/run/collective-team-updates${['apply', 'abort', 'initialize-journals'].includes(input.operation) ? '' : ',readonly'}`] : []),
+      '--mount', `type=bind,src=${source},dst=/opt/collective-resource-helper.mjs,readonly`, '--env', 'NODE_ENV=production', '--env', 'HOME=/nonexistent',
+      '--entrypoint', '/usr/local/bin/node', this.config.image, '/opt/collective-resource-helper.mjs', '--run']);
+    const helper = { name, created }, active = this.helpers.get(owner) ?? new Set<typeof helper>(); active.add(helper); this.helpers.set(owner, active);
+    try {
+      const id = (await created).trim(); current();
+      const info = await this.inspectResourceHelper(owner, id); current();
+      if ((await this.inspect(owner))?.State.Running) throw new LocalError(409, 'The native runtime reopened during resource maintenance.');
+      current(); const result = await this.resourceCommand(['start', '--attach', '--interactive', info.Id], input); current(); return result;
+    } finally {
+      // Cancellation and normal completion share one cleanup to avoid racing removals.
+      try { await created.catch(() => ''); await this.cleanupResourceHelper(owner, name); }
+      finally { active.delete(helper); if (!active.size) this.helpers.delete(owner); }
+    }
+  }
+  private async assertTeamResourceUpdatesSettled(owner: string) {
+    if (!await this.updatesVolume(owner)) return;
+    await this.resourceHelper(owner, { operation: 'fence' });
+  }
+  async capturePublishableResources(owner: string, name: string, identity: string, selection: TeamResourceSelection) {
+    return validateTeamResourceSnapshot(await this.resourceHelper(owner, { operation: 'capture', profile: name, identity, selection }) as TeamPublishableSnapshot);
+  }
+  async inventoryPublishableResources(owner: string, name: string, identity: string) {
+    return teamResourceSelection.parse(await this.resourceHelper(owner, { operation: 'discover', profile: name, identity }));
+  }
+  async inventoryMemberResources(owner: string, name: string, identity: string, trackedPackageIds: readonly string[]) {
+    return validateTeamResourceSnapshot(await this.resourceHelper(owner, { operation: 'inventory', profile: name, identity, trackedPackageIds }) as TeamPublishableSnapshot, { requireCompleteSkills: false });
+  }
+  async applyTeamResourceUpdate(owner: string, name: string, identity: string, operationId: string, plan: TeamResourceUpdatePlan, receipt?: ResourceUpdateReceipt) {
+    const result = await this.resourceHelper(owner, { operation: 'apply', profile: name, identity, operationId, plan, ...(receipt ? { receipt } : {}) }) as ResourceUpdateReceipt;
+    return beginResourceUpdate(operationId, plan, result);
+  }
+  async abortTeamResourceUpdate(owner: string, name: string, identity: string, operationId: string, plan: TeamResourceUpdatePlan): Promise<{ aborted: true }> {
+    const result = await this.resourceHelper(owner, { operation: 'abort', profile: name, identity, operationId, plan });
+    if (!result || (result as { aborted?: unknown }).aborted !== true) throw new LocalError(503, 'Resource update abort was not confirmed.');
+    return { aborted: true };
+  }
   resources(owner: string, name: string, identity: string) { return this.native<NativeResources>(owner, ['resources', name, identity]); }
   reopen(owner: string) { return this.ensure(owner, () => {}, true); }
   private backupName(owner: string, requestId: string) { return `${this.name(owner)}-network-${z.string().uuid().parse(requestId).replaceAll('-', '')}`; }

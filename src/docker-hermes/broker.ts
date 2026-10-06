@@ -3,9 +3,11 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { LocalController, LocalError } from '../local-hermes/controller';
-import { runtimeKey, BrokerConfig, type RuntimeDriver } from './docker';
+import { runtimeKey, BrokerConfig, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver } from './docker';
 import { bindingSchema, ownerId, runtimeOwnerId, phases, profileName, teamAuthorization, teamEnsure, teamScope, teamResourceSelection,
   type DockerBinding, type DockerStatus, type TeamBinding, type TeamMode, type TeamGrant, type TeamModelPolicy } from './types';
+import { beginResourceUpdate, type TeamResourceUpdatePlan } from '../lib/hermes-team/updates';
+import { validateTeamResourceSnapshot } from '../lib/hermes-team/resources';
 import { codexAction, codexStatus, codexStates, type CodexStatus } from './oauth';
 import { profileUpdate, profileTest, testCodes, providerBlocker, type ProfileSettings, type ProfileTestResult } from './settings';
 import { networkMode, networkRequest, networkMigration, networkReceipt, connectivity, type NetworkStatus, type NetworkMigration, type Connectivity } from './network';
@@ -13,6 +15,10 @@ const key = () => randomUUID().replaceAll('-', '');
 const teamOperation = z.object({ teamBotId: ownerId, mode: z.enum(['member', 'admin']), bindingId: z.string().nullable(),
   state: z.enum(['preparing', 'connection_needed', 'revoked', 'needs_attention']),
   interruption: z.literal('runtime-wide').optional() });
+const updateReceipt = z.object({ format: z.literal(1), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), planHash: z.string().regex(/^[a-f0-9]{64}$/), status: z.enum(['applying', 'complete', 'needs-attention']), completedGroups: z.array(z.string().max(256)).max(512), blockedGroup: z.string().max(256).optional() }).strict();
+const resourceOperation = z.object({ bindingId: z.string(), planHash: z.string().regex(/^[a-f0-9]{64}$/), status: z.enum(['applying', 'complete', 'needs-attention', 'aborted']), receipt: updateReceipt.optional() });
+const teamRevoke = teamScope.extend({ requestId: z.string().regex(/^revoke:[a-f0-9]{64}$/).optional(), digest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict().refine(v => !!v.requestId === !!v.digest);
+const revokeReceipt = z.object({ actor: ownerId, teamBotId: ownerId, mode: z.enum(['member', 'admin']), digest: z.string().regex(/^[a-f0-9]{64}$/), result: z.object({ stopped: z.boolean(), interruption: z.enum(['none', 'runtime-wide']) }).optional() });
 const storedSchema = z.object({ owner: runtimeOwnerId, generation: z.number().int(), phase: z.enum(phases), error: z.string().nullable(), cleanupRequired: z.boolean().default(false),
   bindings: z.array(bindingSchema), confirmed: z.array(z.string()).default([]), pending: z.record(z.string(), z.object({ profile: profileName, name: z.string() })),
   logins: z.record(z.string(), z.object({ bindingId: z.string(), sessionId: z.string().uuid(), state: z.enum(codexStates), expiresAt: z.number() })).default({}),
@@ -20,6 +26,8 @@ const storedSchema = z.object({ owner: runtimeOwnerId, generation: z.number().in
   networks: z.record(z.string(), networkMigration).default({}),
   connections: z.record(z.string(), connectivity).default({}),
   teams: z.record(z.string(), teamOperation).default({}),
+  resourceOperations: z.record(z.string(), resourceOperation).default({}),
+  revocations: z.record(z.string(), revokeReceipt).default({}),
   tests: z.record(z.string(), z.object({ bindingId: z.string(), revision: z.string(), checkedAt: z.string(), code: z.enum(testCodes) })).default({}) });
 type Stored = z.infer<typeof storedSchema>;
 const sConnection = (s: Stored, id: string, revision: string) => s.connections[id]?.revision === revision ? s.connections[id] : null;
@@ -38,6 +46,8 @@ export class DockerBroker {
   private leases = new Map<string, { until: number; canCreate: boolean }>();
   private teamGrants = new Map<string, { actor: string; teamBotId: string; mode: TeamMode; modelPolicy: TeamModelPolicy; until: number }>();
   private maintaining = new Set<string>();
+  private revokeJobs = new Map<string, Promise<{ stopped: boolean; interruption: 'none' | 'runtime-wide' }>>();
+  private resourceMaintaining = new Set<string>();
   authorize(owner: string, canCreate: boolean) {
     ownerId.parse(owner); this.leases.set(owner, { until: Date.now() + 60000, canCreate });
     const s = this.states.get(owner);
@@ -105,6 +115,7 @@ export class DockerBroker {
     const grant = this.authorizedTeam(actor, input.teamBotId, input.mode, grantId);
     if (!this.driver.createTeam) throw new LocalError(503, 'This runtime cannot safely create blank Team Bot profiles.');
     const owner = teamOwner(actor, input.teamBotId, input.mode);
+    if (Object.values(this.state(owner)?.revocations ?? {}).some(receipt => !receipt.result)) throw new LocalError(409, 'A retained Team access revocation must settle before new preparation.');
     this.enableRuntime(owner, false);
     await this.jobs.get(owner);
     return this.exclusive(owner, async () => {
@@ -150,49 +161,133 @@ export class DockerBroker {
     if (binding.bindingId !== id) throw new LocalError(403, 'This Team Bot profile belongs to another context.');
     throw new LocalError(409, 'Model connection needed. Team Bot model routes are not verified for replies, learning and subagents.');
   }
-  async captureTeamResources(actor: string, raw: unknown, grantId: string) {
-    const input = z.object({ teamBotId: ownerId, mode: z.literal('admin'), selection: teamResourceSelection }).strict().parse(raw);
-    const binding = this.teamBinding(actor, input.teamBotId, input.mode, grantId), owner = binding.ownerId;
-    if (!this.driver.capturePublishableResources || !this.driver.reopen)
-      throw new LocalError(503, 'Stable Team Bot resource capture is unavailable in this runtime.');
+  /** All sibling controllers must be idle before a runtime-wide stop. No native writes
+   * may overlap the volume helper. Interrupted updates can recover while already stopped. */
+  private async teamMaintenance<T>(actor: string, bot: string, mode: TeamMode, grantId: string,
+    run: (binding: TeamBinding, state: Stored, current: () => void) => Promise<T>, complete: (result: T) => boolean = () => true) {
+    const binding = this.teamBinding(actor, bot, mode, grantId), owner = binding.ownerId;
+    if (!this.driver.reopen) throw new LocalError(503, 'Stopped-volume Team resource maintenance is unavailable.');
     return this.exclusive(owner, async () => {
-      this.authorizedTeam(actor, input.teamBotId, input.mode, grantId);
-      const s = await this.ready(owner), release: (() => void)[] = [];
-      // Admission closes synchronously on every sibling before stopping native background writers.
-      // Capture cannot interrupt a live conversation, approval or uncertain startup.
+      this.teamBinding(actor, bot, mode, grantId); this.authorized(owner);
+      const s = this.state(owner)!;
+      if (this.jobs.has(owner) || this.maintaining.has(owner) || this.unsettledNetwork(s) || this.pendingLogin(owner)
+        || s.cleanupRequired || !['ready', 'stopped'].includes(s.phase)) throw new LocalError(409, 'Reconcile runtime preparation or cleanup before resource maintenance.');
+      const wasReady = s.phase === 'ready', release: (() => void)[] = [];
       try {
         for (const profile of s.bindings) {
           const controller = this.controllers.get(profile.bindingId);
           if (controller) release.push(controller.holdForSettings());
         }
       } catch (error) { release.forEach(fn => fn()); throw error; }
-      this.maintaining.add(owner); const generation = ++s.generation;
+      this.maintaining.add(owner); this.resourceMaintaining.add(owner); const generation = ++s.generation;
       const current = () => {
-        this.authorizedTeam(actor, input.teamBotId, input.mode, grantId);
-        if (s.generation !== generation) throw new LocalError(409, 'Resource capture was interrupted. Capture again after cleanup.');
+        this.authorizedTeam(actor, bot, mode, grantId);
+        if (s.generation !== generation) throw new LocalError(409, 'Resource maintenance was interrupted. Retry the same operation after cleanup.');
       };
       try {
-        this.save(s);
-        await this.driver.stop(owner); current();
+        this.save(s); await this.driver.stop(owner); current();
         for (const profile of s.bindings) { await this.controllers.get(profile.bindingId)?.stop(); this.controllers.delete(profile.bindingId); }
-        current();
-        const snapshot = await this.driver.capturePublishableResources!(owner, binding.profile, binding.identity, input.selection); current();
-        await this.driver.reopen!(owner); current();
-        const native = (await this.driver.profiles(owner)).find(p => p.name === binding.profile); current();
-        if (!native || native.identity !== binding.identity) throw new LocalError(409, 'Team Bot profile changed during resource capture.');
-        return snapshot;
+        s.phase = 'stopped'; this.save(s); current();
+        const result = await run(binding, s, current); current();
+        if (!complete(result)) {
+          s.error = 'Team update needs attention. Native work stays stopped until the protected update journal is reconciled.';
+          this.save(s); return result;
+        }
+        if (wasReady) {
+          await this.driver.reopen!(owner); current();
+          const native = (await this.driver.profiles(owner)).find(p => p.name === binding.profile); current();
+          if (!native || native.identity !== binding.identity) throw new LocalError(409, 'Team Bot profile changed during resource maintenance.');
+          s.phase = 'ready';
+        }
+        s.error = null; this.save(s); return result;
       } catch (error) {
-        // A timed-out helper or reopen never admits new work until owned cleanup settles.
-        try { await this.driver.stop(owner); s.cleanupRequired = false; }
-        catch { s.cleanupRequired = true; }
+        try { await this.driver.stop(owner); s.cleanupRequired = false; } catch { s.cleanupRequired = true; }
         s.phase = s.cleanupRequired ? 'error' : 'stopped';
-        s.error = 'Resource capture did not settle. Native profiles are retained; reopen after cleanup.'; this.save(s); throw error;
-      } finally { release.forEach(fn => fn()); this.maintaining.delete(owner); }
+        s.error = 'Resource maintenance did not settle. Native profiles are retained; retry the same update or reconcile cleanup.';
+        this.save(s); throw error;
+      } finally { release.forEach(fn => fn()); this.maintaining.delete(owner); this.resourceMaintaining.delete(owner); }
+    });
+  }
+  async captureTeamResources(actor: string, raw: unknown, grantId: string) {
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('admin'), selection: teamResourceSelection }).strict().parse(raw);
+    this.teamBinding(actor, input.teamBotId, input.mode, grantId);
+    if (!this.driver.capturePublishableResources) throw new LocalError(503, 'Stable Team Bot resource capture is unavailable in this runtime.');
+    return this.teamMaintenance(actor, input.teamBotId, input.mode, grantId, async binding =>
+      validateTeamResourceSnapshot(await this.driver.capturePublishableResources!(binding.ownerId, binding.profile, binding.identity, input.selection)));
+  }
+  async inventoryTeamResources(actor: string, raw: unknown, grantId: string) {
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('admin') }).strict().parse(raw);
+    this.teamBinding(actor, input.teamBotId, input.mode, grantId);
+    if (!this.driver.inventoryPublishableResources) throw new LocalError(503, 'Publishable resource discovery is unavailable in this runtime.');
+    return this.teamMaintenance(actor, input.teamBotId, input.mode, grantId, async binding =>
+      teamResourceSelection.parse(await this.driver.inventoryPublishableResources!(binding.ownerId, binding.profile, binding.identity)));
+  }
+  async inventoryTeamMemberResources(actor: string, raw: unknown, grantId: string) {
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), trackedPackageIds: z.array(z.string().max(256)).max(1024) }).strict().parse(raw);
+    this.teamBinding(actor, input.teamBotId, input.mode, grantId);
+    if (!this.driver.inventoryMemberResources) throw new LocalError(503, 'Member resource inventory is unavailable in this runtime.');
+    return this.teamMaintenance(actor, input.teamBotId, input.mode, grantId, async binding =>
+      validateTeamResourceSnapshot(await this.driver.inventoryMemberResources!(binding.ownerId, binding.profile, binding.identity, input.trackedPackageIds), { requireCompleteSkills: false }));
+  }
+  async applyTeamMemberResources(actor: string, raw: unknown, grantId: string) {
+    if (Buffer.byteLength(JSON.stringify(raw)) > RESOURCE_PROTOCOL_BYTES) throw new LocalError(413, 'The update exceeds the bounded resource protocol.');
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), plan: z.object({ actions: z.array(z.unknown()).max(1024) }).passthrough(), receipt: updateReceipt.optional() }).strict().parse(raw);
+    const plan = input.plan as unknown as TeamResourceUpdatePlan;
+    try { beginResourceUpdate(input.operationId, plan, input.receipt); } catch { throw new LocalError(400, 'The update plan or receipt is invalid.'); }
+    this.teamBinding(actor, input.teamBotId, input.mode, grantId);
+    if (!this.driver.applyTeamResourceUpdate) throw new LocalError(503, 'Native Team resource updates are unavailable in this runtime.');
+    return this.teamMaintenance(actor, input.teamBotId, input.mode, grantId, async (binding, s, current) => {
+      const prior = s.resourceOperations[input.operationId];
+      if (prior?.status === 'aborted') throw new LocalError(409, 'This untouched update was cancelled. Use a new operation ID.');
+      if (prior && (prior.bindingId !== binding.bindingId || prior.planHash !== plan.planHash)) throw new LocalError(409, 'This operation ID already identifies another immutable update.');
+      const operation = prior ?? { bindingId: binding.bindingId, planHash: plan.planHash, status: 'applying' as const };
+      s.resourceOperations[input.operationId] = operation; this.save(s); current();
+      const result = updateReceipt.parse(await this.driver.applyTeamResourceUpdate!(binding.ownerId, binding.profile, binding.identity, input.operationId, plan, input.receipt));
+      try { beginResourceUpdate(input.operationId, plan, result); } catch { throw new LocalError(503, 'Native update completion could not be verified.'); }
+      current(); operation.status = result.status; operation.receipt = result; this.save(s); return result;
+    }, result => result.status === 'complete');
+  }
+  async abortTeamMemberResources(actor: string, raw: unknown, grantId: string) {
+    if (Buffer.byteLength(JSON.stringify(raw)) > RESOURCE_PROTOCOL_BYTES) throw new LocalError(413, 'The update exceeds the bounded resource protocol.');
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), plan: z.object({ actions: z.array(z.unknown()).max(1024) }).passthrough() }).strict().parse(raw);
+    const plan = input.plan as unknown as TeamResourceUpdatePlan;
+    try { beginResourceUpdate(input.operationId, plan); } catch { throw new LocalError(400, 'The update plan is invalid.'); }
+    this.teamBinding(actor, input.teamBotId, input.mode, grantId);
+    if (!this.driver.abortTeamResourceUpdate) throw new LocalError(503, 'Untouched update cancellation is unavailable.');
+    return this.teamMaintenance(actor, input.teamBotId, input.mode, grantId, async (binding, s, current) => {
+      const operation = s.resourceOperations[input.operationId];
+      if (operation && (operation.bindingId !== binding.bindingId || operation.planHash !== plan.planHash || operation.status === 'complete')) throw new LocalError(409, 'This update must be recovered rather than cancelled.');
+      const result = await this.driver.abortTeamResourceUpdate!(binding.ownerId, binding.profile, binding.identity, input.operationId, plan); current();
+      if (result.aborted !== true) throw new LocalError(503, 'Native update cancellation was not confirmed.');
+      s.resourceOperations[input.operationId] = { bindingId: binding.bindingId, planHash: plan.planHash, status: 'aborted' }; this.save(s); return result;
     });
   }
   async revokeTeam(actor: string, raw: unknown) {
     this.teamEnabled(); ownerId.parse(actor);
-    const scope = teamScope.parse(raw), owner = teamOwner(actor, scope.teamBotId, scope.mode);
+    const input = teamRevoke.parse(raw), owner = teamOwner(actor, input.teamBotId, input.mode);
+    if (!input.requestId) return this.revokeTeamScope(actor, input);
+    // Admin mode derives a different owner for each bot. Request identity must
+    // remain immutable even if a replay tries to change that derived owner.
+    for (const retained of this.states.values()) {
+      const receipt = retained.revocations[input.requestId];
+      if (receipt && (retained.owner !== owner || receipt.actor !== actor || receipt.teamBotId !== input.teamBotId || receipt.mode !== input.mode || receipt.digest !== input.digest))
+        throw new LocalError(409, 'Revocation receipt identifies another immutable request.');
+    }
+    const s = this.state(owner, true)!, prior = s.revocations[input.requestId];
+    if (prior && (prior.actor !== actor || prior.teamBotId !== input.teamBotId || prior.mode !== input.mode || prior.digest !== input.digest)) throw new LocalError(409, 'Revocation receipt identifies another immutable request.');
+    if (prior?.result) return prior.result;
+    const jobKey = `${owner}:${input.requestId}`, pending = this.revokeJobs.get(jobKey); if (pending) return pending;
+    if (!prior) {
+      s.revocations[input.requestId] = { actor, teamBotId: input.teamBotId, mode: input.mode, digest: input.digest! }; this.save(s);
+    }
+    const job = this.revokeTeamScope(actor, input).then(result => {
+      s.revocations[input.requestId!].result = result; this.save(s); return result;
+    });
+    this.revokeJobs.set(jobKey, job);
+    try { return await job; } finally { this.revokeJobs.delete(jobKey); }
+  }
+  private async revokeTeamScope(actor: string, scope: { teamBotId: string; mode: TeamMode }) {
+    const owner = teamOwner(actor, scope.teamBotId, scope.mode);
     const hadGrant = [...this.teamGrants.values()].some(grant => grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode);
     for (const [id, grant] of this.teamGrants) if (grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode) this.teamGrants.delete(id);
     const s = this.state(owner);
@@ -249,6 +344,10 @@ export class DockerBroker {
         if (operation.bindingId && (!binding || binding.teamBotId !== operation.teamBotId || binding.purpose !== `team-${operation.mode}`))
           throw new Error('Retained Team Bot operation binding mismatch');
       }
+      for (const operation of Object.values(state.resourceOperations)) if (!state.bindings.some(binding => binding.bindingId === operation.bindingId && binding.purpose === 'team-member')
+        || (operation.receipt && operation.receipt.planHash !== operation.planHash)) throw new Error('Retained resource operation binding mismatch');
+      for (const [id, receipt] of Object.entries(state.revocations)) if (!/^revoke:[a-f0-9]{64}$/.test(id)
+        || teamOwner(receipt.actor, receipt.teamBotId, receipt.mode) !== state.owner) throw new Error('Retained revocation receipt scope mismatch');
       if (!['stopped', 'disabled'].includes(state.phase)) {
         for (const login of Object.values(state.logins)) if (login.state === 'pending') login.state = 'interrupted';
         state.phase = 'interrupted'; state.cleanupRequired = true; state.error = 'Broker restarted. Retry to reconcile the retained runtime and profiles; uncertain chat work is not replayed.';
@@ -265,7 +364,7 @@ export class DockerBroker {
     let s = this.states.get(owner);
     if (!s && create) {
       if (this.states.size >= this.config.maxUsers) throw new LocalError(409, 'Personal runtime capacity reached.');
-      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {}, teams: {} };
+      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {}, teams: {}, resourceOperations: {}, revocations: {} };
       const dir = path.join(this.config.stateDir, runtimeKey(owner));
       mkdirSync(dir, { mode: 0o700 }); this.driver.setNetwork?.(owner, s.network!); this.states.set(owner, s); this.save(s);
     }
@@ -528,8 +627,10 @@ export class DockerBroker {
     for (const [id, grant] of this.teamGrants) if (teamOwner(grant.actor, grant.teamBotId, grant.mode) === owner) this.teamGrants.delete(id);
     for (const login of Object.values(s.logins)) if (login.state === 'pending') login.state = 'interrupted';
     ++s.generation; s.cleanupRequired = true; s.phase = 'stopping'; s.error = null; this.save(s);
+    const urgent = this.resourceMaintaining.has(owner) ? this.driver.stop(owner) : null;
+    if (urgent) void urgent.catch(() => {});
     await this.exclusive(owner, async () => {
-      try { await this.driver.stop(owner); }
+      try { if (urgent) await urgent; await this.driver.stop(owner); }
       catch { s.phase = 'error'; s.error = 'Native cleanup is unconfirmed. Data is retained; operator reconciliation is required.'; this.save(s); throw new LocalError(503, s.error); }
       for (const b of s.bindings) { await this.controllers.get(b.bindingId)?.stop(); this.controllers.delete(b.bindingId); }
       s.cleanupRequired = false; s.phase = 'stopped'; this.save(s);

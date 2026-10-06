@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
+import { request as httpRequest } from 'node:http';
+import { createTeamResourceSnapshot, resourceSha256, type TeamResource } from '@/lib/hermes-team/resources';
+import { beginResourceUpdate, planTeamResourceUpdate } from '@/lib/hermes-team/updates';
 import { DockerBroker } from '@/docker-hermes/broker';
-import { BrokerConfig, runtimeKey, type RuntimeDriver, type Profile } from '@/docker-hermes/docker';
+import { BrokerConfig, runtimeKey, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver, type Profile } from '@/docker-hermes/docker';
 import { bindingSchema, type TeamMode, type TeamModelPolicy } from '@/docker-hermes/types';
 import { listenBroker } from '@/docker-hermes/main';
 import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
@@ -237,7 +240,7 @@ describe('disabled Team Bot broker foundations', () => {
   it('stops native writers before optional capture, derives the profile root, and verifies retained identity on reopen', async () => {
     const binding = await ensure('alice', 'shared-bot', 'admin'), authorization = grant('alice', 'shared-bot', 'admin');
     const selection = { skillPackages: ['ops/checklist'], includeRole: true };
-    const snapshot = { format: 1, manifestHash: 'a'.repeat(64), resources: [] } as const;
+    const snapshot = createTeamResourceSnapshot([]);
     const capture = vi.fn(async (owner: string, name: string, identity: string) => {
       expect(driver.active.has(owner)).toBe(false); expect(name).toBe(binding.profile); expect(identity).toBe(binding.identity); return snapshot;
     });
@@ -254,7 +257,7 @@ describe('disabled Team Bot broker foundations', () => {
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), entry = new Promise<void>(resolve => { entered = resolve; });
     const extended: RuntimeDriver = driver;
-    extended.capturePublishableResources = async () => { entered(); await gate; return { format: 1, manifestHash: 'a'.repeat(64), resources: [] }; };
+    extended.capturePublishableResources = async () => { entered(); await gate; return createTeamResourceSnapshot([]); };
     extended.reopen = async owner => { driver.active.add(owner); };
     const capture = broker.captureTeamResources('alice', { teamBotId: 'shared-bot', mode: 'admin', selection: {} }, authorization.grantId);
     const failed = expect(capture).rejects.toThrow('authorization');
@@ -291,6 +294,116 @@ describe('disabled Team Bot broker foundations', () => {
     expect(broker.binding('alice', retained.bindingId)).toEqual(retained);
     expect(await broker.link('alice', { profile: name, identity: native.identity, name: 'Legacy bot' })).toEqual(retained);
     expect((await broker.forRequest('alice', retained.bindingId)).controller).toBeDefined();
+  });
+});
+
+describe('Team resource maintenance and replay', () => {
+  const skill = (content: string): TeamResource => ({ path: 'skills/support/SKILL.md', packageId: 'skills/support', kind: 'skill', encoding: 'utf8', content, size: Buffer.byteLength(content), sha256: resourceSha256(content) });
+  const update = () => planTeamResourceUpdate({ installed: createTeamResourceSnapshot([skill('v1')]), release: createTeamResourceSnapshot([skill('v2')]), current: createTeamResourceSnapshot([skill('v1')]) });
+  const hooks = () => { const extended: RuntimeDriver = driver; extended.reopen = async owner => { driver.active.add(owner); }; return extended; };
+  it('discovers admin selection with derived binding, rejects member/admin cross-grants and caller paths', async () => {
+    const binding = await ensure('alice', 'shared-bot', 'admin'), authorization = grant('alice', 'shared-bot', 'admin'), extended = hooks();
+    const inventory = vi.fn(async (owner: string, name: string, identity: string) => { expect(driver.active.has(owner)).toBe(false); expect([owner, name, identity]).toEqual([binding.ownerId, binding.profile, binding.identity]); return { skillPackages: ['support', 'catégories/a/b/c/d/e/f'], includeRole: true, documents: ['shared guide.md'] }; });
+    extended.inventoryPublishableResources = inventory;
+    expect(await broker.inventoryTeamResources('alice', { teamBotId: 'shared-bot', mode: 'admin' }, authorization.grantId)).toEqual({ skillPackages: ['support', 'catégories/a/b/c/d/e/f'], includeRole: true, documents: ['shared guide.md'] });
+    await expect(broker.inventoryTeamResources('bob', { teamBotId: 'shared-bot', mode: 'admin' }, authorization.grantId)).rejects.toThrow('authorization');
+    await expect(broker.inventoryTeamResources('alice', { teamBotId: 'shared-bot', mode: 'member' }, grant('alice').grantId)).rejects.toThrow();
+    await expect(broker.inventoryTeamResources('alice', { teamBotId: 'shared-bot', mode: 'admin', profileRoot: '/private' }, authorization.grantId)).rejects.toThrow();
+    expect(inventory).toHaveBeenCalledTimes(1);
+  });
+  it('offers explicit discovery unavailable state through real IPC rather than an unknown operation', async () => {
+    const running = await listenBroker(broker);
+    try {
+      await ensure('alice', 'shared-bot', 'admin'); const authorization = grant('alice', 'shared-bot', 'admin');
+      const response = await socketFetch(config.socketPath)(`${LOCAL_ORIGIN}/team/inventory`, { method: 'POST', headers: { 'x-collective-owner': 'alice', 'x-collective-team-grant': authorization.grantId }, body: JSON.stringify({ teamBotId: 'shared-bot', mode: 'admin' }) });
+      expect(response.status).toBe(503); expect(await response.json()).toMatchObject({ error: expect.stringContaining('unavailable') });
+      expect(() => broker.teamBinding('alice', 'shared-bot', 'admin', authorization.grantId)).not.toThrow();
+    } finally { await running.close(); }
+  });
+  it('bounds browser discovery selectors before a helper or native stop', async () => {
+    const running = await listenBroker(broker);
+    try {
+      const binding = await ensure('alice', 'shared-bot', 'admin'), authorization = grant('alice', 'shared-bot', 'admin'); const inventory = vi.fn(); hooks().inventoryPublishableResources = inventory;
+      const response = await socketFetch(config.socketPath)(`${LOCAL_ORIGIN}/team/inventory`, { method: 'POST', headers: { 'x-collective-owner': 'alice', 'x-collective-team-grant': authorization.grantId }, body: JSON.stringify({ teamBotId: 'shared-bot', mode: 'admin', junk: 'a'.repeat(97 * 1024) }) });
+      expect(response.status).toBe(413); expect(inventory).not.toHaveBeenCalled(); expect(driver.active.has(binding.ownerId)).toBe(true);
+    } finally { await running.close(); }
+  });
+  it('rejects oversized trusted apply bodies before reading input, stopping native work or writing files', async () => {
+    const running = await listenBroker(broker);
+    try {
+      await ensure('alice'); const authorization = grant('alice'), apply = vi.fn(); hooks().applyTeamResourceUpdate = apply;
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = httpRequest({ socketPath: config.socketPath, path: '/team/apply', method: 'POST', headers: { 'x-collective-owner': 'alice', 'x-collective-team-grant': authorization.grantId, 'content-length': String(RESOURCE_PROTOCOL_BYTES + 1) } }, response => { response.resume(); resolve(response.statusCode!); });
+        request.on('error', reject); request.end();
+      });
+      expect(status).toBe(413); expect(apply).not.toHaveBeenCalled(); expect(driver.active.has('alice')).toBe(true);
+      const stored = JSON.parse(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8')); expect(stored.resourceOperations).toEqual({});
+    } finally { await running.close(); }
+  });
+  it('preserves member scope, receipts and immutable plan identity across replay/restart', async () => {
+    const binding = await ensure('alice'), authorization = grant('alice'), extended = hooks(), plan = update();
+    const complete = { ...beginResourceUpdate('release-1', plan), status: 'complete' as const, completedGroups: ['skills/support'] };
+    extended.inventoryMemberResources = vi.fn(async (owner, name, identity, tracked) => { expect(driver.active.has(owner)).toBe(false); expect([name, identity, tracked]).toEqual([binding.profile, binding.identity, ['skills/support']]); return createTeamResourceSnapshot([skill('v1')]); });
+    await broker.inventoryTeamMemberResources('alice', { teamBotId: 'shared-bot', mode: 'member', trackedPackageIds: ['skills/support'] }, authorization.grantId);
+    const apply = vi.fn(async (owner: string) => { expect(driver.active.has(owner)).toBe(false); return complete; }); extended.applyTeamResourceUpdate = apply;
+    const input = { teamBotId: 'shared-bot', mode: 'member', operationId: 'release-1', plan };
+    expect(await broker.applyTeamMemberResources('alice', input, authorization.grantId)).toEqual(complete);
+    expect(await broker.applyTeamMemberResources('alice', input, authorization.grantId)).toEqual(complete);
+    await broker.close(); broker = new DockerBroker(config, driver); const fresh = grant('alice');
+    expect(await broker.applyTeamMemberResources('alice', input, fresh.grantId)).toEqual(complete);
+    const stored = JSON.parse(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8'));
+    expect(stored.resourceOperations['release-1']).toMatchObject({ bindingId: binding.bindingId, planHash: plan.planHash, status: 'complete', receipt: complete });
+    const otherPlan = planTeamResourceUpdate({ installed: createTeamResourceSnapshot([skill('v1')]), current: createTeamResourceSnapshot([skill('v1')]), release: createTeamResourceSnapshot([skill('v3')]) });
+    await expect(broker.applyTeamMemberResources('alice', { ...input, plan: otherPlan }, fresh.grantId)).rejects.toThrow('immutable'); expect(apply).toHaveBeenCalledTimes(3);
+  });
+  it('accepts bounded plans with many preserved deleted and independently learned packages', async () => {
+    await ensure('alice'); const authorization = grant('alice'), extended = hooks();
+    const named = (name: string) => ({ ...skill(name), path: `skills/${name}/SKILL.md`, packageId: `skills/${name}` });
+    const plan = planTeamResourceUpdate({ installed: createTeamResourceSnapshot(Array.from({ length: 256 }, (_, i) => named(`prior-${i}`))), current: createTeamResourceSnapshot(Array.from({ length: 256 }, (_, i) => named(`learned-${i}`))), release: createTeamResourceSnapshot([named('zz-new')]) });
+    expect(plan.actions).toHaveLength(513);
+    const receipt = { ...beginResourceUpdate('large-plan', plan), status: 'complete' as const, completedGroups: ['skills/zz-new'] };
+    extended.applyTeamResourceUpdate = async () => receipt;
+    expect(await broker.applyTeamMemberResources('alice', { teamBotId: 'shared-bot', mode: 'member', operationId: 'large-plan', plan }, authorization.grantId)).toEqual(receipt);
+  });
+  it('stays stopped on needs-attention and permits protected untouched-abort recovery', async () => {
+    await ensure('alice'); const authorization = grant('alice'), extended = hooks(), plan = update();
+    extended.applyTeamResourceUpdate = async () => ({ ...beginResourceUpdate('stale', plan), status: 'needs-attention', blockedGroup: 'skills/support' });
+    const input = { teamBotId: 'shared-bot', mode: 'member', operationId: 'stale', plan };
+    expect(await broker.applyTeamMemberResources('alice', input, authorization.grantId)).toMatchObject({ status: 'needs-attention' });
+    expect(driver.active.has('alice')).toBe(false); expect((await broker.status('alice')).error).toContain('needs attention');
+    extended.abortTeamResourceUpdate = async () => ({ aborted: true }); expect(await broker.abortTeamMemberResources('alice', input, authorization.grantId)).toEqual({ aborted: true });
+    await expect(broker.applyTeamMemberResources('alice', input, authorization.grantId)).rejects.toThrow('cancelled');
+  });
+  it('rejects stale hashes and unsafe plans before stopping native siblings', async () => {
+    await ensure('alice'); const authorization = grant('alice'), apply = vi.fn(); hooks().applyTeamResourceUpdate = apply;
+    await expect(broker.applyTeamMemberResources('alice', { teamBotId: 'shared-bot', mode: 'member', operationId: 'invalid', plan: { ...update(), planHash: 'a'.repeat(64) } }, authorization.grantId)).rejects.toThrow('invalid');
+    expect(apply).not.toHaveBeenCalled(); expect(driver.active.has('alice')).toBe(true);
+  });
+  it('blocks member apply if an idle sibling hold cannot be obtained', async () => {
+    const one = await ensure('alice'), sibling = await ensure('alice', 'sibling'); const authorization = grant('alice'), apply = vi.fn(); hooks().applyTeamResourceUpdate = apply;
+    const controller = { holdForSettings: () => { throw new LocalError(409, 'Unfinished native work blocks runtime-wide maintenance.'); }, stop: async () => {} } as unknown as LocalController;
+    (broker as unknown as { controllers: Map<string, LocalController> }).controllers.set(sibling.bindingId, controller);
+    await expect(broker.applyTeamMemberResources('alice', { teamBotId: one.teamBotId, mode: 'member', operationId: 'busy', plan: update() }, authorization.grantId)).rejects.toThrow('runtime-wide');
+    expect(apply).not.toHaveBeenCalled(); expect(driver.active.has('alice')).toBe(true);
+  });
+  it('reaches helper cancellation immediately when revocation interrupts maintenance', async () => {
+    await ensure('alice'); const authorization = grant('alice'), extended = hooks(); let entered!: () => void, release!: () => void;
+    const entry = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+    extended.inventoryMemberResources = async () => { entered(); await gate; return createTeamResourceSnapshot([]); };
+    const stop = vi.spyOn(driver, 'stop'); const inventory = broker.inventoryTeamMemberResources('alice', { teamBotId: 'shared-bot', mode: 'member', trackedPackageIds: [] }, authorization.grantId);
+    const failed = expect(inventory).rejects.toThrow('authorization'); await entry; const before = stop.mock.calls.length;
+    const revoke = broker.revokeTeam('alice', { teamBotId: 'shared-bot', mode: 'member' }); expect(stop.mock.calls.length).toBeGreaterThan(before); release(); await failed; await revoke;
+    expect(driver.active.has('alice')).toBe(false);
+  });
+  it('returns completed durable revoke receipts without revoking a new grant, including after broker restart', async () => {
+    await ensure('alice'); const input = { teamBotId: 'shared-bot', mode: 'member', requestId: `revoke:${'a'.repeat(64)}`, digest: 'b'.repeat(64) };
+    const results = await Promise.all([broker.revokeTeam('alice', input), broker.revokeTeam('alice', input)]); expect(results[0]).toEqual(results[1]);
+    await ensure('alice'); const fresh = grant('alice'); const stop = vi.spyOn(driver, 'stop'); expect(await broker.revokeTeam('alice', input)).toEqual(results[0]);
+    expect(stop).not.toHaveBeenCalled(); expect(broker.teamBinding('alice', 'shared-bot', 'member', fresh.grantId)).toBeDefined();
+    await broker.close(); broker = new DockerBroker(config, driver); await ensure('alice'); const afterRestart = grant('alice'); stop.mockClear();
+    expect(await broker.revokeTeam('alice', input)).toEqual(results[0]); expect(stop).not.toHaveBeenCalled(); expect(() => broker.teamBinding('alice', 'shared-bot', 'member', afterRestart.grantId)).not.toThrow();
+    await expect(broker.revokeTeam('alice', { ...input, digest: 'c'.repeat(64) })).rejects.toThrow('immutable');
+    await expect(broker.revokeTeam('alice', { ...input, mode: 'admin', teamBotId: 'another-owner' })).rejects.toThrow('immutable');
   });
 });
 
