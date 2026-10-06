@@ -14,7 +14,7 @@ vi.mock('@/db', async () => {
 import { db, schema } from '@/db';
 import { loadPrincipal, syncUserOnSignIn } from '@/lib/auth/groups';
 import { authorizeTeam, configureTeam, reserveTeamProfile } from '@/lib/hermes-team/store';
-import { openTeamConversation } from '@/lib/hermes-team/conversations';
+import { openTeamConversation, teamChatStatus } from '@/lib/hermes-team/conversations';
 import { queueTeamAccessReconciliation, reconcileTeamAccess, reconcileTeamActorAccess } from '@/lib/hermes-team/revocation';
 import { recordTeamRunAdmission } from '@/lib/hermes-team/run-policy';
 import { updateBot } from '@/app/(chat)/bots/actions';
@@ -74,6 +74,7 @@ describe('Team Bot server capability policy persistence and lifecycle wiring', (
     const builder = await loadBuilderData(admin, 'team');
     expect(builder.teamConfig).toMatchObject({ modelRoutes: { adminRouteId: 'saved-admin-route', personalRouteId: 'saved-personal-route' }, toolPolicy, expectedVersion: 2 });
     expect(builder.teamModelOptions).toEqual([]);
+    expect(await teamChatStatus(alice, 'team')).toMatchObject({ modelAccessAvailable: false, modelAccessReason: expect.any(String) });
   });
   it('actual audience editor mutation cancels queued and waiting work, revokes only the removed member and retains native mapping/history', async () => {
     await runFor(alice, 'queued');
