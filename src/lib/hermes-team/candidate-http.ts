@@ -28,6 +28,8 @@ export async function candidateMcpHttp(request:Request,contextId:string,dependen
     // Even initialize/notifications must check an opaque grant, current audience and current model route.
     const {loadCandidateContext}=await import('./candidate-context');
     await loadCandidateContext(contextId,request.headers.get('authorization'),'tool',dependencies.routes);
+    const {assertCandidateMcpEnabled}=await import('./candidate-tools');
+    await assertCandidateMcpEnabled();
     if(message.method==='notifications/initialized' && message.id===undefined)return new Response(null,{status:202,headers});
     if(message.id===undefined)throw new HttpError(400,'Unsupported native notification.');
     let result:unknown;

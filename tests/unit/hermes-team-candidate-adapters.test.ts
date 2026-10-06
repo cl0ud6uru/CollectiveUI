@@ -32,6 +32,7 @@ import { HERMES_COMMIT } from '@/local-hermes/config';
 import { sealAppSecret } from '@/lib/llm/secrets';
 import { sealCredentialSecret } from '@/lib/llm/chatgpt/store';
 import { snapshotHash } from '@/lib/mcp/snapshot';
+import { getSetting, setSetting } from '@/lib/settings';
 let admin:Principal,alice:Principal,bob:Principal;
 const route:VerifiedTeamModelRoute={id:'app:provider',adapterId:'collective-openai-chat-v1',model:'synthetic-model',billing:'admin',integration:'admin_inference_gateway',credentialHandling:'server_gateway',
   evidence:{id:'synthetic-only',hermesRevision:HERMES_COMMIT,adapterId:'collective-openai-chat-v1',model:'synthetic-model',integration:'admin_inference_gateway',purposes:TEAM_MODEL_PURPOSES,verifiedAt:1,expiresAt:4102444800000}};
@@ -52,7 +53,7 @@ beforeAll(async()=>{
 beforeEach(async()=>{
   vi.stubEnv('HERMES_TEAM_BOTS_ENABLED','1');vi.stubEnv('AUTH_URL','https://app.test.invalid');fixture.human=null;vi.stubEnv('ENCRYPTION_KEY','synthetic-candidate-fixture-encryption-only');
   fixture.revoke.mockReset();fixture.revoke.mockResolvedValue({stopped:true,interruption:'none'});
-  await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
+  await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers,settings CASCADE');
   await db.insert(schema.users).values([{id:'admin',upn:'admin@test.invalid',name:'Admin',isAdmin:true,authSource:'local',identityRealm:'local'},
     {id:'alice',upn:'alice@test.invalid',name:'Alice',authSource:'local',identityRealm:'local'},
     {id:'bob',upn:'bob@test.invalid',name:'Bob',authSource:'local',identityRealm:'local'}]);
@@ -304,6 +305,78 @@ describe('Concrete scoped native MCP bridge and approval continuation',()=>{
     await executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,approvalId,{routes,adapters,connect});expect(connect).toHaveBeenCalledOnce();
     expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0].state).toBe('consumed');
     await expect(executeCandidateTool(request(grant.toolToken,input,randomUUID()),grant.contextId,candidateToolName('documents'),input,approvalId,{routes,adapters,connect})).rejects.toMatchObject({status:409});
+  });
+  describe('existing admin MCP controls',()=>{
+    it('requires the server approval even when a Team read capability does not ask',async()=>{
+      const adapters=await tools();
+      await db.update(schema.mcpServers).set({toolPolicy:{'documents.read':{requireApproval:true}}}).where(eq(schema.mcpServers.id,'company-docs'));
+      await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      const input={resourceId:'document-a'},id=randomUUID();const connect=vi.fn().mockResolvedValue({callTool:vi.fn().mockResolvedValue({content:[{type:'text',text:'done'}]}),close:vi.fn().mockResolvedValue(undefined)});
+      const pending=JSON.parse((await executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).body);
+      expect(pending._meta?.collectiveApprovalId).toBeTypeOf('string');expect(connect).not.toHaveBeenCalled();
+      expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0].attribution.requireApproval).toBe(true);
+      await answerCandidateApproval(alice,pending._meta.collectiveApprovalId,'approved',{routes,adapters});
+      await executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,pending._meta.collectiveApprovalId,{routes,adapters,connect});
+      expect(connect).toHaveBeenCalledOnce();
+    });
+    it.each(['mcp','mcp:company-docs'])('blocks %s disable before any connector setup or action',async key=>{
+      const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      await setSetting('tools',{...await getSetting('tools'),disabledTools:[key]});
+      const input={resourceId:'document-a'};const connect=vi.fn().mockResolvedValue({callTool:vi.fn().mockResolvedValue({content:[{type:'text',text:'must not execute'}]}),close:vi.fn().mockResolvedValue(undefined)});
+      await expect(executeCandidateTool(request(grant.toolToken,input),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).rejects.toBeDefined();
+      const listed=await candidateMcpHttp(request(grant.toolToken,{jsonrpc:'2.0',id:1,method:'tools/list'}),grant.contextId,{routes,adapters,connect});
+      if(listed.ok)expect((await listed.json()).result.tools).toEqual([]);
+      expect(connect).not.toHaveBeenCalled();expect(await db.select().from(schema.hermesTeamCandidateRequests)).toHaveLength(0);
+    });
+    it.each(['documents.read','mcp:company-docs',candidateToolName('documents'),'synthetic_documents__documents_read','synthetic_documents__documents_read_2'])('honors admin-enforced approval for %s',async key=>{
+      const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      await setSetting('tools',{...await getSetting('tools'),enforcedApproval:[key]});
+      const input={resourceId:'document-a'},connect=vi.fn();
+      const pending=JSON.parse((await executeCandidateTool(request(grant.toolToken,input),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).body);
+      expect(pending._meta?.collectiveApprovalId).toBeTypeOf('string');expect(connect).not.toHaveBeenCalled();
+    });
+    it('honors a truncated legacy collision name before any connector setup',async()=>{
+      const adapters=await tools();await db.update(schema.mcpServers).set({name:'a'.repeat(90)}).where(eq(schema.mcpServers.id,'company-docs'));
+      await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      await setSetting('tools',{...await getSetting('tools'),enforcedApproval:[`${'a'.repeat(48)}__documents_re_2`]});
+      const input={resourceId:'document-a'},connect=vi.fn();
+      const pending=JSON.parse((await executeCandidateTool(request(grant.toolToken,input),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).body);
+      expect(pending._meta?.collectiveApprovalId).toBeTypeOf('string');expect(connect).not.toHaveBeenCalled();
+    });
+    it.each(['mcp','mcp:company-docs'])('rechecks %s disable for approved continuations and private approval listings',async key=>{
+      const adapters=await tools('write');await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      const input={resourceId:'document-a'},id=randomUUID(),connect=vi.fn();
+      const pending=JSON.parse((await executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).body);
+      const approvalId=pending._meta.collectiveApprovalId;await answerCandidateApproval(alice,approvalId,'approved',{routes,adapters});
+      await setSetting('tools',{...await getSetting('tools'),disabledTools:[key]});
+      expect(await listCandidateApprovals(alice,(await db.select().from(schema.agentRuns))[0].conversationId,{routes,adapters})).toEqual([]);
+      await expect(executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,approvalId,{routes,adapters,connect})).rejects.toBeDefined();
+      expect(connect).not.toHaveBeenCalled();expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0].state).toBe('approved');
+    });
+    it.each(['mcp','mcp:company-docs'])('denies cached replay after %s disable without returning retained private output',async key=>{
+      const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      const input={resourceId:'document-a'},id=randomUUID(),connect=vi.fn().mockResolvedValue({callTool:vi.fn().mockResolvedValue({content:[{type:'text',text:'retained private result'}]}),close:vi.fn().mockResolvedValue(undefined)});
+      await executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect});
+      await setSetting('tools',{...await getSetting('tools'),disabledTools:[key]});
+      await expect(executeCandidateTool(request(grant.toolToken,input,id),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).rejects.toBeDefined();
+      expect(connect).toHaveBeenCalledOnce();expect((await db.select().from(schema.hermesTeamCandidateRequests))[0].state).toBe('complete');
+    });
+    it.each(['mcp','mcp:company-docs'])('checks %s disable again after upstream initialize and before the action',async key=>{
+      const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      const input={resourceId:'document-a'},callTool=vi.fn();
+      const connect=vi.fn().mockImplementation(async()=>{await setSetting('tools',{...await getSetting('tools'),disabledTools:[key]});return {callTool,close:vi.fn().mockResolvedValue(undefined)};});
+      await expect(executeCandidateTool(request(grant.toolToken,input),grant.contextId,candidateToolName('documents'),input,undefined,{routes,adapters,connect})).rejects.toMatchObject({status:409});
+      expect(callTool).not.toHaveBeenCalled();expect((await db.select().from(schema.hermesTeamCandidateRequests))[0].state).toBe('needs_attention');
+    });
+    it('blocks initialization, ping and notifications while MCP is globally disabled',async()=>{
+      const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+      await setSetting('tools',{...await getSetting('tools'),disabledTools:['mcp']});const connect=vi.fn();
+      for(const method of ['initialize','ping','notifications/initialized']){
+        const response=await candidateMcpHttp(request(grant.toolToken,{jsonrpc:'2.0',...(method.startsWith('notifications')?{}:{id:1}),method}),grant.contextId,{routes,adapters,connect});
+        expect(response.status).toBe(403);
+      }
+      expect(connect).not.toHaveBeenCalled();
+    });
   });
   it('scope revocation during initialize prevents the tool call and retains an ambiguous execution fence',async()=>{
     const adapters=await tools();await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);const input={resourceId:'document-a'};const callTool=vi.fn();

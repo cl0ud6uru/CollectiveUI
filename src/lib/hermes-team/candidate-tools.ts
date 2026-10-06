@@ -9,6 +9,8 @@ import { mcpInputValidator } from '@/lib/mcp/input';
 import { snapshotHash } from '@/lib/mcp/snapshot';
 import { capResult, type McpCallResult } from '@/lib/mcp/hygiene';
 import { HERMES_COMMIT } from '@/local-hermes/config';
+import { getSetting } from '@/lib/settings';
+import { modelToolName } from '@/lib/agent/tools/mcp';
 import { candidateHash, candidateObjectHash, loadCandidateContext, lockCandidateContext, validateCandidateContext } from './candidate-context';
 import { nativeRequestId, type CandidateResponse } from './candidate-model';
 import { candidateResourceAdapterId } from './candidate-resource-adapter';
@@ -20,20 +22,42 @@ export const candidateToolName=(id:string)=>`team_${candidateHash(id).slice(0,32
 type Dependencies={ routes?:readonly VerifiedTeamModelRoute[]; adapters?:readonly VerifiedTeamToolAdapter[]; connect?:typeof connectMcp };
 type Scope={ contextId:string; authorization:string|null; routes:readonly VerifiedTeamModelRoute[]; adapters:readonly VerifiedTeamToolAdapter[] };
 
-async function toolAuthority(scope:Scope,capabilityId:string,q:DbOrTx=db) {
-  const current=await loadCandidateContext(scope.contextId,scope.authorization,'tool',scope.routes,q);
+export async function assertCandidateMcpEnabled(q:DbOrTx=db) {
+  if((await getSetting('tools',q)).disabledTools.includes('mcp'))throw new HttpError(403,'MCP tools are disabled.');
+}
+
+async function resolvedToolAuthority(current:Awaited<ReturnType<typeof loadCandidateContext>>,capabilityId:string,q:DbOrTx=db) {
   const capability=current.run.definition.toolPolicy.capabilities.find(c=>c.capabilityId===capabilityId);
   // No personal MCP connection schema exists today. Never turn this into a company connection.
   if(capability?.connectionMode==='member_connection')throw new HttpError(409,'Native member MCP connections are not supported by this build.');
   const [server]=capability?.connectionId ? await q.select().from(mcpServers).where(eq(mcpServers.id,capability.connectionId)) : [];
-  const usable=server?.status==='enabled' && server.trust==='trusted' && !server.toolsDrift && !!server.toolsSnapshot?.length
+  const settings=await getSetting('tools',q);
+  const disabled=settings.disabledTools.includes('mcp') || !!server && settings.disabledTools.includes(`mcp:${server.id}`);
+  const enforcedNames=['mcp',...(capability?.action ? [capability.action,candidateToolName(capability.capabilityId)] : []),
+    ...(server && capability?.action ? [`mcp:${server.id}`,modelToolName(server,capability.action,new Set())] : [])];
+  // Ordinary MCP names append numeric suffixes after collisions, truncating the base
+  // again to retain the 64-character limit. Honor any possible persisted alias;
+  // a native capability must not escape an admin rule by using its hashed name.
+  const legacyBase=server && capability?.action ? modelToolName(server,capability.action,new Set()) : null;
+  const legacyEnforced=!!legacyBase && settings.enforcedApproval.some(name=>{
+    const suffix=/_([0-9]+)$/.exec(name)?.[1];
+    return !!suffix && Number.isSafeInteger(Number(suffix)) && Number(suffix)>=2
+      && name===`${legacyBase.slice(0,64-suffix.length-1)}_${suffix}`;
+  });
+  const requireApproval=server?.toolPolicy[capability?.action??'']?.requireApproval===true || legacyEnforced || enforcedNames.some(name=>settings.enforcedApproval.includes(name));
+  const policy={...current.run.definition.toolPolicy,capabilities:current.run.definition.toolPolicy.capabilities.map(c=>c.capabilityId===capabilityId ? {...c,requireApproval:c.requireApproval || requireApproval} : c)};
+  const usable=!disabled && server?.status==='enabled' && server.trust==='trusted' && !server.toolsDrift && !!server.toolsSnapshot?.length
     && server.toolsHash===snapshotHash(server.toolsSnapshot);
   const authority:TeamToolAuthority={userId:current.context.actorId,botId:current.context.botId,userEnabled:true,botEnabled:true,audienceAllowed:true,
-    policyVersion:current.run.definition.version,hermesRevision:HERMES_COMMIT,policy:current.run.definition.toolPolicy,
+    policyVersion:current.run.definition.version,hermesRevision:HERMES_COMMIT,policy,
     connection:usable ? {id:server.id,version:server.policyRevision,mode:'approved_team_connection',status:'active',expiresAt:current.context.expiresAt.getTime(),approvedForBotId:current.context.botId}:null};
   const def=server?.toolsSnapshot?.find(t=>t.name===capability?.action);
   if(capability?.connectionMode!=='disabled' && (!def || capability?.adapterId!==candidateResourceAdapterId(def) || server?.toolPolicy[def.name]?.enabled===false))authority.connection=null;
   return {...current,capability,server,authority};
+}
+
+async function toolAuthority(scope:Scope,capabilityId:string,q:DbOrTx=db) {
+  return resolvedToolAuthority(await loadCandidateContext(scope.contextId,scope.authorization,'tool',scope.routes,q),capabilityId,q);
 }
 
 export async function listCandidateTools(contextId:string,authorization:string|null,dependencies:Dependencies={}) {
@@ -101,6 +125,8 @@ export async function executeCandidateTool(request:Request,contextId:string,name
       try{
         // Connection setup itself can use team secrets, so authorize it again after the durable claim.
         const resolved=await toolAuthority(scope,capability.capabilityId);
+        const beforeConnect=authorizeTeamTool(current.context.actorId,toolRequest,resolved.authority,scope.adapters);
+        if(candidateObjectHash(beforeConnect.attribution)!==candidateObjectHash(attribution))throw new HttpError(403,'The connector permission changed before setup.');
         if(!resolved.server || resolved.server.toolPolicy[attribution.action]?.enabled===false)throw new HttpError(403,'The connector action was disabled.');
         const def=resolved.server.toolsSnapshot?.find(t=>t.name===attribution.action);if(!def)throw new HttpError(409,'The connector definition changed.');
         if(abort.signal.aborted)throw new HttpError(409,'The native requester cancelled.');
@@ -156,14 +182,7 @@ async function reviewedApproval(p:Principal,id:string,dependencies:Dependencies,
   if(!approval || !context || context.actorId!==p.user.id || context.sessionVersion!==p.user.sessionVersion)throw new HttpError(404,'Native approval not found.');
     // Tokens are deliberately unrecoverable. Revalidate the persisted run rather than manufacturing a native token.
     const validated=await validateCandidateContext(context,dependencies.routes??VERIFIED_TEAM_MODEL_ROUTES,q);
-    const run=validated.run;
-    const capability=run.definition.toolPolicy.capabilities.find(c=>c.capabilityId===approval.attribution.capabilityId);
-    const [server]=capability?.connectionId ? await q.select().from(mcpServers).where(eq(mcpServers.id,capability.connectionId)) : [];
-    const def=server?.toolsSnapshot?.find(t=>t.name===capability?.action);
-    const authority:TeamToolAuthority={userId:p.user.id,botId:context.botId,userEnabled:true,botEnabled:true,audienceAllowed:true,policyVersion:run.definition.version,
-      hermesRevision:HERMES_COMMIT,policy:run.definition.toolPolicy,connection:server?.status==='enabled' && server.trust==='trusted' && !server.toolsDrift
-        && server.toolsHash===snapshotHash(server.toolsSnapshot??[]) && def && capability?.adapterId===candidateResourceAdapterId(def) && server.toolPolicy[def.name]?.enabled!==false
-        ? {id:server.id,version:server.policyRevision,mode:'approved_team_connection',status:'active',expiresAt:context.expiresAt.getTime(),approvedForBotId:context.botId}:null};
+    const {authority}=await resolvedToolAuthority(validated,approval.attribution.capabilityId,q);
     const checked=authorizeTeamTool(p.user.id,{botId:context.botId,runId:context.runId,capabilityId:approval.attribution.capabilityId,input:approval.input},authority,dependencies.adapters??VERIFIED_TEAM_TOOL_ADAPTERS);
     if(candidateObjectHash(checked.attribution)!==candidateObjectHash(approval.attribution))throw new HttpError(403,'The reviewed native action changed.');
   return {approval,context};
