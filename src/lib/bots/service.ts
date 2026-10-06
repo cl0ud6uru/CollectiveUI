@@ -2,7 +2,7 @@ import { assertLocalBot } from "@/lib/local-hermes/policy";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 import { and, eq, isNotNull, isNull, inArray } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
-import { aiApps, botAccess, botDelegates, botMcpGrants, bots, botTools, mcpServers, type AiApp, type Bot } from "@/db/schema";
+import { aiApps, botAccess, botUserAccess, botDelegates, botMcpGrants, bots, botTools, mcpServers, type AiApp, type Bot } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { HttpError } from "@/lib/authz";
 import { sha256Hex } from "@/lib/crypto";
@@ -16,20 +16,22 @@ export const canEditBot = (p: Principal, bot: Pick<Bot, "ownerId" | "executionMo
 type ServiceInputs = {
   app: AiApp | undefined;
   access: (typeof botAccess.$inferSelect)[];
+  userAccess: (typeof botUserAccess.$inferSelect)[];
   tools: (typeof botTools.$inferSelect)[];
   delegates: (typeof botDelegates.$inferSelect)[];
 };
 
 async function serviceBotInputs(bot: Bot, q: DbOrTx) {
-  const [access, tools, delegates] = await Promise.all([
+  const [access, tools, delegates, userAccess] = await Promise.all([
     q.select().from(botAccess).where(eq(botAccess.botId, bot.id)),
     q.select().from(botTools).where(eq(botTools.botId, bot.id)),
     q.select().from(botDelegates).where(eq(botDelegates.botId, bot.id)),
+    q.select().from(botUserAccess).where(eq(botUserAccess.botId, bot.id)),
   ]);
-  return { access, tools, delegates };
+  return { access, tools, delegates, userAccess };
 }
 
-function serviceConfigDigest(bot: Bot, { app, access, tools, delegates }: ServiceInputs) {
+function serviceConfigDigest(bot: Bot, { app, access, tools, delegates, userAccess }: ServiceInputs) {
   if (!app?.enabled || app.provider === "hermes" || app.credentialMode !== "org" || !app.supportsTools)
     throw new HttpError(400, "Service bots require an enabled native company model with tools.");
   if (tools.some((t) => !t.toolKey.startsWith("mcp:")) || delegates.length)
@@ -42,6 +44,8 @@ function serviceConfigDigest(bot: Bot, { app, access, tools, delegates }: Servic
       apiKeyEnc: app.apiKeyEnc, ...(app.providerConnectionId ? { providerConnectionId: app.providerConnectionId } : {}), model: app.model, systemPrompt: app.systemPrompt,
       credentialMode: app.credentialMode, supportsTools: app.supportsTools, enabled: app.enabled },
     groups: access.map((a) => a.groupId).sort(),
+    // Preserve existing publication hashes when there are no individual grants.
+    ...(userAccess.length ? { users: userAccess.map(a => a.userId).sort() } : {}),
     tools: [...tools].sort((a, b) => a.toolKey.localeCompare(b.toolKey)),
   }));
 }

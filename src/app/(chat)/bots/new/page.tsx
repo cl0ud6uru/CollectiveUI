@@ -23,6 +23,7 @@ export default async function NewBotPage() {
             appId: firstToolApp?.id ?? "",
             visibility: "private",
             groupIds: [],
+            userIds: [],
             maxSteps: 10,
             starters: [],
             tools: [{ key: "memory", approval: "auto" }],

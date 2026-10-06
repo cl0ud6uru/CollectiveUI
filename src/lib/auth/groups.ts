@@ -1,6 +1,6 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
-import { groupMappings, groups, userExternalGroups, users, type User } from "@/db/schema";
+import { groupMappings, groupMembers, groups, userExternalGroups, users, type User } from "@/db/schema";
 
 export type ExternalGroup = { externalId: string; displayName?: string };
 
@@ -72,7 +72,7 @@ export type Principal = {
   canCreateBots: boolean;
 };
 
-/** Resolve a user's portal groups (via external group mappings) and computed permissions. */
+/** Resolve explicit and directory-derived portal groups and computed permissions. */
 export async function resolvePrincipal(user: User, q: DbOrTx = db): Promise<Principal> {
   const ext = user.identityRealm === "local" ? [] : await q
     .select({ source: userExternalGroups.source, externalId: userExternalGroups.externalId })
@@ -93,6 +93,10 @@ export async function resolvePrincipal(user: User, q: DbOrTx = db): Promise<Prin
         ),
       );
   }
+
+  const direct = await q.select({ id: groups.id, isAdmin: groups.isAdmin, canCreateBots: groups.canCreateBots })
+    .from(groups).innerJoin(groupMembers, eq(groupMembers.groupId, groups.id)).where(eq(groupMembers.userId, user.id));
+  portalGroups = [...new Map([...portalGroups, ...direct].map(g => [g.id, g])).values()];
 
   const adminUpns = list(process.env.ADMIN_UPNS);
   const adminGroups = list(process.env.ADMIN_GROUPS);
@@ -130,12 +134,17 @@ export async function knownExternalGroups() {
 
 export async function usersInGroups(groupIds: string[]) {
   if (!groupIds.length) return [];
-  return db
+  const mapped = await db
     .selectDistinct({ userId: userExternalGroups.userId })
     .from(userExternalGroups)
     .innerJoin(
       groupMappings,
       and(eq(groupMappings.source, userExternalGroups.source), eq(groupMappings.externalId, userExternalGroups.externalId)),
     )
-    .where(inArray(groupMappings.groupId, groupIds));
+    .innerJoin(users, eq(users.id, userExternalGroups.userId))
+    .where(and(inArray(groupMappings.groupId, groupIds), eq(users.identityRealm, "directory"), eq(users.disabled, false)));
+  const direct = await db.selectDistinct({ userId: groupMembers.userId }).from(groupMembers)
+    .innerJoin(users, eq(users.id, groupMembers.userId))
+    .where(and(inArray(groupMembers.groupId, groupIds), eq(users.disabled, false)));
+  return [...new Map([...mapped, ...direct].map(u => [u.userId, u])).values()];
 }

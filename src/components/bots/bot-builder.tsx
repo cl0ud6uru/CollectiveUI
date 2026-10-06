@@ -1,5 +1,6 @@
 "use client";
 
+import { UserPicker, type UserOption } from "@/components/user-picker";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -114,6 +115,7 @@ export function BotBuilder({
   initial,
   apps,
   groups,
+  users = [],
   tools,
   delegates,
   delegators = [],
@@ -131,6 +133,7 @@ export function BotBuilder({
   initial: BotInput;
   apps: (Option & { supportsTools: boolean; agentServer?: boolean; managed?: boolean; local?: boolean; docker?: boolean; model?: string; nativeSearchReason?: string | null })[];
   groups: Option[];
+  users?: UserOption[];
   tools: ToolOption[];
   delegates: (Option & { avatar: string | null })[];
   delegators?: (Option & { avatar: string | null })[];
@@ -385,12 +388,13 @@ export function BotBuilder({
               <Field label="Who can use it">
                 <Select disabled={local || personalNew} aria-label="Who can use it" value={form.visibility} onChange={(e) => set("visibility", e.target.value as BotInput["visibility"])}>
                   <option value="private">Only me</option>
-                  <option value="groups">Specific groups</option>
+                  <option value="groups">Specific groups or users</option>
                   <option value="org">Everyone in the organization</option>
                 </Select>
               </Field>
               {form.visibility === "groups" && (
-                <div className="flex flex-wrap gap-2">
+                <div className="space-y-4">
+                  <Field label="Groups"><div className="flex flex-wrap gap-2">
                   {groups.map((g) => {
                     const on = form.groupIds.includes(g.id);
                     return (
@@ -404,6 +408,10 @@ export function BotBuilder({
                     );
                   })}
                   {!groups.length && <p className="text-sm text-muted">No groups defined yet (Admin → Groups).</p>}
+                  </div></Field>
+                  <Field label="Individual users" hint="Select groups, users, or both. Selected users can chat with this bot; only its owner and admins can edit it.">
+                    <UserPicker users={users} value={form.userIds ?? []} onChange={ids => set("userIds", ids)} />
+                  </Field>
                 </div>
               )}
 

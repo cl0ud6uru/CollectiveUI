@@ -1,5 +1,6 @@
 "use client";
 
+import { UserPicker, type UserOption } from "@/components/user-picker";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -14,7 +15,7 @@ import { Badge, Table, Td } from "./ui";
 type Mapping = GroupInput["mappings"][number];
 type Group = GroupInput & { id: string };
 
-function GroupDialog({ group, known, onClose }: { group: Partial<Group> | null; known: Mapping[]; onClose: () => void }) {
+function GroupDialog({ group, known, users, onClose }: { group: Partial<Group> | null; known: Mapping[]; users: UserOption[]; onClose: () => void }) {
   const router = useRouter();
   const [g, setG] = useState<Partial<Group>>(group ?? { mappings: [], isAdmin: false, canCreateBots: true });
   const [src, setSrc] = useState<"entra" | "ldap">("ldap");
@@ -89,6 +90,9 @@ function GroupDialog({ group, known, onClose }: { group: Partial<Group> | null; 
             </div>
             <p className="mt-1 text-xs text-muted">Suggestions come from groups seen on users who have signed in.</p>
           </div>
+          <Field label="Individual users" hint="These users receive the group’s permissions alongside members of its directory groups.">
+            <UserPicker users={users} value={g.memberIds ?? []} onChange={memberIds => setG({ ...g, memberIds })} />
+          </Field>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onClose}>
               Cancel
@@ -105,6 +109,7 @@ function GroupDialog({ group, known, onClose }: { group: Partial<Group> | null; 
                       isAdmin: !!g.isAdmin,
                       canCreateBots: !!g.canCreateBots,
                       mappings,
+                      memberIds: g.memberIds ?? [],
                     });
                     toast.success("Group saved");
                     onClose();
@@ -124,7 +129,7 @@ function GroupDialog({ group, known, onClose }: { group: Partial<Group> | null; 
   );
 }
 
-export function GroupsAdmin({ groups, known }: { groups: Group[]; known: Mapping[] }) {
+export function GroupsAdmin({ groups, known, users }: { groups: Group[]; known: Mapping[]; users: UserOption[] }) {
   const router = useRouter();
   const [edit, setEdit] = useState<Partial<Group> | null>(null);
   return (
@@ -134,7 +139,7 @@ export function GroupsAdmin({ groups, known }: { groups: Group[]; known: Mapping
           <Plus className="h-4 w-4" /> New group
         </Button>
       </div>
-      <Table head={["Name", "Directory groups", "Permissions", ""]}>
+      <Table head={["Name", "Directory groups", "Individual users", "Permissions", ""]}>
         {groups.map((g) => (
           <tr key={g.id} className="cursor-pointer hover:bg-hover/50" onClick={() => setEdit(g)}>
             <Td>
@@ -142,8 +147,9 @@ export function GroupsAdmin({ groups, known }: { groups: Group[]; known: Mapping
               <div className="text-xs text-muted">{g.description}</div>
             </Td>
             <Td className="text-xs text-muted">
-              {g.mappings.map((m) => m.displayName ?? m.externalId).join(", ") || <span className="text-danger">none — no one is in this group</span>}
+              {g.mappings.map((m) => m.displayName ?? m.externalId).join(", ") || <span>None</span>}
             </Td>
+            <Td className="text-xs text-muted">{g.memberIds?.length ?? 0} users</Td>
             <Td className="space-x-1">
               {g.isAdmin && <Badge tone="red">admin</Badge>}
               {g.canCreateBots && <Badge>create bots</Badge>}
@@ -166,13 +172,13 @@ export function GroupsAdmin({ groups, known }: { groups: Group[]; known: Mapping
         ))}
         {!groups.length && (
           <tr>
-            <Td colSpan={4} className="py-8 text-center text-muted">
+            <Td colSpan={5} className="py-8 text-center text-muted">
               No groups yet.
             </Td>
           </tr>
         )}
       </Table>
-      <GroupDialog key={edit?.id ?? (edit ? "new" : "none")} group={edit} known={known} onClose={() => setEdit(null)} />
+      <GroupDialog key={edit?.id ?? (edit ? "new" : "none")} group={edit} known={known} users={users} onClose={() => setEdit(null)} />
     </div>
   );
 }

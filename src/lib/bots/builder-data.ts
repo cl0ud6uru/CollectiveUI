@@ -2,7 +2,7 @@ import { nativeSearchAvailability } from "@/lib/agent/native-search";
 import { isDockerHermes, dockerAllowed } from "@/lib/docker-hermes/policy";
 import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { attachments, botMcpGrants, groups, knowledgeChunks, type ApprovalMode } from "@/db/schema";
+import { attachments, botMcpGrants, groups, users, knowledgeChunks, type ApprovalMode } from "@/db/schema";
 import { servicePublicationStatus } from "@/lib/bots/service";
 import type { McpToolDef } from "@/lib/mcp/kinds";
 import { toolHash } from "@/lib/mcp/snapshot";
@@ -91,6 +91,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
     })) : [],
     apps: await Promise.all(apps.filter((a) => (!isManagedHermes(a) && !isLocalHermes(a)) || currentBot?.appId === a.id).map(async (a) => ({ nativeSearchReason: await nativeSearchAvailability(a, toolSettings), id: a.id, name: a.name, model: a.model, supportsTools: a.supportsTools, agentServer: isAgentServer(a.provider), managed: isManagedHermes(a) || isLocalHermes(a), local: isLocalHermes(a), docker: isDockerHermes(a) }))),
     groups: groupRows,
+    users: await db.select({ id: users.id, name: users.name, email: users.email, upn: users.upn, disabled: users.disabled }).from(users).orderBy(users.name),
     tools,
     delegates: bots.filter((b) => b.id !== botId && b.executionMode !== "service").map((b) => ({ id: b.id, name: b.name, avatar: b.avatar })),
     knowledge,

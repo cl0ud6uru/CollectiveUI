@@ -6,6 +6,7 @@ import {
   aiApps,
   appAccess,
   botAccess,
+  botUserAccess,
   bots,
   conversations,
   mcpServerAccess,
@@ -108,14 +109,16 @@ function botVisibleTo(p: Principal, adminSeesAll = true) {
     eq(bots.visibility, "org"),
     and(
       eq(bots.visibility, "groups"),
-      p.groupIds.length
+      or(
+        exists(db.select({ one: sql`1` }).from(botUserAccess).where(and(eq(botUserAccess.botId, bots.id), eq(botUserAccess.userId, p.user.id)))),
+        p.groupIds.length
         ? exists(
             db
               .select({ one: sql`1` })
               .from(botAccess)
               .where(and(eq(botAccess.botId, bots.id), inArray(botAccess.groupId, p.groupIds))),
           )
-        : sql`false`,
+        : sql`false`),
     ),
   ));
 }

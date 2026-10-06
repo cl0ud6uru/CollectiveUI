@@ -11,6 +11,8 @@ import {
   aiApps,
   attachments,
   botAccess,
+  botUserAccess,
+  users,
   botDelegates,
   bots,
   botTools,
@@ -75,6 +77,7 @@ const BotInput = z.object({
   appId: z.string().min(1),
   visibility: z.enum(["private", "groups", "org"]),
   groupIds: z.array(z.string()).max(100).default([]),
+  userIds: z.array(z.string().min(1).max(100)).max(2000).optional(),
   maxSteps: z.number().int().min(1).max(50).default(10),
   starters: z.array(z.string().max(300)).max(6).default([]),
   tools: z
@@ -145,8 +148,11 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
     if (delegate.executionMode === "service") throw new HttpError(400, "Service bots cannot be delegates. Open a direct chat instead.");
     delegates.push(id);
   }
-  if (input.visibility === "groups" && !input.groupIds.length) throw new HttpError(400, "Pick at least one group");
-  return { tools, delegates, maxSteps: Math.min(input.maxSteps, toolSettings.maxStepsCap) };
+  const userIds = [...new Set(input.userIds ?? (botId ? (await db.select({ userId: botUserAccess.userId }).from(botUserAccess).where(eq(botUserAccess.botId, botId))).map(a => a.userId) : []))];
+  if (input.visibility === "groups" && !input.groupIds.length && !userIds.length) throw new HttpError(400, "Pick at least one group or user");
+  if (userIds.length && (await db.select({ id: users.id }).from(users).where(inArray(users.id, userIds))).length !== userIds.length)
+    throw new HttpError(400, "One or more selected users no longer exist. Refresh and try again.");
+  return { tools, delegates, userIds, maxSteps: Math.min(input.maxSteps, toolSettings.maxStepsCap) };
 }
 
 export async function createBot(raw: BotInput) {
@@ -189,7 +195,7 @@ export async function createBot(raw: BotInput) {
   return { id: bot.id };
 }
 
-async function saveRelations(tx: Tx, botId: string, input: BotInput, v: { tools: BotInput["tools"]; delegates: string[] }) {
+async function saveRelations(tx: Tx, botId: string, input: BotInput, v: { tools: BotInput["tools"]; delegates: string[]; userIds: string[] }) {
   await tx.delete(botTools).where(eq(botTools.botId, botId));
   if (v.tools.length)
     await tx.insert(botTools).values(v.tools.map((t) => ({ botId, toolKey: t.key, approval: t.approval, config: t.config ?? null })));
@@ -197,7 +203,13 @@ async function saveRelations(tx: Tx, botId: string, input: BotInput, v: { tools:
   if (v.delegates.length) await tx.insert(botDelegates).values(v.delegates.map((d) => ({ botId, delegateBotId: d })));
   await tx.delete(botAccess).where(eq(botAccess.botId, botId));
   if (input.visibility === "groups" && input.groupIds.length)
-    await tx.insert(botAccess).values(input.groupIds.map((g) => ({ botId, groupId: g })));
+    await tx.insert(botAccess).values([...new Set(input.groupIds)].map((groupId) => ({ botId, groupId })));
+  // Older editors omit userIds; do not overwrite their existing grants.
+  if (input.visibility !== "groups" || input.userIds !== undefined) {
+    await tx.delete(botUserAccess).where(eq(botUserAccess.botId, botId));
+    if (input.visibility === "groups" && v.userIds.length)
+      await tx.insert(botUserAccess).values(v.userIds.map(userId => ({ botId, userId })));
+  }
 }
 
 export async function updateBot(botId: string, raw: BotInput) {
