@@ -75,7 +75,7 @@ try{
  await expect(page.getByRole('button',{name:'Disconnect saved access'})).toHaveCount(0);
  deleteFailure=0;await page.getByRole('button',{name:'Refresh connections'}).click();await expect(page.getByText('Connection expired',{exact:true})).toBeVisible();
 
- holdList=true;await page.getByRole('button',{name:'Refresh connections'}).click();await expect.poll(()=>typeof releaseList).toBe('function');const oldRelease=releaseList;
+ holdList=true;releaseList=undefined;await page.getByRole('button',{name:'Refresh connections'}).click();await expect.poll(()=>typeof releaseList).toBe('function');const oldRelease=releaseList;
  holdList=false;rows=[{...base,name:'Maintainer inbox'}];await page.evaluate(()=>window.fixtureContext('admin-chat'));
  await expect(page.getByRole('region',{name:'Connection for Maintainer inbox'})).toBeVisible();oldRelease();
  await expect(page.getByText('Connection expired',{exact:true})).toHaveCount(0);
