@@ -328,6 +328,18 @@ describe('Team resource maintenance and replay', () => {
       expect(response.status).toBe(413); expect(inventory).not.toHaveBeenCalled(); expect(driver.active.has(binding.ownerId)).toBe(true);
     } finally { await running.close(); }
   });
+  it('accepts bounded server-derived historical member IDs over the browser selector limit through real IPC', async () => {
+    const running = await listenBroker(broker);
+    try {
+      const binding = await ensure('alice'), authorization = grant('alice'), extended = hooks();
+      const trackedPackageIds = Array.from({ length: 512 }, (_, i) => `skills/deleted-${String(i).padStart(4, '0')}-${'a'.repeat(220)}`);
+      const inventory = vi.fn(async (owner: string, profile: string, identity: string, ids: readonly string[]) => { expect([owner, profile, identity]).toEqual([binding.ownerId, binding.profile, binding.identity]); expect(ids).toEqual(trackedPackageIds); return createTeamResourceSnapshot([]); });
+      extended.inventoryMemberResources = inventory;
+      const payload = JSON.stringify({ teamBotId: 'shared-bot', mode: 'member', trackedPackageIds }); expect(Buffer.byteLength(payload)).toBeGreaterThan(96 * 1024);
+      const response = await socketFetch(config.socketPath)(`${LOCAL_ORIGIN}/team/member-inventory`, { method: 'POST', headers: { 'x-collective-owner': 'alice', 'x-collective-team-grant': authorization.grantId }, body: payload });
+      expect(response.status).toBe(200); expect(inventory).toHaveBeenCalledTimes(1); expect(driver.launches).toBe(0);
+    } finally { await running.close(); }
+  });
   it('rejects oversized trusted apply bodies before reading input, stopping native work or writing files', async () => {
     const running = await listenBroker(broker);
     try {

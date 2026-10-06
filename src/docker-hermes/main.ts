@@ -49,7 +49,7 @@ export async function listenBroker(broker: DockerBroker) {
     }
     if (req.method === 'POST' && ['/team/inventory', '/team/member-inventory', '/team/apply', '/team/abort-update'].includes(url)) {
       const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
-      const input = await teamBody(req, ['/team/apply', '/team/abort-update'].includes(url) ? RESOURCE_PROTOCOL_BYTES : 96 * 1024);
+      const input = await teamBody(req, ['/team/apply', '/team/abort-update'].includes(url) ? RESOURCE_PROTOCOL_BYTES : url === '/team/member-inventory' ? 2 * 1024 * 1024 : 96 * 1024);
       return json(res, 200, url === '/team/inventory' ? await broker.inventoryTeamResources(owner, input, grant)
         : url === '/team/member-inventory' ? await broker.inventoryTeamMemberResources(owner, input, grant) : url === '/team/apply' ? await broker.applyTeamMemberResources(owner, input, grant) : await broker.abortTeamMemberResources(owner, input, grant));
     }

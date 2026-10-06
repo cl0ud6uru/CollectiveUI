@@ -231,7 +231,7 @@ export class DockerBroker {
   }
   async applyTeamMemberResources(actor: string, raw: unknown, grantId: string) {
     if (Buffer.byteLength(JSON.stringify(raw)) > RESOURCE_PROTOCOL_BYTES) throw new LocalError(413, 'The update exceeds the bounded resource protocol.');
-    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), plan: z.object({ actions: z.array(z.unknown()).max(1024) }).passthrough(), receipt: updateReceipt.optional() }).strict().parse(raw);
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), plan: z.object({ actions: z.array(z.unknown()).max(1536) }).passthrough(), receipt: updateReceipt.optional() }).strict().parse(raw);
     const plan = input.plan as unknown as TeamResourceUpdatePlan;
     try { beginResourceUpdate(input.operationId, plan, input.receipt); } catch { throw new LocalError(400, 'The update plan or receipt is invalid.'); }
     this.teamBinding(actor, input.teamBotId, input.mode, grantId);
@@ -249,7 +249,7 @@ export class DockerBroker {
   }
   async abortTeamMemberResources(actor: string, raw: unknown, grantId: string) {
     if (Buffer.byteLength(JSON.stringify(raw)) > RESOURCE_PROTOCOL_BYTES) throw new LocalError(413, 'The update exceeds the bounded resource protocol.');
-    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), plan: z.object({ actions: z.array(z.unknown()).max(1024) }).passthrough() }).strict().parse(raw);
+    const input = z.object({ teamBotId: ownerId, mode: z.literal('member'), operationId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), plan: z.object({ actions: z.array(z.unknown()).max(1536) }).passthrough() }).strict().parse(raw);
     const plan = input.plan as unknown as TeamResourceUpdatePlan;
     try { beginResourceUpdate(input.operationId, plan); } catch { throw new LocalError(400, 'The update plan is invalid.'); }
     this.teamBinding(actor, input.teamBotId, input.mode, grantId);

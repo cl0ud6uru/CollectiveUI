@@ -82,6 +82,12 @@ describe('bounded retained-volume helper', () => {
     await writeFile(path.join(roots.journalRoot, profile, 'forged.json'), JSON.stringify({ format: 1, operationId: 'forged', planHash: 'a'.repeat(64), receipt: { status: 'complete' } }));
     await expect(executeResourceHelper({ operation: 'fence' }, roots)).rejects.toThrow();
   });
+  it('inventories historical deleted boundaries without increasing snapshot file or byte bounds', async () => {
+    const trackedPackageIds = [...Array.from({ length: 512 }, (_, i) => `skills/deleted-${i}`), 'skills/support'];
+    const result = await executeResourceHelper({ operation: 'inventory', ...scope, trackedPackageIds }, roots) as TeamResourceSnapshot;
+    expect(result.resources).toEqual([skill('v1')]);
+    await expect(executeResourceHelper({ operation: 'inventory', ...scope, trackedPackageIds: Array.from({ length: 1025 }, (_, i) => `skills/deleted-${i}`) }, roots)).rejects.toThrow();
+  });
   it('rejects unsafe update plans before profile writes', async () => {
     const update = await plan();
     await expect(executeResourceHelper({ operation: 'apply', ...scope, operationId: 'invalid', plan: { ...update, actions: [{ ...update.actions[0], packageId: '../auth.json' }] } }, roots)).rejects.toThrow();
