@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { open, unlink } from "node:fs/promises";
 import { readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { z } from "zod";
 import { assertNoOtherHermes, installationId, HERMES_RELEASE, validateInstallation, type ControllerConfig } from "./config";
+import { managedPrompt, managedAnswer, skipManagedPrompt, managedControl, nativeAttachments, type NativeAttachment, type ManagedPrompt, type ManagedRunView } from './interactions';
 import { NativeRpc, object, string, type RpcFrame, type RpcObject, type RpcTransport } from "./rpc";
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,160}$/);
@@ -15,17 +16,20 @@ export const PairInput = z.object({ runtimeId: id, ownerId: id, name: z.string()
 const Binding = z.object({ bindingId: id, ownerId: id, botId: id, appId: id, name: z.string(), model: z.string(), provider: z.string() });
 export type LocalBinding = z.infer<typeof Binding>;
 const Stored = z.object({ runtimeId: id, binding: Binding.optional(), sessions: z.record(z.string(), z.string()),
-  receipts: z.record(z.string(), z.object({ runId: id, sessionKey: z.string(), status: z.enum(["running", "completed", "failed", "cancelled", "interrupted"]) })) });
+  receipts: z.record(z.string(), z.object({ runId: id, sessionKey: z.string(), status: z.enum(["running", "completed", "failed", "cancelled", "interrupted"]), digest: z.string().optional() })),
+  operations: z.record(z.string(), z.object({ runId: id, digest: z.string(), outcome: z.enum(["pending", "accepted", "rejected"]).optional() })).default({}) });
 type Stored = z.infer<typeof Stored>;
 export type LocalEvent = { event: string; [key: string]: unknown };
 type LocalRun = { id: string; receipt: string; sessionKey: string; nativeId?: string; status: string; cancel: boolean;
   output?: string; error?: string; events: LocalEvent[]; bytes: number; seq: number;
+  inputs: Map<string, { nativeId: string | number; prompt: ManagedPrompt }>; queued?: string; queueClaim?: boolean; waitingQueuedStart?: boolean; submitted?: boolean;
   approvals: Map<string, { nativeId: string | number; toolId?: string }>; tools: Map<string, string>; syntheticApproval?: string;
+  terminalCandidate?: { epoch: number; status: "completed" | "failed" | "cancelled"; error?: string; usage: RpcObject }; terminalEpoch?: number; settling?: boolean; controlAdmissions?: number;
   usageBefore?: RpcObject; runtime: RpcObject; timer?: NodeJS.Timeout; cancelTimer?: NodeJS.Timeout };
 
 export class LocalError extends Error { constructor(public status: number, message: string) { super(message); } }
 const key = () => randomUUID().replaceAll("-", "");
-const active = (r: LocalRun) => r.status === "running" || r.status === "waiting_for_approval";
+const active = (r: LocalRun) => r.status === "running" || r.status === "waiting_for_approval" || r.status === "waiting_for_input";
 
 /** Sole engine owner. Persistent file contains IDs/admission receipts only, never transcripts or credentials. */
 export class LocalController {
@@ -47,7 +51,7 @@ export class LocalController {
     try { this.stored = Stored.parse(JSON.parse(readFileSync(this.stateFile, "utf8"))); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Controller metadata is unreadable. Restore its original mapping; do not reset it to retry a turn.");
-      this.stored = { runtimeId: this.runtimeId, sessions: {}, receipts: {} };
+      this.stored = { runtimeId: this.runtimeId, sessions: {}, receipts: {}, operations: {} };
     }
     if (this.stored.runtimeId !== this.runtimeId) throw new Error("Installation changed. Restore the original controller paths; retained bindings cannot move to another profile.");
   }
@@ -73,8 +77,8 @@ export class LocalController {
     return { runtimeId: this.runtimeId, label: this.config.label, release: HERMES_RELEASE,
       status: this.stopping ? "stopping" : this.starting ? "starting" : this.rpc?.alive ? "ready" : "stopped",
       error: this.error, binding: this.stored.binding ?? null,
-      capabilities: ["text", "native-sessions", "approve-once", "deny", "stop"],
-      trust: "Single trusted administrator; exclusive profile; direct text chats only" };
+      capabilities: ["text", "native-sessions", "native-attachments", "approve-once", "deny", "stop", "steer", "queue", "native-snapshot", ...(this.rpc?.serverRequests ?? []).filter(m => m !== "approval")],
+      trust: "Single trusted administrator; exclusive profile; direct native chats only" };
   }
   pair(raw: unknown) {
     this.assertStorage();
@@ -173,26 +177,28 @@ export class LocalController {
     if (this.settingsHold) throw new LocalError(409, 'Profile settings are being updated or tested. Try again after they settle.');
     this.assertStorage();
     const binding = this.assertBinding(bindingId);
-    const input = z.object({ input: z.string().min(1).max(64000), session_id: id, instructions: z.string().max(128000).optional(), model: z.never().optional() }).strict().parse(raw);
+    const input = z.object({ input: z.string().max(64000), session_id: id, instructions: z.string().max(128000).optional(), model: z.never().optional(), attachments: nativeAttachments.optional() }).strict().refine(v => !!v.input.trim() || !!v.attachments?.length, "Enter a message or attachment").parse(raw);
+    const digest = createHash("sha256").update(JSON.stringify([input.input, input.attachments ?? []])).digest("hex");
     id.parse(receipt);
     const previous = this.stored.receipts[receipt];
     if (previous) {
       if (previous.sessionKey !== input.session_id) throw new LocalError(409, "This admission receipt belongs to another session");
+      if (previous.digest && previous.digest !== digest) throw new LocalError(409, "This admission receipt belongs to different content");
       return previous.runId;
     }
     if (!this.rpc?.alive || this.starting || this.stopping) throw new LocalError(409, "Start your native runtime before chatting. Personal Docker runtimes are in Settings → Connected accounts.");
     if ([...this.runs.values()].some(active)) throw new LocalError(429, "This personal Hermes profile already has an unfinished turn. Finish its approval or stop it first.");
-    if (Object.keys(this.stored.receipts).length >= 10000 || Object.keys(this.stored.sessions).length >= 1000)
+    if ((Object.keys(this.stored.receipts).length + Object.keys(this.stored.operations).length) >= 10000 || Object.keys(this.stored.sessions).length >= 1000)
       throw new LocalError(409, "Pilot metadata capacity reached. Ask the operator to archive this pilot; receipts are retained to prevent duplicate execution.");
     const runId = `run_${key()}`;
     const r: LocalRun = { id: runId, receipt, sessionKey: input.session_id, status: "running", cancel: false, events: [], bytes: 0, seq: 0,
-      approvals: new Map(), tools: new Map(), runtime: {} };
+      inputs: new Map(), approvals: new Map(), tools: new Map(), runtime: {} };
     this.runs.set(runId, r);
-    this.stored.receipts[receipt] = { runId, sessionKey: input.session_id, status: "running" };
+    this.stored.receipts[receipt] = { runId, sessionKey: input.session_id, status: "running", digest };
     this.save(); // Write-ahead admission: an uncertain prompt is never silently resubmitted.
     r.timer = setTimeout(() => { this.error = "Local turn exceeded the 30-minute pilot limit."; this.halt(); }, 30 * 60_000);
     const admittedRpc = this.rpc;
-    void this.submit(r, input.input, binding).catch(() => {
+    void this.submit(r, input.input, binding, input.attachments ?? []).catch(() => {
       // An old request can reject after Stop completed and a new gateway started.
       if (this.rpc !== admittedRpc || !active(r)) return;
       this.error = "Hermes could not admit or resume this turn. Check its native profile logs. Stop and Start before continuing; no automatic retry was made.";
@@ -201,13 +207,13 @@ export class LocalController {
     });
     return runId;
   }
-  private async submit(r: LocalRun, text: string, binding: LocalBinding) {
+  private async submit(r: LocalRun, text: string, binding: LocalBinding, attachments: NativeAttachment[]) {
     const rpc = this.rpc!;
     let runtime = this.liveSessions.get(r.sessionKey);
     if (!runtime) {
       const storedId = this.stored.sessions[r.sessionKey];
       const response = storedId
-        ? await rpc.call("session.resume", { session_id: storedId })
+        ? await rpc.call("session.resume", { session_id: storedId, inline_images: false })
         : await rpc.call("session.create", { cwd: this.config.workDir, ...(binding.model ? { model: binding.model, provider: binding.provider } : {}) });
       const info = object(response.info);
       const durableId = string(response.stored_session_id) || string(info.stored_session_id) || string(response.session_key);
@@ -227,8 +233,26 @@ export class LocalController {
     r.usageBefore = object(await rpc.call("session.usage", { session_id: runtime }));
     if (!active(r)) return;
     if (r.cancel) { this.finish(r, "cancelled"); return; }
-    const response = await rpc.call("prompt.submit", { session_id: runtime, text });
+    let outgoing = text;
+    let staged = false;
+    const cancelStaging = () => {
+      if (staged) { this.error = "Attachment staging was cancelled. The owned engine is being stopped to discard pending images before reuse."; this.halt(); }
+      else this.finish(r, "cancelled");
+    };
+    for (const file of attachments) {
+      if (!active(r) || r.cancel) { cancelStaging(); return; }
+      staged = true; // An uncertain attachment RPC may have staged native bytes.
+      const params = { session_id: runtime, filename: file.name, content_base64: file.contentBase64 };
+      const attached = file.mediaType.startsWith('image/') ? await rpc.call('image.attach_bytes', params)
+        : file.mediaType === 'application/pdf' ? await rpc.call('pdf.attach', params, 60000)
+        : await rpc.call('file.attach', { session_id: runtime, name: file.name, data_url: `data:${file.mediaType};base64,${file.contentBase64}` });
+      if (attached.attached !== true) throw new Error('Native attachment staging failed');
+      if (typeof attached.ref_text === 'string' && attached.ref_text) outgoing += `\n${attached.ref_text}`;
+    }
+    if (!active(r) || r.cancel) { cancelStaging(); return; }
+    const response = await rpc.call("prompt.submit", { session_id: runtime, text: outgoing });
     if (response.status !== "streaming") throw new Error("Native gateway did not exclusively admit this turn");
+    r.submitted = true;
     if (r.cancel && active(r)) await this.cancel(r.id);
   }
   private emit(r: LocalRun, e: LocalEvent) {
@@ -241,7 +265,7 @@ export class LocalController {
   }
   private finish(r: LocalRun, status: "completed" | "failed" | "cancelled" | "interrupted", error?: string, extra: RpcObject = {}) {
     if (!active(r)) return;
-    r.status = status; r.error = error; r.approvals.clear(); clearTimeout(r.timer); clearTimeout(r.cancelTimer);
+    r.status = status; r.error = error; r.approvals.clear(); r.inputs.clear(); clearTimeout(r.timer); clearTimeout(r.cancelTimer);
     this.stored.receipts[r.receipt].status = status; this.save();
     this.emit(r, { event: `run.${status}`, error, output: r.output, runtime: r.runtime, ...extra });
     this.changes.emit(r.id);
@@ -256,7 +280,18 @@ export class LocalController {
       if (mapping) { this.stored.sessions[mapping[0]] = string(payload.stored_session_id); this.save(); }
     }
     const r = [...this.runs.values()].find(v => active(v) && v.nativeId === p.session_id);
+    if (!r && f.method === 'event' && p.type === 'message.start' && [...this.liveSessions.values()].includes(string(p.session_id))) {
+      this.error = 'Native work started after the recorded turn ended. The owned engine is being stopped to prevent untracked execution.'; this.halt(); return;
+    }
     if (f.id !== undefined && f.method) {
+      if (r && f.method !== 'approval' && this.rpc?.serverRequests.includes(f.method)) {
+        const requestId = key(), prompt = managedPrompt(requestId, f.method, p);
+        if (prompt) {
+          if (r.cancel) { this.rpc.answer(f.id, skipManagedPrompt(prompt)); return; }
+          r.inputs.set(requestId, { nativeId: f.id, prompt }); r.status = 'waiting_for_input';
+          this.changes.emit(r.id); return;
+        }
+      }
       if (f.method !== "approval" || !r) {
         this.rpc?.answer(f.id);
         if (r) { this.error = `Native interaction '${string(f.method).slice(0, 60)}' is not supported in this pilot. Use Hermes directly after stopping the controller.`; this.halt(); }
@@ -280,6 +315,10 @@ export class LocalController {
       case "error":
         this.error = "Native Hermes reported a session error. The owned engine was stopped; check the profile logs before restarting.";
         this.halt(); break;
+      case "message.start":
+        r.terminalCandidate = undefined; r.terminalEpoch = (r.terminalEpoch ?? 0) + 1;
+        if (r.waitingQueuedStart) { r.queued = undefined; r.queueClaim = false; r.waitingQueuedStart = false; }
+        break;
       case "message.delta": this.emit(r, { event: "message.delta", delta: string(payload.text) }); break;
       case "session.info":
         r.runtime = { model: string(payload.model), provider: string(payload.provider) };
@@ -299,7 +338,8 @@ export class LocalController {
       }
       case "request.cancel": {
         for (const [id, pending] of r.approvals) if (pending.nativeId === payload.id) r.approvals.delete(id);
-        if (!r.approvals.size) r.status = "running";
+        for (const [id, pending] of r.inputs) if (pending.nativeId === payload.id) r.inputs.delete(id);
+        r.status = r.approvals.size ? "waiting_for_approval" : r.inputs.size ? "waiting_for_input" : "running";
         break;
       }
       case "message.complete": {
@@ -310,12 +350,42 @@ export class LocalController {
           if (typeof usage[native] === "number" && typeof baseline[native] === "number" && Number(usage[native]) >= Number(baseline[native])) counts[target] = Number(usage[native]) - Number(baseline[native]);
         }
         if (string(usage.model)) r.runtime.model = usage.model;
-        if (r.syntheticApproval) this.emit(r, { event: "tool.completed", tool: "approval", tool_id: r.syntheticApproval, preview: JSON.stringify({ status: "settled", note: "Native approval interaction ended. See Hermes tool results for execution outcome." }) });
-        if (payload.status === "complete" && !payload.partial) this.finish(r, "completed", undefined, { usage: counts });
-        else if (payload.status === "interrupted") this.finish(r, "cancelled");
-        else this.finish(r, "failed", "The native Hermes turn did not complete. Check its profile logs and provider configuration.");
+        if (r.syntheticApproval) { this.emit(r, { event: "tool.completed", tool: "approval", tool_id: r.syntheticApproval, preview: JSON.stringify({ status: "settled", note: "Native approval interaction ended. See Hermes tool results for execution outcome." }) }); r.syntheticApproval = undefined; }
+        const status = payload.status === "complete" && !payload.partial ? "completed" : payload.status === "interrupted" ? "cancelled" : "failed";
+        if (r.queued || r.queueClaim) r.waitingQueuedStart = true;
+        r.terminalCandidate = { epoch: r.terminalEpoch ?? 0, status, usage: counts,
+          ...(status === "failed" ? { error: "The native Hermes turn did not complete. Check its profile logs and provider configuration." } : {}) };
+        // Failed and interrupted turns can also dispatch accepted native follow-ups after this event.
+        void this.settleNative(r);
         break;
       }
+    }
+  }
+  private async settleNative(r: LocalRun) {
+    if (r.settling) return;
+    r.settling = true;
+    const rpc = this.rpc;
+    try {
+      while (active(r) && rpc?.alive && rpc === this.rpc) {
+        const candidate = r.terminalCandidate;
+        if (!candidate) break;
+        const proof = await rpc.call('collective.session.settled', { session_id: r.nativeId }, 5000);
+        if (proof.session_id !== r.nativeId || typeof proof.settled !== 'boolean') throw new Error('Invalid settlement proof');
+        if (proof.settled && r.terminalCandidate === candidate && !r.controlAdmissions) {
+          // Hermes may acknowledge a queued self-copy without retaining it. A fresh worker proof
+          // confirms there is no successor; the local admission claim must not outlive that proof.
+          r.queued = undefined; r.queueClaim = false; r.waitingQueuedStart = false;
+          const status = r.cancel ? 'cancelled' : candidate.status;
+          this.finish(r, status, r.cancel ? undefined : candidate.error, status === 'completed' ? { usage: candidate.usage } : {}); break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } catch {
+      if (rpc === this.rpc && active(r)) { this.error = 'Native worker settlement could not be confirmed. The owned engine is being stopped; this turn will not be replayed.'; this.halt(); }
+    } finally {
+      r.settling = false;
+      // A follow-up can complete while the preceding observer is unwinding.
+      if (active(r) && r.terminalCandidate && rpc?.alive && rpc === this.rpc && !this.stopping) void this.settleNative(r);
     }
   }
   getRun(runId: string) {
@@ -341,8 +411,72 @@ export class LocalController {
     const { request_id, choice } = z.object({ request_id: id, choice: z.enum(["once", "deny"]) }).strict().parse(raw);
     const r = this.runs.get(runId), pending = r?.approvals.get(request_id);
     if (!r || !pending || !active(r) || r.cancel || !this.rpc?.alive) throw new LocalError(409, "This native approval expired or was withdrawn");
-    r.approvals.delete(request_id); r.status = r.approvals.size ? "waiting_for_approval" : "running";
+    r.approvals.delete(request_id); r.status = r.approvals.size ? "waiting_for_approval" : r.inputs.size ? "waiting_for_input" : "running";
     this.rpc.answer(pending.nativeId, { choice });
+  }
+  async nativeView(runId: string): Promise<ManagedRunView> {
+    this.assertStorage();
+    const r = this.runs.get(runId);
+    if (!r?.nativeId || !this.rpc?.alive || this.liveSessions.get(r.sessionKey) !== r.nativeId)
+      throw new LocalError(409, 'Native session inspection is unavailable after restart. Send the next message to resume its retained session.');
+    // Activate only this already-owned live runtime, never cold-resume unknown or auto-continued work.
+    const snapshot = await this.rpc.call('session.activate', { session_id: r.nativeId, omit_messages: true });
+    if (snapshot.session_id !== r.nativeId) throw new LocalError(409, 'Native session identity changed. Reload before continuing.');
+    const info = object(snapshot.info), usage = object(info.usage), projected: Record<string, number> = {};
+    for (const k of ['input', 'output', 'context_used', 'context_max', 'context_percent', 'cost_usd'])
+      if (typeof usage[k] === 'number' && Number.isFinite(usage[k])) projected[k] = usage[k];
+    return { running: active(r), status: r.status, model: string(info.model), provider: string(info.provider), usage: projected,
+      prompts: [...r.inputs.values()].map(p => p.prompt), queued: r.queued ?? '', features: this.status().capabilities };
+  }
+  async nativeControl(runId: string, raw: unknown) {
+    this.assertStorage();
+    const input = managedControl.parse(raw), r = this.runs.get(runId);
+    if (!r || !active(r) || r.cancel || !r.nativeId || !this.rpc?.alive || this.liveSessions.get(r.sessionKey) !== r.nativeId)
+      throw new LocalError(409, 'This native turn has ended or its identity changed.');
+    if (input.operation === 'answer') {
+      const pending = r.inputs.get(input.requestId);
+      if (!pending) throw new LocalError(409, 'This native prompt expired or was answered elsewhere.');
+      let result: RpcObject;
+      try { result = managedAnswer(pending.prompt, input.answer); }
+      catch { throw new LocalError(400, 'Invalid native prompt answer.'); }
+      this.rpc.answer(pending.nativeId, result); r.inputs.delete(input.requestId);
+      r.status = r.approvals.size ? 'waiting_for_approval' : r.inputs.size ? 'waiting_for_input' : 'running';
+      return { answered: true };
+    }
+    if (!r.submitted) throw new LocalError(409, 'Wait for Hermes to confirm the current turn before steering or queueing.');
+    if (this.settingsHold) throw new LocalError(409, 'Native maintenance is in progress.');
+    const digest = createHash('sha256').update(JSON.stringify([input.operation, runId, input.text])).digest('hex');
+    const existing = this.stored.operations[input.requestId];
+    if (existing) {
+      if (existing.runId !== runId || existing.digest !== digest) throw new LocalError(409, 'This native operation receipt belongs to other work.');
+      if (existing.outcome === 'rejected') throw new LocalError(409, 'Hermes rejected this operation; it was not replayed.');
+      if (existing.outcome !== 'accepted') throw new LocalError(503, 'This operation has an uncertain admission receipt and will not be replayed.');
+      return { accepted: true, duplicate: true };
+    }
+    if (Object.keys(this.stored.operations).length + Object.keys(this.stored.receipts).length >= 10000) throw new LocalError(409, 'Native receipt capacity reached.');
+    if (input.operation === 'queue' && (r.queued || r.queueClaim)) throw new LocalError(409, 'Only one next message can be queued.');
+    this.stored.operations[input.requestId] = { runId, digest, outcome: "pending" }; this.save();
+    if (input.operation === 'queue') { r.queueClaim = true; r.queued = input.text; if (r.terminalCandidate) r.waitingQueuedStart = true; }
+    r.terminalEpoch = (r.terminalEpoch ?? 0) + 1;
+    if (r.terminalCandidate) r.terminalCandidate = { ...r.terminalCandidate, epoch: r.terminalEpoch };
+    r.controlAdmissions = (r.controlAdmissions ?? 0) + 1;
+    try {
+      const response = input.operation === 'steer'
+        ? await this.rpc.call('session.steer', { session_id: r.nativeId, text: input.text })
+        : await this.rpc.call('prompt.submit', { session_id: r.nativeId, text: input.text, queued: true });
+      if (response.status === 'rejected') {
+        this.stored.operations[input.requestId].outcome = 'rejected'; this.save();
+        if (input.operation === 'queue') { r.queueClaim = false; r.queued = undefined; }
+        throw new LocalError(409, 'Hermes rejected this correction or next message because the turn changed.');
+      }
+      if (!(input.operation === 'steer' ? ['queued'] : ['queued', 'streaming']).includes(string(response.status))) throw new Error('Native control admission unconfirmed');
+      this.stored.operations[input.requestId].outcome = 'accepted'; this.save();
+      return { accepted: true, duplicate: false };
+    } catch (e) {
+      if (e instanceof LocalError && e.status === 409) throw e;
+      this.error = 'Native control admission could not be confirmed. The owned engine is being stopped; this operation will not be replayed.'; this.halt();
+      throw new LocalError(503, this.error);
+    } finally { r.controlAdmissions = (r.controlAdmissions ?? 1) - 1; }
   }
   async cancel(runId: string) {
     const r = this.runs.get(runId);
@@ -355,6 +489,8 @@ export class LocalController {
     }, 5000);
     for (const pending of r.approvals.values()) this.rpc?.answer(pending.nativeId, { choice: "deny" });
     r.approvals.clear();
+    for (const pending of r.inputs.values()) this.rpc?.answer(pending.nativeId, skipManagedPrompt(pending.prompt));
+    r.inputs.clear(); r.queued = undefined; r.queueClaim = false;
     if (r.nativeId) await this.rpc?.call("session.interrupt", { session_id: r.nativeId }, 8000);
     // Completion event (or explicit process shutdown), never RPC acknowledgement, confirms cancellation.
   }

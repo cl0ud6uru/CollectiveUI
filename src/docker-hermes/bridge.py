@@ -803,6 +803,55 @@ def assert_no_other_native(name, home):
         # Relevant unreadable metadata fails closed; never silently ignore PermissionError.
 
 
+def network_check(provider, mode):
+    """Fixed DNS/TLS-only check. No credentials, HTTP provider request or model inference."""
+    import socket
+    import ssl
+    import signal
+    hosts = {
+        'openai-api': ('api.openai.com',),
+        'anthropic': ('api.anthropic.com',),
+        'openrouter': ('openrouter.ai',),
+        'openai-codex': ('auth.openai.com', 'chatgpt.com'),
+    }
+    if provider not in hosts or mode not in ('none', 'internet', 'proxy'):
+        raise ValueError('unsupported fixed network check')
+    if mode == 'none':
+        return {'code': 'offline'}
+    def timeout(*_):
+        raise TimeoutError('bounded check')
+    prior = signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(8)
+    try:
+        context = ssl.create_default_context()
+        for host in hosts[provider]:
+            endpoint = ('hermes-egress', 3128) if mode == 'proxy' else (host, 443)
+            with socket.create_connection(endpoint, timeout=3) as sock:
+                if mode == 'proxy':
+                    sock.sendall(('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n').encode('ascii'))
+                    header = bytearray()
+                    while b'\r\n\r\n' not in header and len(header) < 4096:
+                        chunk = sock.recv(1)
+                        if not chunk:
+                            break
+                        header.extend(chunk)
+                    line = bytes(header).split(b'\r\n', 1)[0].split()
+                    if b'\r\n\r\n' not in header or len(line) < 2 or line[1] != b'200':
+                        return {'code': 'proxy_blocked'}
+                with context.wrap_socket(sock, server_hostname=host):
+                    pass  # certificate-verified handshake only; never send provider HTTP data
+        return {'code': 'reachable'}
+    except socket.gaierror:
+        return {'code': 'dns_failed'}
+    except ssl.SSLError:
+        return {'code': 'tls_failed'}
+    except (OSError, TimeoutError):
+        return {'code': 'proxy_blocked' if mode == 'proxy' else 'unavailable'}
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prior)
+
+
 def main():
     check_source()
     op = sys.argv[1]
@@ -826,6 +875,8 @@ def main():
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             result = profile_settings(sys.argv[2], sys.argv[3], op, data)
         print(json.dumps(result))
+    elif op == 'network-check':
+        print(json.dumps(network_check(sys.argv[2], sys.argv[3])))
     elif op == 'codex':
         data = json.loads(sys.stdin.read(16385))
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
@@ -849,6 +900,59 @@ def main():
             raise ValueError('profile changed during process admission')
         os.environ.update(HERMES_HOME=str(home), HOME=str(home / 'home'))
         os.chdir(home / 'workspace')
+        # Fixed controller extension, identical to local gateway-bootstrap.ts.
+        # No browser text is interpolated into this registration.
+        import hermes_bootstrap
+        hermes_bootstrap.harden_import_path()
+        from tui_gateway import server as _collective_server
+
+        # The worker proof covers in-process native threads only. Refuse unsupported
+        # isolation at startup instead of admitting work that cannot later settle.
+        if _collective_server._turn_isolation_enabled():
+            raise RuntimeError("Controller requires in-process native turn execution")
+
+        def _collective_session_settled(_rid, _params):
+            # RPC dispatch reserves one retirement slot for this observer. Worker reservations
+            # survive message.complete, running=False, settled-info, and all post-turn followups.
+            # Counting a single slot proves there is no worker still able to dispatch a successor.
+            import re
+            if not isinstance(_params, dict) or set(_params) != {"session_id"}:
+                return _collective_server._err(_rid, 4000, "Invalid controller settlement request")
+            _sid = _params.get("session_id")
+            if not isinstance(_sid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", _sid):
+                return _collective_server._err(_rid, 4000, "Invalid controller session identity")
+            _settled = False
+            try:
+                from hermes_cli.backend_retirement import retirement as _retirement
+                _session = _collective_server._sessions.get(_sid)
+                if isinstance(_session, dict):
+                    # Native _open_requests reacquires this non-reentrant history lock.
+                    # Read it before taking the lock; an arriving worker still reserves
+                    # retirement admission, so the count below prevents false settlement.
+                    _pending = _collective_server._open_requests(_sid)
+                    with _session["history_lock"]:
+                        # Compute-host completions have another parent callback lifetime; the
+                        # inline retirement proof must never be applied to that transport.
+                        _isolated = _collective_server._session_uses_compute_host(_session)
+                        _settled = bool(
+                            _collective_server._sessions.get(_sid) is _session
+                            and not _session.get("_closing")
+                            and not _session.get("_finalized")
+                            and not _isolated
+                            and not _session.get("running")
+                            and not _session.get("queued_prompt")
+                            and not _session.get("queued_prompts")
+                            and not _pending
+                            and _retirement.active_count() == 1
+                        )
+            except Exception:
+                # Any missing/changed ledger is uncertain. Do not serialize native exceptions.
+                _settled = False
+            return _collective_server._ok(_rid, {"session_id": _sid, "settled": _settled})
+
+        if "collective.session.settled" in _collective_server._methods:
+            raise RuntimeError("Controller settlement extension already installed")
+        _collective_server._methods["collective.session.settled"] = _collective_session_settled
         runpy.run_module('tui_gateway.entry', run_name='__main__')
     else:
         raise ValueError('unknown operation')

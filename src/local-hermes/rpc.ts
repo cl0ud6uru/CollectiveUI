@@ -1,3 +1,4 @@
+import { GATEWAY_BOOTSTRAP } from "./gateway-bootstrap";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ControllerConfig } from "./config";
 import { childEnvironment } from "./config";
@@ -24,12 +25,13 @@ export class NativeRpc {
   private cleaning?: Promise<void>;
   private exitNotified = false;
   alive = false;
+  serverRequests: string[] = [];
   constructor(private config: ControllerConfig, private onFrame: (f: RpcFrame) => void, private onExit: () => void, private onCleanupError: () => void, private transport?: RpcTransport) {}
 
   async start() {
     if (this.child) throw new Error("Gateway already started");
     const ready = new Promise<void>((resolve, reject) => { this.ready = { resolve, reject }; });
-    const child = this.transport?.spawn() ?? spawn(this.config.python, ["-u", "-m", "tui_gateway.entry"], {
+    const child = this.transport?.spawn() ?? spawn(this.config.python, ["-u", "-c", GATEWAY_BOOTSTRAP], {
       cwd: this.config.source, env: childEnvironment(this.config), shell: false, detached: true, stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
@@ -82,6 +84,7 @@ export class NativeRpc {
       await ready;
       if ((await this.call("ping")).pong !== true) throw new Error("Hermes did not answer the readiness probe");
       const caps = await this.call("client.capabilities", { server_requests: true });
+      this.serverRequests = Array.isArray(caps.server_requests) ? caps.server_requests.filter((s): s is string => typeof s === 'string') : [];
       if (!Array.isArray(caps.server_requests) || !caps.server_requests.includes("approval")) throw new Error("Hermes does not support native approval requests");
       if ((await this.call("gateway.capabilities")).per_session_exclusive_submit !== true) throw new Error("Hermes lacks exclusive turn admission");
     } catch (e) { await this.stop(); throw e; }

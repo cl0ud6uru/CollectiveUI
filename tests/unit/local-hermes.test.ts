@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { NativeRpc } from "@/local-hermes/rpc";
 import { LocalController } from "@/local-hermes/controller";
 import { ControllerConfig, childEnvironment, installationId } from "@/local-hermes/config";
 import { listenController } from "@/local-hermes/server";
 import { LOCAL_ORIGIN, socketFetch } from "@/lib/local-hermes/client";
-import { HermesLanguageModel } from "@/lib/llm/providers/hermes/model";
+import { randomUUID } from "node:crypto";
+import { HermesLanguageModel, newestNativeAttachments } from "@/lib/llm/providers/hermes/model";
 import { closeAllParked } from "@/lib/llm/providers/hermes/runs";
 import { streamText, type ModelMessage } from "ai";
 import type { RunHandle, ResumeState } from "@/lib/runs/types";
@@ -30,7 +33,7 @@ const until = async (check: () => boolean, timeout = 8000) => {
 };
 const sessionId = "portal-conversation-bot";
 const begin = (text: string, receipt: string, session = sessionId) => controller.begin(binding.bindingId, { input: text, session_id: session }, receipt);
-const settled = (run: string) => until(() => !["running", "waiting_for_approval"].includes(controller.getRun(run).status));
+const settled = (run: string) => until(() => !["running", "waiting_for_approval", "waiting_for_input"].includes(controller.getRun(run).status));
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), "lh-test-"));
@@ -56,6 +59,143 @@ describe("Local Hermes native pilot", () => {
     const metadata = await readFile(path.join(config.stateDir, "bindings.json"), "utf8");
     expect(metadata).not.toContain("hello"); expect(metadata).not.toContain("Fixture answer");
     expect((await readFile(path.join(config.profileHome, "fixture-prompts.jsonl"), "utf8")).trim().split("\n")).toHaveLength(1);
+  });
+  it("stages native image, PDF and file bytes exactly once before prompt admission", async () => {
+    const attachments = [
+      { name: 'fixture.png', mediaType: 'image/png', contentBase64: Buffer.from('synthetic-image').toString('base64') },
+      { name: 'fixture.pdf', mediaType: 'application/pdf', contentBase64: Buffer.from('synthetic-pdf').toString('base64') },
+      { name: 'fixture.txt', mediaType: 'text/plain', contentBase64: Buffer.from('synthetic-file').toString('base64') },
+    ];
+    const run = controller.begin(binding.bindingId, { input: 'inspect these', session_id: sessionId, attachments }, 'files-receipt');
+    await settled(run);
+    expect(controller.begin(binding.bindingId, { input: 'inspect these', session_id: sessionId, attachments }, 'files-receipt')).toBe(run);
+    expect(() => controller.begin(binding.bindingId, { input: 'different', session_id: sessionId, attachments }, 'files-receipt')).toThrow('different content');
+    const staged = (await readFile(path.join(config.profileHome, 'fixture-attachments.jsonl'), 'utf8')).trim().split('\n').map(v => JSON.parse(v));
+    expect(staged.map(v => v.method)).toEqual(['image.attach_bytes', 'pdf.attach', 'file.attach']);
+    const native = JSON.parse((await readFile(path.join(config.profileHome, 'fixture-prompts.jsonl'), 'utf8')).trim());
+    expect(native.text).toBe('inspect these\n@fixture.txt');
+    const metadata = await readFile(path.join(config.stateDir, 'bindings.json'), 'utf8');
+    expect(metadata).not.toContain('synthetic-file'); expect(metadata).not.toContain(attachments[0].contentBase64);
+  });
+  it("answers clarification and protected prompts without storing protected values or leaking native IDs", async () => {
+    for (const kind of ['clarify', 'single', 'protected']) {
+      const run = begin(kind, `input-${kind}`);
+      await until(() => controller.getRun(run).status === 'waiting_for_input');
+      expect(() => controller.holdForSettings()).toThrow('unfinished');
+      const view = await controller.nativeView(run), prompt = view.prompts[0];
+      expect(JSON.stringify(view)).not.toContain('srq-input');
+      await expect(controller.nativeControl('run_forged', { operation: 'answer', requestId: prompt.id, answer: {} })).rejects.toThrow('ended');
+      const answer = kind === 'clarify' ? { answers: { 'q-one': 'One' } } : kind === 'single' ? { answer: 'One' } : { value: 'synthetic-protected' };
+      await controller.nativeControl(run, { operation: 'answer', requestId: prompt.id, answer }); await settled(run);
+      expect(controller.getRun(run).output).toBe('Native input accepted');
+      await expect(controller.nativeControl(run, { operation: 'answer', requestId: prompt.id, answer })).rejects.toThrow('ended');
+      expect(JSON.stringify(controller.events(run, 0))).not.toContain('synthetic-protected');
+      expect(await readFile(path.join(config.stateDir, 'bindings.json'), 'utf8')).not.toContain('synthetic-protected');
+    }
+  });
+  it("deduplicates steering and queued messages, and retains only admission hashes", async () => {
+    const run = begin('slow', 'control-main');
+    await until(() => { try { return controller.status().status === 'ready'; } catch { return false; } });
+    // Wait for actual submission, not just controller readiness.
+    await until(() => { try { return readFileSync(path.join(config.profileHome, 'fixture-prompts.jsonl'), 'utf8').includes('slow'); } catch { return false; } });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const steer = { operation: 'steer', requestId: randomUUID(), text: 'A synthetic correction' };
+    expect(await controller.nativeControl(run, steer)).toEqual({ accepted: true, duplicate: false });
+    expect(await controller.nativeControl(run, steer)).toEqual({ accepted: true, duplicate: true });
+    await expect(controller.nativeControl(run, { ...steer, text: 'Changed correction' })).rejects.toThrow('other work');
+    const queue = { operation: 'queue', requestId: randomUUID(), text: 'A synthetic next message' };
+    await controller.nativeControl(run, queue);
+    expect(await controller.nativeControl(run, queue)).toEqual({ accepted: true, duplicate: true });
+    await expect(controller.nativeControl(run, { ...queue, requestId: randomUUID() })).rejects.toThrow('Only one');
+    expect((await controller.nativeView(run)).queued).toBe(queue.text);
+    const controls = (await readFile(path.join(config.profileHome, 'fixture-controls.jsonl'), 'utf8')).trim().split('\n');
+    expect(controls).toHaveLength(2);
+    const metadata = await readFile(path.join(config.stateDir, 'bindings.json'), 'utf8');
+    expect(metadata).not.toContain(steer.text); expect(metadata).not.toContain(queue.text);
+    await controller.cancel(run); await settled(run);
+  });
+  it.each(['queue', 'steer'] as const)("tracks a %s follow-up and its protected prompt under the original owned run", async operation => {
+    const run = begin('approve', 'queued-continuation');
+    await until(() => controller.getRun(run).status === 'waiting_for_approval');
+    const approval = controller.events(run, 0).events.find(e => e.event === 'approval.request')!;
+    await controller.nativeControl(run, { operation, requestId: randomUUID(), text: operation === 'steer' ? 'followup correction' : 'Synthetic queued work' });
+    controller.approve(run, { request_id: approval.request_id, choice: 'once' });
+    await until(() => controller.getRun(run).status === 'waiting_for_input');
+    expect(controller.events(run, 0).events.some(e => e.event === 'run.completed')).toBe(false);
+    const view = await controller.nativeView(run);
+    expect(view.queued).toBe('');
+    await controller.nativeControl(run, { operation: 'answer', requestId: view.prompts[0].id, answer: { value: 'synthetic-protected' } });
+    await settled(run);
+    expect(controller.getRun(run).output).toBe('Native input accepted');
+    expect(controller.events(run, 0).events.filter(e => e.event === 'run.completed')).toHaveLength(1);
+  });
+  it("retains rejected steering receipts without falsely accepting or replaying them", async () => {
+    const run = begin('approve', 'rejected-steer');
+    await until(() => controller.getRun(run).status === 'waiting_for_approval');
+    const input = { operation: 'steer', requestId: randomUUID(), text: 'rejected correction' };
+    await expect(controller.nativeControl(run, input)).rejects.toMatchObject({ status: 409 });
+    await expect(controller.nativeControl(run, input)).rejects.toMatchObject({ status: 409 });
+    expect(controller.getRun(run).status).toBe('waiting_for_approval');
+    expect((await readFile(path.join(config.profileHome, 'fixture-controls.jsonl'), 'utf8')).trim().split('\n')).toHaveLength(1);
+  });
+  it("stops the owned engine when attachment staging is cancelled before submission", async () => {
+    const run = controller.begin(binding.bindingId, { input: 'cancelled images', session_id: sessionId,
+      attachments: [{ name: 'slow.png', mediaType: 'image/png', contentBase64: 'eA==' }] }, 'cancelled-image');
+    await until(() => { try { return readFileSync(path.join(config.profileHome, 'fixture-attachments.jsonl'), 'utf8').includes('slow.png'); } catch { return false; } });
+    await controller.cancel(run).catch(e => expect(e.message).toContain('Native Hermes exited')); await settled(run);
+    await until(() => controller.status().status === 'stopped');
+    expect(controller.getRun(run).status).toBe('interrupted');
+    await expect(readFile(path.join(config.profileHome, 'fixture-prompts.jsonl'))).rejects.toThrow();
+    await controller.start();
+    const next = begin('new clean turn', 'after-cancelled-image'); await settled(next);
+    const prompt = JSON.parse((await readFile(path.join(config.profileHome, 'fixture-prompts.jsonl'), 'utf8')).trim());
+    expect(prompt.session).toBe('resumed-stored-1'); expect(prompt.text).toBe('new clean turn');
+  });
+  it.each(['queue', 'steer'] as const)("invalidates a stale idle proof before a new %s admission", async operation => {
+    const original = NativeRpc.prototype.call;
+    let release: ((value: Record<string, unknown>) => void) | undefined, observed = 0;
+    const spy = vi.spyOn(NativeRpc.prototype, 'call').mockImplementation(async function(this: NativeRpc, method, params = {}, timeoutMs) {
+      const result = await original.call(this, method, params, timeoutMs);
+      if (method === 'collective.session.settled' && ++observed === 1) return new Promise(resolve => { release = resolve; });
+      return result;
+    });
+    try {
+      const run = begin('approve', `proof-race-${operation}`);
+      await until(() => controller.getRun(run).status === 'waiting_for_approval');
+      const approval = controller.events(run, 0).events.find(e => e.event === 'approval.request')!;
+      controller.approve(run, { request_id: approval.request_id, choice: 'once' });
+      await until(() => !!release);
+      const input = { operation, requestId: randomUUID(), text: operation === 'queue' ? 'Race fixture queue' : 'rejected correction' };
+      if (operation === 'queue') await controller.nativeControl(run, input);
+      else await expect(controller.nativeControl(run, input)).rejects.toMatchObject({ status: 409 });
+      release!({ session_id: 'runtime-stored-1', settled: true });
+      await until(() => observed >= 2);
+      if (operation === 'queue') {
+        expect(controller.getRun(run).status).toBe('running');
+        expect(controller.events(run, 0).events.some(e => e.event === 'run.completed')).toBe(false);
+        const view = await controller.nativeView(run); expect(view.queued).toBe('');
+        await controller.nativeControl(run, { operation: 'answer', requestId: view.prompts[0].id, answer: { value: 'synthetic-protected' } });
+        await settled(run); expect(controller.getRun(run).status).toBe('completed');
+      } else {
+        await settled(run); expect(controller.getRun(run).status).toBe('completed');
+      }
+    } finally { spy.mockRestore(); }
+  });
+  it("transports current AI SDK tagged file parts over the real private controller IPC", async () => {
+    running = await listenController(controller);
+    const model = new HermesLanguageModel('native', { target: { baseUrl: LOCAL_ORIGIN, profile: binding.bindingId, apiKey: '', local: true, fetch: socketFetch(config.socketPath) }, sessionId, sessionKey: null, interactive: true, approvalTimeoutSec: 30 });
+    const result = streamText({ model, messages: [{ role: 'user', content: [
+      { type: 'text', text: 'Inspect attached file' },
+      { type: 'file', data: Buffer.from('synthetic-text'), filename: 'fixture.txt', mediaType: 'text/plain' },
+    ] }] });
+    expect(await result.text).toBe('Fixture answer');
+    const staged = JSON.parse((await readFile(path.join(config.profileHome, 'fixture-attachments.jsonl'), 'utf8')).trim());
+    expect(staged).toMatchObject({ method: 'file.attach', name: 'fixture.txt', content: 'data:text/plain;base64,' + Buffer.from('synthetic-text').toString('base64') });
+  });
+  it("rejects attachment paths and provider URLs before any native work", async () => {
+    expect(() => controller.begin(binding.bindingId, { input: 'bad', session_id: sessionId, attachments: [{ name: '../escape', mediaType: 'text/plain', contentBase64: 'eA==' }] }, 'bad-file')).toThrow();
+    expect(() => newestNativeAttachments([{ role: 'user', content: [{ type: 'file', data: { type: 'url', url: new URL('https://example.com/private') }, mediaType: 'text/plain' }] }])).toThrow('cannot fetch');
+    await expect(readFile(path.join(config.profileHome, 'fixture-prompts.jsonl'))).rejects.toThrow();
   });
   it("resumes durable native sessions after engine and controller restart without replaying the old turn", async () => {
     const one = begin("first", "receipt-first"); await settled(one); await controller.stop();
