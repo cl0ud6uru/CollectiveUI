@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, type DbOrTx } from '@/db';
-import { agentRuns, botAccess, botUserAccess, bots, hermesTeamCandidateContexts, hermesTeamDefinitions, hermesTeamMaintainers, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
+import { agentRuns, botAccess, botUserAccess, bots, hermesTeamCandidateContexts, hermesTeamDefinitions,hermesTeamLearningHandoffs, hermesTeamMaintainers, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { dockerControl } from '@/lib/docker-hermes/client';
 import { OPEN_STATUSES } from '@/lib/runs/types';
@@ -43,6 +43,8 @@ export async function queueTeamAccessReconciliation(q: DbOrTx, botId: string, ac
       await q.update(agentRuns).set({ cancelRequestedAt: new Date() }).where(and(eq(agentRuns.botId, botId), eq(agentRuns.userId, userId), inArray(agentRuns.status, [...OPEN_STATUSES])));
       // Gateway grants are server-owned and revoke in the same transaction as audience/session changes.
       await q.update(hermesTeamCandidateContexts).set({ revokedAt: new Date() }).where(and(eq(hermesTeamCandidateContexts.botId,botId),eq(hermesTeamCandidateContexts.actorId,userId)));
+      // Includes captured work that has not acquired its child run yet; restoring access cannot revive the old epoch.
+      await q.update(hermesTeamLearningHandoffs).set({state:'cancelled',updatedAt:new Date()}).where(and(eq(hermesTeamLearningHandoffs.botId,botId),eq(hermesTeamLearningHandoffs.actorId,userId),inArray(hermesTeamLearningHandoffs.state,['pending','queued','running'])));
       // Shared admin profile state belongs to all maintainers, so one removed actor does not revoke their retained profile.
       if (profile.mode === 'member' || !definition.enabled || !bot.enabled || options.force) {
         const profileAllowed = profile.mode === 'member' ? allowed : bot.enabled && definition.enabled && maintainerIds.length > 0;

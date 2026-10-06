@@ -1530,12 +1530,19 @@ export const hermesTeamCandidateContexts = pgTable('hermes_team_candidate_contex
   personalConnectionId: text('personal_connection_id'), bindingHash: text('binding_hash').notNull(),
   modelTokens: jsonb('model_tokens').$type<Record<import('../lib/hermes-team/model-policy').TeamModelPurpose, string>>().notNull(),
   toolTokenHash: text('tool_token_hash').notNull(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  /** A distinct one-use native snapshot handoff capability; never a model or tool token. */
+  learningTokenHash:text('learning_token_hash'),
+  workerHolder:text('worker_holder'),workerSegment:integer('worker_segment'),
+  retirementState:text('retirement_state').$type<'pending'|'confirmed'|'needs_attention'>(),
+  nativeStoppedAt:timestamp('native_stopped_at',{withTimezone:true}),
   revokedAt: timestamp('revoked_at', { withTimezone: true }), createdAt: createdAt(),
 }, t => [uniqueIndex('hermes_team_candidate_run_idx').on(t.runId), uniqueIndex('hermes_team_candidate_profile_active_idx').on(t.profileId).where(sql`${t.revokedAt} is null`),
   check('hermes_team_candidate_mode_check', sql`${t.mode} in ('member','admin')`),
   check('hermes_team_candidate_route_bound', sql`jsonb_typeof(${t.modelRoute}) = 'object' and octet_length(${t.modelRoute}::text) <= 8192`),
   check('hermes_team_candidate_context_versions_check', sql`${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
   check('hermes_team_candidate_context_hash_check', sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.toolTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_learning_hash_check',sql`${t.learningTokenHash} is null or ${t.learningTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_retirement_check',sql`(${t.retirementState} is null or ${t.retirementState} in ('pending','confirmed','needs_attention')) and (${t.nativeStoppedAt} is null or ${t.retirementState} = 'confirmed') and (${t.workerSegment} is null or ${t.workerSegment} >= 0)`),
   check('hermes_team_candidate_context_tokens_bound', sql`jsonb_typeof(${t.modelTokens}) = 'object' and octet_length(${t.modelTokens}::text) <= 512`)]);
 
 export const hermesTeamCandidateRequests = pgTable('hermes_team_candidate_requests', {
@@ -1565,3 +1572,23 @@ export const hermesTeamCandidateApprovals = pgTable('hermes_team_candidate_appro
 }, t => [uniqueIndex('hermes_team_candidate_approval_request_idx').on(t.contextId,t.requestId),check('hermes_team_candidate_approval_state_check', sql`${t.state} in ('pending','approved','rejected','consumed')`),
   check('hermes_team_candidate_approval_attribution_bound', sql`jsonb_typeof(${t.attribution}) = 'object' and octet_length(${t.attribution}::text) <= 8192`),
   check('hermes_team_candidate_approval_input_bound', sql`octet_length(${t.input}::text) <= 128000 and ${t.inputHash} ~ '^[a-f0-9]{64}$'`)]);
+
+/** One native final review per foreground context; private snapshot stays encrypted and actor-bound. */
+export const hermesTeamLearningHandoffs=pgTable('hermes_team_learning_handoffs',{
+  id:id(),sourceContextId:text('source_context_id').notNull().references(()=>hermesTeamCandidateContexts.id,{onDelete:'restrict'}),
+  reviewId:text('review_id').notNull(),childRunId:text('child_run_id').references(()=>agentRuns.id,{onDelete:'restrict'}),
+  actorId:text('actor_id').notNull().references(()=>users.id,{onDelete:'restrict'}),
+  botId:text('bot_id').notNull().references(()=>hermesTeamDefinitions.botId,{onDelete:'restrict'}),
+  profileId:text('profile_id').notNull().references(()=>hermesTeamProfiles.id,{onDelete:'restrict'}),
+  sessionVersion:integer('session_version').notNull(),definitionVersion:integer('definition_version').notNull(),teamRevision:integer('team_revision'),
+  mode:text('mode').$type<'member'|'admin'>().notNull(),bindingHash:text('binding_hash').notNull(),routeHash:text('route_hash').notNull(),
+  snapshotHash:text('snapshot_hash').notNull(),snapshotBytes:integer('snapshot_bytes').notNull(),payloadEnc:text('payload_enc').notNull(),
+  state:text('state').$type<'pending'|'queued'|'running'|'complete'|'cancelled'|'needs_attention'>().notNull().default('pending'),
+  expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('hermes_team_learning_source_idx').on(t.sourceContextId),uniqueIndex('hermes_team_learning_review_idx').on(t.sourceContextId,t.reviewId),
+  uniqueIndex('hermes_team_learning_child_idx').on(t.childRunId),
+  check('hermes_team_learning_state_check',sql`${t.state} in ('pending','queued','running','complete','cancelled','needs_attention')`),
+  check('hermes_team_learning_identity_check',sql`${t.mode} in ('member','admin') and ${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
+  check('hermes_team_learning_hash_check',sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.routeHash} ~ '^[a-f0-9]{64}$' and ${t.snapshotHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_learning_snapshot_check',sql`${t.snapshotBytes} between 1 and 64000 and octet_length(${t.payloadEnc}) <= 100000 and length(${t.reviewId}) = 36`),
+]);
