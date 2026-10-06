@@ -29,7 +29,7 @@ beforeEach(async () => {
   await mkdir(path.join(root, 'ipc'), { mode: 0o700 });
   config = BrokerConfig.parse({ stateDir: path.join(root, 'state'), socketPath: path.join(root, 'ipc/b.sock'),
     bridgePath: path.resolve('src/docker-hermes/bridge.py'), namespace: 'cui-review',
-    image: `nousresearch/hermes-agent@sha256:${'a'.repeat(64)}` });
+    image: `nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`, network: 'none' });
 });
 afterEach(async () => {
   for (const listener of listeners.splice(0)) await listener.close();
@@ -188,7 +188,7 @@ describe('Docker Hermes security review regressions', () => {
         CapAdd: ['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_SETGID', 'CAP_SETUID'], SecurityOpt: ['no-new-privileges:true'],
         Memory: selected.memoryMb * 1024 * 1024, MemorySwap: selected.memoryMb * 1024 * 1024,
         NanoCpus: selected.cpus * 1e9, PidsLimit: 256, RestartPolicy: { Name: 'no' } },
-      Mounts: [{ Type: 'volume', Name: `${name}-data`, Destination: '/opt/data' },
+      Mounts: [{ Type: 'volume', Name: `${name}-data`, Destination: '/opt/data', RW: true },
         { Type: 'bind', Source: selected.bridgePath, Destination: '/opt/collective-bridge.py', RW: false }],
     };
     const calls: string[][] = [];
