@@ -138,7 +138,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       workspace: toolset.workspace?.description,
     });
     // "/skill-slug do X" in the composer explicitly invokes a skill.
-    const slash = /^\/([a-z0-9-]+)\b/.exec(userText.trim());
+    const slash = /^\/([a-zA-Z0-9-]+)\b/.exec(userText.trim());
     const invoked = slash ? toolset.skills.find((s) => s.slug === slash[1]) : undefined;
     if (invoked && !opts.continuation && !delegated) {
       sections.push({

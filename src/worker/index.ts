@@ -8,6 +8,7 @@ import { startActivityDelivery } from "@/lib/live-activities/delivery";
 import { pool } from "@/db";
 import { getBoss, QUEUES, type AgentRunJob, type MemoryExtractJob, type RoutineRunJob } from "@/lib/jobs";
 import { extractMemoriesFromConversation } from "@/lib/agent/memory";
+import { recoverLearningReviews, reviewNativeRun } from "@/lib/agent/learning/review";
 import { executeRoutineRun, scheduleDueRoutines } from "@/lib/agent/routine-runner";
 import { warnAboutVendorEnv } from "@/lib/env-guard";
 import { refreshAllMcpServers } from "@/lib/mcp/servers";
@@ -86,6 +87,14 @@ async function main() {
     if (n) console.log(`[worker] stored ${n} memories from ${job.data.conversationId}`);
   });
 
+  await boss.work<{ runId: string }>(QUEUES.learningReview, { batchSize: 1, localConcurrency: 1 }, async ([job]) => {
+    const n = await reviewNativeRun(job.data.runId);
+    if (n) console.log(`[learning] saved ${n} lessons`);
+  });
+  const recoverLearning = () => recoverLearningReviews().catch(err => console.error("[learning] recovery failed", err));
+  void recoverLearning();
+  const learningTimer = setInterval(() => void recoverLearning(), 60_000);
+
   // MCP tool lists: hourly (one run across replicas, via pg-boss's schedule) and once at start, which also
   // captures the first snapshot of servers enabled before snapshots existed.
   await boss.work(QUEUES.mcpRefresh, { batchSize: 1 }, async () => {
@@ -121,6 +130,7 @@ async function main() {
     clearInterval(timer);
     clearInterval(sweepTimer);
     clearInterval(hermesTimer);
+    clearInterval(learningTimer);
     // Stop fetching runs without waiting for the running ones (offWork's default waits for them to finish)...
     for (const q of [QUEUES.agentRun, QUEUES.agentRunBackground, QUEUES.agentRunTasks])
       await boss.offWork(q, { wait: false }).catch((err) => console.error("[worker] offWork failed", err));

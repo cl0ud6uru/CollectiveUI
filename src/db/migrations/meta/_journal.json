@@ -253,6 +253,13 @@
       "when": 1791304594961,
       "tag": "0035_direct_user_permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791316925835,
+      "tag": "0036_native_bot_learning",
+      "breakpoints": true
     }
   ]
 }

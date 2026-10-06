@@ -19,6 +19,7 @@ type Initial = {
   botCreation: "everyone" | "groups" | "admins";
   utilityAppId?: string;
   embeddingAppId?: string;
+  learningEnabled?: boolean;
 };
 
 export function ToolSettingsForm({
@@ -126,6 +127,8 @@ export function ToolSettingsForm({
 
       <Card className="space-y-4">
         <h2 className="font-medium">Background models</h2>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.learningEnabled !== false} onChange={e => setS({ ...s, learningEnabled: e.target.checked })} /> Learn from completed native bot work</label>
+        <p className="text-xs text-muted">Save personal lessons privately and verified procedures for the shared bot. Organizational policies require approval. Learning uses the company utility model and can be turned off by each user.</p>
         <Field label="Utility model" hint="Used for chat titles, memory extraction and drafting bots/skills. With no selection, uses the chat’s model when it supports background work with organization credentials. Hermes is not eligible.">
           <Select aria-label="Utility model" value={s.utilityAppId ?? ""} onChange={(e) => setS({ ...s, utilityAppId: e.target.value || undefined })}>
             <option value="">Same as the conversation</option>
@@ -167,6 +170,7 @@ export function ToolSettingsForm({
                 botCreation: s.botCreation,
                 utilityAppId: s.utilityAppId,
                 embeddingAppId: s.embeddingAppId,
+                learningEnabled: s.learningEnabled !== false,
               });
               toast.success("Saved");
               router.refresh();

@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import { useOptionalPets, usePetEnvironment } from "@/components/pets/pet-context";
 import { Button } from "@/components/ui/button";
 import { isGrantable, isHermesTool } from "@/lib/agent/tool-names";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
@@ -104,8 +105,8 @@ function Json({ value }: { value: unknown }) {
 }
 
 type DelegateOutput = {
-  taskId?: string; conversationId?: string | null; bot: string; botId?: string; avatar?: string | null; label?: string | null;
-  status: string; steps: { tool: string; status?: string }[]; answer?: string; error?: string; startedAt?: string; finishedAt?: string;
+  taskId?: string; conversationId?: string | null; bot?: string; botId?: string; avatar?: string | null; label?: string | null;
+  status: string; steps?: { tool: string; status?: string }[]; answer?: string; error?: string; startedAt?: string; finishedAt?: string;
 };
 
 /** "replied in 4s", only from the receiver run's recorded times. */
@@ -119,24 +120,28 @@ function repliedIn(output: DelegateOutput): string | null {
 
 export function DelegationCard({ output }: { output: DelegateOutput }) {
   const [stepsOpen, setStepsOpen] = useState(false);
+  const pets = useOptionalPets();
+  const { visible } = usePetEnvironment();
   useEffect(() => { if (output.taskId) window.dispatchEvent(new Event("bot-work-changed")); }, [output.taskId, output.status]);
+  const botName = typeof output.bot === "string" ? output.bot.trim() : "";
   const working = output.status === "working";
+  const still = output.botId ? pets?.pets[output.botId]?.motion === "still" : false;
   const steps = output.steps ?? [];
   const meta = [output.label, repliedIn(output)].filter(Boolean).join(" · ");
   return (
     <div data-delegation-card={output.status} className="mt-2 flex flex-col gap-3 rounded-[14px] border border-border bg-surface/50 p-4">
       <div className="flex items-center gap-3">
-        <span className={cn("inline-flex shrink-0", !working && "delegate-bob")}>
+        <span className={cn("inline-flex shrink-0", !working && visible && !still && "delegate-bob")}>
           {output.botId ? (
             <BotAvatar botId={output.botId} value={output.avatar} size={44} state={working ? "working" : "idle"} activity={working ? "working" : "decorative"} />
           ) : (
             <span aria-hidden="true" className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-surface-2 text-base font-semibold text-muted">
-              {output.bot.trim().charAt(0).toUpperCase() || "?"}
+              {botName.charAt(0).toUpperCase() || "?"}
             </span>
           )}
         </span>
         <div className="flex min-w-0 grow flex-col gap-px">
-          <span className="truncate text-sm font-semibold text-fg">{output.bot}</span>
+          <span className="truncate text-sm font-semibold text-fg">{botName || "Delegated task"}</span>
           {meta && <span className="truncate text-xs text-muted">{meta}</span>}
         </div>
         {output.conversationId && output.taskId && (
@@ -148,7 +153,7 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
       {output.status === "done" && output.answer && <Markdown text={output.answer} className="markdown-bubble text-fg" />}
       {working && (
         <div className="flex items-center gap-2 text-muted">
-          <Loader2 className="h-4 w-4 animate-spin" /> {output.bot} is working…
+          <Loader2 className="h-4 w-4 animate-spin" /> {botName || "The delegate"} is working…
         </div>
       )}
       {output.status === "queued" && <div className="text-muted">Scheduled independently. This reply will continue when the task returns.</div>}

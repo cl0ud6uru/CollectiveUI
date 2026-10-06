@@ -50,8 +50,9 @@ test("parent links to receiving task, history/activity include it, and home stay
   taskId = (await pool.query("SELECT child_conversation_id FROM delegated_tasks WHERE origin_conversation_id=$1", [originId])).rows[0].child_conversation_id;
   const steps = page.getByRole("button", { name: /Worked for|1 steps/ }).first();
   if (await steps.isVisible()) await steps.click();
-  await expect(page.getByRole("link", { name: "Open Receiver’s task" })).toBeVisible();
-  await page.getByRole("link", { name: "Open Receiver’s task" }).click();
+  const taskLink = page.getByRole("link", { name: "Open task", exact: true });
+  await expect(taskLink).toHaveAttribute("href", `/c/${taskId}`);
+  await taskLink.click();
   await expect(page.getByRole("heading", { name: "Receiver · Delegated task" })).toBeVisible();
   await expect(page.getByText("Assignment from Assigner", { exact: true })).toBeVisible();
   await expect(page.getByText("Result returned to Assigner", { exact: true })).toBeVisible();

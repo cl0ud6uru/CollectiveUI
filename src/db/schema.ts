@@ -222,6 +222,7 @@ export type UserPrefs = {
   botOrder?: string[];
   customInstructions?: string;
   memoryEnabled?: boolean;
+  learningEnabled?: boolean;
   /** Where new chats start: at most one of a model or a bot. Unset follows the organization default. */
   defaultAppId?: string;
   defaultBotId?: string;
@@ -818,6 +819,49 @@ export const skills = pgTable(
   },
   (t) => [uniqueIndex("skills_owner_slug_idx").on(t.ownerId, t.slug)],
 );
+
+/** Learned procedures are separate from the owner's manually authored skill library. */
+export const botLearnings = pgTable("bot_learnings", {
+  id: id(),
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  // null = shared with this bot's audience; otherwise private to this user and bot.
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
+  topic: text("topic").notNull(),
+  kind: text("kind").$type<"preference" | "procedure" | "policy">().notNull(),
+  status: text("status").$type<import("@/lib/agent/learning/types").LessonStatus>().notNull().default("active"),
+  content: jsonb("content").$type<import("@/lib/agent/learning/types").LessonContent>().notNull(),
+  verification: text("verification").notNull(),
+  version: integer("version").notNull().default(1),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, t => [
+  uniqueIndex("bot_learnings_shared_topic_idx").on(t.botId, t.topic).where(sql`${t.userId} is null`),
+  uniqueIndex("bot_learnings_user_topic_idx").on(t.botId, t.userId, t.topic).where(sql`${t.userId} is not null`),
+  check("bot_learnings_status_check", sql`${t.status} in ('active', 'pending', 'archived')`),
+  check("bot_learnings_kind_check", sql`${t.kind} in ('preference', 'procedure', 'policy')`),
+  check("bot_learnings_preference_scope_check", sql`${t.kind} <> 'preference' or ${t.userId} is not null`),
+]);
+
+export const botLearningRevisions = pgTable("bot_learning_revisions", {
+  id: id(),
+  learningId: text("learning_id").notNull().references(() => botLearnings.id, { onDelete: "cascade" }),
+  version: integer("version").notNull(),
+  status: text("status").$type<import("@/lib/agent/learning/types").LessonStatus>().notNull(),
+  content: jsonb("content").$type<import("@/lib/agent/learning/types").LessonContent>().notNull(),
+  verification: text("verification").notNull(),
+  sourceConversationId: text("source_conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+  // Retained as audit provenance only, never exposed to another bot user.
+  sourceRunId: text("source_run_id"),
+  createdAt: createdAt(),
+}, t => [uniqueIndex("bot_learning_revisions_version_idx").on(t.learningId, t.version)]);
+
+/** Durable outbox and idempotency receipt for a completed native run's learning review. */
+export const botLearningReviews = pgTable("bot_learning_reviews", {
+  runId: text("run_id").primaryKey().references(() => agentRuns.id, { onDelete: "cascade" }),
+  attempts: integer("attempts").notNull().default(0),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: createdAt(),
+});
 
 export const routines = pgTable("routines", {
   id: id(),

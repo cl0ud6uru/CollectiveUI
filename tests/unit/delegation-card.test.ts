@@ -3,6 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@/app/(chat)/settings/workspace-actions", () => ({ stopWorkspaceCommand: async () => ({ ok: true }) }));
 import { DelegationCard } from "@/components/chat/tool-part";
+import { PetProvider } from "@/components/pets/pet-context";
+import { DEFAULT_PET } from "@/lib/pets/shared";
 
 type Output = Parameters<typeof DelegationCard>[0]["output"];
 const base: Output = { taskId: "task-1", conversationId: "conv-1", bot: "Gemma 4", botId: "bot-gemma", avatar: "blob:circle:teal", label: "Mac Mini", status: "working", steps: [] };
@@ -57,5 +59,30 @@ describe("delegation card", () => {
     expect(failed).toContain('class="text-danger">The delegated task deadline expired.</div>');
     expect(failed).not.toContain("animate-spin");
     expect(failed).not.toContain("steps");
+  });
+
+  it.each([
+    "The assignment is no longer authorized to return a result.",
+    "The assignment has no authorized, committed result in this chat.",
+  ])("renders a sanitized result without receiver identity: %s", (error) => {
+    // Receipt validation deliberately strips identity and links from rejected outputs.
+    const html = renderToStaticMarkup(createElement(DelegationCard, { output: { status: "error", error } }));
+    expect(html).toContain(error);
+    expect(html).toContain("Delegated task");
+    expect(html).toMatch(/>\?<\/span>/);
+    expect(html).not.toContain("Open task");
+    expect(html).not.toContain("data-bot-avatar");
+  });
+
+  it.each(["still", "auto"] as const)("respects the receiver's %s motion preference", (motion) => {
+    const html = renderToStaticMarkup(createElement(PetProvider, {
+      initialPets: { "bot-gemma": { ...DEFAULT_PET, enabled: true, motion } },
+    }, createElement(DelegationCard, { output: { ...base, status: "done", answer: "Done." } })));
+    if (motion === "still") {
+      expect(html).toContain('data-still="true"');
+      expect(html).not.toContain("delegate-bob");
+    } else {
+      expect(html).toContain("delegate-bob");
+    }
   });
 });
