@@ -7,7 +7,7 @@ export type NativeSessionView = {
   id: string; title: string; profile: string; running: boolean; uncertain: boolean; connection: SocketState;
   messages: { id: string; role: string; text: string }[]; partial: string;
   tools: { id: string; name: string; detail: string; done: boolean }[];
-  prompts: NativePrompt[]; model: string; provider: string; usage: RpcRecord; queued: string;
+  prompts: NativePrompt[]; model: string; provider: string; usage: RpcRecord; queued: string; queuePending: boolean;
 };
 export const PROMPT_METHODS = ['approval', 'clarify', 'sudo', 'secret', 'vault.unlock_prompt', 'vault.save_login', 'vault.code'] as const;
 export function promptView(id: string | number, method: string, raw: unknown): NativePrompt | null {
@@ -41,7 +41,7 @@ export function sessionView(id: string, profile: string, snapshot: RpcRecord, co
     if (typeof usage[key] === 'number' && Number.isFinite(usage[key])) counts[key] = usage[key];
   return { id, title: displayText(info.title, 500) || 'Hermes chat', profile, running: snapshot.running === true || info.running === true || !!displayText(record(snapshot.queued).user, 4000),
     uncertain: false, connection, messages, partial, tools: [], prompts: [], model: displayText(info.model, 200), provider: displayText(info.provider, 200), usage: counts,
-    queued: displayText(record(snapshot.queued).user, 4000),
+    queued: displayText(record(snapshot.queued).user, 4000), queuePending: false,
   };
 }
 export function answerFor(prompt: NativePrompt, input: unknown): RpcRecord {
