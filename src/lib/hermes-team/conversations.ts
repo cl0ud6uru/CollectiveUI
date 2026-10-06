@@ -46,7 +46,8 @@ export async function teamChatStatus(p: Principal, botId: string, conversationId
     .where(and(eq(hermesTeamProfiles.botId, botId), eq(hermesTeamProfiles.mode, mode), mode === 'member' ? eq(hermesTeamProfiles.userId, p.user.id) : isNull(hermesTeamProfiles.userId)));
   const conflicts = profile ? await db.select({ id: hermesTeamResourceStates.packageId }).from(hermesTeamResourceStates)
     .where(and(eq(hermesTeamResourceStates.profileId, profile.id), eq(hermesTeamResourceStates.conflictRevision, auth.definition.publishedRevision))) : [];
-  return { enabled: auth.definition.enabled, mode, canMaintain, state: profile?.state ?? 'preparing', installedRevision: profile?.installedRevision ?? null, publishedRevision: auth.definition.publishedRevision, conflictCount: conflicts.length };
+  return { enabled: auth.definition.enabled, mode, canMaintain, state: profile?.state ?? 'preparing', installedRevision: profile?.installedRevision ?? null, publishedRevision: auth.definition.publishedRevision, conflictCount: conflicts.length,
+    modelAccessAvailable: false, modelAccessReason: 'Team model access is unavailable in this build. Ask an administrator to verify a supported model route.' };
 }
 
 /** Listing/search results must not leak revoked working history through snippets or previews. */

@@ -20,6 +20,8 @@ The service persists an immutable operation plan before native application. A un
 
 Native completion and database completion are separate. Resource states, overrides, conflicts, installed revision and the complete operation receipt commit in one database transaction. Native completion before a lost acknowledgement is recovered by the protected native journal. A completed request does not run inventory or overwrite later learning. A resource completion or safe cancellation leaves provisioning state `connection_needed`; no inference route or gateway is verified in this increment.
 
+Reopening a retained instance renews its native grant and preserves any unfinished update's `updating` or `needs_attention` fence, including a saved request that has not begun native writes. The chat applies a new published revision only after an idle-state preview confirms native inventory support and no pending request. Failed or partial work exposes its exact saved request for recovery. Model status explicitly reports unavailable access while no route is verified; connecting an account alone does not enable inference.
+
 Private restoration uses the same preservation rules and does not change the shared published revision. Shared administrative rollback separately reviews a historical immutable manifest and publishes a new monotonically numbered revision; it must not decrement a shared pointer or delete history.
 
 ## Native helper contract

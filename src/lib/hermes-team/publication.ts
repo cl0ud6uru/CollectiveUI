@@ -42,6 +42,7 @@ export interface TeamPublicationDependencies {
   /** Authorization and profile/runtime selection belong to the server broker, never a browser path. */
   captureResources(principal: Principal, botId: string, selection: ResourceSelection): Promise<unknown>;
   now?: () => Date;
+  nativeUpdatesSupported?: boolean;
 }
 export interface TeamPublicationResult { revision: number; manifestHash: string; requestId: string }
 const resultSchema = z.object({ revision: z.number().int().positive(), manifestHash: z.string().regex(/^[a-f0-9]{64}$/), requestId: z.uuid() }).strict();
@@ -161,14 +162,14 @@ export function createTeamPublicationService(dependencies: TeamPublicationDepend
           .where(and(inArray(hermesTeamResourceStates.profileId, profiles.map(profile => profile.id)), isNotNull(hermesTeamResourceStates.conflictRevision))) : [];
         const states: Record<string, number> = {};
         for (const profile of profiles) states[profile.state] = (states[profile.state] ?? 0) + 1;
-        return { publishedRevision: access.definition.publishedRevision, nativeUpdatesSupported: false,
+        return { publishedRevision: access.definition.publishedRevision, nativeUpdatesSupported: dependencies.nativeUpdatesSupported === true,
           profileCount: profiles.length, states, conflictCount: conflicts.length, conflictedProfileCount: new Set(conflicts.map(row => row.profileId)).size,
           updatesNeeded: profiles.filter(profile => profile.state !== 'revoked' && (profile.installedRevision ?? 0) < access.definition.publishedRevision).length };
       });
     },
   };
 }
-const service = createTeamPublicationService({ captureResources: async (p, botId, selection) => {
+const service = createTeamPublicationService({ nativeUpdatesSupported: true, captureResources: async (p, botId, selection) => {
   const { captureTeamResources } = await import('./transport');
   return captureTeamResources(p, botId, selection);
 } });
