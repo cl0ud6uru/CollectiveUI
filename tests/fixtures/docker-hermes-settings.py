@@ -37,6 +37,18 @@ class NativeSettings(unittest.TestCase):
         os.environ.update(HERMES_HOME=str(self.root), HOME=str(self.root / 'home'), HERMES_DISABLE_LAZY_INSTALLS='1')
         bridge.ROOT = self.root
         self.seed(self.root)
+        # Exercise the real collision scanner against a private PID table. Host
+        # processes (including sandbox launchers) are outside this fixture's
+        # namespace; /proc/self/fd still serves the real native transactions.
+        self.process_root = self.root / 'fixture-proc'
+        self.process_root.mkdir()
+        self.other_pid = os.getpid() + 100_000
+        def process_path(*args, **kwargs):
+            value = Path(*args, **kwargs)
+            return self.process_root if value == Path('/proc') else value
+        process_namespace = patch.object(bridge, 'Path', side_effect=process_path)
+        process_namespace.start()
+        self.addCleanup(process_namespace.stop)
 
     def tearDown(self):
         os.environ.clear()
@@ -59,6 +71,72 @@ class NativeSettings(unittest.TestCase):
 
     def save(self, data, name='default'):
         return bridge.profile_settings(name, bridge.profile(name)[1], 'settings-save', data)
+
+    def process(self, pid, argv=None, environment=None):
+        record = self.process_root / str(pid)
+        record.mkdir(exist_ok=True)
+        if argv is not None:
+            (record / 'cmdline').write_bytes(('\0'.join(argv) + '\0').encode())
+        if environment is not None:
+            (record / 'environ').write_bytes(('\0'.join(f'{key}={value}' for key, value in environment.items()) + '\0').encode())
+        return record
+
+    def test_process_collision_blocks_settings_without_mutating_native_files(self):
+        before = self.files()
+        for argv in (['hermes'], ['hermes-agent'], ['python', 'hermes.py'],
+                     ['python', '-m', 'hermes_cli.main'], ['python', '-m', 'tui_gateway.entry'],
+                     ['python', '/opt/collective-bridge.py', 'gateway', 'default']):
+            with self.subTest(argv=argv):
+                self.process(self.other_pid, argv, {'HERMES_HOME': str(self.root)})
+                with self.assertRaisesRegex(ValueError, 'already has a native process'):
+                    self.save(self.data(before))
+                self.assertEqual(self.files(), before)
+
+    def test_explicit_named_process_collision_preserves_default_profile(self):
+        named = self.root / 'profiles' / 'coder'
+        self.seed(named)
+        before, root_before = self.files(named), self.files()
+        for flags in (['--profile', 'coder'], ['-p', 'coder'], ['--profile=coder']):
+            with self.subTest(flags=flags):
+                self.process(self.other_pid, ['hermes', *flags], {})
+                with self.assertRaisesRegex(ValueError, 'already has a native process'):
+                    self.save(self.data(before), 'coder')
+                self.assertEqual(self.files(named), before)
+                self.assertEqual(self.files(), root_before)
+
+    def test_process_scan_allows_unrelated_siblings_self_and_disappeared_records(self):
+        self.process(self.other_pid, ['unrelated-command'])  # No environment read is needed.
+        self.process(self.other_pid + 1, ['hermes', '--profile=coder'], {'HERMES_HOME': str(self.root)})
+        self.process(self.other_pid + 2, ['python', '/opt/collective-bridge.py', 'gateway', 'coder'])
+        self.process(os.getpid(), ['hermes'], {'HERMES_HOME': str(self.root)})
+        self.process('self', ['hermes'], {'HERMES_HOME': str(self.root)})
+        self.process(self.other_pid + 3)  # A process vanished before cmdline was read.
+        self.process(self.other_pid + 4, ['hermes'])  # It vanished before environ was read.
+        bridge.assert_no_other_native('default', self.root)
+        self.assertNotIn('error', self.save(self.data(self.files())))
+
+    def test_ambiguous_active_profile_refuses_settings_without_mutation(self):
+        self.process(self.other_pid, ['hermes'], {'HERMES_HOME': str(self.root)})
+        (self.root / 'active_profile').write_text('coder')
+        before = self.files()
+        with self.assertRaisesRegex(ValueError, 'active native profile is ambiguous'):
+            self.save(self.data(before))
+        self.assertEqual(self.files(), before)
+
+    def test_unreadable_process_metadata_fails_closed_without_mutation(self):
+        record = self.process(self.other_pid, ['hermes'], {'HERMES_HOME': str(self.root)})
+        before = self.files()
+        read_bytes = Path.read_bytes
+        for filename in ('cmdline', 'environ'):
+            with self.subTest(filename=filename):
+                def denied(path):
+                    if path == record / filename:
+                        raise PermissionError('Synthetic unreadable process metadata')
+                    return read_bytes(path)
+                with patch.object(Path, 'read_bytes', denied):
+                    with self.assertRaisesRegex(PermissionError, 'Synthetic unreadable process metadata'):
+                        self.save(self.data(before))
+                self.assertEqual(self.files(), before)
 
     def test_pinned_image_seed_can_select_every_supported_provider(self):
         # s6 copies these exact files on first boot; an empty model fixture missed this route.
