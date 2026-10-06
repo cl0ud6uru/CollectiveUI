@@ -248,6 +248,7 @@ struct SidebarView: View {
         } label: {
             ConversationRow(conversation: conversation).contentShape(Rectangle())
         }
+        .accessibilityIdentifier("conversation." + conversation.id)
         .buttonStyle(.plain)
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
@@ -377,7 +378,7 @@ struct SidebarView: View {
     #if DEBUG
     /// `--demo-screen search` shows results for a sample query.
     private func applyDemoSearch() {
-        guard DemoMode.isEnabled, DemoMode.screen == "search", !DemoRuntime.searchApplied else { return }
+        guard DemoMode.isEnabled, model.isDemoSession, DemoMode.screen == "search", !DemoRuntime.searchApplied else { return }
         DemoRuntime.searchApplied = true
         searchText = "vector"
     }

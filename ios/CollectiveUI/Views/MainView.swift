@@ -61,6 +61,7 @@ struct MainView: View {
             #endif
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase != .active { model.conversationStates.flush() }
             if phase == .active { Task { await model.refreshShell() } }
         }
     }
@@ -95,7 +96,7 @@ struct MainView: View {
 
     #if DEBUG
     private func applyDemoLaunchOptions() async {
-        guard DemoMode.isEnabled, !DemoRuntime.launchOptionsApplied else { return }
+        guard DemoMode.isEnabled, model.isDemoSession, !DemoRuntime.launchOptionsApplied else { return }
         DemoRuntime.launchOptionsApplied = true
         if DemoMode.sidebarCollapsed { columnVisibility = .detailOnly }
         if let id = DemoMode.openConversationId { model.openConversation(id) }

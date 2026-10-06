@@ -440,7 +440,7 @@ public struct SearchResponse: Decodable, Hashable, Sendable {
     }
 }
 
-public struct UploadedFile: Decodable, Hashable, Sendable, Identifiable {
+public struct UploadedFile: Codable, Hashable, Sendable, Identifiable {
     public var id: String
     public var url: String
     public var filename: String

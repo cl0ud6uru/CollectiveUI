@@ -27,8 +27,16 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
+      shouldUseLaunchSchemeArgsEnv = "NO"
       shouldAutocreateTestPlan = "YES">
+      <Testables>
+         <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C0DE00000000000000000030" BuildableName="CollectiveUITests.xctest" BlueprintName="CollectiveUITests" ReferencedContainer="container:CollectiveUI.xcodeproj" />
+         </TestableReference>
+      </Testables>
+      <CommandLineArguments>
+         <CommandLineArgument argument="--demo" isEnabled="YES" />
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

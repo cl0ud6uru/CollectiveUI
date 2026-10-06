@@ -9,6 +9,8 @@ ios/
   CollectiveUI.xcodeproj    App project (the CollectiveUI/ folder is a synchronized group, so
                             new files are picked up without editing the project)
   CollectiveUI/             App sources: App/, Auth/, Views/, Chat/, Support/, Assets.xcassets
+  CollectiveUITests/        App unit tests: draft lifecycle, session isolation, Stop and contrast
+  UITests/                 Offline simulator regressions and standalone UI test project
   Config/Info.plist         Extra Info.plist keys (local-network ATS exception)
 ```
 
@@ -39,6 +41,12 @@ From the command line:
 ```sh
 # Unit tests for the core package (runs on macOS)
 swift test --package-path ios/CollectiveKit
+
+# App unit tests use fixture transport and in-memory credentials. The host launches with --demo.
+# The optional QA bundle ID keeps a developer's installed app separate.
+xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI \
+  -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+  QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa CODE_SIGNING_ALLOWED=NO test
 
 # Simulator build without signing
 xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI \
@@ -96,6 +104,19 @@ Confirmed unsaved messages restore their original multiline draft and attachment
 optimistic local decisions. Artwork credentials are limited to the exact server origin, and authenticated
 redirects cannot move to another scheme, host or port.
 
+Unsent drafts and uploaded attachment references survive chat switching and app relaunch. They are stored
+on this device in a protected directory excluded from backups, separately for each server and credential
+session. Signing out, changing servers, deleting the chat or receiving a session-ending 401 clears the
+relevant draft state. Uploads interrupted by app termination show an error so the file can be attached again.
+Streaming follows the newest message while the reader stays near the bottom; scrolling away preserves
+their place, and the down-arrow button resumes following. Keyboard and orientation changes follow the
+same policy. Stopping an empty reply shows `Reply stopped`, with that response's marker retained locally
+across snapshots and relaunch. The server currently persists partial output but does not include a terminal
+cancellation reason in conversation snapshots, so this marker is specific to this device/session.
+Transcript rows are measured eagerly so changing offscreen height estimates cannot shift the reader
+during streaming. Very long histories carry rendering and memory costs; pagination remains a follow-up,
+as the current snapshot API loads the complete thread.
+
 The microphone uses native on-device speech recognition after the user grants Speech Recognition and
 Microphone permission. Recognized words are added to the draft for review, never sent automatically.
 Recording stops on backgrounding, interruption or leaving the composer. Unsupported locales show a
@@ -128,11 +149,14 @@ Launch arguments (Xcode: **Product → Scheme → Edit Scheme → Run → Argume
 
 | Argument | Effect |
 | --- | --- |
-| `--demo` | Start signed in as the demo user "Jordan Lee". The Keychain is never touched. |
+| `--demo` | Start signed in as the demo user "Jordan Lee" without reading real credentials. Fixture sessions never touch the Keychain; a real server login reached later uses normal credential persistence. |
 | `--demo-open <conversationId>` | Open a conversation, e.g. `demo-research`, `demo-approval`, `demo-image`, or a bot home chat such as `home-bot-atlas` |
 | `--demo-send "<text>"` | About 1 s after opening, type and send this message in that chat, then stream the reply |
 | `--demo-screen <name>` | Show `inbox`, `settings`, `newchat`, `search`, `setup` or `signin` |
 | `--demo-sidebar-collapsed` | On iPad, show only the chat column |
+| `--demo-stream-scenario long` | Stream 600 deterministic offline lines over about 120 seconds for scroll regressions; Stop ends the fixture early |
+| `--demo-stream-scenario delayed` | Wait six seconds before visible output for immediate Stop regressions |
+| `--demo-reset-drafts` | Clear only the fixture session's saved drafts and local stopped-reply markers on launch; omit when checking relaunch persistence |
 
 Example:
 
@@ -147,6 +171,19 @@ The **Simulator screenshots** job in `.github/workflows/ios.yml` builds the Debu
 xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI -configuration Debug \
   -sdk iphonesimulator -derivedDataPath build/DD CODE_SIGNING_ALLOWED=NO build
 ios/scripts/simulator-screenshots.sh build/DD/Build/Products/Debug-iphonesimulator/CollectiveUI.app screenshots
+```
+
+For the committed offline UI regressions, build the separate QA bundle and run the fixture-only suite.
+The script accepts an optional simulator UUID as its third argument and writes screenshots, hierarchy
+attachments and the result bundle under the output directory. CI publishes these as `ios-regressions`.
+
+```sh
+xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' -derivedDataPath /tmp/collectiveui-qa-dd \
+  QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa CODE_SIGNING_ALLOWED=NO build
+bash ios/scripts/simulator-regressions.sh \
+  /tmp/collectiveui-qa-dd/Build/Products/Debug-iphonesimulator/CollectiveUI.app \
+  /tmp/collectiveui-qa-results
 ```
 
 ## Troubleshooting

@@ -17,11 +17,17 @@ enum InlineMarkdown {
 @MainActor
 struct MarkdownText: View {
     let text: String
+    var marksLatestParagraph = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(MarkdownParser.blocks(from: text).enumerated()), id: \.offset) { item in
-                MarkdownBlockView(block: item.element)
+        let blocks = MarkdownParser.blocks(from: text)
+        let latestParagraphIndex = marksLatestParagraph ? blocks.lastIndex {
+            if case .paragraph = $0 { return true }
+            return false
+        } : nil
+        return VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { item in
+                MarkdownBlockView(block: item.element, marksLatestParagraph: item.offset == latestParagraphIndex)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -32,6 +38,7 @@ struct MarkdownText: View {
 @MainActor
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
+    var marksLatestParagraph = false
 
     var body: some View {
         switch block {
@@ -42,6 +49,7 @@ struct MarkdownBlockView: View {
         case .paragraph(let text):
             Text(InlineMarkdown.attributed(text))
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(marksLatestParagraph ? "chat.latestReplyParagraph" : "")
         case .code(let language, let code):
             CodeBlockView(language: language, code: code)
         case .listItem(_, let marker, let text, let indent):

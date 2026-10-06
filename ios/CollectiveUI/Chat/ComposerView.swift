@@ -85,7 +85,7 @@ struct ComposerView: View {
         }
         .task {
             #if DEBUG
-            if DemoMode.isEnabled {
+            if DemoMode.isEnabled && model.app.isDemoSession {
                 if let draft = DemoMode.value(after: "--demo-draft") { model.composerText = draft }
                 if ProcessInfo.processInfo.arguments.contains("--demo-focus") { focusRequest += 1 }
                 if ProcessInfo.processInfo.arguments.contains("--demo-commands") { showCommands = true }

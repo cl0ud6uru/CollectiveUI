@@ -8,7 +8,7 @@ struct ApprovalDecision: Hashable {
     var reason: String?
 }
 
-struct ComposerAttachment: Identifiable, Hashable {
+struct ComposerAttachment: Identifiable, Hashable, Codable {
     let id: UUID
     var filename: String
     var mediaType: String
@@ -66,8 +66,15 @@ final class ChatModel {
         return ComposerCommands.options(target: target, skills: skills, catalog: commandCatalog)
     }
 
-    var composerText: String = ""
-    var attachments: [ComposerAttachment] = []
+    let conversationState: ConversationState
+    var composerText: String {
+        get { conversationState.text }
+        set { conversationState.text = newValue }
+    }
+    var attachments: [ComposerAttachment] {
+        get { conversationState.attachments }
+        set { conversationState.attachments = newValue }
+    }
     var approvalDecisions: [String: ApprovalDecision] = [:]
     var needsMessageStatusCheck = false
     @ObservationIgnored private var pendingDraft: (messageId: String, text: String, attachments: [ComposerAttachment])?
@@ -75,16 +82,20 @@ final class ChatModel {
 
     /// Bumped whenever the view should scroll to the bottom.
     var scrollToken: Int = 0
+    private(set) var scrollReason: ChatScrollReason = .initial
 
     @ObservationIgnored private var streamTask: Task<Void, Never>? = nil
     @ObservationIgnored private var streamingMessageId: String? = nil
     @ObservationIgnored private var autoResumeBudget: Int = 2
     @ObservationIgnored private var isActive: Bool = false
     @ObservationIgnored private var hasLoaded: Bool = false
+    @ObservationIgnored private var streamGeneration = UUID()
+    @ObservationIgnored private var stopRequestedFor: String?
 
     init(app: AppModel, conversationId: String, newChatTarget: TargetOption?) {
         self.app = app
         self.conversationId = conversationId
+        self.conversationState = app.conversationStates.state(for: conversationId)
         self.newChatTarget = newChatTarget
         self.isNew = newChatTarget != nil
         self.target = newChatTarget
@@ -189,6 +200,7 @@ final class ChatModel {
     /// `--demo-send "<text>"`: types and sends a message in the chat opened with `--demo-open`.
     private func runDemoSendIfNeeded() async {
         guard DemoMode.isEnabled,
+              app.isDemoSession,
               let text = DemoMode.sendText,
               DemoMode.openConversationId == conversationId,
               !DemoRuntime.sendConsumed
@@ -211,6 +223,7 @@ final class ChatModel {
 
     func deactivate() {
         isActive = false
+        conversationState.flush()
         commandTask?.cancel()
         if isStreaming {
             // The server keeps generating; the reply is resumed when the chat is opened again.
@@ -226,7 +239,7 @@ final class ChatModel {
         do {
             let snapshot = try await api.snapshot(conversationId: conversationId)
             apply(snapshot)
-            if snapshot.resume && isActive && !isStreaming && autoResumeBudget > 0 {
+            if snapshot.resume && !conversationState.preventsResume(in: messages) && isActive && !isStreaming && autoResumeBudget > 0 {
                 autoResumeBudget -= 1
                 resume()
             }
@@ -253,10 +266,11 @@ final class ChatModel {
         isUnavailable = snapshot.unavailable
         unavailableReason = snapshot.unavailableReason
         guard !isStreaming else { return }
-        messages = snapshot.displayedThread()
+        let isFirstTranscript = messages.isEmpty
+        messages = conversationState.reconcileStoppedReplies(in: snapshot.displayedThread())
         // Decisions are transient UI state; the server snapshot owns approval status.
         approvalDecisions = [:]
-        scrollToken += 1
+        requestScroll(isFirstTranscript ? .initial : .content)
     }
 
     private func loadCommandCatalog() async {
@@ -361,7 +375,7 @@ final class ChatModel {
         attachments = []
         inlineError = nil
         autoResumeBudget = 2
-        scrollToken += 1
+        requestScroll(.sent)
 
         startStream(api.streamChat(body: .object(body)), reducer: UIMessageStreamReducer(messageId: IDGenerator.make()), existingMessageId: nil)
     }
@@ -377,10 +391,11 @@ final class ChatModel {
         guard let index = messages.firstIndex(where: { $0.id == assistantMessageId }) else { return }
         guard let userIndex = messages[..<index].lastIndex(where: { $0.role == .user }) else { return }
         let userMessageId = messages[userIndex].id
+        conversationState.stoppedReplies.removeAll { $0.parentId == userMessageId }
         messages.removeSubrange((userIndex + 1)...)
         inlineError = nil
         autoResumeBudget = 2
-        scrollToken += 1
+        requestScroll(.sent)
         let body: JSONValue = .object([
             "conversationId": .string(conversationId),
             "regenerate": .bool(true),
@@ -399,19 +414,32 @@ final class ChatModel {
         guard isStreaming, !isStopping else { return }
         isStopping = true
         let answeredId = answeredUserMessageId()
+        stopRequestedFor = answeredId
         let task = streamTask
+        let generation = streamGeneration
         let api = app.api
         let id = conversationId
         Task {
             if let api {
                 do {
                     try await api.stop(conversationId: id, messageId: answeredId)
+                    guard generation == self.streamGeneration else { return }
+                    if self.isStreaming, let answeredId {
+                        self.markStopped(parentId: answeredId)
+                    }
+                    self.isNew = false
+                    if self.pendingDraft?.messageId == answeredId { self.pendingDraft = nil }
                 } catch {
-                    // The local stream is cancelled regardless.
+                    guard generation == self.streamGeneration else { return }
+                    if !error.isUnauthorized {
+                        self.inlineError = "Couldn't confirm that the server stopped the reply. Reopen this chat to check its status."
+                    }
                 }
             }
+            guard generation == self.streamGeneration else { return }
             task?.cancel()
             self.isStopping = false
+            self.stopRequestedFor = nil
         }
     }
 
@@ -484,6 +512,10 @@ final class ChatModel {
         existingMessageId: String?
     ) {
         streamTask?.cancel()
+        let generation = UUID()
+        streamGeneration = generation
+        stopRequestedFor = nil
+        isStopping = false
         isStreaming = true
         app.liveActivities.observe(conversationId: conversationId, replace: true)
         streamingMessageId = existingMessageId
@@ -492,14 +524,14 @@ final class ChatModel {
             var failure: Error? = nil
             do {
                 for try await chunk in stream {
-                    guard let self else { return }
+                    guard let self, self.streamGeneration == generation else { return }
                     let events = reducer.apply(chunk)
                     self.receive(reducer.message, events: events)
                 }
             } catch {
                 failure = error
             }
-            guard let self else { return }
+            guard let self, self.streamGeneration == generation else { return }
             await self.streamDidEnd(error: failure)
         }
     }
@@ -517,7 +549,7 @@ final class ChatModel {
             messages.append(message)
         }
         streamingMessageId = message.id
-        scrollToken += 1
+        requestScroll(.content)
 
         for event in events {
             switch event {
@@ -529,10 +561,24 @@ final class ChatModel {
                 inlineError = errorText
             case .started:
                 app.liveActivities.observe(conversationId: conversationId, replace: true)
-            case .data, .finished, .aborted:
+            case .aborted:
+                // An abort is a terminal stream event, never the normal finishReason "stop".
+                if let parentId = stopRequestedFor { markStopped(parentId: parentId) }
+            case .data, .finished:
                 break
             }
         }
+    }
+
+    private func requestScroll(_ reason: ChatScrollReason) {
+        scrollReason = reason
+        scrollToken += 1
+    }
+
+    private func markStopped(parentId: String) {
+        let id = streamingMessageId ?? "stopped-" + IDGenerator.make()
+        conversationState.markStopped(messageId: id, parentId: parentId)
+        messages = conversationState.reconcileStoppedReplies(in: messages)
     }
 
     private func streamDidEnd(error: Error?) async {
@@ -572,7 +618,7 @@ final class ChatModel {
             } else { pendingDraft = nil }
             submittedApproval = false
             needsMessageStatusCheck = false
-            if snapshot.resume && isActive { resume() }
+            if snapshot.resume && !conversationState.preventsResume(in: messages) && isActive { resume() }
         } catch {
             if isNew, (error as? APIError)?.statusCode == 404, pendingDraft != nil {
                 restorePendingDraft()

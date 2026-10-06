@@ -6,6 +6,7 @@ import CollectiveKit
 struct MessageView: View {
     let message: UIMessage
     let model: ChatModel
+    var marksLatestParagraph = false
     @State private var showWork = false
 
     var body: some View {
@@ -64,9 +65,18 @@ struct MessageView: View {
     }
 
     private var assistantBody: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let latestTextPartIndex = marksLatestParagraph ? message.parts.lastIndex {
+            if case .text(let text) = $0 { return !text.text.isEmpty }
+            return false
+        } : nil
+        return VStack(alignment: .leading, spacing: 8) {
             if !model.usesBubbles {
                 Text(model.assistantName).font(.caption.weight(.medium)).foregroundStyle(PortalTheme.muted)
+            }
+            if model.conversationState.showsStoppedPlaceholder(for: message) {
+                Label("Reply stopped", systemImage: "stop.circle")
+                    .font(.footnote).foregroundStyle(PortalTheme.muted)
+                    .accessibilityIdentifier("chat.stopped.\(message.id)")
             }
             if !completedWork.isEmpty {
                 DisclosureGroup(isExpanded: $showWork) {
@@ -82,7 +92,8 @@ struct MessageView: View {
             ForEach(Array(message.parts.enumerated()), id: \.offset) { item in
                 if !isCompletedWork(item.element) {
                     // Approvals, failures and running tools always remain visible.
-                    MessagePartView(part: item.element, messageId: message.id, model: model)
+                    MessagePartView(part: item.element, messageId: message.id, model: model,
+                        marksLatestParagraph: item.offset == latestTextPartIndex)
                 }
             }
         }
@@ -108,12 +119,13 @@ struct MessagePartView: View {
     let part: MessagePart
     let messageId: String
     let model: ChatModel
+    var marksLatestParagraph = false
 
     var body: some View {
         switch part {
         case .text(let text):
             if !text.text.isEmpty {
-                MarkdownText(text: text.text)
+                MarkdownText(text: text.text, marksLatestParagraph: marksLatestParagraph)
             }
         case .reasoning(let reasoning):
             if !reasoning.text.isEmpty || reasoning.state == "streaming" {
