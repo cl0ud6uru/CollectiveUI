@@ -13,19 +13,23 @@ import type { NativeTeamLearningSnapshot } from './learning-types';
 
 /** Concrete trusted startup caller. Browser responses never contain native bearer grants or profile identities. */
 async function prepareCandidate(p:Principal,botId:string,runId:string,choice:'default'|'personal',routes:readonly VerifiedTeamModelRoute[],worker?:{holder:string;segment:number},learningSnapshot?:NativeTeamLearningSnapshot){
-  const current=await candidateRun(p,runId);
-  if(current.bot.id!==botId)throw new HttpError(404,'Team run not found.');
+  const before=await candidateRun(p,runId);
+  if(before.bot.id!==botId)throw new HttpError(404,'Team run not found.');
   const url=process.env.HERMES_TEAM_GATEWAY_ORIGIN;
   if(!url)throw new HttpError(409,'The server native model gateway is not configured.');
   const origin=new URL(url);
   if(origin.protocol!=='https:' || origin.username || origin.password || origin.pathname!=='/' || origin.search || origin.hash)throw new HttpError(409,'The native gateway requires a fixed HTTPS origin.');
   const issued=await issueTeamCandidateContext(p,runId,choice,routes,worker);
   try{
+    const readIssued=async()=>{const [stored]=await db.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,issued.contextId));if(!stored)throw new HttpError(403,'The prepared native context disappeared.');return validateCandidateContext(stored,routes,db,issued.runPurpose==='learning'?'learning':'reply');};
+    const admitted=await readIssued();
+    const current=admitted.run;
+    if(current.bot.id!==botId)throw new HttpError(403,'The issued native context changed bots.');
     const grant=await dockerControl<{grantId:string}>(p.user.id,'/team/authorize',{teamBotId:botId,mode:current.chat.mode,modelPolicy:current.definition.modelPolicy.mode});
-    const validatePrepared=async()=>{const [stored]=await db.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,issued.contextId));if(!stored)throw new HttpError(403,'The prepared native context disappeared.');await validateCandidateContext(stored,routes,db,issued.runPurpose==='learning'?'learning':'reply');};
+    const validatePrepared=async()=>{await readIssued();};
     await validatePrepared();
     const ensured=await dockerFetch(p.user.id)(`${LOCAL_ORIGIN}/team/ensure`,{method:'POST',headers:{'Content-Type':'application/json','x-collective-team-grant':grant.grantId},body:JSON.stringify({teamBotId:botId,mode:current.chat.mode,name:current.bot.name.slice(0,80)}),signal:AbortSignal.timeout(45000)});
-    if(!ensured.ok || candidateObjectHash(await ensured.json())!==candidateObjectHash(current.profile.binding))throw new HttpError(409,'Native restart must retain this exact Team binding.');
+    if(!ensured.ok || candidateObjectHash(await ensured.json())!==admitted.context.bindingHash)throw new HttpError(409,'Native restart must retain this exact Team binding.');
     await validatePrepared();
     const base=`${origin.origin}/api/hermes-team/native/${issued.contextId}`;
     const binding=current.profile.binding as {bindingId?:string};
@@ -36,7 +40,7 @@ async function prepareCandidate(p:Principal,botId:string,runId:string,choice:'de
     const response=await dockerFetch(p.user.id)(`${LOCAL_ORIGIN}/team/prepare-candidate`,{method:'POST',headers:{'Content-Type':'application/json','x-collective-team-grant':grant.grantId},body:JSON.stringify(body),signal:AbortSignal.timeout(5000)});
     if(!response.ok)throw new HttpError(409,'The native broker could not prepare this candidate adapter.');
     // Repeat permission checks after IPC. The native chat gate remains closed even for a prepared candidate.
-    await candidateRun(p,runId);
+    await validatePrepared();
     return {issued,current,grant,bindingId:binding.bindingId!};
   }catch(error){await db.update(hermesTeamCandidateContexts).set({revokedAt:new Date()}).where(eq(hermesTeamCandidateContexts.id,issued.contextId));throw error;}
 }
@@ -76,8 +80,7 @@ export async function startTeamCandidateRun(p:Principal,botId:string,runId:strin
       const stopped=await dockerControl<{confirmed:boolean;runtimeWide:true}>(p.user.id,'/team/retire-candidate',identity,45000);
       if(stopped.confirmed!==true || stopped.runtimeWide!==true)throw new HttpError(409,'Native writer shutdown was not confirmed.');
       await db.update(hermesTeamCandidateContexts).set({retirementState:'confirmed',nativeStoppedAt:new Date()}).where(eq(hermesTeamCandidateContexts.id,identity.contextId));
-      if(learning)await finishTeamNativeLearning(runId,true);
-      else await scheduleTeamNativeLearning(identity.contextId,{routes}).catch(()=>{}); // Durable pending/queued receipt is retried by recovery, never native execution.
+      // App terminal settlement completes/schedules learning through settleTeamCandidateRun.
       return {confirmed:true,runtimeWide:true};
     }catch{
       const [settled]=await db.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,identity.contextId));

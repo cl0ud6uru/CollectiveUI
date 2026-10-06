@@ -22,6 +22,7 @@ import { TEAM_MODEL_PURPOSES,VERIFIED_TEAM_MODEL_ROUTES,type VerifiedTeamModelRo
 import { validateNativeTeamLearningSnapshot } from '@/lib/hermes-team/learning-types';
 import { HERMES_COMMIT } from '@/local-hermes/config';
 import { sealAppSecret } from '@/lib/llm/secrets';
+import { encrypt } from '@/lib/crypto';
 import { LOCAL_ORIGIN } from '@/lib/local-hermes/client';
 let admin:Principal,alice:Principal,bob:Principal;
 const route:VerifiedTeamModelRoute={id:'app:provider',adapterId:'collective-openai-chat-v1',model:'synthetic-model',billing:'admin',integration:'admin_inference_gateway',credentialHandling:'server_gateway',
@@ -86,6 +87,17 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   await expect(claimTeamNativeLearning(childId,'learning-worker',0,routes)).rejects.toMatchObject({status:409});expect(await recoverTeamNativeLearning({routes})).toBe(0);
   await db.update(schema.agentRuns).set({status:'succeeded',holder:null}).where(eq(schema.agentRuns.id,childId));await finishTeamNativeLearning(childId,true);expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe('complete');
  });
+ it.each(['legacy','transplanted'] as const)('retains attention for a stored %s snapshot and never starts a second child',async(kind)=>{
+  const {grant}=await foreground();await capture(grant);await settle(grant.contextId);const childId=(await scheduleTeamNativeLearning(grant.contextId,{routes}))!;
+  await db.update(schema.agentRuns).set({status:'running',holder:'learning-worker'}).where(eq(schema.agentRuns.id,childId));
+  const ciphertext=encrypt(JSON.stringify(snapshot),kind==='transplanted'?'other-actor/source':undefined);
+  const payloadEnc=kind==='legacy'?ciphertext.split('.').slice(2).join('.'):ciphertext;
+  // A corrupted stored row is injected only in this disposable in-memory database.
+  await fixture.client!.exec('ALTER TABLE hermes_team_learning_handoffs DISABLE TRIGGER hermes_team_learning_identity_guard');
+  try{await db.update(schema.hermesTeamLearningHandoffs).set({payloadEnc}).where(eq(schema.hermesTeamLearningHandoffs.sourceContextId,grant.contextId));}
+  finally{await fixture.client!.exec('ALTER TABLE hermes_team_learning_handoffs ENABLE TRIGGER hermes_team_learning_identity_guard');}
+  await expect(claimTeamNativeLearning(childId,'learning-worker',0,routes)).rejects.toMatchObject({status:409});expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0].state).toBe('needs_attention');expect(await recoverTeamNativeLearning({routes})).toBe(0);
+ });
  it('revokes captured unqueued work and queued children atomically without canceling another member',async()=>{
   const {grant}=await foreground();await capture(grant);await settle(grant.contextId);const childId=(await scheduleTeamNativeLearning(grant.contextId,{routes}))!;
   const other=await foreground(bob,'bob-parent');await capture(other.grant);
@@ -110,9 +122,9 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   await active.authorize();await db.update(schema.agentRuns).set({status:'succeeded',holder:null}).where(eq(schema.agentRuns.id,'parent'));expect(await active.retire()).toEqual({confirmed:true,runtimeWide:true});expect(await retireStoredTeamCandidateRun('parent')).toEqual({confirmed:true,runtimeWide:true});
   expect(fixture.control.mock.calls.filter(c=>c[1]==='/team/retire-candidate')).toHaveLength(1);expect((await db.select().from(schema.hermesTeamCandidateContexts))[0].retirementState).toBe('confirmed');expect(profile.id).toBeTruthy();
  });
- it('detects stale worker after prepare, retires the exact attempted startup and never starts native work',async()=>{
+ it('detects stale worker after prepare, revokes the attempted grant and never starts native work',async()=>{
   await foreground();await db.delete(schema.hermesTeamCandidateContexts);fixture.fetch.mockImplementation(async(url)=>{if(String(url).endsWith('/team/ensure'))return Response.json((await db.select().from(schema.hermesTeamProfiles))[0].binding);if(String(url).endsWith('/team/prepare-candidate'))await db.update(schema.agentRuns).set({holder:'other-worker'}).where(eq(schema.agentRuns.id,'parent'));return Response.json({prepared:true});});
-  await expect(startTeamCandidateRun(alice,'team','parent',{holder:'foreground-worker',segment:0,routes})).rejects.toMatchObject({status:403});expect(fixture.fetch.mock.calls.some(c=>String(c[0]).endsWith('/team/start-candidate'))).toBe(false);expect(fixture.control.mock.calls.some(c=>c[1]==='/team/retire-candidate')).toBe(true);
+  await expect(startTeamCandidateRun(alice,'team','parent',{holder:'foreground-worker',segment:0,routes})).rejects.toMatchObject({status:403});expect(fixture.fetch.mock.calls.some(c=>String(c[0]).endsWith('/team/start-candidate'))).toBe(false);expect((await db.select().from(schema.hermesTeamCandidateContexts))[0].revokedAt).not.toBeNull();
  });
  it('renews the exact active grant during streaming and aborts on a changed worker lease',async()=>{
   await foreground();await db.delete(schema.hermesTeamCandidateContexts);const active=await startTeamCandidateRun(alice,'team','parent',{holder:'foreground-worker',segment:0,routes});

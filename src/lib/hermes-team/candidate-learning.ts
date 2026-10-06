@@ -117,19 +117,24 @@ export async function scheduleTeamNativeLearning(contextId:string,dependencies:{
 export async function claimTeamNativeLearning(runId:string,holder:string,segment:number,routes:readonly VerifiedTeamModelRoute[]=VERIFIED_TEAM_MODEL_ROUTES){
   const [receipt]=await db.select().from(hermesTeamLearningHandoffs).where(eq(hermesTeamLearningHandoffs.childRunId,runId));
   if(!receipt)return null;
-  return db.transaction(async tx=>{
+  const claimed=await db.transaction(async tx=>{
     await lockHandoff(tx,receipt);
     const [row]=await tx.select().from(hermesTeamLearningHandoffs).where(eq(hermesTeamLearningHandoffs.id,receipt.id));
     if(!row || row.state!=='queued')throw new HttpError(409,'This native learning assignment was already started.');
     const authority=await learningAuthority(row,routes,tx);
     const current=await candidateRun(authority.principal,runId,tx);
     if(current.run.status!=='running' || current.run.holder!==holder || current.run.segment!==segment)throw new HttpError(409,'The learning worker lease changed.');
-    if(!row.payloadEnc.startsWith('v2.'))throw new HttpError(409,'The captured review has no actor-bound encryption.');
-    const snapshot=validateNativeTeamLearningSnapshot(JSON.parse(decrypt(row.payloadEnc,aad(row))));
-    if(candidateObjectHash(snapshot)!==row.snapshotHash)throw new HttpError(409,'The captured native review was changed.');
+    let snapshot:NativeTeamLearningSnapshot;
+    try{
+      if(!row.payloadEnc.startsWith('v2.'))throw new Error('Actor-bound encryption required.');
+      snapshot=validateNativeTeamLearningSnapshot(JSON.parse(decrypt(row.payloadEnc,aad(row))));
+      if(candidateObjectHash(snapshot)!==row.snapshotHash)throw new Error('Captured review changed.');
+    }catch{await tx.update(hermesTeamLearningHandoffs).set({state:'needs_attention',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));return {invalidSnapshot:true as const};}
     await tx.update(hermesTeamLearningHandoffs).set({state:'running',updatedAt:new Date()}).where(eq(hermesTeamLearningHandoffs.id,row.id));
     return {snapshot,choice:authority.route.billing==='personal'?'personal' as const:'default' as const,receiptId:row.id};
   });
+  if('invalidSnapshot' in claimed)throw new HttpError(409,'The captured native review needs attention.');
+  return claimed;
 }
 
 export async function finishTeamNativeLearning(runId:string,successful:boolean){
