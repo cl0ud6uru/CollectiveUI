@@ -267,6 +267,13 @@
       "when": 1791318655925,
       "tag": "0037_hermes_team_bots",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791320416034,
+      "tag": "0038_hermes_team_revision_immutability",
+      "breakpoints": true
     }
   ]
 }
