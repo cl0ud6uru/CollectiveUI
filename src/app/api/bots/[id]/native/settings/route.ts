@@ -31,7 +31,7 @@ export async function POST(request: Request, ctx: RouteContext<'/api/bots/[id]/n
       for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 16384) { await reader.cancel(); throw new HttpError(413, 'Profile request is too large.'); } chunks.push(value); }
     } finally { reader.releaseLock(); }
     let raw: unknown; try { raw = JSON.parse(Buffer.concat(chunks).toString()); } catch { throw new HttpError(400, 'Invalid JSON.'); }
-    const input = z.discriminatedUnion('operation', [z.object({ operation: z.literal('save'), settings: profileUpdate }).strict(), z.object({ operation: z.literal('test'), test: profileTest }).strict()]).parse(raw);
+    const input = z.discriminatedUnion('operation', [z.object({ operation: z.literal('save'), settings: profileUpdate }).strict(), z.object({ operation: z.literal('test'), test: profileTest }).strict(), z.object({ operation: z.literal('network'), network: z.object({ revision: z.string().regex(/^[a-f0-9]{64}$/) }).strict() }).strict()]).parse(raw);
     // Parse outside the owner lock; dispatch rechecks enrollment after any queued revocation.
     const result = await withDockerAccess(p, false, async (fresh, tx) => {
       const b = await personalProfileBinding(fresh, id, tx);
@@ -42,6 +42,7 @@ export async function POST(request: Request, ctx: RouteContext<'/api/bots/[id]/n
       await dockerControl(fresh.user.id, '/control/lease', { canCreate }, 3000);
       return input.operation === 'save'
         ? dockerControl<ProfileSettings>(fresh.user.id, `/settings/${b.bindingId}`, input.settings)
+        : input.operation === 'network' ? dockerControl(fresh.user.id, `/settings/${b.bindingId}/network`, input.network)
         : dockerControl<ProfileTestResult>(fresh.user.id, `/settings/${b.bindingId}/test`, input.test);
     });
     return response(result);

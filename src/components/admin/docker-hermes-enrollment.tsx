@@ -6,6 +6,7 @@ import { updateDockerEnrollment } from '@/app/admin/hermes/enrollment-actions';
 import type { DockerReadiness } from '@/lib/docker-hermes/enrollment';
 import { Badge, Card, Table, Td } from '@/components/admin/ui';
 import { Button } from '@/components/ui/button';
+import { HermesNetworkControl, useHermesNetworks } from './hermes-network-control';
 import { cn } from '@/lib/utils';
 
 type Person = { id: string; name: string; upn: string; enabled: boolean; cleanup: string; error: string | null; changedBy: string | null; changedAt: string | null };
@@ -28,6 +29,7 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
   const [message, setMessage] = useState('');
   const [query, setQuery] = useState('');
   const router = useRouter();
+  const networks = useHermesNetworks(readiness.status === 'ready');
   function update(id: string, enabled: boolean) {
     start(async () => {
       setMessage('');
@@ -47,7 +49,7 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
         <p className="flex items-center gap-2 font-medium"><span aria-hidden="true" className={cn('h-2 w-2 shrink-0 rounded-full', status.dot)} />Broker readiness: {status.label}</p>
         <p className="text-sm text-muted">{readiness.message}</p>
       </div>
-      <Button variant="outline" size="sm" disabled={pending} onClick={() => router.refresh()} aria-label="Refresh enrollment and broker status">
+      <Button variant="outline" size="sm" disabled={pending} onClick={() => { router.refresh(); void networks.refresh(); }} aria-label="Refresh enrollment and broker status">
         <RefreshCw className={cn('h-4 w-4', pending && 'animate-spin')} aria-hidden="true" /> Refresh
       </Button>
     </Card>
@@ -61,6 +63,7 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
       <ul className="mt-2 list-disc space-y-1.5 pl-5 text-muted">
         <li>Nobody has access until you allow it here, administrators included.</li>
         <li>Allowing doesn&apos;t create anything. The person turns Hermes on in Settings → Connected accounts → Personal Hermes, then sets up their model provider.</li>
+        <li>Internet access is a separate per-person policy shared by their native profiles. Existing offline and restricted proxy policies stay in place until you approve a change. Fresh installations use Standard Internet.</li>
         <li>Revoking blocks setup, chat and profile access right away and stops their runtime. Their sessions, skills, memory and bots are kept. If a stop fails, the worker retries it.</li>
       </ul>
     </details>
@@ -74,7 +77,8 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
     </div>
     <p role="status" aria-live="polite" className={cn('text-sm', !pending && !message && 'sr-only')}>{pending ? 'Saving permission and checking cleanup…' : message}</p>
 
-    <Table head={['Person', 'Personal Hermes', 'Runtime', 'Last change']}>
+    {networks.error && <p role="alert" className="text-sm text-danger">{networks.error}</p>}
+    <Table head={['Person', 'Personal Hermes', 'Internet access', 'Runtime', 'Last change']}>
       {shown.map(person => {
         const cleanup = CLEANUP[person.cleanup];
         const stopping = !person.enabled && ['pending', 'stopping', 'failed'].includes(person.cleanup);
@@ -87,6 +91,7 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
               <span className={person.enabled ? '' : 'text-muted'}>{person.enabled ? 'Allowed' : 'Off'}</span>
             </label>
           </Td>
+          <Td><HermesNetworkControl owner={person.id} name={person.name} enabled={person.enabled && person.cleanup === 'none'} status={networks.status(person.id)} reload={networks.refresh} /></Td>
           <Td className="min-w-40">
             {cleanup ? <Badge tone={cleanup.tone}>{cleanup.label}</Badge> : <span className="text-subtle">—</span>}
             {person.error && <p role="alert" className="mt-1 text-xs text-danger">{person.error}</p>}
@@ -97,7 +102,7 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
           </Td>
         </tr>;
       })}
-      {!shown.length && <tr><Td colSpan={4} className="py-6 text-center text-muted">No one matches “{query.trim()}”.</Td></tr>}
+      {!shown.length && <tr><Td colSpan={5} className="py-6 text-center text-muted">No one matches “{query.trim()}”.</Td></tr>}
     </Table>
   </section>;
 }
