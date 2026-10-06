@@ -50,6 +50,7 @@ export type ProfileSettings = {
   providerBlockers?: Partial<Record<ProfileValues['provider'], keyof typeof providerBlockerMessages | null>>;
   codexModels?: string[];
   lastTest?: ProfileTestResult | null;
+  connectivity?: import('./network').Connectivity | null;
 };
 /** Older bridges omit Codex support; do not misdiagnose that as custom credentials. */
 export function providerBlocker(settings: ProfileSettings, provider: ProfileValues['provider']): string | null {
@@ -64,7 +65,7 @@ export const testMessages: Record<ProfileTestResult['code'], string> = {
   verified: 'Connection verified for this saved model and API key.',
   authentication_failed: 'The provider rejected the API key. Replace it and test again.',
   model_rejected: 'The provider rejected this model or request. Check the model ID and your account access.',
-  network_blocked: 'This runtime is offline. An operator must configure reviewed provider egress before a connection test can run. No inference request was sent.',
+  network_blocked: 'This runtime is offline. An administrator can turn on Internet access in Admin → Managed Hermes. No inference request was sent.',
   connection_failed: 'The provider could not be reached. This may be DNS, proxy policy, a timeout, or provider availability; it does not prove that the key is invalid.',
   not_configured: 'Save a provider, model and API key for this profile before testing.',
   unsupported: 'This profile uses native routing or authentication settings outside this API-key editor. Use native maintenance to reconcile them first.',

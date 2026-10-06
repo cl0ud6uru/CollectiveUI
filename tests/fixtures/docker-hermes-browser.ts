@@ -24,6 +24,17 @@ class FixtureDriver implements RuntimeDriver {
     this.profilesByOwner.set(owner, this.profilesByOwner.get(owner) ?? [{ name: 'default', identity: `native-${owner}` }]);
     stage('starting_container'); this.active.add(owner); stage('checking_native');
   }
+  modes = new Map<string, import('../../src/docker-hermes/network').NetworkMode>();
+  setNetwork(owner: string, mode: import('../../src/docker-hermes/network').NetworkMode) { this.modes.set(owner, mode); }
+  async networkStatus(owner: string) { return { actual: this.profilesByOwner.has(owner) ? this.modes.get(owner)! : 'absent' as const, running: this.active.has(owner) }; }
+  async snapshotNetwork(owner: string) { return { originalId: this.profilesByOwner.has(owner) ? createHash('sha256').update(owner).digest('hex') : null, profiles: structuredClone(await this.profiles(owner)) }; }
+  async changeNetwork(owner: string, m: import('../../src/docker-hermes/network').NetworkMigration, current: () => void) {
+    current(); this.setNetwork(owner, m.requested); this.active.add(owner); return createHash('sha256').update(m.requestId).digest('hex');
+  }
+  async stopNetwork(owner: string) { await this.stop(owner); }
+  async finishNetwork() {}
+  async rollbackNetwork(owner: string, m: import('../../src/docker-hermes/network').NetworkMigration) { this.setNetwork(owner, m.previous); await this.stop(owner); }
+  async connectivity() { return 'reachable' as const; } // Synthetic TLS outcome; no external connection.
   async running(owner: string) { return this.active.has(owner); }
   async stop(owner: string) {
     if (this.stopFailure) throw new Error('Unconfirmed cleanup');
@@ -103,7 +114,7 @@ async function main() {
   const create=driver.create.bind(driver);driver.create=async(owner,name)=>{await mkdir(path.join(root,owner,name),{recursive:true});return create(owner,name);};
   driver.resources=async()=>({skills:[{id:'native-skill',name:'Native example skill',content:'Safe native skill content'}],memories:[{id:'MEMORY.md',content:'Native remembered fact'}]});
   const broker=new DockerBroker(config,driver);const server=await listenBroker(broker);
-  await writeFile('/tmp/docker-hermes-browser.env',`DOCKER_HERMES_SOCKET=${config.socketPath}\n`,{mode:0o600});
+  await writeFile(process.env.DOCKER_HERMES_BROWSER_ENV || '/tmp/docker-hermes-browser.env',`DOCKER_HERMES_SOCKET=${config.socketPath}\n`,{mode:0o600});
   console.log('Disposable browser broker ready');
   const close=()=>void server.close().finally(()=>pool.end()).then(()=>process.exit(0));process.on('SIGTERM',close);process.on('SIGINT',close);
 }
