@@ -44,7 +44,7 @@ const KILL_GRACE_MS = 8_000;
 const PROBE_TTL_MS = 10 * 60_000;
 
 type RunningExec = { id: string; kill: (reason: ExitReason) => void };
-type Entry = { chain: Promise<unknown>; lastUsed: number; execs: Map<string, RunningExec> };
+type Entry = { chain: Promise<unknown>; lastUsed: number; execs: Map<string, RunningExec>; helpers: number };
 
 export type ExecCallbacks = {
   onStart: () => void;
@@ -62,6 +62,8 @@ export class Manager {
   readonly config: Config;
   private readonly log: Log;
   private readonly entries = new Map<string, Entry>();
+  // One admission queue across all workspace refs. Hold it through Docker start, not just the count check.
+  private admission: Promise<unknown> = Promise.resolve();
   private imageId: string | null = null;
   private engine: EngineInfo | null = null;
   private gvisor: { available: boolean; reason?: string; at: number } = { available: false, reason: "not checked yet", at: 0 };
@@ -108,7 +110,7 @@ export class Manager {
   private entry(ref: string): Entry {
     let e = this.entries.get(ref);
     if (!e) {
-      e = { chain: Promise.resolve(), lastUsed: 0, execs: new Map() };
+      e = { chain: Promise.resolve(), lastUsed: 0, execs: new Map(), helpers: 0 };
       this.entries.set(ref, e);
     }
     return e;
@@ -120,6 +122,17 @@ export class Manager {
     const run = e.chain.then(fn, fn);
     e.chain = run.catch(() => {});
     return run;
+  }
+
+  private admitted<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.admission.then(fn, fn);
+    // A failed Docker operation must release admission for the next workspace. Counts always come from Docker.
+    this.admission = run.catch(() => {});
+    return run;
+  }
+
+  private busy(e: Entry | undefined): boolean {
+    return !!e && (e.execs.size > 0 || e.helpers > 0);
   }
 
   private checkRef(ref: string) {
@@ -182,9 +195,9 @@ export class Manager {
   }
 
   /** Makes sure the sandbox exists, matches the current spec and runs. Returns its container id. */
-  ensure(ref: string, isolation: Isolation, callerExec?: string): Promise<string> {
+  ensure(ref: string, isolation: Isolation, callerExec?: string, callerHelper = false): Promise<string> {
     this.checkRef(ref);
-    return this.locked(ref, async () => {
+    return this.locked(ref, () => this.admitted(async () => {
       const runtime = this.runtimeFor(isolation);
       const imageId = this.imageId ?? (await this.resolveImage());
       const want = specHash({ ref, imageId, runtime, limits: this.config.limits });
@@ -193,7 +206,8 @@ export class Manager {
       if (info && info.Config.Labels[LABEL_INSTANCE] !== this.config.instance) throw new SandboxdError("internal", "Container name clash with another sandboxd");
       if (info && info.Config.Labels[LABEL_SPEC] !== want) {
         // Other commands still running in the old container (not the one asking) keep it alive for now.
-        const active = [...this.entry(ref).execs.keys()].some((id) => id !== callerExec);
+        const e = this.entry(ref);
+        const active = [...e.execs.keys()].some((id) => id !== callerExec) || e.helpers > (callerHelper ? 1 : 0);
         const weaker = isolation === "gvisor" && info.HostConfig.Runtime !== "runsc";
         if (active && weaker) throw new SandboxdError("busy", "The workspace is being upgraded; try again in a moment");
         if (!active) {
@@ -217,7 +231,7 @@ export class Manager {
       if (!info!.State.Running) await this.docker.containerStart(info!.Id);
       this.entry(ref).lastUsed = Date.now();
       return info!.Id;
-    });
+    }));
   }
 
   /** Enforces maxRunning by stopping the least recently used idle sandbox. */
@@ -226,11 +240,17 @@ export class Manager {
     if (running.length < this.config.maxRunning) return;
     const idle = running
       .map((c) => ({ c, e: this.entries.get(c.Labels[LABEL_SANDBOX]) }))
-      .filter((x) => !x.e || x.e.execs.size === 0)
+      .filter((x) => !this.busy(x.e))
       .sort((a, b) => (a.e?.lastUsed ?? 0) - (b.e?.lastUsed ?? 0));
-    if (!idle.length) throw new SandboxdError("capacity", "All workspaces on this host are busy; try again shortly");
-    this.log("stopping least recently used sandbox to make room", { ref: idle[0].c.Labels[LABEL_SANDBOX] });
-    await this.docker.containerStop(idle[0].c.Id, 3);
+    // Restarted daemons (or a lowered limit) may inherit more than maxRunning containers. Make enough room.
+    const needed = running.length - this.config.maxRunning + 1;
+    if (idle.length < needed) throw new SandboxdError("capacity", "All workspaces on this host are busy; try again shortly");
+    for (const { c } of idle.slice(0, needed)) {
+      // Exec/file reservations can arrive while a previous eviction awaits Docker. Never stop their container.
+      if (this.busy(this.entries.get(c.Labels[LABEL_SANDBOX]))) throw new SandboxdError("capacity", "All workspaces on this host are busy; try again shortly");
+      this.log("stopping least recently used sandbox to make room", { ref: c.Labels[LABEL_SANDBOX] });
+      await this.docker.containerStop(c.Id, 3);
+    }
   }
 
   /** Runs an internal helper (not counted against the exec limit) and collects its output. */
@@ -263,20 +283,28 @@ export class Manager {
 
   /** A file helper call: parses fsops' header and maps its errors. */
   async fsCall(ref: string, isolation: Isolation, argv: string[], opts: { stdin?: Buffer; maxBytes?: number; timeoutMs?: number } = {}) {
-    const id = await this.ensure(ref, isolation);
-    const r = await this.collect(id, argv, { stdin: opts.stdin, maxBytes: opts.maxBytes, timeoutMs: opts.timeoutMs ?? 60_000 });
-    this.entry(ref).lastUsed = Date.now();
-    const nl = r.stdout.indexOf(0x0a);
-    if (!r.stdout.subarray(0, FS_MAGIC.length).equals(FS_MAGIC) || nl < 0) {
-      throw new SandboxdError("internal", `The file helper failed${r.stderr.length ? `: ${r.stderr.toString().trim().slice(0, 300)}` : ""}`);
+    this.checkRef(ref);
+    const e = this.entry(ref);
+    e.helpers++;
+    try {
+      const id = await this.ensure(ref, isolation, undefined, true);
+      const r = await this.collect(id, argv, { stdin: opts.stdin, maxBytes: opts.maxBytes, timeoutMs: opts.timeoutMs ?? 60_000 });
+      this.entry(ref).lastUsed = Date.now();
+      const nl = r.stdout.indexOf(0x0a);
+      if (!r.stdout.subarray(0, FS_MAGIC.length).equals(FS_MAGIC) || nl < 0) {
+        throw new SandboxdError("internal", `The file helper failed${r.stderr.length ? `: ${r.stderr.toString().trim().slice(0, 300)}` : ""}`);
+      }
+      const header = JSON.parse(r.stdout.subarray(FS_MAGIC.length, nl).toString()) as { ok: boolean; code?: ErrorCode; message?: string; [k: string]: unknown };
+      if (!header.ok) {
+        const code: ErrorCode = header.code && header.code in STATUS ? header.code : "internal";
+        throw new SandboxdError(code, header.message ?? "File operation failed");
+      }
+      if (r.code !== 0) throw new SandboxdError("internal", "The file helper exited early");
+      return { header, payload: r.stdout.subarray(nl + 1) };
+    } finally {
+      e.helpers--;
+      e.lastUsed = Date.now();
     }
-    const header = JSON.parse(r.stdout.subarray(FS_MAGIC.length, nl).toString()) as { ok: boolean; code?: ErrorCode; message?: string; [k: string]: unknown };
-    if (!header.ok) {
-      const code: ErrorCode = header.code && header.code in STATUS ? header.code : "internal";
-      throw new SandboxdError(code, header.message ?? "File operation failed");
-    }
-    if (r.code !== 0) throw new SandboxdError("internal", "The file helper exited early");
-    return { header, payload: r.stdout.subarray(nl + 1) };
   }
 
   /** Runs a workspace command, streaming its output. Rejects (nothing ran) until onStart has been called. */
@@ -432,7 +460,8 @@ export class Manager {
         await this.docker.volumeRemove(volume.Name);
       }
     });
-    this.entries.delete(ref);
+    // Keep the entry: queued ensure/exec/file calls may already hold its chain and reservations.
+    // Deleting it would hide their activity from admission and the reaper.
   }
 
   private toState(ref: string, info: ContainerInfo | null): SandboxState {
@@ -479,11 +508,11 @@ export class Manager {
       const ref = c.Labels[LABEL_SANDBOX];
       if (!ref || !REF_RE.test(ref)) continue;
       const e = this.entry(ref);
-      if (e.execs.size) continue;
+      if (this.busy(e)) continue;
       if (!e.lastUsed) e.lastUsed = now;
       if (now - e.lastUsed < this.config.idleMinutes * 60_000) continue;
       await this.locked(ref, async () => {
-        if (e.execs.size) return;
+        if (this.busy(e) || now - e.lastUsed < this.config.idleMinutes * 60_000) return;
         await this.docker.containerStop(c.Id, 3);
         stopped.push(ref);
       });
