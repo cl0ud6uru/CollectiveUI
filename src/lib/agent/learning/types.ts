@@ -25,6 +25,11 @@ export type ReviewedLesson = z.infer<typeof learningReviewSchema>["lessons"][num
 /** Client projection deliberately omits source conversation/run IDs and other users' identities. */
 export type LearningView = {
   id: string;
+  kind: "preference" | "procedure" | "policy";
+  pinned: boolean;
+  useCount: number;
+  lastUsedAt: string | null;
+  stale: boolean;
   scope: "user" | "bot";
   status: LessonStatus;
   content: LessonContent;

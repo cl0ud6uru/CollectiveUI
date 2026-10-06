@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/input";
 import type { LearningView, LessonContent } from "@/lib/agent/learning/types";
 
-function LearningCard({ row }: { row: LearningView }) {
+export function LearningCard({ row }: { row: LearningView }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [editing, setEditing] = useState(false);
@@ -25,7 +25,11 @@ function LearningCard({ row }: { row: LearningView }) {
   });
   return <details className="rounded-xl border border-border p-4">
     <summary className="cursor-pointer text-sm font-medium">
-      {row.content.name} <span className="font-normal text-muted">· {row.scope === "user" ? "Only you" : "Shared bot"} · {row.status === "pending" ? "Needs approval" : row.status} · v{row.version}</span>
+      {row.content.name}
+      <span className="ml-2 inline-flex flex-wrap gap-1 font-normal">
+        {["Learned", row.scope === "user" ? "Personal" : "Shared", row.status === "pending" ? "Needs approval" : row.status === "archived" ? "Archived" : row.stale ? "Stale" : "Active", ...(row.pinned ? ["Pinned"] : [])].map(tag => <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{tag}</span>)}
+        <span className="text-muted">v{row.version}</span>
+      </span>
     </summary>
     <div className="mt-3 space-y-3 text-sm">
       <p className="text-muted">{row.content.description}</p>
@@ -42,8 +46,10 @@ function LearningCard({ row }: { row: LearningView }) {
         {row.content.expectedOutput && <p><strong>Expected output: </strong>{row.content.expectedOutput}</p>}
         {row.content.boundaries && <p><strong>Boundaries: </strong>{row.content.boundaries}</p>}
       </>}
+      <p className="text-xs text-muted">{row.kind === "preference" ? "Personal preference, included in this bot’s memory." : `Loaded ${row.useCount} ${row.useCount === 1 ? "time" : "times"}${row.lastUsedAt ? ` · last loaded ${new Date(row.lastUsedAt).toLocaleDateString()}` : ""}.`}</p>
       <p className="text-muted"><strong>Evidence: </strong>{row.verification}</p>
       {row.canManage && <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, pinned: !row.pinned })}>{row.pinned ? "Unpin" : "Pin"}</Button>
         {row.status === "pending" && <Button size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, status: "active" })}>Approve</Button>}
         <Button variant="outline" size="sm" disabled={pending} onClick={() => { setContent(row.content); setEditing(true); }}>Edit</Button>
         <Button variant="outline" size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, status: row.status === "archived" ? "active" : "archived" })}>{row.status === "archived" ? "Restore" : row.status === "pending" ? "Reject" : "Archive"}</Button>
@@ -61,11 +67,6 @@ function LearningCard({ row }: { row: LearningView }) {
   </details>;
 }
 
-export function LearningPanel({ rows }: { rows: LearningView[] }) {
-  return <section className="mt-8 space-y-3" aria-label="Bot learning">
-    <h2 className="text-lg font-semibold">Learning</h2>
-    <p className="text-sm text-muted">Personal lessons stay between you and this bot. Shared procedures help everyone using it. Policies wait for approval. Learned procedures follow the bot’s instructions and existing permissions.</p>
-    {!rows.length && <p className="text-sm text-muted">No lessons yet. The bot learns from completed work and your corrections.</p>}
-    {rows.map(row => <LearningCard key={`${row.id}:${row.version}`} row={row} />)}
-  </section>;
+export function LearnedItems({ rows }: { rows: LearningView[] }) {
+  return <div className="space-y-2">{rows.map(row => <LearningCard key={`${row.id}:${row.version}`} row={row} />)}</div>;
 }

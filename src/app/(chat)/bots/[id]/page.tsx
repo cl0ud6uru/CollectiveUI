@@ -17,7 +17,6 @@ import { StartSideChat } from "@/components/chat/start-side-chat";
 import { ShareTemplateButton } from "@/components/bots/share-template";
 import { UseAsTemplateButton } from "@/components/bots/template-button";
 import { isLocalHermes } from "@/lib/local-hermes/config";
-import { LearningPanel } from "@/components/bots/learning-panel";
 import { learningViews } from "@/lib/agent/learning/store";
 
 export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
@@ -93,6 +92,7 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
         canEdit={canEdit && !docker}
         native={docker}
         serviceMode={bot.executionMode === "service"}
+        learned={learned ?? []}
         webhookBase={`${origin}/api/routines/webhook`}
         skills={skills.map((s) => ({
           id: s.id,
@@ -137,7 +137,6 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           createdAt: a.createdAt.toISOString(),
         }))}
       />}
-      {learned && <LearningPanel rows={learned} />}
     </PageFrame>
   );
 }

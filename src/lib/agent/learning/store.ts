@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
 import { botLearnings, botLearningRevisions, type Skill } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
@@ -11,8 +11,16 @@ export const visibleLearningScope = (botId: string, userId: string) => and(
   eq(botLearnings.botId, botId), or(isNull(botLearnings.userId), eq(botLearnings.userId, userId)),
 );
 
+async function publishedLearning(row: typeof botLearnings.$inferSelect) {
+  if (row.status === "active") return row;
+  if (row.status !== "pending") return null;
+  const [approved] = await db.select().from(botLearningRevisions).where(and(eq(botLearningRevisions.learningId, row.id), eq(botLearningRevisions.status, "active"))).orderBy(desc(botLearningRevisions.version)).limit(1);
+  return approved ? { ...row, content: approved.content, verification: approved.verification, version: approved.version, status: "active" as const } : null;
+}
+
 export async function learnedSkillsForBot(botId: string, userId: string): Promise<Skill[]> {
-  const rows = await db.select().from(botLearnings).where(and(visibleLearningScope(botId, userId), eq(botLearnings.status, "active"))).orderBy(botLearnings.topic);
+  const visible = await db.select().from(botLearnings).where(and(visibleLearningScope(botId, userId), ne(botLearnings.kind, "preference"))).orderBy(botLearnings.topic);
+  const rows = (await Promise.all(visible.map(publishedLearning))).filter(row => row !== null);
   return rows.map(row => ({
     id: row.id, botId, ownerId: row.userId ?? "", slug: `learned-${row.userId ? "personal" : "shared"}-${row.topic}`,
     ...row.content, version: row.version, createdAt: row.createdAt, updatedAt: row.updatedAt,
@@ -23,8 +31,11 @@ export async function learnedSkillsForBot(botId: string, userId: string): Promis
 export async function learningViews(p: Principal, botId: string): Promise<LearningView[]> {
   const bot = await getAccessibleBot(p, botId);
   const rows = await db.select().from(botLearnings).where(visibleLearningScope(botId, p.user.id)).orderBy(desc(botLearnings.updatedAt));
-  return rows.filter(row => row.status !== "pending" || row.userId === p.user.id || canEditBot(p, bot)).map(row => ({
-    id: row.id, scope: row.userId ? "user" : "bot", status: row.status, content: row.content,
+  const shown = await Promise.all(rows.map(row => row.status === "pending" && row.userId !== p.user.id && !canEditBot(p, bot) ? publishedLearning(row) : row));
+  return shown.filter(row => row !== null).map(row => ({
+    id: row.id, kind: row.kind, pinned: row.pinned, useCount: row.useCount, lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+    stale: row.kind === "procedure" && row.status === "active" && !row.pinned && Date.now() - Math.max(row.createdAt.getTime(), row.updatedAt.getTime(), row.lastUsedAt?.getTime() ?? 0) >= 14 * 86400000,
+    scope: row.userId ? "user" : "bot", status: row.status, content: row.content,
     verification: row.verification, version: row.version, updatedAt: row.updatedAt.toISOString(),
     canManage: row.userId === p.user.id || (!row.userId && canEditBot(p, bot)),
   }));
@@ -48,7 +59,7 @@ async function manageableLearning(p: Principal, id: string, tx: Tx) {
 
 /** Every human change is a new revision. A stale browser cannot overwrite a newer lesson. */
 export async function changeLearning(p: Principal, id: string, expectedVersion: number, change: {
-  status?: LessonStatus; content?: LessonContent; restoreVersion?: number;
+  status?: LessonStatus; content?: LessonContent; restoreVersion?: number; pinned?: boolean;
 }) {
   return db.transaction(async tx => {
     const row = await manageableLearning(p, id, tx);
@@ -61,7 +72,12 @@ export async function changeLearning(p: Principal, id: string, expectedVersion: 
       content = previous.content;
       verification = previous.verification;
     }
-    const [next] = await tx.update(botLearnings).set({ content, verification, status: change.status ?? row.status, version: row.version + 1, updatedAt: new Date() }).where(eq(botLearnings.id, id)).returning();
+    let status = change.status ?? row.status;
+    if (row.status === "pending" && change.status === "archived") {
+      const [approved] = await tx.select().from(botLearningRevisions).where(and(eq(botLearningRevisions.learningId, row.id), eq(botLearningRevisions.status, "active"))).orderBy(desc(botLearningRevisions.version)).limit(1);
+      if (approved) { content = approved.content; verification = approved.verification; status = "active"; }
+    }
+    const [next] = await tx.update(botLearnings).set({ content, verification, pinned: change.pinned ?? row.pinned, status, version: row.version + 1, updatedAt: new Date() }).where(eq(botLearnings.id, id)).returning();
     await recordLearningRevision(tx, next);
     return next.botId;
   });
@@ -78,4 +94,20 @@ export async function learningHistory(p: Principal, id: string) {
 export async function learningIsEnabled(p: Principal, q: DbOrTx = db) {
   const settings = await getSetting("tools", q);
   return settings.learningEnabled !== false && !settings.disabledTools.includes("skills") && p.user.prefs.learningEnabled !== false && p.user.prefs.memoryEnabled !== false;
+}
+
+/** Usage metadata never revises or rewrites a lesson. */
+export async function recordLearnedSkillUse(botId: string, userId: string, id: string) {
+  await db.update(botLearnings).set({ lastUsedAt: new Date(), useCount: sql`${botLearnings.useCount} + 1` })
+    .where(and(eq(botLearnings.id, id), visibleLearningScope(botId, userId), sql`${botLearnings.status} in ('active', 'pending')`, ne(botLearnings.kind, "preference")));
+}
+
+/** Preferences are always-on private memory, rather than on-demand procedure skills. */
+export async function learnedPreferences(userId: string, botId: string, limit = 5) {
+  const { loadPrincipal } = await import("@/lib/auth/groups");
+  const p = await loadPrincipal(userId);
+  if (!p || !(await learningIsEnabled(p))) return [];
+  const rows = await db.select().from(botLearnings).where(and(eq(botLearnings.botId, botId), eq(botLearnings.userId, userId), eq(botLearnings.kind, "preference"), sql`${botLearnings.status} in ('active', 'pending')`)).orderBy(desc(botLearnings.updatedAt)).limit(limit);
+  const published = (await Promise.all(rows.map(publishedLearning))).filter(row => row !== null);
+  return published.map(row => ({ id: row.id, content: `${row.content.description}\n${row.content.instructions}\n${row.content.boundaries}`.slice(0, 1500), pinned: row.pinned, botId }));
 }

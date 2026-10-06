@@ -55,6 +55,9 @@ export type ToolSettings = {
   embeddingAppId?: string;
   /** Automatic private/shared procedure learning for native caller bots. */
   learningEnabled?: boolean;
+  learningRequireApproval?: boolean;
+  learningMaintenanceEnabled?: boolean;
+  learningConsolidationEnabled?: boolean;
 };
 
 /**

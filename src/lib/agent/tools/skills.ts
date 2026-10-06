@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { skills, type Skill } from "@/db/schema";
 import type { AgentCtx, ToolEntry } from "../types";
-import { learnedSkillsForBot, learningIsEnabled } from "../learning/store";
+import { learnedSkillsForBot, learningIsEnabled, recordLearnedSkillUse } from "../learning/store";
 
 export async function learnedSkillsForTurn(ctx: AgentCtx): Promise<Skill[]> {
   if (!ctx.bot || ctx.bot.executionMode === "service" || !(await learningIsEnabled(ctx.principal))) return [];
@@ -45,6 +45,7 @@ export function skillTool(ctx: AgentCtx, available: Skill[]): ToolEntry | null {
       inputSchema: z.object({ slug: z.enum(available.map((s) => s.slug) as [string, ...string[]]) }),
       execute: async ({ slug }) => {
         const s = available.find((x) => x.slug === slug);
+        if (s?.slug.startsWith("learned-") && ctx.bot) await recordLearnedSkillUse(ctx.bot.id, ctx.principal.user.id, s.id);
         return s ? { skill: renderSkill(s), skillId: s.id, version: s.version } : { error: "Unknown skill" };
       },
     }),
