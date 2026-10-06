@@ -8,6 +8,7 @@ import { lessonContentSchema } from "@/lib/agent/learning/types";
 
 const changeSchema = z.object({
   id: z.string().min(1).max(100), version: z.number().int().positive(),
+  pinned: z.boolean().optional(),
   status: z.enum(["active", "archived"]).optional(),
   content: lessonContentSchema.optional(), restoreVersion: z.number().int().positive().optional(),
 });

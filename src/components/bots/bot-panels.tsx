@@ -1,5 +1,7 @@
 "use client";
 
+import { LearnedItems } from "./learning-panel";
+import type { LearningView } from "@/lib/agent/learning/types";
 import { NativeResources } from "./native-resources";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -116,6 +118,7 @@ export function BotPanels({
   native = false,
   webhookBase,
   skills,
+  learned = [],
   routines,
   runs,
   memories,
@@ -127,6 +130,7 @@ export function BotPanels({
   native?: boolean;
   webhookBase: string;
   skills: Skill[];
+  learned?: LearningView[];
   routines: RoutineRow[];
   runs: RunRow[];
   memories: { id: string; content: string; pinned: boolean }[];
@@ -136,6 +140,8 @@ export function BotPanels({
   const [tab, setTab] = useState<(typeof TABS)[number]>(serviceMode ? "Activity" : "Skills");
   const [editSkill, setEditSkill] = useState<Partial<Skill> | null>(null);
   const [editRoutine, setEditRoutine] = useState<RoutineRow | "new" | null>(null);
+  const learnedSkills = learned.filter(row => row.kind !== "preference");
+  const learnedMemory = learned.filter(row => row.kind === "preference");
   const [newMemory, setNewMemory] = useState("");
 
   return (
@@ -155,12 +161,14 @@ export function BotPanels({
       {native && (tab === "Skills" || tab === "Memory") && <NativeResources botId={botId} section={tab} />}
       {!native && tab === "Skills" && (
         <div className="space-y-2">
+          <p className="text-sm text-muted">Manual and learned procedures. Shared skills help everyone using this bot; Personal skills apply only to you. Policies marked Needs approval are not active.</p>
           {skills.map((s) => (
             <div key={s.id} className="flex items-start gap-3 rounded-xl border border-border p-3">
               <Sparkles className="mt-0.5 h-4 w-4 text-accent" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">
-                  {s.name} <span className="font-normal text-subtle">/{s.slug} · v{s.version}{s.botId === null ? " · shared" : ""}</span>
+                  {s.name} <span className="ml-2 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-normal text-muted">Manual</span> <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-normal text-muted">Shared</span>
+                  <span className="ml-2 font-normal text-subtle">/{s.slug} · v{s.version}{s.botId === null ? " · available across the owner’s bots" : ""}</span>
                 </div>
                 <div className="text-sm text-muted">{s.description}</div>
               </div>
@@ -184,7 +192,8 @@ export function BotPanels({
               )}
             </div>
           ))}
-          {!skills.length && <p className="text-sm text-muted">No skills yet. Skills turn a workflow that worked into a repeatable procedure.</p>}
+          <LearnedItems rows={learnedSkills} />
+          {!skills.length && !learnedSkills.length && <p className="text-sm text-muted">No skills yet. Skills turn a workflow that worked into a repeatable procedure.</p>}
           {canEdit && (
             <Button variant="outline" size="sm" onClick={() => setEditSkill({ botId })}>
               <Plus className="h-4 w-4" /> New skill
@@ -259,7 +268,8 @@ export function BotPanels({
 
       {!native && tab === "Memory" && (
         <div className="space-y-2">
-          <p className="text-sm text-muted">What this bot remembers about you (in addition to your shared memory in Settings).</p>
+          <p className="text-sm text-muted">Personal facts and preferences for this bot. These stay private to you. Memory in Settings can follow you across bots.</p>
+          <LearnedItems rows={learnedMemory} />
           {memories.map((m) => (
             <div key={m.id} className="flex items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm">
               <span className="flex-1">{m.content}</span>

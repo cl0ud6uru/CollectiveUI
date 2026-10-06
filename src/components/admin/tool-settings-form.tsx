@@ -20,6 +20,9 @@ type Initial = {
   utilityAppId?: string;
   embeddingAppId?: string;
   learningEnabled?: boolean;
+  learningRequireApproval?: boolean;
+  learningMaintenanceEnabled?: boolean;
+  learningConsolidationEnabled?: boolean;
 };
 
 export function ToolSettingsForm({
@@ -128,6 +131,11 @@ export function ToolSettingsForm({
       <Card className="space-y-4">
         <h2 className="font-medium">Background models</h2>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.learningEnabled !== false} onChange={e => setS({ ...s, learningEnabled: e.target.checked })} /> Learn from completed native bot work</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.learningRequireApproval === true} onChange={e => setS({ ...s, learningRequireApproval: e.target.checked })} /> Require approval for every learned skill or preference change</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.learningMaintenanceEnabled !== false} onChange={e => setS({ ...s, learningMaintenanceEnabled: e.target.checked })} /> Archive unpinned learned procedures after 30 days without use or changes</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={s.learningConsolidationEnabled === true} onChange={e => setS({ ...s, learningConsolidationEnabled: e.target.checked })} /> Consolidate identical learned procedures within the same scope</label>
+        <p className="text-xs text-muted">Consolidation keeps one identical procedure and archives duplicates. Automatic maintenance pauses while approval is required for every learned change.</p>
+        <p className="text-xs text-muted">Pin procedures to keep them active. Archived procedures remain restorable. Personal preferences, policies and procedures referenced by routines are excluded from automatic archival.</p>
         <p className="text-xs text-muted">Save personal lessons privately and verified procedures for the shared bot. Organizational policies require approval. Learning uses the company utility model and can be turned off by each user.</p>
         <Field label="Utility model" hint="Used for chat titles, memory extraction and drafting bots/skills. With no selection, uses the chat’s model when it supports background work with organization credentials. Hermes is not eligible.">
           <Select aria-label="Utility model" value={s.utilityAppId ?? ""} onChange={(e) => setS({ ...s, utilityAppId: e.target.value || undefined })}>
@@ -171,6 +179,9 @@ export function ToolSettingsForm({
                 utilityAppId: s.utilityAppId,
                 embeddingAppId: s.embeddingAppId,
                 learningEnabled: s.learningEnabled !== false,
+                learningRequireApproval: s.learningRequireApproval === true,
+                learningMaintenanceEnabled: s.learningMaintenanceEnabled !== false,
+                learningConsolidationEnabled: s.learningConsolidationEnabled === true,
               });
               toast.success("Saved");
               router.refresh();

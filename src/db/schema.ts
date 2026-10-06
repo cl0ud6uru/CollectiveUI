@@ -827,6 +827,10 @@ export const botLearnings = pgTable("bot_learnings", {
   // null = shared with this bot's audience; otherwise private to this user and bot.
   userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   topic: text("topic").notNull(),
+  pinned: boolean("pinned").notNull().default(false),
+  useCount: integer("use_count").notNull().default(0),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  lastCuratedAt: timestamp("last_curated_at", { withTimezone: true }),
   kind: text("kind").$type<"preference" | "procedure" | "policy">().notNull(),
   status: text("status").$type<import("@/lib/agent/learning/types").LessonStatus>().notNull().default("active"),
   content: jsonb("content").$type<import("@/lib/agent/learning/types").LessonContent>().notNull(),
