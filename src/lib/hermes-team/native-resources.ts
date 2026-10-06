@@ -198,7 +198,9 @@ export async function applyTeamResourcePlan(profileRoot: string, operationId: st
   if (active.has(profileRoot)) unsafe('Another resource update is active.');
   // Protected journal storage is separate; the broker owns its mount and enforces cross-process exclusion.
   if (!path.isAbsolute(options.journalRoot) || options.journalRoot === profileRoot || options.journalRoot.startsWith(profileRoot + path.sep)) unsafe('Resource journals must be outside the writable native profile.');
-  const supplied = beginResourceUpdate(operationId, plan, options.receipt);
+  // Application receipts are validated reports, never authority to skip native writes.
+  beginResourceUpdate(operationId, plan, options.receipt);
+  const freshReceipt = beginResourceUpdate(operationId, plan);
   if (await realpath(path.dirname(options.journalRoot)) !== path.dirname(options.journalRoot)) unsafe('Journal parent must be canonical protected storage.');
   try { await mkdir(options.journalRoot, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   const root = await rootHandle(profileRoot); let journals: FileHandle;
@@ -212,10 +214,8 @@ export async function applyTeamResourcePlan(profileRoot: string, operationId: st
     }
     let journal = await readJournal(journals, operationId + '.json');
     if (journal && (journal.operationId !== operationId || journal.planHash !== plan.planHash)) unsafe('Resource operation changed after it began.');
-    const initial = beginResourceUpdate(operationId, plan, journal?.receipt ?? supplied);
+    const initial = beginResourceUpdate(operationId, plan, journal?.receipt ?? freshReceipt);
     journal ??= { format: 1, operationId, planHash: plan.planHash, receipt: initial };
-    // Never trust a caller to advance a broker-owned journal.
-    if (options.receipt && journal.receipt.completedGroups.some((id, index) => options.receipt!.completedGroups[index] !== id) && options.receipt.status === 'complete') unsafe('Resource receipt disagrees with protected journal.');
     await saveJournal(journals, journal);
     for (;;) {
       if (journal.inFlight) {

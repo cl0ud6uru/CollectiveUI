@@ -3,7 +3,7 @@ import { link, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 
 import path from 'node:path';
 import { createTeamResourceSnapshot, resourceSha256, type TeamResource } from '@/lib/hermes-team/resources';
 import { applyTeamResourcePlan, assertResourceUpdatesSettled, inventoryMemberResources, inventoryPublishableResourceSelection } from '@/lib/hermes-team/native-resources';
-import { planTeamResourceUpdate } from '@/lib/hermes-team/updates';
+import { beginResourceUpdate, planTeamResourceUpdate } from '@/lib/hermes-team/updates';
 let home: string, root: string, journals: string;
 const skill = (content: string, file = 'SKILL.md', name = 'support'): TeamResource => ({ path: `skills/${name}/${file}`, packageId: `skills/${name}`, kind: 'skill', encoding: 'utf8', content, size: Buffer.byteLength(content), sha256: resourceSha256(content) });
 async function file(relative: string, content: string) { await mkdir(path.dirname(path.join(root, relative)), { recursive: true }); await writeFile(path.join(root, relative), content); }
@@ -98,5 +98,25 @@ describe('Durable stopped-runtime filesystem application', () => {
     expect(await readFile(path.join(root, 'documents/help.md'), 'utf8')).toBe('doc2'); expect(await readFile(path.join(root, 'skills/added/SKILL.md'), 'utf8')).toBe('added');
     expect(await readFile(path.join(root, 'skills/learned/SKILL.md'), 'utf8')).toBe('member learning');
     await expect(readFile(path.join(root, 'skills/support/SKILL.md'))).rejects.toThrow();
+  });
+});
+
+
+describe("Protected native receipt authority", () => {
+  it("does not initialize an absent protected journal from a forged completed application receipt", async () => {
+    const plan = await nextPlan(), fresh = beginResourceUpdate('forged-complete', plan);
+    const forged = { ...fresh, status: 'complete' as const, completedGroups: ['skills/support'] };
+    const result = await applyTeamResourcePlan(root, 'forged-complete', plan, { journalRoot: journals, receipt: forged });
+    expect(result.status).toBe('complete');
+    expect(await readFile(path.join(root, 'skills/support/SKILL.md'), 'utf8')).toBe('v2');
+  });
+  it("does not skip a forged progressed prefix before the protected native journal exists", async () => {
+    await file('skills/second/SKILL.md', 'old second');
+    const current = await inventoryMemberResources(root), release = createTeamResourceSnapshot([skill('v2'), skill('new second', 'SKILL.md', 'second')]);
+    const plan = planTeamResourceUpdate({ installed: current, release, current }), fresh = beginResourceUpdate('forged-prefix', plan);
+    const forged = { ...fresh, completedGroups: [plan.actions[0].packageId] };
+    await applyTeamResourcePlan(root, 'forged-prefix', plan, { journalRoot: journals, receipt: forged });
+    expect(await readFile(path.join(root, 'skills/second/SKILL.md'), 'utf8')).toBe('new second');
+    expect(await readFile(path.join(root, 'skills/support/SKILL.md'), 'utf8')).toBe('v2');
   });
 });
