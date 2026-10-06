@@ -34,6 +34,17 @@ describe('trusted Team broker adapter', () => {
     await expect(ensureTeamRuntime(p, 'team', 'member')).rejects.toMatchObject({ status: 403 });
     expect(f.control).toHaveBeenCalledWith('alice', '/team/revoke', { teamBotId: 'team', mode: 'member' }, 3000);
   });
+  it('cleans up authority denied immediately after grant issuance, before native dispatch', async () => {
+    f.authorize.mockResolvedValueOnce({ bot: { name: 'Support' }, definition: { modelPolicy: { mode: 'personal_required' } } }).mockRejectedValueOnce(new HttpError(403, 'Revoked'));
+    await expect(ensureTeamRuntime(p, 'team', 'member')).rejects.toMatchObject({ status: 403 }); expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.control).toHaveBeenCalledWith('alice', '/team/revoke', { teamBotId: 'team', mode: 'member' }, 3000);
+  });
+  it('treats an older broker without inventory as unavailable and preserves authorized working profiles', async () => {
+    f.fetch.mockResolvedValueOnce(Response.json({ error: 'Unknown operation' }, { status: 404 }));
+    await expect(inventoryTeamResources(p, 'team')).rejects.toMatchObject({ status: 503 });
+    expect(f.control).toHaveBeenCalledTimes(1);
+    expect(f.control.mock.calls[0][1]).toBe('/team/authorize');
+  });
   it('rejects expired grants and hides upstream response/exception contents', async () => {
     f.control.mockResolvedValueOnce({ grantId, expiresAt: Date.now() - 1 });
     await expect(ensureTeamRuntime(p, 'team', 'member')).rejects.toMatchObject({ status: 503 }); expect(f.fetch).not.toHaveBeenCalled();

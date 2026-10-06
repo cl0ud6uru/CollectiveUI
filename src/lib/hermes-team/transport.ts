@@ -16,34 +16,39 @@ async function grantTeam(p: Principal, botId: string, mode: TeamMode) {
 }
 export async function ensureTeamRuntime(p: Principal, botId: string, mode: TeamMode): Promise<unknown> {
   const { bot, grant } = await grantTeam(p, botId, mode);
-  await authorizeTeam(p, botId, mode);
   return teamRequest(p, botId, mode, grant.grantId, '/team/ensure', { teamBotId: botId, mode, name: bot.name.slice(0,80) });
 }
 export async function captureTeamResources(p: Principal, botId: string, selection: TeamResourceSelection): Promise<unknown> {
   const { grant } = await grantTeam(p, botId, 'admin');
-  await authorizeTeam(p, botId, 'admin');
   return teamRequest(p, botId, 'admin', grant.grantId, '/team/capture', { teamBotId: botId, mode: 'admin', selection });
 }
 export async function inventoryTeamResources(p: Principal, botId: string): Promise<TeamPublishableInventory> {
   const { grant } = await grantTeam(p, botId, 'admin');
-  await authorizeTeam(p, botId, 'admin');
   const selection = await teamRequest(p, botId, 'admin', grant.grantId, '/team/inventory', { teamBotId: botId, mode: 'admin' });
   const { teamResourceSelectionSchema } = await import('./publication');
   return { selection: teamResourceSelectionSchema.parse(selection), available: true };
 }
 async function teamRequest(p: Principal, botId: string, mode: TeamMode, grantId: string, action: '/team/ensure' | '/team/capture' | '/team/inventory', body: unknown) {
+  let permissionDenied = false;
+  const freshAuthorization = async () => {
+    try { await authorizeTeam(p, botId, mode); }
+    catch (e) { if (e instanceof HttpError && [403, 404].includes(e.status)) permissionDenied = true; throw e; }
+  };
   try {
+    await freshAuthorization();
     const response = await dockerFetch(p.user.id)(`${LOCAL_ORIGIN}${action}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-collective-team-grant': grantId },
       body: JSON.stringify(body), signal: AbortSignal.timeout(45000),
     });
     const value = await response.json();
-    if (!response.ok) throw new HttpError(response.status, 'The Team runtime needs attention. Its model and volume adapters may still need verification.');
+    if (!response.ok) throw new HttpError(action === '/team/inventory' && response.status === 404 ? 503 : response.status, 'The Team runtime needs attention. Its model and volume adapters may still need verification.');
     // Fresh permission after broker I/O, before any mapping/resources reach the caller.
-    await authorizeTeam(p, botId, mode);
+    await freshAuthorization();
     return value as unknown;
   } catch (e) {
-    if (e instanceof HttpError && (e.status === 403 || e.status === 404)) {
+    // Capability/binding HTTP errors are not proof that app authority was revoked.
+    // Revoke only a confirmed freshness failure, including immediately after issue.
+    if (permissionDenied) {
       await dockerControl(p.user.id, '/team/revoke', { teamBotId: botId, mode }, 3000).catch(() => {});
       throw e;
     }
