@@ -25,7 +25,7 @@ const resource = (resourcePath, packageId, content, kind='skill',encoding='utf8'
 };
 const packageHash = files => sha(JSON.stringify([...files].sort((a,b)=>a.path.localeCompare(b.path)).map(file=>[file.path,file.sha256])));
 const change = (packageId,previousResources,capturedResources) => ({packageId,change:!previousResources.length?'added':!capturedResources.length?'removed':'changed',beforeHash:packageHash(previousResources),afterHash:packageHash(capturedResources),previousResources,capturedResources});
-let draft = 'Reviewed procedure'; let captureCount=0; let inventoryAvailable=true; let unstableNextCapture=false;
+let draft = 'Reviewed procedure'; let captureCount=0; let inventoryAvailable=true; let inventoryFailure=false; let unstableNextCapture=false;
 let failFirstPublish=true; let staleNextPublish=false; let holdPublish=true; let releasePublish;
 const receipts = new Map(); const captures = []; const publications = []; const gets = [];
 const view = {enabled:true,mode:'admin',canMaintain:true,state:'connection_needed',installedRevision:null,publishedRevision:2,conflictCount:0};
@@ -45,7 +45,7 @@ const server = createServer(async(req,res)=>{
   if(url.pathname==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css.css);return;}
   if(!url.pathname.startsWith('/api/')){res.setHeader('Content-Type','text/html');res.end('<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"></head><body><div id="root"></div><script src="/bundle.js"></script></body></html>');return;}
   res.setHeader('Content-Type','application/json');
-  if(req.method==='GET'){gets.push(url.pathname);res.end(JSON.stringify(url.pathname.endsWith('/capture')?inventory():view));return;}
+  if(req.method==='GET'){gets.push(url.pathname);if(url.pathname.endsWith('/capture')&&inventoryFailure){res.statusCode=503;res.end(JSON.stringify({error:'Native resource inventory is unavailable on this connection.'}));return;}res.end(JSON.stringify(url.pathname.endsWith('/capture')?inventory():view));return;}
   const bytes=[];for await(const chunk of req)bytes.push(chunk);const input=JSON.parse(Buffer.concat(bytes).toString());
   if(url.pathname.endsWith('/capture')){
     captures.push(input);
@@ -98,7 +98,9 @@ try{
   expect(captures.at(-1).expectedRevision).toBe(4);await review.getByRole('button',{name:'Cancel',exact:true}).click();
   inventoryAvailable=false;const beforeUnavailable=captures.length;await open.click();
   await expect(review.getByText('Native resource review is not supported by this connection yet.')).toBeVisible();await expect(review.getByRole('button',{name:'Review again'})).toBeVisible();expect(captures).toHaveLength(beforeUnavailable);
-  inventoryAvailable=true;unstableNextCapture=true;await review.getByRole('button',{name:'Review again'}).click();await review.getByRole('button',{name:'Capture changes'}).click();
+  await review.getByRole('button',{name:'Cancel',exact:true}).click();inventoryFailure=true;await open.click();
+  await expect(page.getByRole('alert')).toHaveText('Native resource inventory is unavailable on this connection.');await expect(review).toHaveCount(0);expect(captures).toHaveLength(beforeUnavailable);await expect(open).toBeEnabled();
+  inventoryFailure=false;inventoryAvailable=true;unstableNextCapture=true;await open.click();await review.getByRole('button',{name:'Capture changes'}).click();
   await expect(review.getByRole('alert')).toHaveText('Native resource writes have not settled; capture again when idle');
   await review.getByRole('button',{name:'Capture changes'}).click();await expect(review.getByRole('checkbox',{name:'Publish procedure',exact:true})).toBeVisible();
   expect(gets.filter(url=>url.endsWith('/team')).length).toBeGreaterThan(3);expect(errors).toEqual([]);
