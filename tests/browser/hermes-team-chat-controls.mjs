@@ -61,7 +61,15 @@ try {
   denyStatus = true; await expect(page.getByRole('alert')).toHaveText('Your Team Bot access was removed.', { timeout: 7000 });
   await expect(page.getByRole('region', { name: 'Hermes Team Bot controls' })).toHaveCount(0);
   denyStatus = false; await page.getByRole('button', { name: 'Try again' }).click(); await expect(mode).toBeVisible();
+  Object.assign(view,{state:'connection_needed',modelAccessAvailable:false,modelAccessReason:'Team models are unavailable in this build. Ask an admin to configure a supported connection.'});
+  await page.evaluate(() => window.fixtureContext({botId:'team-two',conversationId:'model-unavailable-context',started:true,busy:false}));
+  await expect(page.getByText('Team models are unavailable in this build. Ask an admin to configure a supported connection.',{exact:true})).toBeVisible();
+  await expect(page.getByText('Model access unavailable',{exact:true})).toBeVisible();await expect(page.getByRole('link',{name:'Settings',exact:true})).toHaveCount(0);
+  view.modelAccessAvailable=true;
+  await page.evaluate(() => window.fixtureContext({botId:'team-two',conversationId:'model-reconnect-context',started:true,busy:false}));
+  await expect(page.getByRole('link',{name:'Settings',exact:true})).toBeVisible();await expect(page.getByText('Model connection needed',{exact:true})).toBeVisible();
+  await expect(page.getByText('Team models are unavailable in this build. Ask an admin to configure a supported connection.',{exact:true})).toHaveCount(0);
   await page.evaluate(() => window.fixtureContext({ botId: 'team-two', conversationId: 'saved-context', started: true, busy: true })); await expect(mode).toBeDisabled();
   expect(errors).toEqual([]);
-  console.log('PASS: server-only mode open identity, rejected navigation, current conversation query, stale-context clearing, revoked status and retry, active-work disablement; synthetic HTTP only.');
+  console.log('PASS: server-only mode open identity, rejected navigation, current conversation query, stale-context clearing, revoked status and retry, active-work disablement, server-confirmed unavailable model reason versus verified reconnect guidance; synthetic HTTP only.');
 } finally { if (releaseStatus) releaseStatus(); await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

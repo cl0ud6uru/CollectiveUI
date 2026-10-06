@@ -20,6 +20,8 @@ export type HermesTeamView = {
   installedRevision: number | null;
   publishedRevision: number;
   conflictCount: number;
+  modelAccessAvailable?: boolean;
+  modelAccessReason?: string;
 };
 
 const stateLabels: Record<HermesTeamView["state"], string> = {
@@ -128,12 +130,13 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
   const locked = !!operation || busy || view.state === "revoked";
   const canCapture = view.state !== "preparing" && view.state !== "updating" && view.state !== "revoked";
   const admin = view.mode === "admin";
+  const modelUnavailable = view.modelAccessAvailable === false;
   return <section className="mx-auto w-full max-w-3xl space-y-2 px-4 py-2" aria-label="Hermes Team Bot controls">
     <div className="space-y-2 rounded-xl border border-border bg-surface px-3 py-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
           <span className="rounded-full bg-surface-2 px-2 py-1 font-medium">{admin ? "Admin mode" : "Private chat"}</span>
-          <span className="flex items-center gap-1.5 text-muted" role="status">{(view.state === "preparing" || view.state === "updating") && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}{stateLabels[view.state]}</span>
+          <span className="flex items-center gap-1.5 text-muted" role="status">{(view.state === "preparing" || view.state === "updating") && <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin" />}{modelUnavailable && (view.state === "connection_needed" || view.state === "ready") ? "Model access unavailable" : stateLabels[view.state]}</span>
           {view.publishedRevision > 0 && <span className="text-muted">Team version {admin ? view.publishedRevision : view.installedRevision ?? "pending"}</span>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -151,7 +154,8 @@ export function HermesTeamControls({ view, busy = false, onOpenMode, onPrepareCa
       </div>
       {view.canMaintain && <p id={`${id}-mode-description`} className="text-xs text-muted">Admin mode opens a separate conversation. Maintainers share this working bot’s skills and native memory. Your private chat and other maintainers’ conversations stay separate.</p>}
       {!admin && <p className="text-xs text-muted">Your chat history, memory and new skills stay private. Team updates preserve your own changes.</p>}
-      {view.state === "connection_needed" && <p className="text-sm">Connect or reconnect the required model account in <a href="/settings?tab=connected-accounts" className="underline">Settings</a> to continue.</p>}
+      {modelUnavailable && view.state !== "revoked" && <p className="text-sm">{view.modelAccessReason?.trim() || "Team model access is unavailable in this build. Ask an admin to configure a supported model connection."}</p>}
+      {view.state === "connection_needed" && !modelUnavailable && <p className="text-sm">Connect or reconnect the required model account in <a href="/settings?tab=connected-accounts" className="underline">Settings</a> to continue.</p>}
       {view.state === "needs_attention" && <p className="text-xs text-muted">This bot is paused. Ask an admin to check its configuration, or try again after the issue is resolved.</p>}
       {view.state === "revoked" && <p className="text-xs text-muted">Your access to this Team Bot was removed. Ask an admin if you need access again.</p>}
       {view.canMaintain && !onOpenMode && <p className="text-xs text-muted">Open this bot in a compatible web version to switch Admin mode.</p>}

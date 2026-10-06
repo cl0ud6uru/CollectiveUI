@@ -131,6 +131,19 @@ try {
   await page.evaluate(() => { window.fixtureSupported(true); window.fixtureStatus({ state: 'connection_needed' }); });
   await expect(page.getByRole('button', { name: 'Publish changes', exact: true })).toBeEnabled();
   await expect(page.getByRole('link', { name: 'Settings', exact: true })).toBeVisible();
+  await page.evaluate(() => window.fixtureStatus({modelAccessAvailable:false,modelAccessReason:'Team model access is unavailable in this build. No supported connection has been configured.'}));
+  await expect(page.getByText('Team model access is unavailable in this build. No supported connection has been configured.',{exact:true})).toBeVisible();
+  await expect(page.getByText('Model access unavailable',{exact:true})).toBeVisible();
+  await expect(page.getByRole('link',{name:'Settings',exact:true})).toHaveCount(0);
+  await expect(page.getByText('Connect or reconnect the required model account in',{exact:false})).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Publish changes',exact:true})).toBeEnabled();
+  await page.evaluate(() => window.fixtureStatus({modelAccessReason:' '}));
+  await expect(page.getByText('Team model access is unavailable in this build. Ask an admin to configure a supported model connection.',{exact:true})).toBeVisible();
+  await page.evaluate(() => window.fixtureStatus({state:'ready'}));
+  await expect(page.getByText('Model access unavailable',{exact:true})).toBeVisible();
+  await page.evaluate(() => window.fixtureStatus({state:'connection_needed',modelAccessAvailable:true}));
+  await expect(page.getByRole('link',{name:'Settings',exact:true})).toBeVisible();
+  await expect(page.getByText('Model connection needed',{exact:true})).toBeVisible();
   await page.evaluate(() => window.fixtureStatus({ state: 'revoked' }));
   await expect(mode).toBeDisabled();
   await expect(page.getByText('Your access to this Team Bot was removed. Ask an admin if you need access again.')).toBeVisible();
@@ -156,5 +169,5 @@ try {
   }
   await page.evaluate(() => window.fixtureStatus({ enabled: false })); await expect(page.getByRole('region', { name: 'Hermes Team Bot controls' })).toHaveCount(0);
   expect(errors).toEqual([]);
-  console.log('PASS: member/admin authorization hints, separate mode navigation, active-work controls, immutable package review, escaped code, stable publish retry, modified/deleted conflict choices, unverified model choices, compatible states and 320–1280px layouts; no model/runtime calls or browser errors.');
+  console.log('PASS: member/admin authorization hints, separate mode navigation, active-work controls, immutable package review, escaped code, stable publish retry, modified/deleted conflict choices, unverified model choices, unavailable model build guidance vs verified reconnect states and 320–1280px layouts; no model/runtime calls or browser errors.');
 } finally { await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }
