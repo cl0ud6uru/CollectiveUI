@@ -34,7 +34,7 @@ beforeEach(async()=>{
  vi.restoreAllMocks();
  vi.stubEnv('HERMES_TEAM_BOTS_ENABLED','1');vi.stubEnv('HERMES_TEAM_CANDIDATE_RUNTIME_ENABLED','1');vi.stubEnv('HERMES_TEAM_GATEWAY_ORIGIN','https://app.test.invalid');vi.stubEnv('ENCRYPTION_KEY','synthetic-learning-fixture-encryption-only');
  fixture.enqueue.mockReset();fixture.enqueue.mockResolvedValue(undefined);fixture.control.mockReset();fixture.control.mockImplementation(async(_actor,path)=>path==='/team/authorize'?{grantId:'current-server-grant'}:path==='/team/retire-candidate'?{confirmed:true,runtimeWide:true}:{stopped:true,interruption:'none'});
- fixture.fetch.mockReset();fixture.fetch.mockImplementation(async(url)=>String(url).endsWith('/team/start-candidate')?Response.json({started:true}):Response.json({prepared:true}));
+ fixture.fetch.mockReset();fixture.fetch.mockImplementation(async(url)=>{if(String(url).endsWith('/team/ensure'))return Response.json((await db.select().from(schema.hermesTeamProfiles))[0].binding);return String(url).endsWith('/team/start-candidate')?Response.json({started:true}):Response.json({prepared:true});});
  await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
  await db.insert(schema.users).values([{id:'admin',upn:'admin@test.invalid',name:'Admin',isAdmin:true,authSource:'local',identityRealm:'local'},{id:'alice',upn:'alice@test.invalid',name:'Alice',authSource:'local',identityRealm:'local'},{id:'bob',upn:'bob@test.invalid',name:'Bob',authSource:'local',identityRealm:'local'}]);
  admin=(await loadPrincipal('admin'))!;alice=(await loadPrincipal('alice'))!;bob=(await loadPrincipal('bob'))!;
@@ -111,7 +111,7 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   expect(fixture.control.mock.calls.filter(c=>c[1]==='/team/retire-candidate')).toHaveLength(1);expect((await db.select().from(schema.hermesTeamCandidateContexts))[0].retirementState).toBe('confirmed');expect(profile.id).toBeTruthy();
  });
  it('detects stale worker after prepare, retires the exact attempted startup and never starts native work',async()=>{
-  await foreground();await db.delete(schema.hermesTeamCandidateContexts);fixture.fetch.mockImplementation(async(url)=>{if(String(url).endsWith('/team/prepare-candidate'))await db.update(schema.agentRuns).set({holder:'other-worker'}).where(eq(schema.agentRuns.id,'parent'));return Response.json({prepared:true});});
+  await foreground();await db.delete(schema.hermesTeamCandidateContexts);fixture.fetch.mockImplementation(async(url)=>{if(String(url).endsWith('/team/ensure'))return Response.json((await db.select().from(schema.hermesTeamProfiles))[0].binding);if(String(url).endsWith('/team/prepare-candidate'))await db.update(schema.agentRuns).set({holder:'other-worker'}).where(eq(schema.agentRuns.id,'parent'));return Response.json({prepared:true});});
   await expect(startTeamCandidateRun(alice,'team','parent',{holder:'foreground-worker',segment:0,routes})).rejects.toMatchObject({status:403});expect(fixture.fetch.mock.calls.some(c=>String(c[0]).endsWith('/team/start-candidate'))).toBe(false);expect(fixture.control.mock.calls.some(c=>c[1]==='/team/retire-candidate')).toBe(true);
  });
  it('renews the exact active grant during streaming and aborts on a changed worker lease',async()=>{
@@ -120,6 +120,7 @@ describe('Actual durable native learning handoff and trusted active startup',()=
   try{
    fixture.fetch.mockImplementation(async(url)=>String(url).endsWith('/team/renew-candidate')?Response.json({renewed:true}):new Response(new ReadableStream({start(controller){controller.enqueue(new TextEncoder().encode('synthetic stream'));}})));
    const response=await active.target.fetch!(`${LOCAL_ORIGIN}/p/${'a'.repeat(32)}/v1/responses`,{method:'POST'});const reader=response.body!.getReader();expect((await reader.read()).done).toBe(false);
+   const call=fixture.fetch.mock.calls.find(c=>String(c[0]).includes('/v1/responses'));const headers=new Headers(call![1].headers);expect(headers.get('x-collective-team-bot')).toBe('team');expect(headers.get('x-collective-team-mode')).toBe('member');
    await vi.advanceTimersByTimeAsync(15000);expect(fixture.fetch.mock.calls.some(c=>String(c[0]).endsWith('/team/renew-candidate'))).toBe(true);
    await db.update(schema.agentRuns).set({holder:'changed-worker'}).where(eq(schema.agentRuns.id,'parent'));
    await vi.advanceTimersByTimeAsync(15000);expect(fixture.control.mock.calls.some(c=>c[1]==='/team/retire-candidate')).toBe(true);

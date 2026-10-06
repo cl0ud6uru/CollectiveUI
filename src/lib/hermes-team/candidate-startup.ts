@@ -5,7 +5,7 @@ import { HttpError } from '@/lib/authz';
 import type { Principal } from '@/lib/auth/groups';
 import { dockerControl,dockerFetch } from '@/lib/docker-hermes/client';
 import { LOCAL_ORIGIN } from '@/lib/local-hermes/client';
-import { candidateRun,issueTeamCandidateContext,validateCandidateContext } from './candidate-context';
+import { candidateObjectHash,candidateRun,issueTeamCandidateContext,validateCandidateContext } from './candidate-context';
 import { TEAM_MODEL_PURPOSES,VERIFIED_TEAM_MODEL_ROUTES,type VerifiedTeamModelRoute } from './model-policy';
 import type { HermesTarget } from '@/lib/llm/providers/hermes/client';
 import { claimTeamNativeLearning,finishTeamNativeLearning,scheduleTeamNativeLearning } from './candidate-learning';
@@ -22,6 +22,11 @@ async function prepareCandidate(p:Principal,botId:string,runId:string,choice:'de
   const issued=await issueTeamCandidateContext(p,runId,choice,routes,worker);
   try{
     const grant=await dockerControl<{grantId:string}>(p.user.id,'/team/authorize',{teamBotId:botId,mode:current.chat.mode,modelPolicy:current.definition.modelPolicy.mode});
+    const validatePrepared=async()=>{const [stored]=await db.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,issued.contextId));if(!stored)throw new HttpError(403,'The prepared native context disappeared.');await validateCandidateContext(stored,routes,db,issued.runPurpose==='learning'?'learning':'reply');};
+    await validatePrepared();
+    const ensured=await dockerFetch(p.user.id)(`${LOCAL_ORIGIN}/team/ensure`,{method:'POST',headers:{'Content-Type':'application/json','x-collective-team-grant':grant.grantId},body:JSON.stringify({teamBotId:botId,mode:current.chat.mode,name:current.bot.name.slice(0,80)}),signal:AbortSignal.timeout(45000)});
+    if(!ensured.ok || candidateObjectHash(await ensured.json())!==candidateObjectHash(current.profile.binding))throw new HttpError(409,'Native restart must retain this exact Team binding.');
+    await validatePrepared();
     const base=`${origin.origin}/api/hermes-team/native/${issued.contextId}`;
     const binding=current.profile.binding as {bindingId?:string};
     const body={teamBotId:botId,mode:current.chat.mode,bindingId:binding.bindingId,runId,contextId:issued.contextId,expiresAt:issued.expiresAt,
