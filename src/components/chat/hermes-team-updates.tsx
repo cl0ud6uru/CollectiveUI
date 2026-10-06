@@ -73,7 +73,7 @@ export function HermesTeamMemberUpdates({ installedRevision, publishedRevision, 
     try { await action(); }
     catch (err) {
       setError(err instanceof Error ? err.message : "The update was not confirmed. Retry the same request.");
-      if (err instanceof Error && "status" in err && err.status === 409) { setStale(true); if (request?.kind === "resolve") setRestartNeeded(true); }
+      if (err instanceof Error && "status" in err && err.status === 409) { setStale(true); if (request?.kind === "resolve" && err.message === "Your skill changed. Review both versions again.") setRestartNeeded(true); }
       if (err instanceof Error && "status" in err && err.status === 403) { setReview(null); setOpen(false); }
     } finally { workingRef.current = false; setWorking(false); }
   }
