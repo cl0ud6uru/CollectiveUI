@@ -1,8 +1,15 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn(), ensure: vi.fn() }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn(), ensure: vi.fn(), pagePrincipal: vi.fn() }));
+vi.mock('@/lib/session', () => ({ requirePagePrincipal: fixture.pagePrincipal }));
+vi.mock('@/components/chat/start-side-chat', () => ({ StartSideChat: () => null }));
+vi.mock('@/components/page-frame', async () => {
+  const { createElement } = await import('react');
+  return { PageFrame: ({ children }: { children: import('react').ReactNode }) => createElement('main', null, children) };
+});
 vi.mock('@/lib/jobs', () => ({ scheduleMemoryExtraction: fixture.schedule, enqueue: fixture.enqueue, QUEUES: { learningReview: 'learning.review' } }));
 vi.mock('@/lib/llm', async original => ({ ...await original<typeof import('@/lib/llm')>(), utilityApp: fixture.utility }));
 vi.mock('@/lib/hermes-team/transport', () => ({ ensureTeamRuntime: fixture.ensure }));
@@ -22,6 +29,7 @@ import { loadGroupMembers } from '@/lib/agent/group';
 import { scheduleLearningReview, recoverLearningReviews, reviewNativeRun } from '@/lib/agent/learning/review';
 import { learnedSkillsForBot, learningViews } from '@/lib/agent/learning/store';
 import { ensureTeamPrivateInstance } from '@/lib/hermes-team/provisioning';
+import BotChatsPage from '@/app/(chat)/bots/[id]/chats/page';
 import { teamChatStatus } from '@/lib/hermes-team/conversations';
 import { resolveTargetOption } from '@/lib/chat/targets';
 import { openBotHome } from '@/lib/chat/home';
@@ -32,6 +40,7 @@ beforeAll(async () => {
     await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, 'utf8').replace('CREATE EXTENSION IF NOT EXISTS vector;', '').replace(/\bvector\b/g, 'real[]'));
 }, 45000);
 beforeEach(async () => {
+  fixture.pagePrincipal.mockReset();
   fixture.schedule.mockClear();
   fixture.enqueue.mockClear(); fixture.utility.mockReset();
   fixture.utility.mockImplementation(() => { throw new Error('Company utility access is forbidden in this Team fixture.'); });
@@ -112,6 +121,55 @@ describe('disabled Team Bot schema and fresh authorization', () => {
     await expect(authorizeTeamConversation(alice, working.conversationId)).rejects.toMatchObject({ status: 404 });
     await db.delete(schema.hermesTeamMaintainers).where(eq(schema.hermesTeamMaintainers.userId, 'admin'));
     await expect(getOwnedConversation(admin, working.conversationId)).rejects.toMatchObject({ status: 403 });
+  });
+  it('hides revoked non-owner maintainer Admin titles while retaining own member and ordinary personal history', async () => {
+    await db.update(schema.users).set({ isAdmin: true }).where(eq(schema.users.id, 'alice'));
+    alice = (await loadPrincipal('alice'))!;
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'personal_required' }, maintainerIds: ['admin', 'alice'], enabled: true, expectedVersion: 1 });
+    const working = await openTeamConversation(alice, 'team', 'admin');
+    const member = await openTeamConversation(alice, 'team', 'member');
+    await db.update(schema.conversations).set({ title: 'Restricted admin teaching title' }).where(eq(schema.conversations.id, working.conversationId));
+    await db.update(schema.conversations).set({ title: 'Retained private member title' }).where(eq(schema.conversations.id, member.conversationId));
+    await db.insert(schema.bots).values({ id: 'ordinary-personal', ownerId: 'alice', name: 'Personal', visibility: 'private', enabled: false });
+    await db.insert(schema.conversations).values({ id: 'ordinary-history', userId: 'alice', botId: 'ordinary-personal', title: 'Retained ordinary personal title', source: 'routine', archived: true });
+    fixture.pagePrincipal.mockResolvedValue(alice);
+    const renderHistory = async (id: string) => renderToStaticMarkup(await BotChatsPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve({}) }));
+    expect(await renderHistory('team')).toContain('Restricted admin teaching title');
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'personal_required' }, maintainerIds: ['admin'], enabled: true, expectedVersion: 2 });
+    expect((await loadPrincipal('alice'))!.isAdmin).toBe(true);
+    const history = await renderHistory('team');
+    expect(history).not.toContain('Restricted admin teaching title');
+    expect(history).not.toContain(`/c/${working.conversationId}`);
+    expect(history).toContain('Retained private member title');
+    expect(history).toContain(`/c/${member.conversationId}`);
+    const ordinaryHistory = await renderHistory('ordinary-personal');
+    expect(ordinaryHistory).toContain('Retained ordinary personal title');
+    expect(ordinaryHistory).toContain('Archived');
+    await expect(teamChatStatus(alice, 'team', working.conversationId)).rejects.toMatchObject({ status: 403 });
+    expect(await teamChatStatus(alice, 'team', member.conversationId)).toMatchObject({ mode: 'member', canMaintain: false });
+    expect(await teamChatStatus(alice, 'team')).toMatchObject({ mode: 'member', canMaintain: false });
+  });
+  it('uses the authorized Admin fallback profile outside the member audience without mixing saved contexts', async () => {
+    await db.update(schema.users).set({ isAdmin: true }).where(eq(schema.users.id, 'bob'));
+    bob = (await loadPrincipal('bob'))!;
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'personal_required' }, maintainerIds: ['admin', 'bob'], enabled: true, expectedVersion: 1 });
+    const member = await openTeamConversation(bob, 'team', 'member');
+    const [memberProfile] = await db.select().from(schema.hermesTeamProfiles).where(eq(schema.hermesTeamProfiles.userId, 'bob'));
+    await db.update(schema.hermesTeamProfiles).set({ state: 'needs_attention', installedRevision: 7 }).where(eq(schema.hermesTeamProfiles.id, memberProfile.id));
+    await db.delete(schema.botUserAccess).where(and(eq(schema.botUserAccess.botId, 'team'), eq(schema.botUserAccess.userId, 'bob')));
+    expect(await teamChatStatus(bob, 'team')).toMatchObject({ mode: 'admin', state: 'preparing', installedRevision: null });
+    const working = await openTeamConversation(bob, 'team', 'admin');
+    const [workingProfile] = await db.select().from(schema.hermesTeamProfiles).where(eq(schema.hermesTeamProfiles.mode, 'admin'));
+    await db.update(schema.hermesTeamProfiles).set({ state: 'connection_needed', installedRevision: 3 }).where(eq(schema.hermesTeamProfiles.id, workingProfile.id));
+    await db.update(schema.hermesTeamDefinitions).set({ publishedRevision: 9 }).where(eq(schema.hermesTeamDefinitions.botId, 'team'));
+    await db.insert(schema.hermesTeamResourceStates).values([
+      { profileId: workingProfile.id, packageId: 'skills/admin-a', conflictRevision: 9 },
+      { profileId: workingProfile.id, packageId: 'skills/admin-b', conflictRevision: 9 },
+      { profileId: memberProfile.id, packageId: 'skills/member-private', conflictRevision: 9 },
+    ]);
+    expect(await teamChatStatus(bob, 'team')).toMatchObject({ mode: 'admin', canMaintain: true, state: 'connection_needed', installedRevision: 3, publishedRevision: 9, conflictCount: 2 });
+    expect(await teamChatStatus(bob, 'team', working.conversationId)).toMatchObject({ mode: 'admin', installedRevision: 3, conflictCount: 2 });
+    await expect(teamChatStatus(bob, 'team', member.conversationId)).rejects.toMatchObject({ status: 403 });
   });
   it('never resolves the previous company app as a fallback for an unverified Team runtime', async () => {
     await db.insert(schema.aiApps).values({ id: 'old-app', name: 'Company', provider: 'openai', model: 'synthetic', isPublic: true });
