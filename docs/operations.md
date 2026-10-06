@@ -116,25 +116,63 @@ Nothing secret enters a workspace: no model keys, ChatGPT sign-ins or portal tok
 
 **Host setup (once):**
 
-1. Install gVisor and register it with Docker (recommended; without it, see below):
+1. Install gVisor and register it with Docker. Prefer the [official apt package](https://gvisor.dev/docs/user_guide/install/); for a manual installation, extract the **entire** verified release:
    ```bash
-   # https://gvisor.dev/docs/user_guide/install/ — the apt repository, or the release tarball:
-   ARCH=$(uname -m); URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
-   curl -fsSLO ${URL}/gvisor.tar.bz2 -fsSLO ${URL}/gvisor.tar.bz2.sha512 && sha512sum -c gvisor.tar.bz2.sha512
-   sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin runsc containerd-shim-runsc-v1
-   sudo runsc install && sudo systemctl restart docker     # adds "runsc" to /etc/docker/daemon.json
+   (
+     set -e
+     ARCH=$(uname -m)
+     URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
+     curl -fsSLO "${URL}/gvisor.tar.bz2" -fsSLO "${URL}/gvisor.tar.bz2.sha512"
+     sha512sum -c gvisor.tar.bz2.sha512
+     sudo tar -xjf gvisor.tar.bz2 -C /usr/local/bin
+     sudo /usr/local/bin/runsc install
+     sudo dockerd --validate --config-file=/etc/docker/daemon.json
+     sudo systemctl reload docker
+     docker info --format '{{json .Runtimes}}'
+     docker run --rm --runtime=runsc hello-world
+   )
    ```
+   The release includes `runsc`, its shim and `gvisor-bin/` sidecars. Keep the sidecars beside `runsc`; extracting only two binaries is incomplete. If `tar` lacks bzip2 support, use the official zstd archive with matching checksum and `tar --zstd`, or install an appropriate decompressor first.
+
+   Docker supports [runtime configuration reload](https://docs.docker.com/reference/cli/dockerd/#configuration-reload-behavior). If the systemd unit has no reload action, signal only its main daemon with `sudo systemctl kill -s HUP --kill-who=main docker.service`. Validate the actual configuration path and service flags on custom installations. Confirm `runsc` appears in the runtime list and the real container probe succeeds; a successful signal alone is insufficient. Record existing containers' `StartedAt` values before and after. If reload fails, diagnose it and arrange a maintenance window before restarting a shared Docker host.
+
    Keep the runtime's default flags: sandboxd won't use gVisor configured with `--overlay2=all:…` (workspace files would live in memory and be lost), and warns about network, ptrace or debug flags.
 2. Build the workspace image: `scripts/build-sandbox-image.sh` (tag `ai-portal-sandbox:p5`; set `BASE_IMAGE` to use a registry mirror with the same digest).
-3. Run `openssl rand -base64 32` and `getent group docker | cut -d: -f3` in your shell. Paste their outputs into `.env` as `SANDBOXD_SECRET` and `DOCKER_GID`; `.env` does not execute shell commands.
-4. Start with the add-on file: `docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build` (or set `COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml` in `.env`). sandboxd joins an internal network shared only with web and worker, and gets no `env_file`.
-5. **Admin → Workspaces**: check the health banner, turn workspaces on and choose who gets one. Then add the **Workspace** tools to a bot.
+3. Run `openssl rand -base64 32` and `getent group docker | cut -d: -f3` in your shell. Paste their outputs into `.env` as `SANDBOXD_SECRET` and `DOCKER_GID`; `.env` does not execute shell commands. Keep the secret in restricted operator files and share it only with web, worker and sandboxd.
+4. Review the merged configuration before starting the add-on:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml config --quiet
+   # Inspect the full merged config locally; it may include secrets, so don't paste it into chat or logs.
+   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
+   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml exec sandboxd node src/sandboxd/index.ts --check
+   ```
+   For custom production files, substitute their actual filenames and env-file/project options in every command. Compose [merges network mappings by name](https://docs.docker.com/reference/compose-file/merge/); the add-on does not generally replace existing network lists. Inspect the resulting web/worker networks and preserve their ingress and database connections. Only web, worker and sandboxd should join the internal `control` network. sandboxd should have no published port, app `env_file`, app secrets, database/upload mounts or public network. Docker socket access is **host-root-equivalent**, even with a non-root user, dropped capabilities and a read-only filesystem; protect the daemon and its control secret accordingly.
+5. **Admin → Workspaces** (`/admin/sandboxes`): check the health banner, turn workspaces on and choose who gets one. Selected access includes **all admins** as well as the selected users/groups. Then add the **Workspace** tools to an eligible native bot; external Hermes tools use a separate execution path.
 
-Workspace volumes have no size quota (Docker's local volume driver can't enforce one portably): a workspace can fill the disk that holds Docker's data root, so keep `/var/lib/docker` on its own filesystem. People see their workspace's size under **Settings → Workspace**, and admins can destroy any workspace.
+**Limits and rollout:**
+
+Workspace volumes have no size quota (Docker's local volume driver can't enforce one portably): a workspace can fill the disk that holds Docker's data root. Keep that data on its own filesystem where practical. Monitor free bytes **and inodes**, total workspace-volume growth, and per-user usage under **Settings → Workspace**. Set an operator alert threshold before enabling users (for example, warn at 75% filesystem use and suspend new workspace work at 85%, or earlier if the free-space reserve is insufficient). These are monitoring/runbook thresholds, not automatic enforcement. Start with trusted selected users and admins; expand only after capacity, storage growth and recovery are measured. Disabling workspaces prevents new tool access; stop running workspaces separately if needed. Reset/destroy removes files and requires deliberate user/admin action; keep backups when files matter.
+
+sandboxd refuses to start if Docker can't enforce memory, process or CPU limits (and warns if it can't limit swap). Its limits (`SANDBOXD_MEMORY_MB`, `SANDBOXD_CPUS`, `SANDBOXD_PIDS`, `SANDBOXD_MAX_RUNNING`, `SANDBOXD_MAX_EXECS`, `SANDBOXD_MAX_EXEC_SECONDS`, `SANDBOXD_IDLE_MINUTES`; see `src/sandboxd/config.ts`) are its own settings, so the portal can't raise them. Memory/CPU/PID limits and `MAX_EXECS` apply **per workspace**, not per host; budget aggregate usage for all admitted workspaces.
+
+Run **one sandboxd process per Docker daemon**. `MAX_RUNNING` serializes workspace admission across owners through count/eviction/create/start. Counts come from Docker on every admission, including after restart or failed operations. When full, it stops enough least-recently-used idle workspaces to admit the next one, or returns capacity if commands/file helpers are active. The ceiling covers workspace containers labeled with that daemon's `SANDBOXD_INSTANCE`; probes and unrelated containers are outside it. Multiple daemon processes do not share the admission lock, and differently labeled instances have separate limits: this is not a host-wide limit across independent managers. Do not scale sandboxd replicas against one Docker socket or rely on it to constrain external Docker operators.
+
+`node src/sandboxd/index.ts --check` runs startup checks and prints what it found. Backend file/command smoke tests do not establish that browser approval cards, delegated approvals, artifact links or model-driven chat work. Test those flows with the intended users before broad rollout; commands still require human approval.
+
+**Updating sandboxd:**
+
+A web/worker image update does not update a separately pinned daemon image. Whenever `src/sandboxd/` or the Dockerfile's `sandboxd` stage changes, rebuild and recreate the daemon with the actual deployment Compose files/options:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml build sandboxd
+# Wait for active workspace commands/file operations to finish before replacing the daemon.
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --no-deps --force-recreate sandboxd
+docker compose -f docker-compose.yml -f docker-compose.sandbox.yml exec sandboxd node src/sandboxd/index.ts --check
+```
+
+For externally built images, build `docker build --target sandboxd -t <new-daemon-tag> .`, update the deployment's sandboxd image tag, then recreate it. Confirm the running container's image ID matches the new build and that authenticated health works from web/worker. Restart recovery retains workspace volumes and counts existing containers; it cannot resume an in-memory command stream. Do not delete volumes to update code. Rebuild the workspace image separately when `docker/sandbox/` changes, then verify stop/start persistence and command timeout/isolation behavior.
 
 **Without gVisor** (e.g. Docker Desktop): set `SANDBOXD_RUNTIME=auto` (or `runc`) and, in **Admin → Workspaces**, allow standard isolation; that needs a typed confirmation, recorded with your name. Containers then share the host kernel, so a kernel bug could let a command escape. If you run this way on a shared host, consider Docker's [userns-remap](https://docs.docker.com/engine/security/userns-remap/), which maps container uids to unprivileged host uids (it applies to the whole daemon, and existing images and volumes have to be recreated). Rootless Docker also works, on cgroup v2 hosts with systemd, where it can still enforce limits.
-
-sandboxd refuses to start if Docker can't enforce memory, process or CPU limits (and warns if it can't limit swap). Its capacity limits (`SANDBOXD_MEMORY_MB`, `SANDBOXD_CPUS`, `SANDBOXD_PIDS`, `SANDBOXD_MAX_RUNNING`, `SANDBOXD_MAX_EXECS`, `SANDBOXD_MAX_EXEC_SECONDS`, `SANDBOXD_IDLE_MINUTES`; see `src/sandboxd/config.ts`) are its own settings, so the portal can't raise them. `node src/sandboxd/index.ts --check` runs the start-up checks and prints what it found.
 
 **Local development:** build the image, then run sandboxd from the repo with its own env file (it never reads `.env.local`):
 
