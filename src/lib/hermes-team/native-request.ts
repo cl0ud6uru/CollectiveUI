@@ -5,7 +5,7 @@ import { canonicalTeamToolInput } from './tool-policy';
 export type TeamNativeModelProtocol = 'chat_completions' | 'responses';
 export const CANDIDATE_MODEL_LIMITS = Object.freeze({ requests: 8, inputBytes:512000,outputTokens: 2048, perRequestOutput: 256, requestBytes: 64000, responseBytes: 2_000_000 });
 const fields = {
-  chat_completions: new Set(['model','messages','tools','tool_choice','stream','stream_options','temperature','top_p','max_tokens','max_completion_tokens','parallel_tool_calls','reasoning_effort','response_format','stop','n','presence_penalty','frequency_penalty','seed']),
+  chat_completions: new Set(['model','messages','tools','tool_choice','stream','stream_options','temperature','top_p','max_tokens','max_completion_tokens','parallel_tool_calls','reasoning_effort','reasoning','response_format','stop','n','presence_penalty','frequency_penalty','seed']),
   responses: new Set(['model','input','instructions','tools','tool_choice','stream','temperature','top_p','max_output_tokens','parallel_tool_calls','reasoning','text','include','truncation','store']),
 };
 
@@ -20,7 +20,10 @@ export function validateNativeModelRequest(raw: unknown, protocol: TeamNativeMod
   if (body.n !== undefined && body.n !== 1) throw new HttpError(400, 'Multiple model candidates are unsupported.');
   if (body.max_tokens !== undefined && body.max_completion_tokens !== undefined)
     throw new HttpError(409, 'Choose one fixed native output limit.');
-  if(body.reasoning!==undefined)z.object({effort:z.enum(['minimal','low','medium','high']).optional(),summary:z.enum(['auto','concise','detailed']).optional()}).strict().parse(body.reasoning);
+  if(body.reasoning!==undefined){
+    if(protocol==='chat_completions')z.object({enabled:z.literal(false)}).strict().parse(body.reasoning);
+    else z.object({effort:z.enum(['minimal','low','medium','high']).optional(),summary:z.enum(['auto','concise','detailed']).optional()}).strict().parse(body.reasoning);
+  }
   if (body.stream_options !== undefined) z.object({include_usage:z.boolean().optional()}).strict().parse(body.stream_options);
   if(body.tools!==undefined && (!Array.isArray(body.tools) || body.tools.some(tool=>!tool || typeof tool!=='object' || tool.type!=='function')))
     throw new HttpError(409,'Hosted provider tools are unsupported by the bounded native adapter.');
@@ -34,7 +37,11 @@ export function validateNativeModelRequest(raw: unknown, protocol: TeamNativeMod
   const requested = body[outputKey];
   if (requested !== undefined && (!Number.isSafeInteger(requested) || (requested as number) < 1 || (requested as number) > CANDIDATE_MODEL_LIMITS.perRequestOutput))
     throw new HttpError(409, 'This request exceeds the bounded Team model allowance.');
-  return { ...body, [outputKey]: requested ?? CANDIDATE_MODEL_LIMITS.perRequestOutput,
+  const supported={...body};
+  // The pinned auxiliary title task emits this exact disable hint through extra_body.
+  // It is an internal native setting, not a public Chat Completions parameter.
+  if(protocol==='chat_completions')delete supported.reasoning;
+  return { ...supported, [outputKey]: requested ?? CANDIDATE_MODEL_LIMITS.perRequestOutput,
     ...(protocol === 'chat_completions' && body.stream === true ? {stream_options:{include_usage:true}} : {}),
     ...(protocol === 'responses' ? { store: false } : {}) };
 }
