@@ -28,10 +28,13 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import { BotAvatar } from "@/components/bots/bot-avatar";
+import { useOptionalPets, usePetEnvironment } from "@/components/pets/pet-context";
 import { Button } from "@/components/ui/button";
 import { isGrantable, isHermesTool } from "@/lib/agent/tool-names";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
+import { Markdown } from "./markdown";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
@@ -101,25 +104,76 @@ function Json({ value }: { value: unknown }) {
   );
 }
 
-type DelegateOutput = { taskId?: string; conversationId?: string | null; bot: string; status: string; steps: { tool: string; status?: string }[]; answer?: string; error?: string };
+type DelegateOutput = {
+  taskId?: string; conversationId?: string | null; bot?: string; botId?: string; avatar?: string | null; label?: string | null;
+  status: string; steps?: { tool: string; status?: string }[]; answer?: string; error?: string; startedAt?: string; finishedAt?: string;
+};
 
-function DelegationTrace({ output }: { output: DelegateOutput }) {
+/** "replied in 4s", only from the receiver run's recorded times. */
+function repliedIn(output: DelegateOutput): string | null {
+  if (output.status !== "done" || !output.startedAt || !output.finishedAt) return null;
+  const ms = Date.parse(output.finishedAt) - Date.parse(output.startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const s = Math.max(1, Math.round(ms / 1000));
+  return `replied in ${s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`}`;
+}
+
+export function DelegationCard({ output }: { output: DelegateOutput }) {
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const pets = useOptionalPets();
+  const { visible } = usePetEnvironment();
   useEffect(() => { if (output.taskId) window.dispatchEvent(new Event("bot-work-changed")); }, [output.taskId, output.status]);
+  const botName = typeof output.bot === "string" ? output.bot.trim() : "";
+  const working = output.status === "working";
+  const still = output.botId ? pets?.pets[output.botId]?.motion === "still" : false;
+  const steps = output.steps ?? [];
+  const meta = [output.label, repliedIn(output)].filter(Boolean).join(" · ");
   return (
-    <div className="mt-2 space-y-1 border-l-2 border-border pl-3 text-xs text-muted">
-      {output.conversationId && output.taskId && <Link href={`/c/${encodeURIComponent(output.conversationId)}`} className="mb-2 block underline">Open {output.bot}’s task</Link>}
-      {(output.steps ?? []).map((s, i) => (
-        <div key={i} className="flex items-center gap-1.5">
-          {s.status === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : s.status === "error" || s.status === "denied" ? <X className="h-3 w-3 text-danger" /> : <Check className="h-3 w-3" />} {s.status === "running" ? describe(s.tool).running : s.status === "error" || s.status === "denied" ? `${s.tool}: ${s.status}` : describe(s.tool).done}
+    <div data-delegation-card={output.status} className="mt-2 flex flex-col gap-3 rounded-[14px] border border-border bg-surface/50 p-4">
+      <div className="flex items-center gap-3">
+        <span className={cn("inline-flex shrink-0", !working && visible && !still && "delegate-bob")}>
+          {output.botId ? (
+            <BotAvatar botId={output.botId} value={output.avatar} size={44} state={working ? "working" : "idle"} activity={working ? "working" : "decorative"} />
+          ) : (
+            <span aria-hidden="true" className="inline-flex h-11 w-11 items-center justify-center rounded-full bg-surface-2 text-base font-semibold text-muted">
+              {botName.charAt(0).toUpperCase() || "?"}
+            </span>
+          )}
+        </span>
+        <div className="flex min-w-0 grow flex-col gap-px">
+          <span className="truncate text-sm font-semibold text-fg">{botName || "Delegated task"}</span>
+          {meta && <span className="truncate text-xs text-muted">{meta}</span>}
         </div>
-      ))}
-      {output.status === "working" && (
-        <div className="flex items-center gap-1.5">
-          <Loader2 className="h-3 w-3 animate-spin" /> {output.bot} is working…
+        {output.conversationId && output.taskId && (
+          <Link href={`/c/${encodeURIComponent(output.conversationId)}`} className="shrink-0 rounded-lg border border-border px-3 py-2 text-[13px] leading-none text-fg hover:bg-hover">
+            Open task
+          </Link>
+        )}
+      </div>
+      {output.status === "done" && output.answer && <Markdown text={output.answer} className="markdown-bubble text-fg" />}
+      {working && (
+        <div className="flex items-center gap-2 text-muted">
+          <Loader2 className="h-4 w-4 animate-spin" /> {botName || "The delegate"} is working…
         </div>
       )}
-      {output.status === "queued" && <div>Scheduled independently. This reply will continue when the task returns.</div>}
+      {output.status === "queued" && <div className="text-muted">Scheduled independently. This reply will continue when the task returns.</div>}
       {output.error && <div className="text-danger">{output.error}</div>}
+      {steps.length > 0 && (
+        <div className="text-xs text-muted">
+          <button type="button" aria-expanded={stepsOpen} onClick={() => setStepsOpen((o) => !o)} className="flex items-center gap-1 hover:text-fg">
+            {stepsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} {steps.length} {steps.length === 1 ? "step" : "steps"}
+          </button>
+          {stepsOpen && (
+            <div className="mt-2 space-y-1">
+              {steps.map((s, i) => (
+                <div key={i} className="flex items-center gap-1.5">
+                  {s.status === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : s.status === "error" || s.status === "denied" ? <X className="h-3 w-3 text-danger" /> : <Check className="h-3 w-3" />} {s.status === "running" ? describe(s.tool).running : s.status === "error" || s.status === "denied" ? `${s.tool}: ${s.status}` : describe(s.tool).done}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -265,7 +319,7 @@ export function ToolPartView({
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
-      {isDelegate && !!output && typeof output === "object" && <DelegationTrace output={output as DelegateOutput} />}
+      {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
       {artifact && <a href={artifact.downloadUrl} download className="mt-2 inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>}
       {open && (
         <div className="mt-2 space-y-2">

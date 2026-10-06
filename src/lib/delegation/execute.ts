@@ -1,7 +1,7 @@
 import { getToolOrDynamicToolName, isToolUIPart, readUIMessageStream } from "ai";
 import { and, eq } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
-import { agentRuns, conversations, messages } from "@/db/schema";
+import { agentRuns, bots, conversations, messages } from "@/db/schema";
 import { runTurn } from "@/lib/agent/run";
 import { afterAssistantSaved, saveAssistantMessage, type PersistTurnInput } from "@/lib/agent/persist";
 import { resolveTurnTarget } from "@/lib/agent/target";
@@ -125,10 +125,16 @@ function stepsOf(message: PortalUIMessage): DelegationResult["steps"] {
     status: p.state === "output-denied" ? "denied" : p.state === "output-error" || ("output" in p && p.output && typeof p.output === "object" && "status" in p.output && ["error", "cancelled", "interrupted"].includes(String(p.output.status))) ? "error" : p.state === "output-available" && !("preliminary" in p && p.preliminary) ? "done" : "running" }));
 }
 
+/** Who the task went to, for the chat card. The bot row may since be gone; its id and name are kept on the task. */
+export async function resultHead(task: DelegatedTask, q: DbOrTx = db) {
+  const [bot] = await q.select({ avatar: bots.avatar, label: bots.label }).from(bots).where(eq(bots.id, task.receiverBotId));
+  return { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, botId: task.receiverBotId, avatar: bot?.avatar ?? null, label: bot?.label ?? null };
+}
+
 /** The persisted final step is the parent's result; intermediate reasoning/tool results stay in the task. */
 export async function taskResult(task: DelegatedTask, q: DbOrTx = db): Promise<DelegationResult> {
   const run = task.childRunId ? await getRun(task.childRunId, q) : null;
-  const base: DelegationResult = { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, status: "error", steps: [] };
+  const base: DelegationResult = { ...await resultHead(task, q), status: "error", steps: [] };
   if (!run || run.userId !== task.userId || run.conversationId !== task.childConversationId || run.botId !== task.receiverBotId) return { ...base, error: "The task was removed." };
   if (run.status === "queued") return { ...base, status: "queued" };
   if (run.status === "running" || run.status === "waiting_tasks") return { ...base, status: "working" };
@@ -138,7 +144,8 @@ export async function taskResult(task: DelegatedTask, q: DbOrTx = db): Promise<D
   if (run.status !== "succeeded") return { ...base, status: run.status === "cancelled" || run.status === "interrupted" ? run.status : "error", error: run.error ?? "The delegated task did not finish." };
   const parts = message?.parts ?? [];
   const lastStep = parts.findLastIndex(p => p.type === "step-start");
-  return { ...base, status: "done", answer: parts.slice(Math.max(0, lastStep)).map(p => p.type === "text" ? p.text : "").join("").trim() };
+  const timing = run.startedAt && run.finishedAt ? { startedAt: run.startedAt.toISOString(), finishedAt: run.finishedAt.toISOString() } : {};
+  return { ...base, ...timing, status: "done", answer: parts.slice(Math.max(0, lastStep)).map(p => p.type === "text" ? p.text : "").join("").trim() };
 }
 
 export async function* runDelegation(ctx: AgentCtx, receiverId: string, prompt: string, toolCallId: string, signal?: AbortSignal, authorizationMode: "manual" | "coordinator" = "manual"): AsyncGenerator<DelegationResult> {
@@ -151,14 +158,15 @@ export async function* runDelegation(ctx: AgentCtx, receiverId: string, prompt: 
   });
   // Always observe the committed child. Repeated invocations attach, never execute another child.
   const run = await getRun(task.childRunId!);
+  const head = await resultHead(task);
   let lastSteps = "";
   if (run?.status === "running") {
-    yield { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, status: "working", steps: [] };
+    yield { ...head, status: "working", steps: [] };
     try {
       const stream = tailRun(run.id, { afterSeq: 0, targetSegment: 0, replay: true, authorize: async () => { signal?.throwIfAborted(); streamStop.signal.throwIfAborted(); await assertTaskExecution(task); } });
       for await (const message of readUIMessageStream<PortalUIMessage>({ stream, terminateOnError: false })) {
         const steps = stepsOf(message), key = JSON.stringify(steps);
-        if (key !== lastSteps) { lastSteps = key; yield { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, status: "working", steps }; }
+        if (key !== lastSteps) { lastSteps = key; yield { ...head, status: "working", steps }; }
       }
     } catch { /* The authoritative result below explains cancellation/failure. */ }
   }
@@ -169,6 +177,6 @@ export async function* runDelegation(ctx: AgentCtx, receiverId: string, prompt: 
     await assertTaskExecution(task);
     yield await taskResult(task);
   } catch (err) {
-    yield { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, status: "error", steps: [], error: safeError(err) };
+    yield { ...head, status: "error", steps: [], error: safeError(err) };
   }
 }
