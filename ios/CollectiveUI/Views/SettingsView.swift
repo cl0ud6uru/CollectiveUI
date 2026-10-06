@@ -22,6 +22,15 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section("Live Activities") {
+                    Toggle("Show bot status", isOn: Binding(get: { model.liveActivities.enabled }, set: { value in
+                        Task { await model.liveActivities.setEnabled(value) }
+                    }))
+                    Text("Shows your selected pet and a generic task status on the Lock Screen and Dynamic Island. Task text stays private. Tap to open its chat.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text(model.liveActivities.availability).font(.footnote).foregroundStyle(.secondary)
+                }
+
                 Section("Account") {
                     LabeledContent("Name", value: user?.name ?? "—")
                     LabeledContent("Email", value: user?.email ?? "—")

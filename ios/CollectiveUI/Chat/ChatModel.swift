@@ -485,6 +485,7 @@ final class ChatModel {
     ) {
         streamTask?.cancel()
         isStreaming = true
+        app.liveActivities.observe(conversationId: conversationId, replace: true)
         streamingMessageId = existingMessageId
         streamTask = Task { [weak self] in
             var reducer = initialReducer
@@ -526,7 +527,9 @@ final class ChatModel {
                 app.showBanner(notice)
             case .error(let errorText):
                 inlineError = errorText
-            case .started, .data, .finished, .aborted:
+            case .started:
+                app.liveActivities.observe(conversationId: conversationId, replace: true)
+            case .data, .finished, .aborted:
                 break
             }
         }

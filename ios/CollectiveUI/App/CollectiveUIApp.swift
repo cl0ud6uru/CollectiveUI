@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 struct CollectiveUIApp: App {
     @AppStorage("appearance") private var appearance: AppAppearance = .system
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: AppModel
 
     init() {
@@ -19,6 +20,8 @@ struct CollectiveUIApp: App {
         WindowGroup {
             RootView()
                 .environment(model)
+                .onOpenURL { url in Task { await model.liveActivities.open(url) } }
+                .onChange(of: scenePhase) { _, phase in model.liveActivities.foreground(phase == .active) }
                 .preferredColorScheme(appearance.colorScheme)
                 .background(PortalTheme.background.ignoresSafeArea())
                 .tint(PortalTheme.ink)

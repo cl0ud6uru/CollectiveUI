@@ -1,15 +1,15 @@
 import { eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type DbOrTx } from "@/db";
 import { localCredentials, users } from "@/db/schema";
 import { providerEnabled } from "./config";
-export async function sessionState(id: string, version: unknown, provider?: unknown) {
-  const [user] = await db.select().from(users).where(eq(users.id, id));
+export async function sessionState(id: string, version: unknown, provider?: unknown, q: DbOrTx = db) {
+  const [user] = await q.select().from(users).where(eq(users.id, id));
   if (!user || user.disabled || user.sessionVersion !== (version ?? 0)) return null;
   // Existing pre-migration directory tokens have no provider/version. Preserve them until their original expiry.
   const source = typeof provider === "string" ? provider : user.authSource === "entra" ? "microsoft-entra-id" : user.authSource;
   if (!providerEnabled(source) || (source === "local") !== (user.identityRealm === "local")) return null;
   if (source !== "local") return { mustChangePassword: false };
-  const [credential] = await db.select({ mustChangePassword: localCredentials.mustChangePassword, temporaryExpiresAt: localCredentials.temporaryExpiresAt }).from(localCredentials).where(eq(localCredentials.userId, id));
+  const [credential] = await q.select({ mustChangePassword: localCredentials.mustChangePassword, temporaryExpiresAt: localCredentials.temporaryExpiresAt }).from(localCredentials).where(eq(localCredentials.userId, id));
   if (!credential || (credential.temporaryExpiresAt && credential.temporaryExpiresAt <= new Date())) return null;
   return { mustChangePassword: credential.mustChangePassword };
 }
