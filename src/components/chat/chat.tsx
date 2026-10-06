@@ -1,4 +1,5 @@
 "use client";
+import { HermesNativeControls } from "./hermes-native-controls";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -626,6 +627,8 @@ export function Chat({
           approval={messages.at(-1)?.role === "assistant" && messages.at(-1)!.parts.some((p) => isToolUIPart(p) && p.state === "approval-requested") || false}
           failed={!!error || (messages.at(-1)?.role === "assistant" && messages.at(-1)!.parts.some((p) => p.type === "data-run-error" || p.type === "data-bot-error")) || false}
         />}
+
+        {started && hermes && target?.kind === "bot" && !embedded && <HermesNativeControls key={conversationId} conversationId={conversationId} />}
 
         {empty ? (
           <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-6 pb-[12vh]">

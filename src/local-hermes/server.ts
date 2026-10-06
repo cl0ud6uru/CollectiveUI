@@ -4,11 +4,11 @@ import path from "node:path";
 import { ZodError } from "zod";
 import { LocalController, LocalError } from "./controller";
 
-export async function body(req: IncomingMessage) {
+export async function body(req: IncomingMessage, maxBytes = 256 * 1024) {
   let size = 0; const chunks: Buffer[] = [];
   for await (const part of req) {
     const chunk = Buffer.from(part); size += chunk.length;
-    if (size > 256 * 1024) throw new LocalError(413, "Local request is too large");
+    if (size > maxBytes) throw new LocalError(413, "Local request is too large");
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString() || "{}"); }
@@ -64,16 +64,21 @@ export async function serveNative(controller: LocalController, bindingId: string
       controller.assertBinding(bindingId);
 
       if (req.method === "GET" && route === "/v1/capabilities") {
-        json(res, 200, { features: { run_submission: true, run_events_sse: true, run_stop: true, run_approval_response: true, approval_events: true } }); return;
+        json(res, 200, { features: { run_submission: true, run_events_sse: true, run_stop: true, run_approval_response: true, approval_events: true, native_attachments: true, native_run_view: true, native_run_controls: true } }); return;
       }
       // The first pilot does not proxy arbitrary native management/commands, profile config or model discovery.
       if (req.method === "POST" && route === "/v1/runs") {
-        const runId = controller.begin(bindingId, await body(req), String(req.headers["idempotency-key"] ?? ""));
+        const runId = controller.begin(bindingId, await body(req, 24 * 1024 * 1024), String(req.headers["idempotency-key"] ?? ""));
         json(res, 202, { run_id: runId }); return;
       }
-      const runMatch = /^\/v1\/runs\/(run_[A-Za-z0-9]+)(?:\/(events|approval|stop))?$/.exec(route);
+      const runMatch = /^\/v1\/runs\/(run_[A-Za-z0-9]+)(?:\/(events|approval|stop|native))?$/.exec(route);
       if (!runMatch) throw new LocalError(404, "This capability is not supported by the Local Hermes pilot");
       const [, runId, operation] = runMatch;
+      if (operation === "native") {
+        if (req.method === "GET") { json(res, 200, await controller.nativeView(runId)); return; }
+        if (req.method === "POST") { json(res, 200, await controller.nativeControl(runId, await body(req))); return; }
+        throw new LocalError(405, "Method not allowed");
+      }
       if (req.method === "POST" && operation === "approval") { controller.approve(runId, await body(req)); json(res, 200, { status: "resolved" }); return; }
       if (req.method === "POST" && operation === "stop") { await controller.cancel(runId); json(res, 200, { status: "requested" }); return; }
       if (req.method !== "GET") throw new LocalError(405, "Method not allowed");

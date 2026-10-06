@@ -10,6 +10,7 @@ import type { Discovery, HermesSkill, HermesToolset } from "@/lib/chat/hermes-co
 import { isPrivateAddress } from "@/lib/agent/tools/web";
 import { HttpError } from "@/lib/authz";
 import { isBlockedAddress } from "@/lib/mcp/url";
+import { nativeAttachments, type NativeAttachment, type ManagedRunView } from "@/local-hermes/interactions";
 import { parseSse } from "./sse";
 
 export type HermesTarget = {
@@ -118,6 +119,7 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export type StartRun = {
+  attachments?: NativeAttachment[];
   input: string;
   sessionId: string | null;
   instructions?: string;
@@ -134,6 +136,10 @@ export async function startRun(t: HermesTarget, r: StartRun): Promise<string> {
   if (r.sessionId) body.session_id = r.sessionId;
   if (r.instructions) body.instructions = r.instructions;
   if (r.model) body.model = r.model;
+  if (r.attachments?.length) {
+    if (!t.local) throw new HermesError("rejected", 400, "Native file transport is unavailable on this Hermes connection.");
+    body.attachments = nativeAttachments.parse(r.attachments);
+  }
   const res = await call(t, "/v1/runs", {
     method: "POST",
     body: JSON.stringify(body),
@@ -301,4 +307,14 @@ export async function checkHermesUrl(raw: string, lookup: Lookup = defaultLookup
     return "Use https for a Hermes server outside your network (its key would travel in cleartext)";
   }
   return null;
+}
+
+/** Private controller operations only; callers resolve the owned provider run from durable portal records. */
+export async function managedRunView(t: HermesTarget, runId: string): Promise<ManagedRunView> {
+  if (!t.local || !/^run_[a-f0-9]{32}$/.test(runId)) throw new HermesError('rejected', 400, 'Native run inspection is unavailable.');
+  return json<ManagedRunView>(await call(t, `/v1/runs/${runId}/native`));
+}
+export async function controlManagedRun(t: HermesTarget, runId: string, input: unknown) {
+  if (!t.local || !/^run_[a-f0-9]{32}$/.test(runId)) throw new HermesError('rejected', 400, 'Native controls are unavailable.');
+  return json(await call(t, `/v1/runs/${runId}/native`, { method: 'POST', body: JSON.stringify(input) }));
 }

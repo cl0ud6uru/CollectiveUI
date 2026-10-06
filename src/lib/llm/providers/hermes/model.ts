@@ -7,6 +7,7 @@
  * (`tool-approval-response`), which posts it to Hermes and continues the same run: on the stream this process held
  * (runs.ts), else from the resume state saved with the pause. Turns that can't pause (delegates, group chats) deny.
  */
+import { nativeAttachments, type NativeAttachment } from "@/local-hermes/interactions";
 import { randomUUID } from "node:crypto";
 import type {
   LanguageModelV4,
@@ -68,6 +69,33 @@ export function lastUserInput(prompt: LanguageModelV4Prompt): string {
     return files ? `${text}\n\n[${files} attachment${files > 1 ? "s" : ""} not passed on: this Hermes bot takes text only]`.trim() : text;
   }
   return "";
+}
+
+export function newestNativeText(prompt: LanguageModelV4Prompt): string {
+  const message = [...prompt].reverse().find(m => m.role === 'user');
+  return message?.role === 'user' ? message.content.filter(p => p.type === 'text').map(p => p.type === 'text' ? p.text : '').join('\n').trim() : '';
+}
+/** Resolved inline bytes only. Never fetch a browser URL, provider URL, or local path. */
+export function newestNativeAttachments(prompt: LanguageModelV4Prompt): NativeAttachment[] {
+  const message = [...prompt].reverse().find(m => m.role === 'user');
+  if (message?.role !== 'user') return [];
+  return nativeAttachments.parse(message.content.filter(p => p.type === 'file').map(p => {
+    if (p.type !== 'file') throw new HermesError('rejected', 400, 'Invalid attachment');
+    let bytes: Buffer;
+    const tagged = p.data;
+    if (tagged.type === 'text') bytes = Buffer.from(tagged.text, 'utf8');
+    else if (tagged.type === 'data' || (tagged.type === 'url' && tagged.url.protocol === 'data:')) {
+      const encoded = tagged.type === 'url' ? tagged.url.href : tagged.data;
+      if (encoded instanceof Uint8Array) bytes = Buffer.from(encoded);
+      else {
+        if (encoded.startsWith('data:') && !encoded.startsWith(`data:${p.mediaType};base64,`)) throw new HermesError('rejected', 400, 'Attachment media type does not match its inline bytes.');
+        const data = encoded.startsWith('data:') ? encoded.slice(encoded.indexOf(',') + 1) : encoded;
+        if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)) throw new HermesError('rejected', 400, 'Attachment bytes must be resolved before sending to Hermes.');
+        bytes = Buffer.from(data, 'base64');
+      }
+    } else throw new HermesError('rejected', 400, 'Hermes cannot fetch attachment URLs or provider references.');
+    return { name: p.filename || 'attachment', mediaType: p.mediaType, contentBase64: bytes.toString('base64') };
+  }));
 }
 
 export const systemText = (prompt: LanguageModelV4Prompt) =>
@@ -200,8 +228,6 @@ export class HermesLanguageModel implements LanguageModelV4 {
   /** A new turn: stop runs of this conversation still waiting on an unanswered approval, then start one. */
   private async begin(prompt: LanguageModelV4Prompt) {
     const { target, sessionId, sessionKey } = this.ctx;
-    if (target.local && prompt.some(m => m.role === "user" && m.content.some(p => p.type === "file")))
-      throw new HermesError("rejected", 400, "Local Hermes currently accepts text only. Start a text chat without file attachments.");
     if (sessionId) {
       for (const stale of parkedForSession(sessionId)) {
         unpark(stale.runId);
@@ -209,10 +235,12 @@ export class HermesLanguageModel implements LanguageModelV4 {
         void stopRun(stale.target, stale.runId).catch(() => {});
       }
     }
-    const input = lastUserInput(prompt);
-    if (!input) throw new HermesError("rejected", 400, "There's no message to send.");
+    const attachments = target.local ? newestNativeAttachments(prompt) : [];
+    const input = target.local ? newestNativeText(prompt) : lastUserInput(prompt);
+    if (!input && !attachments.length) throw new HermesError("rejected", 400, "There's no message to send.");
     const runId = await startRun(target, {
       input,
+      attachments,
       sessionId,
       instructions: target.local ? undefined : systemText(prompt) || undefined,
       idempotencyKey: target.local && this.ctx.run ? `portal-${this.ctx.run.id}` : `portal-${randomUUID()}`,
