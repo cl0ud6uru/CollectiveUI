@@ -40,6 +40,8 @@ These are captures of the running app with synthetic demo data and the included 
 
 Want more detail? The [user guide](docs/user-guide.md) covers chat controls, bot memory, routines, sharing, approvals and branding.
 
+**Talk by voice.** Direct chats using an OpenAI API connection have a headphones control for spoken conversations with `gpt-live-1`. Voice transcripts are temporary. [Setup and limitations](docs/voice.md).
+
 <a id="models-agent-backends-and-bots"></a>
 
 ## Choose the engine behind each bot

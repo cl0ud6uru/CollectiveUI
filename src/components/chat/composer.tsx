@@ -9,6 +9,8 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/component
 import { cn } from "@/lib/utils";
 import { HERMES_COMMANDS } from "@/lib/chat/hermes-commands";
 import { insertCommandIntoDraft, type ComposerCommand } from "@/lib/chat/composer-commands";
+import { VoiceControl } from "./voice-control";
+import type { VoiceTarget } from "@/lib/voice/client";
 
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
@@ -50,8 +52,9 @@ export const Composer = forwardRef<
     autoFocus?: boolean;
     /** Send button colour (a bot chat uses the bot's colour, like ChatGPT dots). */
     tint?: { bg: string; fg: string };
+    voiceTarget?: VoiceTarget;
   }
->(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint }, ref) {
+>(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint, voiceTarget }, ref) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -105,8 +108,10 @@ export const Composer = forwardRef<
   // Dictation (Web Speech API, where the browser supports it).
   const canDictate = useSyncExternalStore(noopSubscribe, () => !!speechCtor(), () => false);
   const [listening, setListening] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const toggleDictation = useCallback(() => {
+    if (voiceActive) return;
     if (recRef.current) {
       recRef.current.stop();
       return;
@@ -129,7 +134,7 @@ export const Composer = forwardRef<
     recRef.current = rec;
     rec.start();
     setListening(true);
-  }, []);
+  }, [voiceActive]);
 
   const uploading = files.some((f) => !f.uploaded && !f.error);
   const hasContent = text.trim().length > 0 || files.some((f) => f.uploaded);
@@ -404,13 +409,15 @@ export const Composer = forwardRef<
               <Tip label={listening ? "Stop dictation" : "Dictate (Ctrl/⌘ D)"}>
                 <button
                   onClick={toggleDictation}
-                  className={cn("flex h-9 w-9 items-center justify-center rounded-full hover:bg-hover", listening && "animate-pulse bg-danger/15 text-danger")}
+                  disabled={voiceActive}
+                  className={cn("flex h-9 w-9 items-center justify-center rounded-full hover:bg-hover disabled:opacity-40", listening && "animate-pulse bg-danger/15 text-danger")}
                   aria-label={listening ? "Stop dictation" : "Start voice input"}
                 >
                   <Mic className="h-5 w-5" />
                 </button>
               </Tip>
             )}
+            {voiceTarget && !listening && <VoiceControl key={`${voiceTarget.appId ?? ""}:${voiceTarget.botId ?? ""}:${voiceTarget.conversationId ?? ""}`} target={voiceTarget} disabled={disabled} onActiveChange={setVoiceActive} />}
             {busy && !hasContent ? (
               <button onClick={onStop} className="flex h-9 w-9 items-center justify-center rounded-full bg-fg text-bg" aria-label="Stop generating">
                 <Square className="h-3.5 w-3.5 fill-current" />

@@ -172,6 +172,8 @@ export function Chat({
   } : undefined;
   const commandResult = commandOutput?.scope === commandScope ? commandOutput.result : null;
   const composerCommandList = target ? composerCommands({ kind: target.kind, hermes, embedded, skills }) : undefined;
+  const voiceTarget = target?.kind === "app" ? { appId: target.id, ...(started ? { conversationId } : {}) }
+    : target?.kind === "bot" ? { botId: target.id, ...(started ? { conversationId } : {}) } : undefined;
 
   // Messages from other branches (edits / regenerations). useChat only holds the visible path; the
   // full tree is derived from both, so nothing is lost when the visible path changes.
@@ -666,6 +668,7 @@ export function Chat({
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
+                voiceTarget={voiceTarget}
                 busy={busy}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}
@@ -774,6 +777,7 @@ export function Chat({
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
+                voiceTarget={voiceTarget}
                 busy={busy}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}
