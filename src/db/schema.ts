@@ -1064,6 +1064,24 @@ export const mcpServers = pgTable(
   ],
 );
 
+/** A person's account for a fixed admin-reviewed MCP endpoint. Never a shared server credential. */
+export const mcpMemberConnections = pgTable("mcp_member_connections", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  serverId: text("server_id").notNull().references(() => mcpServers.id, { onDelete: "cascade" }),
+  /** Row, owner and endpoint-bound encrypted personal headers; no OAuth refresh is implied. */
+  headersEnc: text("headers_enc").notNull(),
+  status: text("status").$type<"active" | "revoked">().notNull().default("active"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revision: integer("revision").notNull().default(1),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, t => [
+  uniqueIndex("mcp_member_connections_owner_server_idx").on(t.userId, t.serverId),
+  check("mcp_member_connections_status_check", sql`${t.status} in ('active', 'revoked')`),
+  check("mcp_member_connections_revision_check", sql`${t.revision} > 0`),
+]);
+
 /**
  * Each person's workspace sandbox (P5). The container itself lives in Docker (sandboxd is the source of truth for
  * its state); this row maps the person to an unguessable ref and tracks retention. No credential columns.
