@@ -18,6 +18,10 @@ export function validateNativeModelRequest(raw: unknown, protocol: TeamNativeMod
   if (protocol === 'chat_completions' && (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > 256)) throw new HttpError(400, 'Invalid native message request.');
   if (protocol === 'responses' && !(typeof body.input === 'string' || Array.isArray(body.input))) throw new HttpError(400, 'Invalid native Responses input.');
   if (body.n !== undefined && body.n !== 1) throw new HttpError(400, 'Multiple model candidates are unsupported.');
+  if (body.max_tokens !== undefined && body.max_completion_tokens !== undefined)
+    throw new HttpError(409, 'Choose one fixed native output limit.');
+  if(body.reasoning!==undefined)z.object({effort:z.enum(['minimal','low','medium','high']).optional(),summary:z.enum(['auto','concise','detailed']).optional()}).strict().parse(body.reasoning);
+  if (body.stream_options !== undefined) z.object({include_usage:z.boolean().optional()}).strict().parse(body.stream_options);
   if(body.tools!==undefined && (!Array.isArray(body.tools) || body.tools.some(tool=>!tool || typeof tool!=='object' || tool.type!=='function')))
     throw new HttpError(409,'Hosted provider tools are unsupported by the bounded native adapter.');
   const textContent=(content:unknown)=>content===null || typeof content==='string' || (Array.isArray(content) && content.every(part=>part && typeof part==='object'
@@ -30,7 +34,9 @@ export function validateNativeModelRequest(raw: unknown, protocol: TeamNativeMod
   const requested = body[outputKey];
   if (requested !== undefined && (!Number.isSafeInteger(requested) || (requested as number) < 1 || (requested as number) > CANDIDATE_MODEL_LIMITS.perRequestOutput))
     throw new HttpError(409, 'This request exceeds the bounded Team model allowance.');
-  return { ...body, [outputKey]: requested ?? CANDIDATE_MODEL_LIMITS.perRequestOutput, ...(protocol === 'responses' ? { store: false } : {}) };
+  return { ...body, [outputKey]: requested ?? CANDIDATE_MODEL_LIMITS.perRequestOutput,
+    ...(protocol === 'chat_completions' && body.stream === true ? {stream_options:{include_usage:true}} : {}),
+    ...(protocol === 'responses' ? { store: false } : {}) };
 }
 
 export async function readCandidateJson(request: Request) {

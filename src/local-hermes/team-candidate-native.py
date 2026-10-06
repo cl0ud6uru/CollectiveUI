@@ -98,7 +98,8 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
                 raise RuntimeError("Unsupported positional native Team construction")
             self._collective_team_purpose = purpose_context.get()
             kwargs.update(runtime(self._collective_team_purpose))
-            kwargs.update(fallback_model=[], max_tokens=256, request_overrides={})
+            kwargs.update(fallback_model=[], max_tokens=256, request_overrides={},
+                          enabled_toolsets=["memory", "skills", "delegation", "mcp-collective_team"], disabled_toolsets=None)
             # Failure escapes construction. No standard agent or credential-pool fallback is attempted.
             super().__init__(**kwargs)
 

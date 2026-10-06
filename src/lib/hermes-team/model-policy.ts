@@ -20,6 +20,7 @@ const integrationSchema = z.enum(["admin_inference_gateway", "hermes_native_code
 const routeSchema = z.object({
   id: identifier, adapterId: identifier, integration: integrationSchema, model: identifier,
   billing: z.enum(["admin", "personal"]), credentialHandling: z.literal("server_gateway"),
+  transportHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),
   evidence: z.object({
     id: identifier, hermesRevision: z.string().regex(/^[a-f0-9]{40}$/), adapterId: identifier,
     integration: integrationSchema, model: identifier, purposes: z.array(z.enum(TEAM_MODEL_PURPOSES)),
@@ -32,6 +33,8 @@ export type VerifiedTeamModelRoute = {
   integration: TeamModelIntegration;
   model: string;
   billing: TeamModelBilling;
+  /** Candidate proof pins server routing/credential revision without storing decrypted secrets. */
+  transportHash?: string;
   /** The gateway holds credentials; this contract never accepts a token, key, endpoint or profile path. */
   credentialHandling: "server_gateway";
   evidence: {

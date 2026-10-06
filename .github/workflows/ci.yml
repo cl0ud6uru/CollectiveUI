@@ -46,6 +46,7 @@ jobs:
           node tests/browser/hermes-team-builder.mjs
           node tests/browser/hermes-team-controls.mjs
           node tests/browser/hermes-team-chat-controls.mjs
+          node tests/browser/hermes-team-candidate-approvals.mjs
           node tests/browser/hermes-team-publication.mjs
           node tests/browser/hermes-team-updates.mjs
           node tests/browser/hermes-team-restore.mjs

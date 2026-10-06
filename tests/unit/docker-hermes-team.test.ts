@@ -9,7 +9,7 @@ import { createTeamResourceSnapshot, resourceSha256, type TeamResource } from '@
 import { beginResourceUpdate, planTeamResourceUpdate } from '@/lib/hermes-team/updates';
 import { DockerBroker } from '@/docker-hermes/broker';
 import { BrokerConfig, runtimeKey, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver, type Profile } from '@/docker-hermes/docker';
-import { bindingSchema, type TeamMode, type TeamModelPolicy } from '@/docker-hermes/types';
+import { bindingSchema, type TeamMode, type TeamModelPolicy, type TeamCandidateConfig } from '@/docker-hermes/types';
 import { listenBroker } from '@/docker-hermes/main';
 import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
 import { stopOwnedGroup } from '@/local-hermes/process-group';
@@ -23,7 +23,7 @@ const until = async (fn: () => Promise<boolean>) => {
 class TeamFixtureDriver implements RuntimeDriver {
   active = new Set<string>(); profilesByOwner = new Map<string, Profile[]>();
   children = new Map<string, Set<ChildProcessWithoutNullStreams>>();
-  createCount = 0; launches = 0; stopFailure = false;
+  createCount = 0; launches = 0; stopFailure = false; candidates:TeamCandidateConfig[]=[];
   constructor(readonly root: string) {}
   async ensure(owner: string, stage: Parameters<RuntimeDriver['ensure']>[1]) {
     stage('checking_image');
@@ -51,6 +51,7 @@ class TeamFixtureDriver implements RuntimeDriver {
   }
   createTeam(owner: string, name: string) { return this.create(owner, name); }
   async resources() { return { skills: [], memories: [] }; }
+  candidateTransport(owner:string,profile:string,_identity:string,config:TeamCandidateConfig){this.candidates.push(config);return this.transport(owner,profile);}
   transport(owner: string, profile: string) {
     return { spawn: () => {
       this.launches++;
@@ -78,6 +79,20 @@ const ensure = (actor: string, bot = 'shared-bot', mode: TeamMode = 'member') =>
 };
 
 describe('disabled Team Bot broker foundations', () => {
+  it('prepares the concrete dormant candidate controller without weakening Team native admission or persisting bearer grants',async()=>{
+    const binding=await ensure('alice');const authorization=grant('alice');
+    const config={teamBotId:'shared-bot',mode:'member',bindingId:binding.bindingId,runId:'synthetic-run',contextId:'synthetic-context',expiresAt:Date.now()+60000,
+      model:'synthetic-model',adapterId:'collective-openai-chat-v1',modelBaseUrls:{reply:'https://app.test.invalid/reply',learning:'https://app.test.invalid/learning',utility:'https://app.test.invalid/utility',subagent:'https://app.test.invalid/subagent'},
+      modelTokens:{reply:'a'.repeat(64),learning:'b'.repeat(64),utility:'c'.repeat(64),subagent:'d'.repeat(64)},toolUrl:'https://app.test.invalid/mcp',toolToken:'e'.repeat(64)} as TeamCandidateConfig;
+    expect(broker.prepareTeamCandidate('alice',config,authorization.grantId)).toEqual({prepared:true,modelAccessAvailable:false});
+    expect(driver.candidates).toHaveLength(1);expect(driver.launches).toBe(0);
+    await expect(broker.forTeamRequest('alice','shared-bot','member',binding.bindingId,authorization.grantId)).rejects.toThrow('not verified');
+    await expect(broker.controller(binding)).rejects.toThrow('not verified');
+    const journal=await readFile(path.join(root,'state',runtimeKey('alice'),'runtime.json'),'utf8');expect(journal).not.toContain(config.toolToken);expect(journal).not.toContain(config.contextId);
+    expect(()=>broker.prepareTeamCandidate('alice',{...config,model:'changed',bindingId:'arbitrary'},authorization.grantId)).toThrow();
+    await broker.revokeTeam('alice',{teamBotId:'shared-bot',mode:'member'});expect(driver.launches).toBe(0);
+  });
+
   it('is opt-in and separates team provisioning from personal-bot creation authority', async () => {
     expect(BrokerConfig.parse({ ...config, teamBotsEnabled: undefined }).teamBotsEnabled).toBe(false);
     await mkdir(path.join(root, 'disabled-state'));

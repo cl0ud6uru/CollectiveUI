@@ -919,6 +919,20 @@ def network_check(provider, mode):
         signal.signal(signal.SIGALRM, prior)
 
 
+def install_candidate_bootstrap(payload, *, allow_synthetic_loopback=False):
+    # Source and code arrive only from the application-owned protected broker bundle.
+    if set(payload) != {'config', 'code', 'codeHash', 'contract'} or payload['contract']['revision'] != COMMIT:
+        raise ValueError('Unsupported candidate bootstrap contract')
+    if hashlib.sha256(payload['code'].encode('utf-8')).hexdigest() != payload['codeHash']:
+        raise ValueError('Candidate bootstrap content changed')
+    if payload['config']['expiresAt'] <= int(time.time() * 1000):
+        raise ValueError('Candidate bootstrap grant expired')
+    namespace = {'__name__': '_collective_team_candidate'}
+    exec(compile(payload['code'], '<trusted-collective-team-candidate>', 'exec'), namespace)
+    return namespace['install_candidate_process'](payload['config'], SOURCE, payload['contract']['sourceHashes'],
+                                                  allow_synthetic_loopback=allow_synthetic_loopback)
+
+
 def main():
     check_source()
     op = sys.argv[1]
@@ -994,15 +1008,7 @@ def main():
             if len(raw.encode('utf-8')) > 65536 or not raw.endswith('\n'):
                 raise ValueError('Invalid bounded candidate bootstrap')
             payload = json.loads(raw)
-            if set(payload) != {'config', 'code', 'codeHash', 'contract'} or payload['contract']['revision'] != COMMIT:
-                raise ValueError('Unsupported candidate bootstrap contract')
-            if hashlib.sha256(payload['code'].encode('utf-8')).hexdigest() != payload['codeHash']:
-                raise ValueError('Candidate bootstrap content changed')
-            if payload['config']['expiresAt'] <= int(time.time() * 1000):
-                raise ValueError('Candidate bootstrap grant expired')
-            namespace = {'__name__': '_collective_team_candidate'}
-            exec(compile(payload['code'], '<trusted-collective-team-candidate>', 'exec'), namespace)
-            namespace['install_candidate_process'](payload['config'], SOURCE, payload['contract']['sourceHashes'])
+            install_candidate_bootstrap(payload)
         from tui_gateway import server as _collective_server
 
         # The worker proof covers in-process native threads only. Refuse unsupported

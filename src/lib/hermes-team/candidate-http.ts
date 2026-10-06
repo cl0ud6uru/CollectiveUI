@@ -3,7 +3,7 @@ import { HttpError } from '@/lib/authz';
 import { TeamModelPolicyError, TEAM_MODEL_PURPOSES, type TeamModelPurpose, type VerifiedTeamModelRoute } from './model-policy';
 import { TeamToolPolicyError, type VerifiedTeamToolAdapter } from './tool-policy';
 import { executeCandidateModel } from './candidate-model';
-import { executeCandidateTool, listCandidateTools } from './candidate-tools';
+import { executeCandidateTool, listCandidateTools,checkCandidateApproval } from './candidate-tools';
 import { readCandidateJson } from './native-request';
 
 const headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'};
@@ -22,7 +22,7 @@ export async function candidateModelHttp(request:Request,params:{contextId:strin
   }catch(error){return failure(error);}
 }
 const rpc=z.object({jsonrpc:z.literal('2.0'),id:z.union([z.string().max(200),z.number().finite()]).optional(),method:z.string().max(100),params:z.record(z.string(),z.unknown()).optional()}).strict();
-export async function candidateMcpHttp(request:Request,contextId:string,dependencies:{routes?:readonly VerifiedTeamModelRoute[];adapters?:readonly VerifiedTeamToolAdapter[];connect?:typeof import('@/lib/mcp/client').connectMcp}={}){
+export async function candidateMcpHttp(request:Request,contextId:string,dependencies:{routes?:readonly VerifiedTeamModelRoute[];adapters?:readonly VerifiedTeamToolAdapter[];connect?:typeof import('@/lib/mcp/client').connectMcp;approvalWaitMs?:number}={}){
   try{
     const message=rpc.parse(await readCandidateJson(request));
     // Even initialize/notifications must check an opaque grant, current audience and current model route.
@@ -38,6 +38,28 @@ export async function candidateMcpHttp(request:Request,contextId:string,dependen
       const params=z.object({name:z.string().min(1).max(100),arguments:z.record(z.string(),z.unknown()).default({}),_meta:z.record(z.string(),z.unknown()).optional()}).strict().parse(message.params);
       const response=await executeCandidateTool(request,contextId,params.name,params.arguments,request.headers.get('x-collective-approval-id')??undefined,dependencies);
       result=JSON.parse(response.body);
+      const approvalId=(result as {_meta?:{collectiveApprovalId?:string}})?._meta?.collectiveApprovalId;
+      if(approvalId){
+        const deadline=Date.now()+Math.min(30_000,dependencies.approvalWaitMs??30_000);
+        for(;;){
+          await loadCandidateContext(contextId,request.headers.get('authorization'),'tool',dependencies.routes);
+          if(request.signal.aborted)throw new HttpError(409,'The native approval requester disconnected.');
+          const approval=await checkCandidateApproval(contextId,request.headers.get('authorization'),approvalId,dependencies);
+          if(approval.expiresAt.getTime()<=Date.now())throw new HttpError(403,'The native approval expired.');
+          if(approval.state==='approved'){
+            // Resume the exact held call and UUID. The connector factory rechecks scopes and consumes its receipt atomically.
+            const continued=await executeCandidateTool(request,contextId,params.name,params.arguments,approvalId,dependencies);
+            result=JSON.parse(continued.body);break;
+          }
+          if(approval.state==='rejected')throw new HttpError(403,'The native approval was denied.');
+          if(approval.state!=='pending')throw new HttpError(409,'The native approval was already consumed.');
+          if(Date.now()>=deadline){
+            // No detached network work after a timeout. A new explicit native call must match the retained receipt.
+            break;
+          }
+          await new Promise<void>(resolve=>setTimeout(resolve,100));
+        }
+      }
     }else return Response.json({jsonrpc:'2.0',id:message.id,error:{code:-32601,message:'This native MCP method is unsupported.'}},{headers});
     return Response.json({jsonrpc:'2.0',id:message.id,result},{headers});
   }catch(error){return failure(error);}

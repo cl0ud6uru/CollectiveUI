@@ -58,7 +58,22 @@ except RuntimeError:
     pass
 else:
     raise AssertionError("Changed source evidence was accepted")
-TeamAgent = module.install_candidate_process(config, source, manifest["sourceHashes"], allow_synthetic_loopback=True)
+# Consume the same fixed bundle through the production bridge bootstrap entry.
+bridge_spec = importlib.util.spec_from_file_location("collective_bridge", repo / "src/docker-hermes/bridge.py")
+bridge = importlib.util.module_from_spec(bridge_spec)
+bridge_spec.loader.exec_module(bridge)
+bridge.SOURCE = source
+os.environ["HERMES_HOME"] = synthetic_home.name
+config["expiresAt"] = 4102444800000
+code = (repo / "src/local-hermes/team-candidate-native.py").read_text()
+payload = {"config": config, "code": code, "codeHash": hashlib.sha256(code.encode()).hexdigest(), "contract": manifest}
+try:
+    bridge.install_candidate_bootstrap({**payload, "codeHash": "0" * 64})
+except ValueError:
+    pass
+else:
+    raise AssertionError("Tampered broker bootstrap was accepted")
+TeamAgent = bridge.install_candidate_bootstrap(payload, allow_synthetic_loopback=True)
 from tools import mcp_tool_config
 assert mcp_tool_config._load_mcp_config() == {"collective_team": clients.mcp_configuration()}
 asyncio.run(native_mcp())
@@ -66,6 +81,8 @@ parent = TeamAgent(model="forbidden-model", provider="anthropic", api_key="forbi
                    base_url="https://forbidden.test.invalid", enabled_toolsets=["memory", "skills"], quiet_mode=True,
                    cwd=synthetic_home.name, max_iterations=1, skip_context_files=True)
 assert parent.model == config["model"] and parent._collective_team_purpose == "reply"
+assert parent.enabled_toolsets == ["memory", "skills", "delegation", "mcp-collective_team"]
+assert "terminal" not in parent.valid_tool_names and "manage_connections" not in parent.valid_tool_names
 from agent import background_review, auxiliary_client
 from tools import delegate_tool
 review, _, _ = background_review.build_cache_parity_fork(parent, {}, max_iterations=1)

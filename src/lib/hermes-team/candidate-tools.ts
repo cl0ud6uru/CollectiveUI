@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { db, type DbOrTx } from '@/db';
-import { hermesTeamCandidateApprovals, hermesTeamCandidateContexts, hermesTeamCandidateRequests, mcpServers } from '@/db/schema';
+import { hermesTeamCandidateApprovals, hermesTeamCandidateContexts, hermesTeamCandidateRequests, agentRuns, mcpServers } from '@/db/schema';
 import { HttpError } from '@/lib/authz';
 import type { Principal } from '@/lib/auth/groups';
 import { connectMcp, redactMcpValue } from '@/lib/mcp/client';
@@ -9,7 +9,7 @@ import { mcpInputValidator } from '@/lib/mcp/input';
 import { snapshotHash } from '@/lib/mcp/snapshot';
 import { capResult, type McpCallResult } from '@/lib/mcp/hygiene';
 import { HERMES_COMMIT } from '@/local-hermes/config';
-import { candidateHash, candidateObjectHash, loadCandidateContext, lockCandidateContext } from './candidate-context';
+import { candidateHash, candidateObjectHash, loadCandidateContext, lockCandidateContext, validateCandidateContext } from './candidate-context';
 import { nativeRequestId, type CandidateResponse } from './candidate-model';
 import { candidateResourceAdapterId } from './candidate-resource-adapter';
 import { VERIFIED_TEAM_MODEL_ROUTES, type VerifiedTeamModelRoute } from './model-policy';
@@ -86,6 +86,8 @@ export async function executeCandidateTool(request:Request,contextId:string,name
         if(attribution.requireApproval && (!approval || approval.contextId!==contextId || approval.requestId!==requestId || approval.state!=='approved'
           || approval.expiresAt.getTime()<=Date.now() || candidateObjectHash(approval.attribution)!==candidateObjectHash(attribution)))throw new HttpError(409,'The approval was consumed or changed.');
         if(approval)await tx.update(hermesTeamCandidateApprovals).set({state:'consumed',updatedAt:new Date()}).where(eq(hermesTeamCandidateApprovals.id,approval.id));
+        const calls=await tx.select({id:hermesTeamCandidateRequests.id}).from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,contextId),eq(hermesTeamCandidateRequests.kind,'tool')));
+        if(calls.length>=32)throw new HttpError(409,'This native run exhausted its tool allowance.');
         const id=randomUUID();await tx.insert(hermesTeamCandidateRequests).values({id,contextId,requestId,kind:'tool',inputHash,state:'running'});
         return {response:null,id};
       });
@@ -139,29 +141,24 @@ export async function executeCandidateTool(request:Request,contextId:string,name
       const checked=authorizeTeamTool(current.context.actorId,toolRequest,resolved.authority,scope.adapters);
       const [existing]=await tx.select().from(hermesTeamCandidateApprovals).where(and(eq(hermesTeamCandidateApprovals.contextId,contextId),eq(hermesTeamCandidateApprovals.requestId,requestId)));
       if(existing){if(existing.inputHash!==inputHash || candidateObjectHash(existing.attribution)!==candidateObjectHash(checked.attribution))throw new HttpError(409,'The pending action changed.');return existing;}
+      const approvals=await tx.select({id:hermesTeamCandidateApprovals.id}).from(hermesTeamCandidateApprovals).where(eq(hermesTeamCandidateApprovals.contextId,contextId));
+      if(approvals.length>=16)throw new HttpError(409,'This native run exhausted its approval allowance.');
       const [row]=await tx.insert(hermesTeamCandidateApprovals).values({contextId,inputHash,input:JSON.parse(canonicalTeamToolInput(input)),attribution:checked.attribution,requestId,expiresAt:current.context.expiresAt}).returning();return row;
     });
     return json({isError:true,content:[{type:'text',text:'This action requires the current person’s approval.'}],_meta:{collectiveApprovalId:pending.id}});
   }
 }
 
-/** Ordinary session endpoint: an admin cannot approve a different member's native operation. */
-export async function answerCandidateApproval(p:Principal,id:string,decision:'approved'|'rejected',dependencies:Dependencies={}){
-  return db.transaction(async tx=>{
-    const [approval]=await tx.select().from(hermesTeamCandidateApprovals).where(eq(hermesTeamCandidateApprovals.id,id));
-    const [context]=approval ? await tx.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,approval.contextId)) : [];
-    if(!approval || !context || context.actorId!==p.user.id || context.sessionVersion!==p.user.sessionVersion)throw new HttpError(404,'Native approval not found.');
-    await lockCandidateContext(tx,context);
+/** Reuses the exact actor/profile/revision/route validation without recovering native bearer tokens. */
+async function reviewedApproval(p:Principal,id:string,dependencies:Dependencies,q:DbOrTx=db){
+  const [approval]=await q.select().from(hermesTeamCandidateApprovals).where(eq(hermesTeamCandidateApprovals.id,id));
+  const [context]=approval ? await q.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.id,approval.contextId)) : [];
+  if(!approval || !context || context.actorId!==p.user.id || context.sessionVersion!==p.user.sessionVersion)throw new HttpError(404,'Native approval not found.');
     // Tokens are deliberately unrecoverable. Revalidate the persisted run rather than manufacturing a native token.
-    const {candidateRun,candidateAuthority}=await import('./candidate-context');
-    const run=await candidateRun(p,context.runId,tx);
-    if(context.revokedAt || context.expiresAt.getTime()<=Date.now() || run.definition.version!==context.definitionVersion)throw new HttpError(403,'This native approval expired.');
-    const routes=dependencies.routes??VERIFIED_TEAM_MODEL_ROUTES;
-    const {evaluateTeamModelAccess}=await import('./model-policy');
-    const model=evaluateTeamModelAccess({userId:p.user.id,botId:context.botId,runId:context.runId,purpose:'reply',choice:context.modelRoute.billing==='personal'?'personal':'default'},await candidateAuthority(p,context.runId,routes,tx),routes);
-    if(model.status!=='ready')throw new HttpError(403,'Current Team model access is unavailable.');
+    const validated=await validateCandidateContext(context,dependencies.routes??VERIFIED_TEAM_MODEL_ROUTES,q);
+    const run=validated.run;
     const capability=run.definition.toolPolicy.capabilities.find(c=>c.capabilityId===approval.attribution.capabilityId);
-    const [server]=capability?.connectionId ? await tx.select().from(mcpServers).where(eq(mcpServers.id,capability.connectionId)) : [];
+    const [server]=capability?.connectionId ? await q.select().from(mcpServers).where(eq(mcpServers.id,capability.connectionId)) : [];
     const def=server?.toolsSnapshot?.find(t=>t.name===capability?.action);
     const authority:TeamToolAuthority={userId:p.user.id,botId:context.botId,userEnabled:true,botEnabled:true,audienceAllowed:true,policyVersion:run.definition.version,
       hermesRevision:HERMES_COMMIT,policy:run.definition.toolPolicy,connection:server?.status==='enabled' && server.trust==='trusted' && !server.toolsDrift
@@ -169,6 +166,39 @@ export async function answerCandidateApproval(p:Principal,id:string,decision:'ap
         ? {id:server.id,version:server.policyRevision,mode:'approved_team_connection',status:'active',expiresAt:context.expiresAt.getTime(),approvedForBotId:context.botId}:null};
     const checked=authorizeTeamTool(p.user.id,{botId:context.botId,runId:context.runId,capabilityId:approval.attribution.capabilityId,input:approval.input},authority,dependencies.adapters??VERIFIED_TEAM_TOOL_ADAPTERS);
     if(candidateObjectHash(checked.attribution)!==candidateObjectHash(approval.attribution))throw new HttpError(403,'The reviewed native action changed.');
+  return {approval,context};
+}
+
+export async function listCandidateApprovals(p:Principal,conversationId:string,dependencies:Dependencies={}){
+  const rows=await db.select({id:hermesTeamCandidateApprovals.id}).from(hermesTeamCandidateApprovals)
+    .innerJoin(hermesTeamCandidateContexts,eq(hermesTeamCandidateApprovals.contextId,hermesTeamCandidateContexts.id))
+    .innerJoin(agentRuns,eq(hermesTeamCandidateContexts.runId,agentRuns.id))
+    .where(and(eq(hermesTeamCandidateContexts.actorId,p.user.id),eq(agentRuns.conversationId,conversationId),
+      eq(hermesTeamCandidateApprovals.state,'pending'),gt(hermesTeamCandidateApprovals.expiresAt,new Date()))).limit(16);
+  const result=[];
+  for(const row of rows){
+    try{const {approval}=await reviewedApproval(p,row.id,dependencies);
+      result.push({id:approval.id,action:approval.attribution.action,resourceIds:approval.attribution.resourceIds,input:approval.input,expiresAt:approval.expiresAt.toISOString()});
+    }catch(error){if(!(error instanceof HttpError) && !(error instanceof TeamToolPolicyError))throw error;}
+  }
+  return result;
+}
+
+/** Held MCP call validates the same reviewed action during every wait interval. */
+export async function checkCandidateApproval(contextId:string,authorization:string|null,id:string,dependencies:Dependencies={}){
+  const current=await loadCandidateContext(contextId,authorization,'tool',dependencies.routes??VERIFIED_TEAM_MODEL_ROUTES);
+  const checked=await reviewedApproval(current.principal,id,dependencies);
+  if(checked.context.id!==contextId)throw new HttpError(403,'The native approval belongs to another context.');
+  return checked.approval;
+}
+
+/** Ordinary session endpoint: an admin cannot approve a different member's native operation. */
+export async function answerCandidateApproval(p:Principal,id:string,decision:'approved'|'rejected',dependencies:Dependencies={}){
+  return db.transaction(async tx=>{
+    const {context}=await reviewedApproval(p,id,dependencies,tx);
+    await lockCandidateContext(tx,context);
+    // Re-read after acquiring the same bot/context fence as every native dispatch.
+    await reviewedApproval(p,id,dependencies,tx);
     const [locked]=await tx.select().from(hermesTeamCandidateApprovals).where(eq(hermesTeamCandidateApprovals.id,id)).for('update');
     if(locked.state!=='pending' || locked.expiresAt.getTime()<=Date.now())throw new HttpError(409,'This native approval already changed.');
     await tx.update(hermesTeamCandidateApprovals).set({state:decision,updatedAt:new Date()}).where(eq(hermesTeamCandidateApprovals.id,id));return {id,state:decision};

@@ -140,7 +140,7 @@ async function environment() {
   const database = drizzle(client, { schema: {} });
   const dialect = new PgDialect();
   return { client, metadata, failNextAdmission: () => { failAdmission = true; },
-    apply: async (through = 40) => {
+    apply: async (through = 41) => {
       const pending = migrations.filter((_, index) => metadata.entries[index].idx <= through).map((migration, index) => {
         const sql = migration.sql.map(text => text.replace('CREATE EXTENSION IF NOT EXISTS vector;', '').replace(/\bvector\b/g, 'real[]'));
         if (failAdmission && metadata.entries[index].idx === 40) { failAdmission = false; sql.push('SELECT 1 / 0'); }
@@ -154,12 +154,18 @@ async function environment() {
 }
 
 describe('combined main and Team Bot upgrade history (PGlite, no pgvector or native image)', () => {
-  it('preserves native-learning usage snapshots and the exact contiguous 0035–0040 lineage', async () => {
+  it('keeps all0000–0040 SQL/snapshots and journal entries identical to the independently reviewed reconciliation baseline',async()=>{
+    const baseline=JSON.parse(await readFile('tests/fixtures/hermes-team-candidate-baseline.json','utf8')) as {files:Record<string,string>;journalEntries:Journal['entries']};
+    for(const [file,hash] of Object.entries(baseline.files))expect(createHash('sha256').update(await readFile(file)).digest('hex'),file).toBe(hash);
+    expect((await journal()).entries.slice(0,41)).toEqual(baseline.journalEntries);
+  });
+
+  it('preserves native-learning usage snapshots and the exact contiguous 0035–0041 lineage', async () => {
     const entries = (await journal()).entries;
     expect(entries.map(entry => entry.idx)).toEqual(entries.map((_, index) => index));
     for (let index = 1; index < entries.length; index++) expect(entries[index].when).toBeGreaterThan(entries[index - 1].when);
-    expect(entries.slice(35, 41).map(entry => entry.tag)).toEqual(['0035_direct_user_permissions', '0036_native_bot_learning', '0037_learning_usage', '0038_hermes_team_bots', '0039_hermes_team_revision_immutability', '0040_hermes_team_admission']);
-    const snapshots = await Promise.all([35, 36, 37, 38, 39, 40].map(snapshot));
+    expect(entries.slice(35, 42).map(entry => entry.tag)).toEqual(['0035_direct_user_permissions', '0036_native_bot_learning', '0037_learning_usage', '0038_hermes_team_bots', '0039_hermes_team_revision_immutability', '0040_hermes_team_admission', '0041_hermes_team_candidate_adapters']);
+    const snapshots = await Promise.all([35, 36, 37, 38, 39, 40, 41].map(snapshot));
     snapshots.slice(1).forEach((next, index) => expect(next.prevId).toBe(snapshots[index].id));
     for (const table of learningTables) {
       expect(snapshots[0].tables[`public.${table}`]).toBeUndefined();
@@ -178,9 +184,11 @@ describe('combined main and Team Bot upgrade history (PGlite, no pgvector or nat
     }
     expect(snapshots[3].tables['public.bots'].columns.hermes_team).toMatchObject({ default: false, notNull: true });
     expect(snapshots[5].tables['public.hermes_team_run_attribution'].columns.admission).toMatchObject({ type: 'jsonb', notNull: false });
+    for (const [table, definition] of Object.entries(snapshots[5].tables)) expect(snapshots[6].tables[table]).toEqual(definition);
+    expect(Object.keys(snapshots[6].tables).filter(table => table.startsWith('public.hermes_team_candidate_'))).toHaveLength(3);
   });
 
-  it.each(['fresh', 'main0035', 'main0036', 'main0037'] as const)('preserves %s personal bindings, permissions, history and usage through 0040 and repeated replay', async source => {
+  it.each(['fresh', 'main0035', 'main0036', 'main0037'] as const)('preserves %s personal bindings, permissions, history and usage through 0041 and repeated replay', async source => {
     const fixture = await environment();
     try {
       if (source !== 'fresh') {
@@ -193,11 +201,11 @@ describe('combined main and Team Bot upgrade history (PGlite, no pgvector or nat
       const prefix = source === 'fresh' ? [] : await history(fixture.client);
       await fixture.apply();
       await assertRetained(fixture.client, before);
-      for (const table of Object.keys((await snapshot(38)).tables).filter(table => table.startsWith('public.hermes_team_'))) expect(await rows(fixture.client, table.slice(7))).toEqual([]);
+      for (const table of Object.keys((await snapshot(41)).tables).filter(table => table.startsWith('public.hermes_team_'))) expect(await rows(fixture.client, table.slice(7))).toEqual([]);
       const applied = await history(fixture.client);
       expect(applied.slice(0, prefix.length)).toEqual(prefix);
-      expect(applied.map(row => Number(row.created_at))).toEqual(fixture.metadata.entries.filter(entry => entry.idx <= 40).map(entry => entry.when));
-      expect(applied.map(row => row.hash)).toEqual(await Promise.all(fixture.metadata.entries.filter(entry => entry.idx <= 40).map(async entry => createHash('sha256').update(await readFile(path.join(original, `${entry.tag}.sql`))).digest('hex'))));
+      expect(applied.map(row => Number(row.created_at))).toEqual(fixture.metadata.entries.filter(entry => entry.idx <= 41).map(entry => entry.when));
+      expect(applied.map(row => row.hash)).toEqual(await Promise.all(fixture.metadata.entries.filter(entry => entry.idx <= 41).map(async entry => createHash('sha256').update(await readFile(path.join(original, `${entry.tag}.sql`))).digest('hex'))));
       expect((await fixture.client.query("SELECT tgname FROM pg_trigger WHERE tgname='hermes_team_revision_immutable_trigger'")).rows).toHaveLength(1);
       expect((await fixture.client.query("SELECT conname FROM pg_constraint WHERE conname='hermes_team_run_admission_check'")).rows).toHaveLength(1);
       if (source === 'fresh') await seedPersonalData(fixture.client);
@@ -228,7 +236,7 @@ describe('combined main and Team Bot upgrade history (PGlite, no pgvector or nat
       expect((await fixture.client.query("SELECT column_name FROM information_schema.columns WHERE table_name='bots' AND column_name='hermes_team'")).rows).toEqual([]);
       if (baseline === 36) expect((await fixture.client.query("SELECT column_name FROM information_schema.columns WHERE table_name='bot_learnings' AND column_name='pinned'")).rows).toEqual([]);
       await fixture.apply(); await assertRetained(fixture.client, before);
-      expect(await history(fixture.client)).toHaveLength(41);
+      expect(await history(fixture.client)).toHaveLength(42);
       expect(await rows(fixture.client, 'hermes_team_profiles')).toEqual([]);
     } finally { await fixture.close(); }
   }, 45000);

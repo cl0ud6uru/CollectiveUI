@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { HermesTeamCandidateApprovals } from "./hermes-team-candidate-approvals";
 import { useRouter } from "next/navigation";
 import { HermesTeamControls, type HermesTeamMode, type HermesTeamView } from "./hermes-team-controls";
 import type { HermesTeamUpdateInput, HermesTeamResolveInput, HermesTeamUpdateReview, HermesTeamUpdateResult } from "./hermes-team-updates";
@@ -121,6 +122,7 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
     return () => controller.abort();
   }, [base, scope, busy, view?.enabled, view?.mode, view?.state, view?.installedRevision, view?.publishedRevision]);
   if (view) return <>
+    <HermesTeamCandidateApprovals key={scope} conversationId={conversationId} active={started && busy && view.enabled && view.state === "ready" && view.modelAccessAvailable === true} />
     <HermesTeamControls view={view} busy={busy} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
       onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>} onLoadRevisions={loadRevisions} onCaptureRollback={captureRollback}
       onLoadUpdates={loadUpdates} onApplyUpdate={input => update("updates", input)} onResolveUpdate={input => update("updates/resolve", input)}

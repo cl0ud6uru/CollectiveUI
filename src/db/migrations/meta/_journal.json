@@ -288,6 +288,13 @@
       "when": 1791323615967,
       "tag": "0040_hermes_team_admission",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791325067092,
+      "tag": "0041_hermes_team_candidate_adapters",
+      "breakpoints": true
     }
   ]
 }

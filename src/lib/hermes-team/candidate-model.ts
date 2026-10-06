@@ -10,6 +10,34 @@ import { CANDIDATE_MODEL_LIMITS, validateNativeModelRequest, type TeamNativeMode
 import { loadCandidateModelWire } from './candidate-model-transport';
 
 export type CandidateResponse = { status:number; contentType:string; body:string };
+class CandidateResponseError extends HttpError {
+  constructor(readonly usage:{input:number|null;output:number|null}){super(503,'The native response could not be safely delivered.');}
+}
+/** Decode before checking known secrets. Arbitrary encoded/external secrets are not claimed to be detected. */
+function safeNativeResponse(body:string,contentType:string,secrets:readonly string[]):string{
+  const keys=secrets.filter(Boolean);let nodes=0;
+  const sanitize=(value:unknown,depth=0):unknown=>{
+    if(++nodes>100000 || depth>32)throw new Error('Bounded native response structure exceeded.');
+    if(typeof value==='string'){let clean=value;for(const secret of keys)clean=clean.split(secret).join('[redacted]');return clean;}
+    if(Array.isArray(value))return value.map(item=>sanitize(item,depth+1));
+    if(value && typeof value==='object')return Object.fromEntries(Object.entries(value).map(([key,item])=>{
+      if(keys.some(secret=>key.includes(secret)))throw new Error('Unsafe native response key.');return[key,sanitize(item,depth+1)];}));
+    return value;
+  };
+  if(!/^text\/event-stream/i.test(contentType))return JSON.stringify(sanitize(JSON.parse(body)));
+  const streams=new Map<string,string>();
+  const append=(id:string,text:unknown)=>{if(typeof text!=='string')return;const complete=(streams.get(id)??'')+text;streams.set(id,complete);
+    if(keys.some(secret=>complete.includes(secret)))throw new Error('Unsafe native streamed response.');};
+  return body.split(/\r?\n\r?\n/).map(block=>{
+    const lines=block.split(/\r?\n/);const data=lines.filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n');
+    if(!data || data.trim()==='[DONE]')return block;
+    const value=JSON.parse(data);
+    for(const choice of value.choices??[]){append(`content:${choice.index}`,choice.delta?.content);append(`refusal:${choice.index}`,choice.delta?.refusal);
+      for(const call of choice.delta?.tool_calls??[])append(`args:${choice.index}:${call.index}`,call.function?.arguments);}
+    if(typeof value.delta==='string')append(`responses:${value.type}:${value.item_id??value.output_index??''}:${value.content_index??''}`,value.delta);
+    return [...lines.filter(line=>!line.startsWith('data:')),`data: ${JSON.stringify(sanitize(value))}`].join('\n');
+  }).join('\n\n');
+}
 export function nativeRequestId(request: Request,payload?:unknown) {
   const id = request.headers.get('x-collective-request-id');
   // The trusted process shim emits a UUID through its HTTPX hook for each SDK request.
@@ -27,9 +55,9 @@ export async function readCandidateResponse(response: Response, secrets: readonl
     for (;;) { const {done,value}=await reader.read(); if(done)break; bytes+=value.length;
       if(bytes>CANDIDATE_MODEL_LIMITS.responseBytes){ await reader.cancel();throw new HttpError(503,'The model response exceeds the supported bound.'); } chunks.push(value); }
   } finally { reader.releaseLock(); }
-  let body = Buffer.concat(chunks).toString('utf8');
-  for (const secret of secrets.filter(Boolean)) body=body.split(secret).join('[redacted]');
-  return {status:200,contentType,body};
+  const raw = {status:200,contentType,body:Buffer.concat(chunks).toString('utf8')};
+  try{return {...raw,body:safeNativeResponse(raw.body,contentType,secrets)};}
+  catch{throw new CandidateResponseError(nativeProviderUsage(raw));}
 }
 
 /** Concrete production factory caller. Tests substitute the verified inventory and HTTP fetch, never credentials. */
@@ -46,6 +74,11 @@ export async function executeCandidateModel(request: Request, contextId: string,
   const requestId=nativeRequestId(request,{purpose,protocol,body});
   const inputHash=candidateObjectHash({purpose,protocol,body});
   const inputBytes=Buffer.byteLength(JSON.stringify(body),'utf8');
+  const usageValues=(id:string)=>({id,userId:initial.context.actorId,conversationId:initial.run.run.conversationId,runId:initial.context.runId,botId:initial.context.botId,
+    appId:initial.context.modelRoute.billing==='admin'?initial.context.modelRoute.id.slice(4):null,
+    providerKind:initial.transport.providerKind,
+    model:initial.context.modelRoute.model,purpose:purpose==='reply'?'chat' as const:purpose==='subagent'?'delegate' as const:purpose==='learning'?'memory' as const:'draft' as const,
+    billingSource:initial.context.modelRoute.billing==='admin'?'org' as const:'chatgpt_plan' as const,credentialId:initial.context.personalConnectionId});
   let receiptId: string | undefined;
   const current=()=>loadCandidateContext(contextId,authorization,purpose,routes);
   const gateway=createTeamModelGateway<Record<string,unknown>,CandidateResponse>({ routes,now:Date.now,
@@ -78,7 +111,9 @@ export async function executeCandidateModel(request: Request, contextId: string,
         const [row]=await tx.select().from(hermesTeamCandidateRequests).where(eq(hermesTeamCandidateRequests.id,id)).for('update');
         if(row?.state==='complete' && row.response)return row.response;
         if(!row || row.state!=='reserved')throw new HttpError(409,'The native request was already started.');
-        await tx.update(hermesTeamCandidateRequests).set({state:'running',updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,id));return null;
+        await tx.update(hermesTeamCandidateRequests).set({state:'running',updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,id));
+        // Commit the unknown usage attribution with the dispatch claim, before any provider I/O can start.
+        await tx.insert(usageEvents).values(usageValues(id)).onConflictDoNothing();return null;
       });
       if(prior)return prior;
       const abort=new AbortController(); let watch:ReturnType<typeof setTimeout>|undefined;let finished=false;
@@ -97,18 +132,17 @@ export async function executeCandidateModel(request: Request, contextId: string,
         });
         watch=setTimeout(()=>void check(),250);
         const result=await readCandidateResponse(await started.response,started.secrets);
+        const usage=nativeProviderUsage(result);
         await db.transaction(async tx=>{
-          const usage=nativeProviderUsage(result);
-          await tx.insert(usageEvents).values({id,userId:initial.context.actorId,conversationId:initial.run.run.conversationId,runId:initial.context.runId,botId:initial.context.botId,
-            appId:initial.context.modelRoute.billing==='admin'?initial.context.modelRoute.id.slice(4):null,providerKind:initial.context.modelRoute.billing==='admin'?'openai-compatible':'chatgpt',
-            model:initial.context.modelRoute.model,purpose:purpose==='reply'?'chat':purpose==='subagent'?'delegate':purpose==='learning'?'memory':'draft',
-            billingSource:initial.context.modelRoute.billing==='admin'?'org':'chatgpt_plan',credentialId:initial.context.personalConnectionId,inputTokens:usage.input,outputTokens:usage.output}).onConflictDoNothing();
+          await tx.update(usageEvents).set({inputTokens:usage.input,outputTokens:usage.output}).where(eq(usageEvents.id,id));
         });
+        if(usage.input===null || usage.output===null)throw new HttpError(409,'The provider did not confirm this request’s usage.');
         // Historical accounting survives revocation; delivery and cached replay still require fresh access.
         await current();
         await db.update(hermesTeamCandidateRequests).set({state:'complete',response:result,updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,id));
         return result;
-      }catch{
+      }catch(error){
+        if(error instanceof CandidateResponseError)await db.update(usageEvents).set({inputTokens:error.usage.input,outputTokens:error.usage.output}).where(eq(usageEvents.id,id));
         await db.update(hermesTeamCandidateRequests).set({state:'needs_attention',updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,id));
         throw new HttpError(409,'The native model request needs attention; it will not retry or use another provider.');
       }finally{finished=true;clearTimeout(timeout);clearTimeout(watch);request.signal.removeEventListener('abort',callerAbort);abort.abort();}
@@ -123,7 +157,7 @@ export function nativeProviderUsage(response:CandidateResponse):{input:number|nu
   let usage:Record<string,unknown>|undefined;
   const number=(value:unknown)=>typeof value==='number' && Number.isSafeInteger(value) && value>=0 && value<=2147483647?value:null;
   const inspect=(text:string)=>{try{const value=JSON.parse(text);if(value?.usage)usage=value.usage;else if(value?.response?.usage)usage=value.response.usage;}catch{}};
-  if(response.contentType.startsWith('text/event-stream'))for(const line of response.body.split('\n')){if(line.startsWith('data:'))inspect(line.slice(5).trim());}
+  if(/^text\/event-stream/i.test(response.contentType))for(const line of response.body.split('\n')){if(line.startsWith('data:'))inspect(line.slice(5).trim());}
   else inspect(response.body);
   return {input:number(usage?.input_tokens??usage?.prompt_tokens),output:number(usage?.output_tokens??usage?.completion_tokens)};
 }
