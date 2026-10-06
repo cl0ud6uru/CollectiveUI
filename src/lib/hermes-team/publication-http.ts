@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { HttpError } from '@/lib/authz';
+import { assertAuthOrigin } from '@/lib/auth/origin';
 import { TeamResourceError } from './resources';
 export const teamPublicationResponse = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
 export function teamPublicationFailure(error: unknown): Response {
@@ -9,7 +10,7 @@ export function teamPublicationFailure(error: unknown): Response {
 }
 /** Resource bytes arrive only from the broker. Browser requests contain bounded selections/IDs. */
 export async function readTeamPublicationRequest(request: Request): Promise<unknown> {
-  if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
+  assertAuthOrigin(request.headers);
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') ?? '')) throw new HttpError(415, 'JSON required.');
   const maximum = 96 * 1024;
   if (!request.body || Number(request.headers.get('content-length')) > maximum) throw new HttpError(413, 'Publication request is too large.');

@@ -4,7 +4,8 @@ import type { Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { authorizeTeam } from './store';
 import type { TeamMode } from './types';
-export type TeamResourceSelection = { skillPackages?: string[]; includeRole?: boolean; documents?: string[] };
+export type TeamResourceSelection = { skillPackages?: readonly string[]; includeRole?: boolean; documents?: readonly string[] };
+export type TeamPublishableInventory = { selection: TeamResourceSelection; available: boolean; reason?: string };
 /** Only this trusted server adapter constructs broker scopes and grant headers. */
 async function grantTeam(p: Principal, botId: string, mode: TeamMode) {
   const auth = await authorizeTeam(p, botId, mode);
@@ -23,7 +24,14 @@ export async function captureTeamResources(p: Principal, botId: string, selectio
   await authorizeTeam(p, botId, 'admin');
   return teamRequest(p, botId, 'admin', grant.grantId, '/team/capture', { teamBotId: botId, mode: 'admin', selection });
 }
-async function teamRequest(p: Principal, botId: string, mode: TeamMode, grantId: string, action: '/team/ensure' | '/team/capture', body: unknown) {
+export async function inventoryTeamResources(p: Principal, botId: string): Promise<TeamPublishableInventory> {
+  const { grant } = await grantTeam(p, botId, 'admin');
+  await authorizeTeam(p, botId, 'admin');
+  const selection = await teamRequest(p, botId, 'admin', grant.grantId, '/team/inventory', { teamBotId: botId, mode: 'admin' });
+  const { teamResourceSelectionSchema } = await import('./publication');
+  return { selection: teamResourceSelectionSchema.parse(selection), available: true };
+}
+async function teamRequest(p: Principal, botId: string, mode: TeamMode, grantId: string, action: '/team/ensure' | '/team/capture' | '/team/inventory', body: unknown) {
   try {
     const response = await dockerFetch(p.user.id)(`${LOCAL_ORIGIN}${action}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-collective-team-grant': grantId },

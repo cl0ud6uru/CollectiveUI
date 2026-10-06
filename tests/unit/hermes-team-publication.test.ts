@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 const fixture = vi.hoisted(() => ({ client: null as PGlite | null, principal: null as unknown,
-  capture: vi.fn(async () => null as unknown) }));
+  capture: vi.fn(async () => null as unknown), inventory: vi.fn() }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'), { drizzle } = await import('drizzle-orm/pglite'), schema = await import('@/db/schema');
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
@@ -13,14 +13,14 @@ vi.mock('@/lib/session', async () => {
   const { HttpError } = await import('@/lib/authz');
   return { requirePrincipal: async () => { if (!fixture.principal) throw new HttpError(401, 'Unauthorized'); return fixture.principal; } };
 });
-vi.mock('@/lib/hermes-team/transport', () => ({ captureTeamResources: fixture.capture }));
+vi.mock('@/lib/hermes-team/transport', () => ({ captureTeamResources: fixture.capture, inventoryTeamResources: fixture.inventory }));
 import { db, schema } from '@/db';
 import { loadPrincipal, type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { configureTeam, reserveTeamProfile } from '@/lib/hermes-team/store';
 import { createTeamResourceSnapshot, resourceSha256, type TeamResource, type TeamResourceSnapshot } from '@/lib/hermes-team/resources';
 import { createTeamPublicationService, teamCaptureRequestSchema, teamPublishRequestSchema } from '@/lib/hermes-team/publication';
-import { POST as captureRoute } from '@/app/api/bots/[id]/team/capture/route';
+import { POST as captureRoute, GET as inventoryRoute } from '@/app/api/bots/[id]/team/capture/route';
 import { POST as publishRoute, GET as rolloutRoute } from '@/app/api/bots/[id]/team/publish/route';
 let admin: Principal, otherAdmin: Principal, alice: Principal, clock: Date;
 const resource = (content: string, packageName = 'support', filename = 'SKILL.md'): TeamResource => ({ path: `skills/${packageName}/${filename}`, kind: 'skill', packageId: `skills/${packageName}`,
@@ -46,6 +46,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1'); vi.stubEnv('AUTH_URL', 'https://portal.test.invalid');
   fixture.capture.mockReset(); fixture.capture.mockResolvedValue(snapshot()); clock = new Date('2026-10-06T20:00:00Z');
+  fixture.inventory.mockReset(); fixture.inventory.mockResolvedValue({ selection: { skillPackages: ['support'], includeRole: false, documents: [] }, available: true });
   await fixture.client!.exec('TRUNCATE users, ai_apps, settings CASCADE');
   await db.insert(schema.users).values([
     { id: 'admin', name: 'Admin', upn: 'admin@test.invalid', authSource: 'local', identityRealm: 'local', isAdmin: true },
@@ -241,6 +242,23 @@ describe('Atomic immutable publication and retries', () => {
 });
 
 describe('Publication HTTP boundaries', () => {
+  it('uses authenticated server-derived inventory without browser paths or cached private responses', async () => {
+    const response = await inventoryRoute(new Request('https://portal.test.invalid/api/bots/team/team/capture?profile=foreign'), ctx);
+    expect(response.status).toBe(200); expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(fixture.inventory).toHaveBeenCalledWith(admin, 'team');
+    fixture.inventory.mockRejectedValueOnce(new HttpError(403, 'Admin only'));
+    expect((await inventoryRoute(new Request('https://portal.test.invalid/api/bots/team/team/capture'), ctx)).status).toBe(403);
+    fixture.principal = null;
+    expect((await inventoryRoute(new Request('https://portal.test.invalid/api/bots/team/team/capture'), ctx)).status).toBe(401);
+    expect(fixture.inventory).toHaveBeenCalledTimes(2);
+  });
+  it('fails closed when origin is missing or trusted origin is not configured', async () => {
+    const withoutOrigin = request('/api/bots/team/team/capture', captureInput); withoutOrigin.headers.delete('origin');
+    expect((await captureRoute(withoutOrigin, ctx)).status).toBe(403);
+    vi.stubEnv('AUTH_URL', '');
+    expect((await captureRoute(request('/api/bots/team/team/capture', captureInput), ctx)).status).toBe(403);
+    expect(fixture.capture).not.toHaveBeenCalled();
+  });
   it('authenticates, rejects cross-origin writes and invalid or oversized bodies without a broker call', async () => {
     fixture.principal = null;
     expect((await captureRoute(request('/api/bots/team/team/capture', captureInput), ctx)).status).toBe(401);
