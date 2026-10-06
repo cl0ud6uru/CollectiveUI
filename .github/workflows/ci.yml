@@ -29,6 +29,27 @@ jobs:
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.
       - run: npm test
 
+  hermes-team-web:
+    name: Synthetic Team Bot controls and mobile web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise real browser requests with synthetic accounts and no inference
+        run: |
+          node tests/browser/hermes-team-builder.mjs
+          node tests/browser/hermes-team-controls.mjs
+          node tests/browser/hermes-team-chat-controls.mjs
+          node tests/browser/hermes-team-publication.mjs
+          node tests/browser/hermes-team-updates.mjs
+          node tests/browser/hermes-team-restore.mjs
+
   native-hermes:
     name: Pinned native Hermes settings, Team profiles and synthetic OAuth
     runs-on: ubuntu-latest
