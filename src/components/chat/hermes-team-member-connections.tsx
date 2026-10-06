@@ -82,7 +82,7 @@ function MemberConnections({ botId, supportedAuthActions, onConnect }: Omit<Para
       setNotice("Saved access disconnected. Your chat history is preserved. This does not revoke access at the outside service.");
     } catch (err) {
       epoch.current++;
-      if (err instanceof Error && "status" in err && (err.status === 403 || err.status === 409)) setRows(null);
+      if (err instanceof Error && "status" in err && (err.status === 401 || err.status === 403 || err.status === 409)) setRows(null);
       setError(err instanceof Error ? err.message : "Your connection was not confirmed disconnected. Refresh before trying again.");
     }
     finally { held.current = false; setPending(null); }

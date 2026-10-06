@@ -26,7 +26,7 @@ export function HermesTeamSavedConnections({ initial }: { initial: SavedTeamConn
       const response = await fetch(`/api/hermes-team/member-connections${next ? `?cursor=${encodeURIComponent(next)}` : ""}`, { cache: "no-store", signal: abort.signal });
       const result = await response.json();
       if (!response.ok) {
-        if (response.status === 403 && !abort.signal.aborted && readEpoch === epoch.current) { setRows([]); setCursor(null); }
+        if ((response.status === 401 || response.status === 403) && !abort.signal.aborted && readEpoch === epoch.current) { setRows([]); setCursor(null); }
         throw new Error(result.error ?? "Your saved connection list could not be checked.");
       }
       if (!Array.isArray(result.connections) || !(result.nextCursor === null || typeof result.nextCursor === "string")) throw new Error("Your saved connection list was not confirmed. Try again.");
@@ -49,7 +49,7 @@ export function HermesTeamSavedConnections({ initial }: { initial: SavedTeamConn
       setNotice("Saved access disconnected. Your chat history is preserved. This does not revoke access at the outside service.");
     } catch (err) {
       epoch.current++;
-      if (err instanceof Error && "status" in err && (err.status === 403 || err.status === 409)) { setRows([]); setCursor(null); }
+      if (err instanceof Error && "status" in err && (err.status === 401 || err.status === 403 || err.status === 409)) { setRows([]); setCursor(null); }
       setError(err instanceof Error ? err.message : "Your connection was not confirmed disconnected. Refresh before trying again.");
     } finally { held.current = false; setPending(null); }
   }

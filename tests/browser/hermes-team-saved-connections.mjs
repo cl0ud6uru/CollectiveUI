@@ -26,7 +26,7 @@ createRoot(document.getElementById('root')).render(<App/>);
 const aliases=Object.fromEntries(['next/navigation','next-themes','next/link','@/app/(chat)/actions','@/components/settings/chatgpt-connection','@/components/settings/workspace-panel','@/components/start-target-select'].map(source=>[source,stubs]));
 const bundle=await build({entryPoints:[entry],write:false,bundle:true,platform:'browser',format:'iife',jsx:'automatic',nodePaths:[path.join(root,'node_modules')],alias:{'@':path.join(root,'src'),...aliases}});
 const css=await postcss([tailwind({base:root})]).process(await readFile(path.join(root,'src/app/globals.css'),'utf8'),{from:path.join(root,'src/app/globals.css')});
-let holdRead=false,releaseRead,holdDelete=false,releaseDelete,deleteFailure=0,denyList=false;const requests=[];
+let holdRead=false,releaseRead,holdDelete=false,releaseDelete,deleteFailure=0,denyList=0;const requests=[];
 const server=createServer(async(req,res)=>{
  if(req.url==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(bundle.outputFiles[0].contents);return;}
  if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css.css);return;}
@@ -36,11 +36,11 @@ const server=createServer(async(req,res)=>{
   requests.push({method:'GET',url:req.url});const after=new URL(req.url,'http://localhost').searchParams.get('cursor');const available=after?rows.filter(row=>row.id>after):rows;
   const body=JSON.stringify({connections:available.slice(0,100),nextCursor:available.length>100?available[99].id:null});
   if(holdRead)await new Promise(resolve=>{releaseRead=resolve;});
-  if(denyList){res.statusCode=403;res.end(JSON.stringify({error:'Your account or session changed.'}));}else res.end(body);return;
+  if(denyList){res.statusCode=denyList;res.end(JSON.stringify({error:denyList===401?'Unauthorized':'Your account or session changed.'}));}else res.end(body);return;
  }
  const bytes=[];for await(const chunk of req)bytes.push(chunk);const body=JSON.parse(Buffer.concat(bytes).toString());requests.push({method:req.method,url:req.url,body});
  if(holdDelete)await new Promise(resolve=>{releaseDelete=resolve;});
- if(deleteFailure){res.statusCode=deleteFailure;res.end(JSON.stringify({error:'Your connection changed. Reload before disconnecting.'}));return;}
+ if(deleteFailure){res.statusCode=deleteFailure;res.end(JSON.stringify({error:deleteFailure===401?'Unauthorized':'Your connection changed. Reload before disconnecting.'}));return;}
  const accountId=decodeURIComponent(req.url.split('/').at(-1));rows=rows.map(row=>row.id===accountId?{...row,status:'revoked',revision:row.revision+1}:row);
  res.end(JSON.stringify({id:accountId,status:'revoked',revision:3}));
 });
@@ -67,13 +67,19 @@ try{
  await expired.getByRole('button',{name:'Disconnect saved access'}).click();await expect(page.getByRole('alert')).toHaveText('Your connection changed. Reload before disconnecting.');
  await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(0);await expect(page.getByRole('button',{name:'Show more saved connections'})).toHaveCount(0);
  deleteFailure=0;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(expired.getByText('Connection expired',{exact:true})).toBeVisible();
+ deleteFailure=401;await expired.getByRole('button',{name:'Disconnect saved access'}).click();await expect(page.getByRole('alert')).toHaveText('Unauthorized');
+ await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(0);await expect(page.getByRole('button',{name:'Show more saved connections'})).toHaveCount(0);
+ deleteFailure=0;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(expired.getByText('Connection expired',{exact:true})).toBeVisible();
  holdRead=true;releaseRead=undefined;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect.poll(()=>typeof releaseRead).toBe('function');const staleReply=releaseRead;
  await expired.getByRole('button',{name:'Disconnect saved access'}).click();await expect(expired.getByText('Disconnected',{exact:true})).toBeVisible();holdRead=false;staleReply();
  await expect(expired.getByText('Connection expired',{exact:true})).toHaveCount(0);await expect(page.getByRole('button',{name:'Refresh saved connections'})).toBeEnabled();
- denyList=true;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(page.getByRole('alert')).toHaveText('Your account or session changed.');
+ denyList=403;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(page.getByRole('alert')).toHaveText('Your account or session changed.');
+ await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(0);await expect(page.getByRole('button',{name:'Show more saved connections'})).toHaveCount(0);
+ denyList=0;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(100);
+ denyList=401;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(page.getByRole('alert')).toHaveText('Unauthorized');
  await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(0);await expect(page.getByRole('button',{name:'Show more saved connections'})).toHaveCount(0);
  expect(requests.every(request=>request.url.startsWith('/api/hermes-team/member-connections'))).toBe(true);expect(requests.every(request=>request.method==='GET'||request.method==='DELETE')).toBe(true);
  await page.evaluate(()=>window.fixtureShowAccounts(false));await expect(page.getByRole('button',{name:'Connected accounts',exact:true})).toHaveCount(0);await expect(page.getByRole('region',{name:'Saved Team Bot connections'})).toHaveCount(0);
  expect(errors).toEqual([]);
- console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403, late reads do not restore disconnected accounts, no credential/auth inputs, empty tab omitted, 320–1280px actual CSS; synthetic HTTP only');
+ console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, empty tab omitted, 320–1280px actual CSS; synthetic HTTP only');
 }finally{if(releaseRead)releaseRead();if(releaseDelete)releaseDelete();await browser.close();server.close();await rm(dir,{recursive:true,force:true});}

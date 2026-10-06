@@ -36,7 +36,7 @@ const server=createServer(async(req,res)=>{
  }
  const bytes=[];for await(const chunk of req)bytes.push(chunk);const body=JSON.parse(Buffer.concat(bytes).toString());requests.push({method:req.method,url:req.url,body});
  if(holdDelete)await new Promise(resolve=>{releaseDelete=resolve;});
- if(deleteFailure){res.statusCode=deleteFailure;res.end(JSON.stringify({error:'Your connection changed. Refresh before disconnecting.'}));return;}
+ if(deleteFailure){res.statusCode=deleteFailure;res.end(JSON.stringify({error:deleteFailure===401?'Unauthorized':'Your connection changed. Refresh before disconnecting.'}));return;}
  rows=rows.map(row=>row.id==='own-account'?{...row,status:'revoked',revision:row.revision+1}:row);
  res.end(JSON.stringify({id:'own-account',status:'revoked',revision:3}));
 });
@@ -72,6 +72,9 @@ try{
  rows=[{...base,id:'own-account',status:'expired',revision:2}];await page.getByRole('button',{name:'Refresh connections'}).click();
  await expect(page.getByText('Connection expired',{exact:true})).toBeVisible();deleteFailure=409;
  await page.getByRole('button',{name:'Disconnect saved access'}).click();await expect(page.getByRole('alert')).toHaveText('Your connection changed. Refresh before disconnecting.');
+ await expect(page.getByRole('button',{name:'Disconnect saved access'})).toHaveCount(0);
+ deleteFailure=0;await page.getByRole('button',{name:'Refresh connections'}).click();await expect(page.getByText('Connection expired',{exact:true})).toBeVisible();
+ deleteFailure=401;await page.getByRole('button',{name:'Disconnect saved access'}).click();await expect(page.getByRole('alert')).toHaveText('Unauthorized');
  await expect(page.getByRole('button',{name:'Disconnect saved access'})).toHaveCount(0);
  deleteFailure=0;await page.getByRole('button',{name:'Refresh connections'}).click();await expect(page.getByText('Connection expired',{exact:true})).toBeVisible();
 
