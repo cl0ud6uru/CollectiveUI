@@ -1,0 +1,15 @@
+# Hermes Team Bot foundation
+
+Team definitions extend `bots`, `bot_access` and `bot_user_access`; they do not create another catalog. Migration `0037_hermes_team_bots` is generated against main's `0036_native_bot_learning` and leaves all existing personal Hermes bindings and volumes intact. No migration enables Team Bots. The application flag `HERMES_TEAM_BOTS_ENABLED=1` must be explicitly configured for synthetic/staging work; the broker has a separate disabled flag in the subsequent runtime increment.
+
+The foundation records maintainers, unique member user×bot profiles, one shared working admin profile, explicit conversation modes, bounded publication captures, immutable-revision storage, resource overrides/conflicts, durable operation receipts and run attribution. Maintainers must be current administrators and explicitly assigned to the bot. Instance ownership and admin oversight never substitute for a shared audience grant. Fresh user/session/bot/audience/maintainer checks protect saved contexts as well as new reservations. The working runtime owner is `team-admin:<botId>` and is never an administrator's personal owner/default profile.
+
+Mode changes create or open separate conversations. They never reclassify private history. Members have private histories and resources; maintainers intentionally share the working profile's native skills and memory. Team transcripts cannot be shared or continued through public snapshot links. Search/sidebar views suppress revoked working contexts. Legacy activity/workspace panels return no Team content; native Team views must be supplied by the scoped runtime adapter.
+
+Existing app connections cannot become a fallback. Direct target resolution blocks Team inference until a verified route exists; groups, delegation, routines, templates and CollectiveUI skill drafting refuse Team definitions. Generic mutation cannot change their app/direct execution/coordinator invariants. Team conversation bindings suppress app memory extraction and the native-harness utility-learning scheduler, recovery queue and worker, including jobs created before a definition changes. Native turns skip app memory embeddings and utility title inference. Hermes remains the learning engine.
+
+## Validation and enablement boundary
+
+`tests/unit/hermes-team-store.test.ts` executes the complete migration journal in disposable embedded PostgreSQL with synthetic users. It covers repeated/concurrent reservations, different users, separate admin contexts, fresh admin and maintainer permissions, audience revocation, disabled flags/definitions, session expiry, retained mapping protection, stale edits, old company-app/group fallback refusal, private saved contexts, durable native-learning guards and revoked search/sidebar previews. No production database, credentials, OAuth, inference or container is used.
+
+This increment is a disabled foundation. It does not enable model/tool gateways, native volume capture/application, automatic rollout or a pilot. Those capabilities require their own broker adapters, independent reviews and explicit bounded upstream verification before the direct admission gate can be removed.

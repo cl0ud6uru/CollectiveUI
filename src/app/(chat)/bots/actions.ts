@@ -63,7 +63,8 @@ async function localEngine(appId: string | null) {
   const [app] = await db.select().from(aiApps).where(eq(aiApps.id, appId));
   return !!app && isLocalHermes(app);
 }
-async function requirePortableEngine(appId: string | null) {
+async function requirePortableEngine(appId: string | null, team = false) {
+  if (team) throw new HttpError(400, "Team Bots use native resources and direct chats only.");
   if (await localEngine(appId)) throw new HttpError(400, "Local Hermes supports its owner's direct chats only. Groups, routines and template sharing are unavailable in this pilot.");
 }
 
@@ -144,7 +145,7 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
   for (const id of input.delegateIds) {
     if (id === botId) continue;
     const delegate = await getAccessibleBot(p, id);
-    await requirePortableEngine(delegate.appId);
+    await requirePortableEngine(delegate.appId, delegate.hermesTeam);
     if (delegate.executionMode === "service") throw new HttpError(400, "Service bots cannot be delegates. Open a direct chat instead.");
     delegates.push(id);
   }
@@ -387,7 +388,7 @@ export async function addKnowledgeFile(botId: string, attachmentId: string) {
   const embeddings = await embedTexts(chunks, { userId: p.user.id, botId }).catch(() => null);
   await db.transaction(async (tx) => {
     const bot = await lockEditableBot(p, botId, tx);
-    await requirePortableEngine(bot.appId);
+    await requirePortableEngine(bot.appId, bot.hermesTeam);
     if (bot.executionMode === "service") throw new HttpError(400, "Service bots do not support knowledge files.");
     await tx.delete(knowledgeChunks).where(and(eq(knowledgeChunks.botId, botId), eq(knowledgeChunks.attachmentId, att.id)));
     for (let i = 0; i < chunks.length; i += 100) {
@@ -413,7 +414,7 @@ export async function removeKnowledgeFile(botId: string, attachmentId: string) {
   await getEditableBot(p, botId);
   await db.transaction(async (tx) => {
     const bot = await lockEditableBot(p, botId, tx);
-    await requirePortableEngine(bot.appId);
+    await requirePortableEngine(bot.appId, bot.hermesTeam);
     if (bot.executionMode === "service") throw new HttpError(400, "Service bots do not support knowledge files.");
     await tx.delete(knowledgeChunks).where(and(eq(knowledgeChunks.botId, botId), eq(knowledgeChunks.attachmentId, attachmentId)));
   });
@@ -444,7 +445,7 @@ export async function saveSkill(raw: z.infer<typeof SkillInput>) {
     if (input.id && !existing) throw new HttpError(404, "Skill not found");
     for (const id of [...new Set([existing?.botId, input.botId].filter((x): x is string => !!x))].sort()) {
       const bot = await lockEditableBot(p, id, tx);
-      await requirePortableEngine(bot.appId);
+      await requirePortableEngine(bot.appId, bot.hermesTeam);
       if (bot.executionMode === "service") throw new HttpError(400, "Service bots do not support editable skills.");
     }
     if (existing) await tx.update(skills).set({ ...input, slug, version: existing.version + 1, updatedAt: new Date() }).where(eq(skills.id, existing.id));
@@ -463,7 +464,7 @@ export async function deleteSkill(id: string) {
     if (!skill) return;
     if (skill.botId) {
       const bot = await lockEditableBot(p, skill.botId, tx);
-      await requirePortableEngine(bot.appId);
+      await requirePortableEngine(bot.appId, bot.hermesTeam);
       if (bot.executionMode === "service") throw new HttpError(400, "Service bots do not support editable skills.");
     }
     await tx.delete(skills).where(and(eq(skills.id, id), eq(skills.ownerId, p.user.id)));
@@ -477,6 +478,8 @@ export async function draftSkillFromConversation(conversationId: string) {
   const { getOwnedConversation } = await import("@/lib/authz");
   const { loadMessageRows, pathTo, partsToText } = await import("@/lib/chat/store");
   const conv = await getOwnedConversation(p, conversationId);
+  const { teamUsesNativeLearning } = await import("@/lib/hermes-team/learning");
+  if (await teamUsesNativeLearning(conv.id)) throw new HttpError(409, "Teach this bot through native chat, then publish the selected skill in Admin mode.");
   const path = pathTo(await loadMessageRows(conv.id), conv.currentLeafId);
   const app = await utilityApp();
   if (!app) throw new HttpError(400, "No utility model configured");
@@ -519,7 +522,7 @@ export async function saveRoutine(raw: z.infer<typeof RoutineInput>) {
   const p = await requirePrincipal();
   const input = RoutineInput.parse(raw);
   const bot = await getAccessibleBot(p, input.botId);
-  await requirePortableEngine(bot.appId);
+  await requirePortableEngine(bot.appId, bot.hermesTeam);
   if (bot.executionMode === "service") throw new HttpError(400, "Service bots can only run in direct chats, not routines.");
   let nextRunAt: Date | null = null;
   if (input.triggerType === "cron") {
@@ -674,7 +677,7 @@ async function createBotFromSnapshot(snap: BotTemplateSnapshot, opts: { name: st
 export async function duplicateBot(botId: string) {
   const p = await requirePrincipal();
   const src = await getAccessibleBot(p, botId);
-  await requirePortableEngine(src.appId);
+  await requirePortableEngine(src.appId, src.hermesTeam);
   const snap = await snapshotBot(src.id);
   const delegates = await db.select().from(botDelegates).where(eq(botDelegates.botId, src.id));
   return createBotFromSnapshot(snap, {
@@ -703,7 +706,7 @@ export async function getBotTemplate(botId: string) {
 export async function createBotTemplate(botId: string) {
   const p = await requirePrincipal();
   const bot = await getEditableBot(p, botId);
-  await requirePortableEngine(bot.appId);
+  await requirePortableEngine(bot.appId, bot.hermesTeam);
   const existing = await getBotTemplate(botId);
   if (existing) return existing;
   const token = newToken();
@@ -714,7 +717,7 @@ export async function createBotTemplate(botId: string) {
 export async function updateBotTemplate(botId: string) {
   const p = await requirePrincipal();
   const bot = await getEditableBot(p, botId);
-  await requirePortableEngine(bot.appId);
+  await requirePortableEngine(bot.appId, bot.hermesTeam);
   const res = await db
     .update(botTemplates)
     .set({ snapshot: await snapshotBot(botId), updatedAt: new Date() })
@@ -810,7 +813,7 @@ export async function createGroupChat(botIds: string[], name?: string) {
   const members = [];
   for (const id of ids) {
     const bot = await getAccessibleBot(p, id);
-    await requirePortableEngine(bot.appId);
+    await requirePortableEngine(bot.appId, bot.hermesTeam);
     if (bot.executionMode === "service") throw new HttpError(400, "Service bots can only run in direct chats.");
     members.push(bot);
   }

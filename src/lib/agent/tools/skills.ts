@@ -7,7 +7,7 @@ import type { AgentCtx, ToolEntry } from "../types";
 import { learnedSkillsForBot, learningIsEnabled } from "../learning/store";
 
 export async function learnedSkillsForTurn(ctx: AgentCtx): Promise<Skill[]> {
-  if (!ctx.bot || ctx.bot.executionMode === "service" || !(await learningIsEnabled(ctx.principal))) return [];
+  if (!ctx.bot || ctx.bot.hermesTeam || ctx.bot.executionMode === "service" || !(await learningIsEnabled(ctx.principal))) return [];
   return learnedSkillsForBot(ctx.bot.id, ctx.principal.user.id);
 }
 

@@ -117,7 +117,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   const start = async () => {
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     const userText = lastUser ? partsToText(lastUser.parts) : "";
-    const memories = !delegated && bot?.executionMode !== "service" && (await memoryEnabled(principal.user.id))
+    const memories = !bot?.hermesTeam && !delegated && bot?.executionMode !== "service" && (await memoryEnabled(principal.user.id))
       ? await selectMemories({ userId: principal.user.id, botId: bot?.id ?? null, query: userText, limit: 15, conversationId: conversation.id }).catch(
           () => [],
         )
@@ -227,7 +227,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
         ? (async () => {
             const fallback = userText.slice(0, 60) || "New chat";
             // Background work only runs on company credentials; without an eligible app, use the text itself.
-            const tApp = await utilityApp(app);
+            const tApp = bot?.hermesTeam ? undefined : await utilityApp(app);
             const title = tApp
               ? await generateTitle(tApp, userText || "Attachment", {
                   userId: principal.user.id,

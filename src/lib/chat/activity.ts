@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { agentRuns, attachments, botTools, conversations, inboxItems, messages, routineRuns, routines } from "@/db/schema";
+import { agentRuns, attachments, bots, botTools, conversations, inboxItems, messages, routineRuns, routines } from "@/db/schema";
 import { sandboxd } from "@/lib/sandbox/client";
 import { userMayUseWorkspace } from "@/lib/sandbox/policy";
 import { findSandbox } from "@/lib/sandbox/store";
@@ -11,6 +11,8 @@ export type BotOutput = { id: string; title: string; href: string; kind: "file";
 
 /** User/bot-scoped work and returned files. Ordinary completed replies remain in the transcript. */
 export async function loadBotActivity(p: Principal, botId: string) {
+  const [bot] = await db.select({ team: bots.hermesTeam }).from(bots).where(eq(bots.id, botId));
+  if (bot?.team) return { state: { working: false, awaitingApproval: false }, activity: [], outputs: [] };
   const scope = and(eq(agentRuns.userId, p.user.id), eq(agentRuns.botId, botId), eq(conversations.userId, p.user.id), eq(conversations.botId, botId));
   const open = inArray(agentRuns.status, ["queued", "running", "waiting", "waiting_tasks"]);
   const latestFailure = and(inArray(agentRuns.status, ["failed", "interrupted"]), sql`not exists (
@@ -79,6 +81,8 @@ export type WorkspacePreview = {
  * acting person's own workspace and their own chats with this bot. No paths or refs leave the server.
  */
 export async function loadWorkspacePreview(p: Principal, botId: string): Promise<WorkspacePreview | null> {
+  const [bot] = await db.select({ team: bots.hermesTeam }).from(bots).where(eq(bots.id, botId));
+  if (bot?.team) return null;
   const [tool] = await db.select({ key: botTools.toolKey }).from(botTools).where(and(eq(botTools.botId, botId), eq(botTools.toolKey, "workspace"))).limit(1);
   if (!tool) return null;
   const settings = await getSetting("sandbox");

@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { aiApps, conversations, memories, users, type AiApp } from "@/db/schema";
 import { embedTexts, resolveModel, utilityApp } from "@/lib/llm";
 import { loadMessageRows, partsToText, pathTo } from "@/lib/chat/store";
+import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
 
 export type MemoryRow = { id: string; content: string; pinned: boolean; botId: string | null };
 
@@ -70,6 +71,7 @@ export async function memoryEnabled(userId: string) {
  * Runs in the worker a few minutes after the last message.
  */
 export async function extractMemoriesFromConversation(conversationId: string) {
+  if (await teamUsesNativeLearning(conversationId)) return 0;
   const [conv] = await db.select().from(conversations).where(eq(conversations.id, conversationId));
   if (!conv || !(await memoryEnabled(conv.userId))) return 0;
   const rows = await loadMessageRows(conversationId);

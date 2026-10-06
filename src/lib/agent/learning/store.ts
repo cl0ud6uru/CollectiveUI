@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
-import { botLearnings, botLearningRevisions, type Skill } from "@/db/schema";
+import { bots, botLearnings, botLearningRevisions, type Skill } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { canEditBot } from "@/lib/bots/service";
 import { getAccessibleBot, HttpError } from "@/lib/authz";
@@ -12,6 +12,8 @@ export const visibleLearningScope = (botId: string, userId: string) => and(
 );
 
 export async function learnedSkillsForBot(botId: string, userId: string): Promise<Skill[]> {
+  const [bot] = await db.select({ team: bots.hermesTeam }).from(bots).where(eq(bots.id, botId));
+  if (bot?.team) return [];
   const rows = await db.select().from(botLearnings).where(and(visibleLearningScope(botId, userId), eq(botLearnings.status, "active"))).orderBy(botLearnings.topic);
   return rows.map(row => ({
     id: row.id, botId, ownerId: row.userId ?? "", slug: `learned-${row.id}`,
@@ -22,6 +24,7 @@ export async function learnedSkillsForBot(botId: string, userId: string): Promis
 
 export async function learningViews(p: Principal, botId: string): Promise<LearningView[]> {
   const bot = await getAccessibleBot(p, botId);
+  if (bot.hermesTeam) return [];
   const rows = await db.select().from(botLearnings).where(visibleLearningScope(botId, p.user.id)).orderBy(desc(botLearnings.updatedAt));
   return rows.filter(row => row.status !== "pending" || row.userId === p.user.id || canEditBot(p, bot)).map(row => ({
     id: row.id, scope: row.userId ? "user" : "bot", status: row.status, content: row.content,
@@ -41,7 +44,7 @@ async function manageableLearning(p: Principal, id: string, tx: Tx) {
   const [row] = await tx.select().from(botLearnings).where(eq(botLearnings.id, id)).for("update");
   if (!row) throw new HttpError(404, "Learning not found.");
   const bot = await getAccessibleBot(p, row.botId, tx);
-  if (bot.executionMode === "service") throw new HttpError(403, "Service bots do not support learned procedures.");
+  if (bot.hermesTeam || bot.executionMode === "service") throw new HttpError(403, "This bot uses its native learning controls.");
   if (row.userId ? row.userId !== p.user.id : !canEditBot(p, bot)) throw new HttpError(403, "You cannot manage this learning.");
   return row;
 }
