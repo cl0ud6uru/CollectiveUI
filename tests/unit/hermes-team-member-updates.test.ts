@@ -124,7 +124,8 @@ describe('Actual PostgreSQL and native filesystem Team cycle', () => {
     const reviewed = await service.preview(alice, 'team'), conflict = reviewed.conflicts[0];
     expect(conflict).toMatchObject({ packageId: 'skills/support', recorded: true });
     await service.resolve(alice, 'team', { ...updateInput(2, 2), packageId: conflict.packageId, choice: 'keep-member', expectedMemberHash: conflict.expectedMemberHash, expectedTeamHash: conflict.expectedTeamHash });
-    expect((await service.preview(alice, 'team')).conflicts).toEqual([]);
+    const kept = await service.preview(alice, 'team');
+    expect(kept.conflicts).toEqual([]); expect(kept.overrides).toMatchObject([{ packageId: 'skills/deleted', choice: 'deleted', recorded: true }, { packageId: 'skills/support', choice: 'keep-member', recorded: true }]);
     expect(await readSkill('alice')).toBe('Alice corrected this procedure privately');
     // Shared rollback publishes the exact immutable old manifest as NEW revision 3; members use the same preservation rules.
     const [old] = await db.select().from(schema.hermesTeamRevisions).where(eq(schema.hermesTeamRevisions.revision, 1));
@@ -149,6 +150,20 @@ describe('Actual PostgreSQL and native filesystem Team cycle', () => {
     expect((await service.preview(alice, 'team', { targetRevision: 1 })).targetRevision).toBe(1);
     await service.update(alice, 'team', updateInput(2, 1)); expect(await readSkill('alice')).toBe('Team support procedure v1');
     expect((await db.select().from(schema.hermesTeamDefinitions))[0].publishedRevision).toBe(2);
+  });
+  it('offers an exact private preview to explicitly reset deleted and kept copies without resurrecting them automatically', async () => {
+    await publishWorking(); await service.update(alice, 'team', updateInput(null));
+    await rm(path.join(roots.get('alice')!, 'skills/support'), { recursive: true });
+    await skillFile(working, 'support', 'Team v2'); await publishWorking(1); await service.update(alice, 'team', updateInput(1));
+    const deleted = (await service.preview(alice, 'team')).overrides[0]; expect(deleted).toMatchObject({ choice: 'deleted', memberResources: [], recorded: true });
+    await service.resolve(alice, 'team', { ...updateInput(2, 2), packageId: deleted.packageId, choice: 'use-team', expectedMemberHash: deleted.expectedMemberHash, expectedTeamHash: deleted.expectedTeamHash });
+    expect(await readSkill('alice')).toBe('Team v2'); expect((await service.preview(alice, 'team')).overrides).toEqual([]);
+    await skillFile(roots.get('alice')!, 'support', 'Private correction'); await skillFile(working, 'support', 'Team v3'); await publishWorking(2); await service.update(alice, 'team', updateInput(2));
+    const conflict = (await service.preview(alice, 'team')).conflicts[0];
+    await service.resolve(alice, 'team', { ...updateInput(3, 3), packageId: conflict.packageId, choice: 'keep-member', expectedMemberHash: conflict.expectedMemberHash, expectedTeamHash: conflict.expectedTeamHash });
+    const kept = (await service.preview(alice, 'team')).overrides[0]; expect(kept.choice).toBe('keep-member');
+    await service.resolve(alice, 'team', { ...updateInput(3, 3), packageId: kept.packageId, choice: 'use-team', expectedMemberHash: kept.expectedMemberHash, expectedTeamHash: kept.expectedTeamHash });
+    expect(await readSkill('alice')).toBe('Team v3'); expect((await service.preview(alice, 'team')).overrides).toEqual([]);
   });
 });
 

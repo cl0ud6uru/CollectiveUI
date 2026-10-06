@@ -64,10 +64,10 @@ async function snapshotAt(tx: Tx, botId: string, value: number): Promise<TeamRes
   if (snapshot.manifestHash !== row.hash) throw new HttpError(503, 'The Team revision needs attention.');
   return snapshot;
 }
-/** Shared lock order with provisioning/publication: account, bot, definition, private profile, operation. */
+/** Shared lock order with audience/security mutations: bot, account, definition, private profile, operation. */
 async function lockedMember(p: Principal, botId: string, tx: Tx) {
-  await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
   await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, botId)).for('update');
+  await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
   await tx.select({ id: hermesTeamDefinitions.botId }).from(hermesTeamDefinitions).where(eq(hermesTeamDefinitions.botId, botId)).for('update');
   const access = await authorizeTeam(p, botId, 'member', tx);
   const [profile] = await tx.select().from(hermesTeamProfiles).where(and(eq(hermesTeamProfiles.botId, botId), eq(hermesTeamProfiles.userId, p.user.id), eq(hermesTeamProfiles.mode, 'member'))).for('update');
@@ -89,13 +89,18 @@ function privateConflicts(plan: TeamResourceUpdatePlan, states: MemberAccess['st
       memberResources: action.memberResources, teamResources: action.teamResources,
       recorded: states.some(state => state.packageId === action.packageId && state.conflictRevision !== null) }));
 }
+function privateOverrides(plan: TeamResourceUpdatePlan, states: MemberAccess['states']) {
+  return plan.actions.filter(action => states.some(state => state.packageId === action.packageId && ['keep', 'deleted'].includes(state.override ?? '')))
+    .map(action => ({ packageId: action.packageId, choice: states.find(state => state.packageId === action.packageId)?.override === 'deleted' ? 'deleted' as const : 'keep-member' as const,
+      expectedMemberHash: action.beforeHash, expectedTeamHash: action.teamHash, memberResources: action.memberResources, teamResources: action.teamResources, recorded: true as const }));
+}
 function previewResult(access: MemberAccess, targetRevision: number, plan?: TeamResourceUpdatePlan, pending?: Operation) {
   const data = pending ? operationData(pending) : undefined;
   return { installedRevision: access.profile.installedRevision, targetRevision, publishedRevision: access.definition.publishedRevision,
     state: access.profile.state, nativeUpdatesSupported: true,
     ...(pending && data ? { pendingRequestId: pending.requestId, pendingRequest: { kind: data.kind, input: data.input } } : {}),
     changes: plan?.actions.filter(action => action.reason !== 'independent-learning').map(action => ({ packageId: action.packageId, action: action.action, reason: action.reason })) ?? [],
-    conflicts: plan ? privateConflicts(plan, access.states) : [] };
+    conflicts: plan ? privateConflicts(plan, access.states) : [], overrides: plan ? privateOverrides(plan, access.states) : [] };
 }
 export type MemberUpdatePreview = ReturnType<typeof previewResult>;
 
