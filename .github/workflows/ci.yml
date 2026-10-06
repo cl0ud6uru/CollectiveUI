@@ -78,6 +78,19 @@ jobs:
           python tests/fixtures/docker-hermes-network.py
           python tests/fixtures/hermes-team-native-contract.py
           python tests/fixtures/hermes-team-pinned-bridge.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: python -m pip install -r tests/fixtures/hermes-team-candidate-requirements.txt
+      - name: Require pinned native SDK clients against production candidate handlers (synthetic upstreams only)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          test -d "$HERMES_SOURCE"
+          npx vitest run --project unit tests/unit/hermes-team-candidate-adapters.test.ts -t 'actual pinned'
 
   hermes-team-image:
     name: Official pinned image · offline Team resource helper

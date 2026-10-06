@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, type DbOrTx } from '@/db';
-import { agentRuns, botAccess, botUserAccess, bots, hermesTeamDefinitions, hermesTeamMaintainers, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
+import { agentRuns, botAccess, botUserAccess, bots, hermesTeamCandidateContexts, hermesTeamDefinitions, hermesTeamMaintainers, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { dockerControl } from '@/lib/docker-hermes/client';
 import { OPEN_STATUSES } from '@/lib/runs/types';
@@ -41,6 +41,8 @@ export async function queueTeamAccessReconciliation(q: DbOrTx, botId: string, ac
       await q.insert(hermesTeamOperations).values({ botId, profileId: profile.id, actorId, requestId, kind: 'revoke', digest: digest(value), result: value }).onConflictDoNothing();
       // A queued/waiting approval cannot continue while runtime reconciliation is pending or unavailable.
       await q.update(agentRuns).set({ cancelRequestedAt: new Date() }).where(and(eq(agentRuns.botId, botId), eq(agentRuns.userId, userId), inArray(agentRuns.status, [...OPEN_STATUSES])));
+      // Gateway grants are server-owned and revoke in the same transaction as audience/session changes.
+      await q.update(hermesTeamCandidateContexts).set({ revokedAt: new Date() }).where(and(eq(hermesTeamCandidateContexts.botId,botId),eq(hermesTeamCandidateContexts.actorId,userId)));
       // Shared admin profile state belongs to all maintainers, so one removed actor does not revoke their retained profile.
       if (profile.mode === 'member' || !definition.enabled || !bot.enabled || options.force) {
         const profileAllowed = profile.mode === 'member' ? allowed : bot.enabled && definition.enabled && maintainerIds.length > 0;

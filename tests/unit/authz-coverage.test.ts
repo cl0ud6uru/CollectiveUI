@@ -26,6 +26,8 @@ function urlOf(file: string) {
 
 // Public routes and actions that intentionally run without a session, and how each one authenticates instead.
 const PUBLIC_HANDLERS: Record<string, string> = {
+  "/api/hermes-team/native/[contextId]/model/[purpose]/[...operation]": "Opaque per-run, per-purpose native grant plus fresh server-owned Team authorization; empty verified registry denies dispatch",
+  "/api/hermes-team/native/[contextId]/mcp": "Opaque per-run native tool grant plus fresh Team, adapter, connector, action/resource and approval checks",
   "/api/auth/ldap-security": "Same-origin, rate-limited, browser-bound LDAP recovery and passkey challenges; no session",
   "/api/auth/local-security": "Same-origin, rate-limited, browser-bound factor challenges and tickets only; no session",
   "/api/auth/[...nextauth]": "Auth.js sign-in endpoints",

@@ -20,6 +20,13 @@ export type TeamBinding = DockerBinding & { purpose: 'team-member' | 'team-admin
 export const teamAuthorization = z.object({ teamBotId, mode: teamMode, modelPolicy: teamModelPolicy }).strict();
 export const teamEnsure = z.object({ teamBotId, mode: teamMode, name: z.string().trim().min(1).max(80) }).strict();
 export const teamScope = z.object({ teamBotId, mode: teamMode }).strict();
+const candidateUrl=z.string().url().max(2048).refine(value=>{const u=new URL(value);return u.protocol==='https:' && !u.username && !u.password && !u.search && !u.hash;});
+const candidateToken=z.string().regex(/^[a-f0-9]{64}$/);
+export const teamCandidateConfig=teamScope.extend({bindingId:z.string().regex(/^[a-f0-9]{32}$/),contextId:ownerId,runId:ownerId,
+  expiresAt:z.number().finite(),model:z.string().min(1).max(200),adapterId:z.enum(['collective-openai-chat-v1','collective-openai-responses-v1','collective-codex-responses-v1']),
+  modelBaseUrls:z.object({reply:candidateUrl,learning:candidateUrl,utility:candidateUrl,subagent:candidateUrl}).strict(),
+  modelTokens:z.object({reply:candidateToken,learning:candidateToken,utility:candidateToken,subagent:candidateToken}).strict(),toolUrl:candidateUrl,toolToken:candidateToken}).strict();
+export type TeamCandidateConfig=z.infer<typeof teamCandidateConfig>;
 export type TeamGrant = { grantId: string; expiresAt: number };
 const safeRelativeResource = z.string().min(1).max(256).refine(value => new TextEncoder().encode(value).length <= 256
   && !/[\\%\x00-\x1f\x7f]/.test(value) && !value.startsWith('/') && !/^[A-Za-z]:/.test(value)

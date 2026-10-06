@@ -3,7 +3,7 @@
  * route must authenticate on its own (e.g. the routine webhook's HMAC/bearer check).
  * tests/unit/authz-coverage.test.ts keeps this list, proxy.ts and the route handlers in sync.
  */
-export const PUBLIC_PREFIXES = ["/login", "/api/auth", "/api/routines/webhook", "/api/health"] as const;
+export const PUBLIC_PREFIXES = ["/login", "/api/auth", "/api/routines/webhook", "/api/health", "/api/hermes-team/native"] as const;
 
 export const PUBLIC_PATHS = ["/api/branding/logo", "/api/branding/login-pet", "/api/mobile/info", "/api/mobile/auth/token"] as const;
 

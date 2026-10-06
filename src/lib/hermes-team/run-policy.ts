@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '@/db';
+import { db, type Tx } from '@/db';
 import { agentRuns, bots, hermesTeamChats, hermesTeamProfiles, hermesTeamRunAttribution } from '@/db/schema';
 import type { Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
@@ -7,11 +7,12 @@ import { HERMES_COMMIT } from '@/local-hermes/config';
 import { authorizeTeam } from './store';
 import { evaluateTeamModelAccess, VERIFIED_TEAM_MODEL_ROUTES, type TeamModelPurpose, type VerifiedTeamModelRoute } from './model-policy';
 import { TeamRunAdmissionDetailsSchema } from './run-attribution';
+import { loadTeamPersonalAccess } from './personal-access';
 
 /** Gateway-only admission. The profile, human, bot and version are derived from the persisted run and chat. */
 export async function recordTeamRunAdmission(p: Principal, runId: string, purpose: TeamModelPurpose, routes: readonly VerifiedTeamModelRoute[] = VERIFIED_TEAM_MODEL_ROUTES,
-  receipts: { usageReceiptId?: string; gatewayGrantId?: string } = {}) {
-  return db.transaction(async tx => {
+  receipts: { usageReceiptId?: string; gatewayGrantId?: string; choice?: 'default' | 'personal' } = {}, transaction?: Tx) {
+  const admit = async (tx: Tx) => {
     const [run] = await tx.select().from(agentRuns).where(eq(agentRuns.id, runId));
     if (!run || run.userId !== p.user.id || !run.botId) throw new HttpError(404, 'Team run not found.');
     await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, run.botId)).for('update');
@@ -24,12 +25,12 @@ export async function recordTeamRunAdmission(p: Principal, runId: string, purpos
       throw new HttpError(404, 'Team run context not found.');
     const auth = await authorizeTeam(p, run.botId, chat.mode, tx);
     if (lockedRun.cancelRequestedAt || !['queued','running','waiting'].includes(lockedRun.status)) throw new HttpError(409, 'This Team run is no longer admissible.');
-    const decision = evaluateTeamModelAccess({ userId: auth.principal.user.id, botId: run.botId, runId, purpose }, {
+    const personalRoute = routes.find(route => route.id === auth.definition.modelPolicy.personalRouteId);
+    const decision = evaluateTeamModelAccess({ userId: auth.principal.user.id, botId: run.botId, runId, purpose, choice: receipts.choice }, {
       userId: auth.principal.user.id, botId: run.botId, userEnabled: !auth.principal.user.disabled,
       botEnabled: auth.bot.enabled && auth.definition.enabled, audienceAllowed: true,
       policyVersion: auth.definition.version, hermesRevision: HERMES_COMMIT, policy: auth.definition.modelPolicy,
-      // Native Codex and official ChatGPT plan connections require different tested bridges. Neither is installed here.
-      personalConnection: null,
+      personalConnection: personalRoute ? await loadTeamPersonalAccess(auth.principal, personalRoute.integration, tx) : null,
     }, routes);
     if (decision.status !== 'ready') throw new HttpError(decision.status === 'blocked' ? 403 : 409, decision.message);
     if (!profile.binding || profile.state !== 'ready') throw new HttpError(409, 'Finish preparing or recovering this private Team profile before starting model work.');
@@ -53,5 +54,6 @@ export async function recordTeamRunAdmission(p: Principal, runId: string, purpos
       if (!prior.data.purposes[purpose]) await tx.update(hermesTeamRunAttribution).set({ admission: { ...prior.data, purposes: { ...prior.data.purposes, ...details.purposes } } }).where(eq(hermesTeamRunAttribution.runId, runId));
     } else await tx.insert(hermesTeamRunAttribution).values({ ...values, admission: details });
     return decision.attribution;
-  });
+  };
+  return transaction ? admit(transaction) : db.transaction(admit);
 }

@@ -5,7 +5,9 @@ import { redactSecrets } from "@/lib/redact";
 import { identityClaims, openIdentitySecret, signIdentity, type IdentitySubject, type ServiceIdentity } from "./identity";
 import { checkMcpUrl } from "./url";
 
-export type McpCaller = { subject: IdentitySubject; botId?: string | null; conversationId?: string | null; service?: ServiceIdentity };
+export type McpCaller = { subject: IdentitySubject; botId?: string | null; conversationId?: string | null; service?: ServiceIdentity;
+  /** Native Team adapters must reauthorize every transport request, including initialize and continuation. */
+  authorize?: () => Promise<McpCaller> };
 
 export const MCP_CLIENT_NAME = "ai-portal";
 
@@ -23,12 +25,13 @@ export function mcpFetch(server: Pick<McpServer, "id" | "url" | "identityHeader"
   const origin = new URL(server.url).origin;
   const secret = server.identityHeader ? openIdentitySecret(server) : null;
   return async (input, init) => {
+    const current = caller.authorize ? await caller.authorize() : caller;
     const target = new URL(input instanceof Request ? input.url : String(input));
     if (target.origin !== origin) throw new Error(`Refusing to send an MCP request to ${target.origin}: it isn't the server's origin`);
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
     new Headers(init?.headers).forEach((v, k) => headers.set(k, v));
     if (secret && server.identityHeader) {
-      const claims = identityClaims(caller.subject, { audience: server.url, botId: caller.botId, conversationId: caller.conversationId, service: caller.service });
+      const claims = identityClaims(current.subject, { audience: server.url, botId: current.botId, conversationId: current.conversationId, service: current.service });
       headers.set(server.identityHeader, signIdentity(claims, secret));
     }
     return fetch(input, { ...init, headers, redirect: "error" });

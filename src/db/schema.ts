@@ -1496,3 +1496,51 @@ export const hermesTeamRunAttribution = pgTable('hermes_team_run_attribution', {
   and ((${t.admission}->'purposes') - array['reply','learning','utility','subagent']) = '{}'::jsonb
   and (${t.admission} - array['version','routeId','adapterId','integration','model','billing','connectionId','gatewayGrantId','evidence','purposes']) = '{}'::jsonb
 ) is true`)]);
+
+/** Unregistered native gateway candidates. Opaque grant hashes only; provider credentials never enter these rows. */
+export const hermesTeamCandidateContexts = pgTable('hermes_team_candidate_contexts', {
+  id: id(), runId: text('run_id').notNull().references(() => agentRuns.id, { onDelete: 'restrict' }),
+  botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  actorId: text('actor_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  sessionVersion: integer('session_version').notNull(), definitionVersion: integer('definition_version').notNull(),
+  teamRevision: integer('team_revision'), mode: text('mode').$type<'member' | 'admin'>().notNull(),
+  modelRoute: jsonb('model_route').$type<import('../lib/hermes-team/model-policy').VerifiedTeamModelRoute>().notNull(),
+  personalConnectionId: text('personal_connection_id'), bindingHash: text('binding_hash').notNull(),
+  modelTokens: jsonb('model_tokens').$type<Record<import('../lib/hermes-team/model-policy').TeamModelPurpose, string>>().notNull(),
+  toolTokenHash: text('tool_token_hash').notNull(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }), createdAt: createdAt(),
+}, t => [uniqueIndex('hermes_team_candidate_run_idx').on(t.runId), uniqueIndex('hermes_team_candidate_profile_active_idx').on(t.profileId).where(sql`${t.revokedAt} is null`),
+  check('hermes_team_candidate_mode_check', sql`${t.mode} in ('member','admin')`),
+  check('hermes_team_candidate_route_bound', sql`jsonb_typeof(${t.modelRoute}) = 'object' and octet_length(${t.modelRoute}::text) <= 8192`),
+  check('hermes_team_candidate_context_versions_check', sql`${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
+  check('hermes_team_candidate_context_hash_check', sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.toolTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_context_tokens_bound', sql`jsonb_typeof(${t.modelTokens}) = 'object' and octet_length(${t.modelTokens}::text) <= 512`)]);
+
+export const hermesTeamCandidateRequests = pgTable('hermes_team_candidate_requests', {
+  id: id(), contextId: text('context_id').notNull().references(() => hermesTeamCandidateContexts.id, { onDelete: 'restrict' }),
+  requestId: text('request_id').notNull(), kind: text('kind').$type<'model' | 'tool'>().notNull(),
+  purpose: text('purpose').$type<import('../lib/hermes-team/model-policy').TeamModelPurpose | null>(),
+  inputHash: text('input_hash').notNull(), outputReserved: integer('output_reserved').notNull().default(0),
+  inputReservedBytes:integer('input_reserved_bytes').notNull().default(0),
+  state: text('state').$type<'reserved' | 'running' | 'complete' | 'needs_attention'>().notNull().default('reserved'),
+  /** Private bounded response replay; never exposed in rollout or maintainer views. */
+  response: jsonb('response').$type<{ status: number; contentType: string; body: string }>(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_candidate_request_idx').on(t.contextId, t.kind, t.requestId),
+  check('hermes_team_candidate_request_kind_check', sql`${t.kind} in ('model','tool')`),
+  check('hermes_team_candidate_request_state_check', sql`${t.state} in ('reserved','running','complete','needs_attention')`),
+  check('hermes_team_candidate_request_reserve_check', sql`${t.outputReserved} between 0 and 256 and ${t.inputReservedBytes} between 0 and 64000`),
+  check('hermes_team_candidate_request_hash_check', sql`${t.inputHash} ~ '^[a-f0-9]{64}$' and length(${t.requestId}) between 1 and 100`),
+  check('hermes_team_candidate_request_response_bound', sql`${t.response} is null or (jsonb_typeof(${t.response}) = 'object' and octet_length(${t.response}::text) <= 12582912)`),
+  check('hermes_team_candidate_request_purpose_check', sql`${t.purpose} is null or ${t.purpose} in ('reply','learning','utility','subagent')`)]);
+
+export const hermesTeamCandidateApprovals = pgTable('hermes_team_candidate_approvals', {
+  id: id(), contextId: text('context_id').notNull().references(() => hermesTeamCandidateContexts.id, { onDelete: 'restrict' }),
+  inputHash: text('input_hash').notNull(), attribution: jsonb('attribution').$type<import('../lib/hermes-team/tool-policy').TeamToolAttribution>().notNull(),
+  input: jsonb('input').$type<unknown>().notNull(),
+  state: text('state').$type<'pending' | 'approved' | 'rejected' | 'consumed'>().notNull().default('pending'),
+  requestId: text('request_id'), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_candidate_approval_request_idx').on(t.contextId,t.requestId),check('hermes_team_candidate_approval_state_check', sql`${t.state} in ('pending','approved','rejected','consumed')`),
+  check('hermes_team_candidate_approval_attribution_bound', sql`jsonb_typeof(${t.attribution}) = 'object' and octet_length(${t.attribution}::text) <= 8192`),
+  check('hermes_team_candidate_approval_input_bound', sql`octet_length(${t.input}::text) <= 128000 and ${t.inputHash} ~ '^[a-f0-9]{64}$'`)]);

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { LocalController, LocalError } from '../local-hermes/controller';
 import { runtimeKey, BrokerConfig, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver } from './docker';
 import { bindingSchema, ownerId, runtimeOwnerId, phases, profileName, teamAuthorization, teamEnsure, teamScope, teamResourceSelection,
-  type DockerBinding, type DockerStatus, type TeamBinding, type TeamMode, type TeamGrant, type TeamModelPolicy } from './types';
+  teamCandidateConfig, type TeamCandidateConfig, type DockerBinding, type DockerStatus, type TeamBinding, type TeamMode, type TeamGrant, type TeamModelPolicy } from './types';
 import { beginResourceUpdate, type TeamResourceUpdatePlan } from '../lib/hermes-team/updates';
 import { validateTeamResourceSnapshot } from '../lib/hermes-team/resources';
 import { codexAction, codexStatus, codexStates, type CodexStatus } from './oauth';
@@ -37,6 +37,30 @@ const teamProfile = (owner: string, bot: string, mode: TeamMode) => `cui-team-${
 
 /** Durable control journal is outside every native container. Profiles cannot edit their app binding. */
 export class DockerBroker {
+  /** Candidate grants exist only in broker memory. Never persist them in readable native profiles or state JSON. */
+  private candidateConfigs=new Map<string,{actor:string;config:TeamCandidateConfig;controller:LocalController}>();
+  prepareTeamCandidate(actor:string,raw:unknown,grantId:string){
+    const config=teamCandidateConfig.parse(raw);
+    const binding=this.teamBinding(actor,config.teamBotId,config.mode,grantId);
+    if(binding.bindingId!==config.bindingId || config.expiresAt<=Date.now() || config.expiresAt>Date.now()+120_000)throw new LocalError(409,'Invalid native Team candidate context.');
+    const prior=this.candidateConfigs.get(binding.bindingId);
+    if(prior && prior.config.expiresAt>Date.now() && (prior.actor!==actor || prior.config.contextId!==config.contextId))throw new LocalError(409,'Another native Team context holds this profile.');
+    if (!this.driver.candidateTransport) throw new LocalError(409, 'The native candidate bootstrap is unavailable.');
+    // Construct the actual native-run consumer, but never call start(). Production chat admission still denies Team runs.
+    // A future verified route must validate the whole native lifecycle before this dormant controller may be started.
+    const transport=this.driver.candidateTransport(binding.ownerId,binding.profile,binding.identity,config);
+    const dir=path.join(this.config.stateDir,runtimeKey(binding.ownerId),binding.bindingId,'candidate');
+    mkdirSync(dir,{recursive:true,mode:0o700});
+    const controller=new LocalController({trust:'single-user-exclusive-profile',source:'/opt/hermes',python:'/opt/hermes/.venv/bin/python',
+      profileHome:`/opt/data/profiles/${binding.profile}`,workDir:`/opt/data/profiles/${binding.profile}/workspace`,accountHome:'/opt/data/home',
+      stateDir:dir,socketPath:this.config.socketPath,label:'Team Docker Hermes candidate'}, {
+        validate:async()=>{this.teamBinding(actor,config.teamBotId,config.mode,grantId);if(config.expiresAt<=Date.now() || !await this.driver.running(binding.ownerId))throw new LocalError(409,'The native Team candidate context expired.');},
+        transport:()=>transport,
+      });
+    this.candidateConfigs.set(binding.bindingId,{actor,config,controller});
+    // Preparing adapter configuration is not runtime/model admission. controller() and forTeamRequest() still refuse it.
+    return {prepared:true,modelAccessAvailable:false};
+  }
   private states = new Map<string, Stored>();
   private jobs = new Map<string, Promise<void>>();
   private creationJobs = new Set<string>();
@@ -287,6 +311,7 @@ export class DockerBroker {
     try { return await job; } finally { this.revokeJobs.delete(jobKey); }
   }
   private async revokeTeamScope(actor: string, scope: { teamBotId: string; mode: TeamMode }) {
+    for(const [id,value] of this.candidateConfigs)if(value.actor===actor && value.config.teamBotId===scope.teamBotId && value.config.mode===scope.mode)this.candidateConfigs.delete(id);
     const owner = teamOwner(actor, scope.teamBotId, scope.mode);
     const hadGrant = [...this.teamGrants.values()].some(grant => grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode);
     for (const [id, grant] of this.teamGrants) if (grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode) this.teamGrants.delete(id);

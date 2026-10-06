@@ -1,6 +1,7 @@
 """Allowlisted bridge for pinned official Hermes. No arbitrary paths or RPC from HTTP."""
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -846,7 +847,7 @@ def assert_no_other_native(name, home):
                          '/hermes_cli/' in a or '/tui_gateway/' in a for a in argv)
             if '/opt/collective-bridge.py' in argv:
                 at = argv.index('/opt/collective-bridge.py')
-                if argv[at + 1:at + 3] == ['gateway', name]:
+                if argv[at + 1] in ('gateway', 'gateway-candidate') and argv[at + 2] == name:
                     raise ValueError('profile already has a native process')
                 continue  # separate broker-owned profiles hold their own inode locks
             if not native:
@@ -950,18 +951,24 @@ def main():
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             result = profile_codex(sys.argv[2], sys.argv[3], data)
         print(json.dumps(result))
-    elif op == 'gateway':
+    elif op in ('gateway', 'gateway-candidate'):
         name, expected = sys.argv[2:4]
         # Empty local auth alone is insufficient: pinned Hermes falls back to root auth.
         # No Team route is admitted until replies, helpers, learning and subagents are verified.
         parts, identity = profile(name)
+        candidate = op == 'gateway-candidate'
+        is_team = False
         with directory(parts) as team_fd:
             try:
                 read_at(team_fd, TEAM_MARKER, strict=True)
             except FileNotFoundError:
                 pass  # Existing personal profiles retain their native names and behavior.
             else:
-                raise ValueError('Team inference route is unverified')
+                is_team = True
+                if not candidate:
+                    raise ValueError('Team inference route is unverified')
+        if candidate and not is_team:
+            raise ValueError('Candidate bootstrap requires a retained Team profile')
         if identity != expected:
             raise ValueError('profile identity changed')
         home = ROOT.joinpath(*parts)
@@ -981,6 +988,21 @@ def main():
         # No browser text is interpolated into this registration.
         import hermes_bootstrap
         hermes_bootstrap.harden_import_path()
+        if candidate:
+            # Only the protected broker emits this first stdin frame. Skill files never supply bootstrap code.
+            raw = sys.stdin.readline(65537)
+            if len(raw.encode('utf-8')) > 65536 or not raw.endswith('\n'):
+                raise ValueError('Invalid bounded candidate bootstrap')
+            payload = json.loads(raw)
+            if set(payload) != {'config', 'code', 'codeHash', 'contract'} or payload['contract']['revision'] != COMMIT:
+                raise ValueError('Unsupported candidate bootstrap contract')
+            if hashlib.sha256(payload['code'].encode('utf-8')).hexdigest() != payload['codeHash']:
+                raise ValueError('Candidate bootstrap content changed')
+            if payload['config']['expiresAt'] <= int(time.time() * 1000):
+                raise ValueError('Candidate bootstrap grant expired')
+            namespace = {'__name__': '_collective_team_candidate'}
+            exec(compile(payload['code'], '<trusted-collective-team-candidate>', 'exec'), namespace)
+            namespace['install_candidate_process'](payload['config'], SOURCE, payload['contract']['sourceHashes'])
         from tui_gateway import server as _collective_server
 
         # The worker proof covers in-process native threads only. Refuse unsupported

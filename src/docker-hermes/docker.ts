@@ -12,6 +12,8 @@ import type { ProfileSettings, ProfileUpdate, ProfileTestResult } from './settin
 import { networkMode, connectivityCode, type NetworkMode, type Connectivity, type NetworkMigration } from './network';
 import { buildResourceHelper } from './resource-bundle';
 import type { ResourceHelperRequest } from './resource-helper';
+import { candidateBootstrap } from './candidate-bundle';
+import type { TeamCandidateConfig } from './types';
 import { beginResourceUpdate, type TeamResourceUpdatePlan, type ResourceUpdateReceipt } from '../lib/hermes-team/updates';
 import { validateTeamResourceSnapshot } from '../lib/hermes-team/resources';
 export const RESOURCE_PROTOCOL_BYTES = 160 * 1024 * 1024;
@@ -65,6 +67,8 @@ export interface RuntimeDriver {
   rollbackNetwork?(owner: string, migration: NetworkMigration): Promise<void>;
   connectivity?(owner: string, provider: Connectivity['provider']): Promise<Connectivity['code']>;
   transport(owner: string, profile: string, identity: string): RpcTransport;
+  /** Dormant candidate transport. Preparing this never starts a gateway or admits model work. */
+  candidateTransport?(owner: string, profile: string, identity: string, config: TeamCandidateConfig): RpcTransport;
 }
 
 /** The only module that can call Docker. No browser-supplied argv, env, mounts or image names. */
@@ -535,5 +539,17 @@ export class DockerDriver implements RuntimeDriver {
       // Killing docker exec alone doesn't stop descendants. Stop the user's entire owned container;
       // sibling profiles get interrupted receipts, retain native sessions and restart explicitly.
       stop: () => this.stop(owner) };
+  }
+  candidateTransport(owner: string, profile: string, identity: string, config: TeamCandidateConfig): RpcTransport {
+    const bootstrap = candidateBootstrap(config);
+    return { spawn: () => {
+      if (config.expiresAt <= Date.now()) throw new LocalError(409, 'The native candidate grant expired.');
+      const child = spawn('/usr/local/bin/docker', this.argv(owner, ['gateway-candidate', profile, identity]),
+        { env: ENV, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      // Trusted configuration precedes RPC frames. It never appears in argv, env, native files or state journals.
+      child.stdin.on('error', () => {});
+      child.stdin.write(bootstrap);
+      return child;
+    }, stop: () => this.stop(owner) };
   }
 }
