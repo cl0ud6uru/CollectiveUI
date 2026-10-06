@@ -206,6 +206,21 @@ describe('Team Bot server capability policy persistence and lifecycle wiring', (
     await expect(authorizeTeam(alice, 'team', 'member')).rejects.toMatchObject({ status: 403 });
     expect(fixture.revoke).toHaveBeenCalledTimes(1);
   });
+  it('blocks first conversion while ordinary work or approvals are open, including a disabled Team definition', async () => {
+    await db.insert(schema.bots).values({ id: 'ordinary', ownerId: 'admin', name: 'Ordinary', appId: 'old-app' });
+    await db.insert(schema.conversations).values({ id: 'ordinary-history', userId: 'alice', botId: 'ordinary' });
+    await db.insert(schema.agentRuns).values({ id: 'ordinary-work', userId: 'alice', botId: 'ordinary', conversationId: 'ordinary-history', messageId: 'ordinary-message', status: 'queued' });
+    for (const status of ['queued', 'running', 'waiting', 'waiting_tasks'] as const) {
+      await db.update(schema.agentRuns).set({ status }).where(eq(schema.agentRuns.id, 'ordinary-work'));
+      for (const enabled of [false, true])
+        await expect(configureTeam(admin, 'ordinary', { ...config, enabled, modelPolicy: { mode: 'personal_required' } })).rejects.toMatchObject({ status: 409 });
+    }
+    expect((await db.select().from(schema.bots).where(eq(schema.bots.id, 'ordinary')))[0].hermesTeam).toBe(false);
+    expect(await db.select().from(schema.hermesTeamDefinitions).where(eq(schema.hermesTeamDefinitions.botId, 'ordinary'))).toEqual([]);
+    expect((await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, 'ordinary-work')))[0].cancelRequestedAt).toBeNull();
+    expect(await db.select().from(schema.conversations).where(eq(schema.conversations.id, 'ordinary-history'))).toHaveLength(1);
+    expect(fixture.revoke).not.toHaveBeenCalled();
+  });
   it('actual admin disable action reconciles retained Team work and creates durable interruption receipts', async () => {
     await runFor(alice, 'active');
     await setBotEnabled('team', false);

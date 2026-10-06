@@ -45,7 +45,8 @@ export async function configureTeam(p: Principal, botId: string, raw: unknown) {
     const [bot] = await tx.select().from(bots).where(eq(bots.id, botId)).for('update');
     if (!bot) throw new HttpError(404, 'Bot not found');
     const [active] = await tx.select({ id: agentRuns.id }).from(agentRuns).where(and(eq(agentRuns.botId, botId), inArray(agentRuns.status, [...OPEN_STATUSES]))).limit(1);
-    if (active && input.enabled) throw new HttpError(409, 'Finish active bot work and approvals before changing its Team configuration.');
+    // First conversion cannot inherit ordinary work. Only an existing Team definition may be disabled during work.
+    if (active && (!bot.hermesTeam || input.enabled)) throw new HttpError(409, 'Finish active bot work and approvals before changing its Team configuration.');
     if (bot.executionMode !== 'caller' || bot.coordinatorEligible || bot.isCoordinator) throw new HttpError(400, 'Team Bots support direct chats only.');
     const [app] = bot.appId ? await tx.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
     if (app && (app.providerConfig.docker !== undefined || app.providerConfig.local !== undefined || app.providerConfig.managed !== undefined))
