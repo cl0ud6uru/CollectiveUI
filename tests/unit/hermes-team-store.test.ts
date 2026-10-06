@@ -2,8 +2,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}) }));
-vi.mock('@/lib/jobs', () => ({ scheduleMemoryExtraction: fixture.schedule }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn() }));
+vi.mock('@/lib/jobs', () => ({ scheduleMemoryExtraction: fixture.schedule, enqueue: fixture.enqueue, QUEUES: { learningReview: 'learning.review' } }));
+vi.mock('@/lib/llm', async original => ({ ...await original<typeof import('@/lib/llm')>(), utilityApp: fixture.utility }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'); const { drizzle } = await import('drizzle-orm/pglite'); const schema = await import('@/db/schema');
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
@@ -17,6 +18,8 @@ import { resolveTurnTarget } from '@/lib/agent/target';
 import { afterAssistantSaved } from '@/lib/agent/persist';
 import { extractMemoriesFromConversation } from '@/lib/agent/memory';
 import { loadGroupMembers } from '@/lib/agent/group';
+import { scheduleLearningReview, recoverLearningReviews, reviewNativeRun } from '@/lib/agent/learning/review';
+import { learnedSkillsForBot, learningViews } from '@/lib/agent/learning/store';
 let admin: Principal, alice: Principal, bob: Principal;
 beforeAll(async () => {
   await fixture.client!.waitReady;
@@ -25,6 +28,8 @@ beforeAll(async () => {
 }, 45000);
 beforeEach(async () => {
   fixture.schedule.mockClear();
+  fixture.enqueue.mockClear(); fixture.utility.mockReset();
+  fixture.utility.mockImplementation(() => { throw new Error('Company utility access is forbidden in this Team fixture.'); });
   vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1');
   await fixture.client!.exec('TRUNCATE users, ai_apps, settings CASCADE');
   await db.insert(schema.users).values([
@@ -125,5 +130,28 @@ describe('disabled Team Bot schema and fresh authorization', () => {
     expect(await filterTeamConversationViews(admin, rows, r => r.id)).toEqual(rows);
     await db.delete(schema.hermesTeamMaintainers).where(eq(schema.hermesTeamMaintainers.userId, 'admin'));
     expect(await filterTeamConversationViews(admin, rows, r => r.id)).toEqual([rows[1]]);
+  });
+  it('blocks native-harness paid utility scheduling, stale workers and recovery for retained Team contexts', async () => {
+    const chat = await openTeamConversation(alice, 'team', 'member');
+    await db.insert(schema.aiApps).values({ id: 'company-model', name: 'Company model', provider: 'openai', model: 'synthetic', isPublic: true });
+    await db.update(schema.bots).set({ appId: 'company-model' }).where(eq(schema.bots.id, 'team'));
+    await db.insert(schema.messages).values([{ id: 'learning-prompt', conversationId: chat.conversationId, role: 'user', parts: [{ type: 'text', text: 'Remember this preference.' }] }, { id: 'learning-reply', conversationId: chat.conversationId, parentId: 'learning-prompt', role: 'assistant', parts: [{ type: 'text', text: 'Synthetic reply.' }] }]);
+    await db.insert(schema.agentRuns).values({ id: 'learning-run', userId: 'alice', conversationId: chat.conversationId, messageId: 'learning-reply', parentMessageId: 'learning-prompt', appId: 'company-model', botId: 'team', status: 'succeeded' });
+    // A changed definition cannot turn this saved Team context into paid utility work.
+    await db.update(schema.bots).set({ hermesTeam: false }).where(eq(schema.bots.id, 'team'));
+    await scheduleLearningReview('learning-run');
+    expect(await db.select().from(schema.botLearningReviews)).toHaveLength(0);
+    await db.insert(schema.botLearningReviews).values({ runId: 'learning-run' });
+    expect(await reviewNativeRun('learning-run')).toBe(0);
+    expect((await db.select().from(schema.botLearningReviews))[0].completedAt).not.toBeNull();
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    await recoverLearningReviews();
+    expect((await db.select().from(schema.botLearningReviews))[0].completedAt).not.toBeNull();
+    expect(fixture.enqueue).not.toHaveBeenCalled(); expect(fixture.utility).not.toHaveBeenCalled();
+  });
+  it('does not expose old native-harness procedures as published Team skills', async () => {
+    await db.insert(schema.botLearnings).values({ id: 'legacy-learning', botId: 'team', topic: 'old-topic', kind: 'procedure', status: 'active', verification: 'Synthetic evidence.', content: { name: 'Old procedure', description: 'Never published.', instructions: 'Old company procedure.', expectedOutput: '', boundaries: '' } });
+    expect(await learnedSkillsForBot('team', 'alice')).toEqual([]);
+    expect(await learningViews(alice, 'team')).toEqual([]);
   });
 });

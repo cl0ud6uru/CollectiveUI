@@ -1,7 +1,7 @@
 import { and, eq, isNull, or } from "drizzle-orm";
 import { tool } from "ai";
 import { z } from "zod";
-import { db } from "@/db";
+import { db, type DbOrTx } from "@/db";
 import { skills, type Skill } from "@/db/schema";
 import type { AgentCtx, ToolEntry } from "../types";
 import { learnedSkillsForBot, learningIsEnabled } from "../learning/store";
@@ -12,8 +12,8 @@ export async function learnedSkillsForTurn(ctx: AgentCtx): Promise<Skill[]> {
 }
 
 /** Skills visible to a bot: the bot's own skills plus the bot owner's shared skills. */
-export async function skillsForBot(botId: string, ownerId: string): Promise<Skill[]> {
-  return db
+export async function skillsForBot(botId: string, ownerId: string, q: DbOrTx = db): Promise<Skill[]> {
+  return q
     .select()
     .from(skills)
     .where(and(eq(skills.ownerId, ownerId), or(eq(skills.botId, botId), isNull(skills.botId))))

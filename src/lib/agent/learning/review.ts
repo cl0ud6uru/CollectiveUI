@@ -10,7 +10,7 @@ import { enqueue, QUEUES } from "@/lib/jobs";
 import { cleanLearningText, containsPrivateIdentity, lessonDisposition, privateEvidenceValues, secretEvidenceValues, successfulToolEvidence } from "./policy";
 import { learningIsEnabled, recordLearningRevision, visibleLearningScope } from "./store";
 import { learningReviewSchema, lessonContentSchema } from "./types";
-import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
+import { teamUsesNativeLearning, withNonTeamLearning } from '@/lib/hermes-team/learning';
 
 async function runUsesHermesLearning(runId: string) {
   const [run] = await db.select({ conversationId: agentRuns.conversationId }).from(agentRuns).where(eq(agentRuns.id, runId));
@@ -51,92 +51,106 @@ export async function reviewNativeRun(runId: string) {
     return 0;
   };
   if (!run || run.status !== "succeeded" || run.executionMode !== "worker" || run.background || !run.botId) return finishWithoutLearning();
-  // Required-personal Team work must never reach the company utility learner,
-  // including retained jobs whose original app/definition has since changed.
-  if (await teamUsesNativeLearning(run.conversationId)) return finishWithoutLearning();
-  const p = await loadPrincipal(run.userId);
-  if (!p || !(await learningIsEnabled(p))) return finishWithoutLearning();
-  const bot = await getAccessibleBot(p, run.botId).catch(() => null);
-  const sourceApp = run.appId ? await getAccessibleApp(p, run.appId).catch(() => null) : null;
-  if (!bot?.enabled || bot.executionMode === "service" || !sourceApp || sourceApp.provider === "hermes" || bot.appId !== sourceApp.id) return finishWithoutLearning();
-  const [conv] = await db.select().from(conversations).where(eq(conversations.id, run.conversationId));
-  const [reply] = await db.select().from(messages).where(and(eq(messages.id, run.messageId), eq(messages.conversationId, run.conversationId)));
-  if (!conv || conv.userId !== p.user.id || conv.botId !== bot.id || !reply || reply.role !== "assistant") return finishWithoutLearning();
-  const response = rowToUIMessage(reply);
-  const evidence = successfulToolEvidence(response);
-  const successfulIds = new Set(evidence.map(e => e.callId));
-  const path = pathTo(await loadMessageRows(conv.id), run.messageId);
-  const lastUser = [...path].reverse().find(m => m.role === "user");
-  const explicitLearning = /\b(remember|learn|prefer|always|instead|actually|correction)\b/i.test(lastUser ? partsToText(lastUser.parts) : "");
-  if (!evidence.length && !explicitLearning) return finishWithoutLearning();
-  const app = await utilityApp(sourceApp);
-  // No fallback to a personal plan. Future runs can learn after an eligible utility model is configured.
-  if (!app) return finishWithoutLearning();
-  const existing = await db.select().from(botLearnings).where(visibleLearningScope(bot.id, p.user.id));
-  const { skillsForBot } = await import("../tools/skills");
-  const manual = await skillsForBot(bot.id, bot.ownerId);
-  const prompt = cleanLearningText(JSON.stringify({
-    bot: { job: bot.description?.slice(0, 1000), instructions: bot.instructions?.slice(0, 3000), boundaries: bot.boundaries?.slice(0, 1500) },
-    manualSkills: manual.slice(0, 10).map(s => ({ name: s.name, instructions: s.instructions.slice(0, 1000) })),
-    existing: existing.slice(0, 20).map(l => ({ topic: l.topic, scope: l.userId ? "user" : "bot", status: l.status, version: l.version, name: l.content.name, description: l.content.description, instructions: l.content.instructions.slice(0, 1000) })),
-    transcript: path.slice(-8).map(m => ({ role: m.role, text: partsToText(m.parts).slice(0, 1000) })),
-    successfulTools: evidence.slice(-6).map(e => ({ callId: e.callId, name: e.name, input: JSON.stringify(e.input)?.slice(0, 500), output: JSON.stringify(e.output)?.slice(0, 1000) })),
-    failedOrDeniedTools: response.parts.filter(isToolUIPart).filter(part => !successfulIds.has(part.toolCallId) && ["output-error", "output-denied", "output-available"].includes(part.state)).slice(-4).map(part => ({
-      callId: part.toolCallId, name: getToolOrDynamicToolName(part), state: part.state,
-      input: JSON.stringify(part.input)?.slice(0, 500), result: JSON.stringify("output" in part ? part.output : "errorText" in part ? part.errorText : "denied")?.slice(0, 1000),
-    })),
-  }));
-  const usage = newUsageScope({ runId: run.id, messageId: run.messageId });
-  // The outbox must not restart exhausted queue retries and spend tokens indefinitely.
-  const [attempt] = await db.update(botLearningReviews).set({ attempts: sql`${botLearningReviews.attempts} + 1` })
-    .where(and(eq(botLearningReviews.runId, runId), isNull(botLearningReviews.completedAt), lt(botLearningReviews.attempts, 3))).returning();
-  if (!attempt) return 0;
-  const { output } = await generateText({
-    model: (await resolveModel(app, { purpose: "memory", userId: p.user.id, botId: bot.id, conversationId: conv.id, usage })).model,
-    instructions: REVIEW_INSTRUCTIONS, prompt, output: Output.object({ schema: learningReviewSchema }),
-    maxOutputTokens: 5000, maxRetries: 0, abortSignal: AbortSignal.timeout(60000),
+  let generationFailed = false, generationError: unknown;
+  const result = await withNonTeamLearning(run.conversationId, 0, async q => {
+    const finishWithoutLearning = async () => {
+      await q.update(botLearningReviews).set({ completedAt: new Date() }).where(eq(botLearningReviews.runId, runId));
+      return 0;
+    };
+    const [current] = await q.select().from(botLearningReviews).where(eq(botLearningReviews.runId, runId));
+    if (!current || current.completedAt || current.attempts >= 3) return 0;
+    const p = await loadPrincipal(run.userId, q);
+    if (!p || !(await learningIsEnabled(p, q))) return finishWithoutLearning();
+    const bot = await getAccessibleBot(p, run.botId!, q).catch(() => null);
+    const sourceApp = run.appId ? await getAccessibleApp(p, run.appId, q).catch(() => null) : null;
+    if (!bot?.enabled || bot.hermesTeam || bot.executionMode === "service" || !sourceApp || sourceApp.provider === "hermes" || bot.appId !== sourceApp.id) return finishWithoutLearning();
+    const [conv] = await q.select().from(conversations).where(eq(conversations.id, run.conversationId));
+    const [reply] = await q.select().from(messages).where(and(eq(messages.id, run.messageId), eq(messages.conversationId, run.conversationId)));
+    if (!conv || conv.userId !== p.user.id || conv.botId !== bot.id || !reply || reply.role !== "assistant") return finishWithoutLearning();
+    const response = rowToUIMessage(reply);
+    const evidence = successfulToolEvidence(response);
+    const successfulIds = new Set(evidence.map(e => e.callId));
+    const path = pathTo(await loadMessageRows(conv.id, q), run.messageId);
+    const lastUser = [...path].reverse().find(m => m.role === "user");
+    const explicitLearning = /\b(remember|learn|prefer|always|instead|actually|correction)\b/i.test(lastUser ? partsToText(lastUser.parts) : "");
+    if (!evidence.length && !explicitLearning) return finishWithoutLearning();
+    const app = await utilityApp(sourceApp, q);
+    // No fallback to a personal plan. Future runs can learn after an eligible utility model is configured.
+    if (!app) return finishWithoutLearning();
+    const existing = await q.select().from(botLearnings).where(visibleLearningScope(bot.id, p.user.id));
+    const { skillsForBot } = await import("../tools/skills");
+    const manual = await skillsForBot(bot.id, bot.ownerId, q);
+    const prompt = cleanLearningText(JSON.stringify({
+      bot: { job: bot.description?.slice(0, 1000), instructions: bot.instructions?.slice(0, 3000), boundaries: bot.boundaries?.slice(0, 1500) },
+      manualSkills: manual.slice(0, 10).map(s => ({ name: s.name, instructions: s.instructions.slice(0, 1000) })),
+      existing: existing.slice(0, 20).map(l => ({ topic: l.topic, scope: l.userId ? "user" : "bot", status: l.status, version: l.version, name: l.content.name, description: l.content.description, instructions: l.content.instructions.slice(0, 1000) })),
+      transcript: path.slice(-8).map(m => ({ role: m.role, text: partsToText(m.parts).slice(0, 1000) })),
+      successfulTools: evidence.slice(-6).map(e => ({ callId: e.callId, name: e.name, input: JSON.stringify(e.input)?.slice(0, 500), output: JSON.stringify(e.output)?.slice(0, 1000) })),
+      failedOrDeniedTools: response.parts.filter(isToolUIPart).filter(part => !successfulIds.has(part.toolCallId) && ["output-error", "output-denied", "output-available"].includes(part.state)).slice(-4).map(part => ({
+        callId: part.toolCallId, name: getToolOrDynamicToolName(part), state: part.state,
+        input: JSON.stringify(part.input)?.slice(0, 500), result: JSON.stringify("output" in part ? part.output : "errorText" in part ? part.errorText : "denied")?.slice(0, 1000),
+      })),
+    }));
+    const usage = newUsageScope({ runId: run.id, messageId: run.messageId }, q);
+    // The outbox must not restart exhausted queue retries and spend tokens indefinitely.
+    const [attempt] = await q.update(botLearningReviews).set({ attempts: sql`${botLearningReviews.attempts} + 1` })
+      .where(and(eq(botLearningReviews.runId, runId), isNull(botLearningReviews.completedAt), lt(botLearningReviews.attempts, 3))).returning();
+    if (!attempt) return 0;
+    try {
+      const { output } = await generateText({
+        model: (await resolveModel(app, { purpose: "memory", userId: p.user.id, botId: bot.id, conversationId: conv.id, usage, q })).model,
+        instructions: REVIEW_INSTRUCTIONS, prompt, output: Output.object({ schema: learningReviewSchema }),
+        maxOutputTokens: 5000, maxRetries: 0, abortSignal: AbortSignal.timeout(60000),
+      });
+      await Promise.allSettled(usage.pending);
+      if (!output) throw new Error("Learning review returned no structured result.");
+      const observed = response.parts.filter(isToolUIPart);
+      const privateValues = observed.flatMap(part => [...privateEvidenceValues(part.input), ...privateEvidenceValues("output" in part ? part.output : null)]);
+      const secrets = observed.flatMap(part => [...secretEvidenceValues(part.input), ...secretEvidenceValues("output" in part ? part.output : null)]);
+      return await q.transaction(async tx => {
+        // One commit per source run, even if two replicas generated a review concurrently.
+        const [currentReceipt] = await tx.select().from(botLearningReviews).where(eq(botLearningReviews.runId, runId)).for("update");
+        if (!currentReceipt || currentReceipt.completedAt) return 0;
+        const actor = await loadPrincipal(run.userId, tx);
+        if (!actor || actor.user.sessionVersion !== p.user.sessionVersion || !(await learningIsEnabled(actor, tx))) return 0;
+        const currentBot = await getAccessibleBot(actor, bot.id, tx).catch(() => null);
+        const currentApp = await getAccessibleApp(actor, sourceApp.id, tx).catch(() => null);
+        if (!currentBot?.enabled || currentBot.hermesTeam || await teamUsesNativeLearning(conv.id, tx) || currentBot.executionMode === "service" || currentBot.revision !== bot.revision || currentBot.appId !== sourceApp.id || !currentApp || currentApp.provider === "hermes") return 0;
+        // Serialize updates to the bot's shared topics; private lessons retain their user boundary.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`bot-learning:${bot.id}`}))`);
+        let added = 0;
+        for (const lesson of output.lessons) {
+          const disposition = lessonDisposition(lesson, successfulIds);
+          const content = lessonContentSchema.parse(Object.fromEntries(
+            Object.entries(lessonContentSchema.parse(lesson)).map(([key, value]) => [key, cleanLearningText(value)]),
+          ));
+          const verification = cleanLearningText(lesson.verification);
+          const lessonText = JSON.stringify({ content, verification }).toLowerCase();
+          if (secrets.some(v => lessonText.includes(v.toLowerCase()))) continue;
+          if (disposition.scope === "bot" && (containsPrivateIdentity(lessonText, actor.user) || privateValues.some(v => lessonText.includes(v.toLowerCase())))) continue;
+          const userId = disposition.scope === "user" ? actor.user.id : null;
+          const [previous] = await tx.select().from(botLearnings).where(and(eq(botLearnings.botId, bot.id), eq(botLearnings.topic, lesson.topic), userId ? eq(botLearnings.userId, userId) : isNull(botLearnings.userId))).for("update");
+          // Archiving suppresses autonomous resurrection; stale reviews cannot overwrite newer work.
+          if (previous?.status === "archived" || (previous?.version ?? 0) !== lesson.baseVersion) continue;
+          if (previous && JSON.stringify(previous.content) === JSON.stringify(content)) continue;
+          // A pending proposal stays pending until a human explicitly approves it.
+          const status = previous?.status === "pending" || previous?.kind === "policy" ? "pending" : disposition.status;
+          const values = { kind: previous?.kind === "policy" ? "policy" as const : lesson.kind, content, verification, status, version: (previous?.version ?? 0) + 1, updatedAt: new Date() };
+          const [next] = previous
+            ? await tx.update(botLearnings).set(values).where(eq(botLearnings.id, previous.id)).returning()
+            : await tx.insert(botLearnings).values({ ...values, botId: bot.id, userId, topic: lesson.topic }).returning();
+          await recordLearningRevision(tx, next, { conversationId: conv.id, runId });
+          added++;
+        }
+        await tx.update(botLearningReviews).set({ completedAt: new Date() }).where(eq(botLearningReviews.runId, runId));
+        return added;
+      });
+
+    } catch (error) { await Promise.allSettled(usage.pending); generationFailed = true; generationError = error; return 0; }
+  }, async q => {
+    await q.update(botLearningReviews).set({ completedAt: new Date() }).where(eq(botLearningReviews.runId, runId));
   });
-  await Promise.allSettled(usage.pending);
-  if (!output) throw new Error("Learning review returned no structured result.");
-  const observed = response.parts.filter(isToolUIPart);
-  const privateValues = observed.flatMap(part => [...privateEvidenceValues(part.input), ...privateEvidenceValues("output" in part ? part.output : null)]);
-  const secrets = observed.flatMap(part => [...secretEvidenceValues(part.input), ...secretEvidenceValues("output" in part ? part.output : null)]);
-  return db.transaction(async tx => {
-    // One commit per source run, even if two replicas generated a review concurrently.
-    const [currentReceipt] = await tx.select().from(botLearningReviews).where(eq(botLearningReviews.runId, runId)).for("update");
-    if (!currentReceipt || currentReceipt.completedAt) return 0;
-    const actor = await loadPrincipal(run.userId, tx);
-    if (!actor || actor.user.sessionVersion !== p.user.sessionVersion || !(await learningIsEnabled(actor, tx))) return 0;
-    const currentBot = await getAccessibleBot(actor, bot.id, tx).catch(() => null);
-    const currentApp = await getAccessibleApp(actor, sourceApp.id, tx).catch(() => null);
-    if (!currentBot?.enabled || currentBot.hermesTeam || await teamUsesNativeLearning(conv.id, tx) || currentBot.executionMode === "service" || currentBot.revision !== bot.revision || currentBot.appId !== sourceApp.id || !currentApp || currentApp.provider === "hermes") return 0;
-    // Serialize updates to the bot's shared topics; private lessons retain their user boundary.
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`bot-learning:${bot.id}`}))`);
-    let added = 0;
-    for (const lesson of output.lessons) {
-      const disposition = lessonDisposition(lesson, successfulIds);
-      const content = lessonContentSchema.parse(Object.fromEntries(
-        Object.entries(lessonContentSchema.parse(lesson)).map(([key, value]) => [key, cleanLearningText(value)]),
-      ));
-      const verification = cleanLearningText(lesson.verification);
-      const lessonText = JSON.stringify({ content, verification }).toLowerCase();
-      if (secrets.some(v => lessonText.includes(v.toLowerCase()))) continue;
-      if (disposition.scope === "bot" && (containsPrivateIdentity(lessonText, actor.user) || privateValues.some(v => lessonText.includes(v.toLowerCase())))) continue;
-      const userId = disposition.scope === "user" ? actor.user.id : null;
-      const [previous] = await tx.select().from(botLearnings).where(and(eq(botLearnings.botId, bot.id), eq(botLearnings.topic, lesson.topic), userId ? eq(botLearnings.userId, userId) : isNull(botLearnings.userId))).for("update");
-      // Archiving suppresses autonomous resurrection; stale reviews cannot overwrite newer work.
-      if (previous?.status === "archived" || (previous?.version ?? 0) !== lesson.baseVersion) continue;
-      if (previous && JSON.stringify(previous.content) === JSON.stringify(content)) continue;
-      // A pending proposal stays pending until a human explicitly approves it.
-      const status = previous?.status === "pending" || previous?.kind === "policy" ? "pending" : disposition.status;
-      const values = { kind: previous?.kind === "policy" ? "policy" as const : lesson.kind, content, verification, status, version: (previous?.version ?? 0) + 1, updatedAt: new Date() };
-      const [next] = previous
-        ? await tx.update(botLearnings).set(values).where(eq(botLearnings.id, previous.id)).returning()
-        : await tx.insert(botLearnings).values({ ...values, botId: bot.id, userId, topic: lesson.topic }).returning();
-      await recordLearningRevision(tx, next, { conversationId: conv.id, runId });
-      added++;
-    }
-    await tx.update(botLearningReviews).set({ completedAt: new Date() }).where(eq(botLearningReviews.runId, runId));
-    return added;
-  });
+  // Persist the bounded attempt counter even when generation or the nested save transaction fails.
+  if (generationFailed) throw generationError;
+  return result;
 }
