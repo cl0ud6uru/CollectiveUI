@@ -123,6 +123,13 @@ describe("Protected native receipt authority", () => {
 
 
 describe("Strict protected journals and untouched abort", () => {
+  it("persists an abort fence before the first native apply so a delayed request cannot write after cancellation", async () => {
+    const plan = await nextPlan();
+    await abortUnstartedResourceUpdate(root, 'cancel-before-apply', plan, { journalRoot: journals });
+    await assertResourceUpdatesSettled(journals);
+    await expect(applyTeamResourcePlan(root, 'cancel-before-apply', plan, { journalRoot: journals })).rejects.toThrow('aborted');
+    expect(await readFile(path.join(root, 'skills/support/SKILL.md'), 'utf8')).toBe('v1');
+  });
   it("rejects incomplete complete receipts, wrong filename identity and invalid recovery names", async () => {
     const plan = await nextPlan(); await applyTeamResourcePlan(root, 'journal-format', plan, { journalRoot: journals });
     const saved = JSON.parse(await readFile(path.join(journals, 'journal-format.json'), 'utf8'));

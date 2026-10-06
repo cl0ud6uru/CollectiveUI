@@ -321,12 +321,16 @@ export async function abortUnstartedResourceUpdate(profileRoot: string, operatio
   if (active.has(profileRoot)) unsafe('Another resource update is active.');
   if (!path.isAbsolute(options.journalRoot) || options.journalRoot === profileRoot || options.journalRoot.startsWith(profileRoot + path.sep)) unsafe('Resource journals must be outside the writable native profile.');
   if (await realpath(path.dirname(options.journalRoot)) !== path.dirname(options.journalRoot)) unsafe('Journal parent must be canonical protected storage.');
+  try { await mkdir(options.journalRoot, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   const root = await rootHandle(profileRoot); let journals: FileHandle;
   try { journals = await rootHandle(options.journalRoot); }
-  catch (error) { await root.close(); if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { aborted: true }; throw error; }
+  catch (error) { await root.close(); throw error; }
   try {
-    const journal = await readJournal(journals, operationId + '.json');
-    if (!journal) return { aborted: true };
+    const journal = await readJournal(journals, operationId + '.json') ?? {
+      format: 1 as const, operationId, planHash: plan.planHash,
+      writes: plan.actions.flatMap((action, index) => action.action === 'install' || action.action === 'remove' ? [{ packageId: action.packageId, index, beforeHash: action.beforeHash, afterHash: action.afterHash }] : []),
+      receipt: beginResourceUpdate(operationId, plan),
+    };
     if (journal.planHash !== plan.planHash || journal.receipt.completedGroups.length) unsafe('An applied resource update must be recovered, not discarded.');
     if (journal.aborted) return { aborted: true };
     if (journal.inFlight) {
