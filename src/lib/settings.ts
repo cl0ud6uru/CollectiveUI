@@ -33,6 +33,13 @@ export type LimitsSettings = {
   maxAttachmentsPerMessage: number;
 };
 
+/** Personal remote dashboard credentials are separate from shared and managed Hermes backends. */
+export type RemoteHermesSettings = {
+  enabled: boolean;
+  /** Exact dashboard bases approved for connections to private/LAN/tailnet addresses. */
+  privateGateways: string[];
+};
+
 export type ToolSettings = {
   /** built-in tool keys that are disabled org-wide */
   disabledTools: string[];
@@ -93,6 +100,7 @@ export type SandboxSettings = {
 };
 
 const defaults = {
+  remoteHermes: { enabled: false, privateGateways: [] } as RemoteHermesSettings,
   coordinator: { enabled: false, defaultBotId: null, starterBotId: null } as CoordinatorSettings,
   branding: { appName: "AI Portal", welcomeText: "What can I help with?", logoEmoji: "" } as BrandingSettings,
   // Separate from editable text so stale admin forms cannot resurrect a removed logo.

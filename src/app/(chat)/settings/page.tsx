@@ -1,4 +1,6 @@
 import { PersonalHermes } from "@/components/settings/personal-hermes";
+import { RemoteHermes } from "@/components/settings/remote-hermes";
+import { listRemoteConnections } from "@/lib/remote-hermes/store";
 import { dockerAllowed, assertDockerCreate } from "@/lib/docker-hermes/policy";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { PageFrame } from "@/components/page-frame";
@@ -18,6 +20,7 @@ import type { ChatGPTConnectionView } from "@/components/settings/chatgpt-connec
 
 export default async function SettingsPage() {
   const p = await requirePagePrincipal();
+  const [remotePolicy, remoteConnections] = await Promise.all([getSetting('remoteHermes'), listRemoteConnections(p.user.id)]);
   const [chatgptSettings, credential, pendingLogin] = await Promise.all([
     getSetting("chatgpt"),
     getChatGPTCredential(p.user.id),
@@ -78,7 +81,7 @@ export default async function SettingsPage() {
         chatgpt={chatgpt}
         workspace={workspace}
         security={<SecurityPanel />}
-        hermes={hermes}
+        hermes={hermes || remotePolicy.enabled || remoteConnections.length > 0 ? <>{hermes}{(remotePolicy.enabled || remoteConnections.length > 0) && <RemoteHermes allowed={remotePolicy.enabled} initial={remoteConnections} />}</> : null}
       />
     </PageFrame>
   );
