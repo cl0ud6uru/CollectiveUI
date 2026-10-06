@@ -88,7 +88,9 @@ export async function serveNative(controller: LocalController, bindingId: string
       controller.events(runId, cursor); // validate before starting SSE
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
       const drain = () => {
-        const batch = controller.events(runId, cursor);
+        let batch:ReturnType<LocalController['events']>;
+        try { batch = controller.events(runId, cursor); }
+        catch { res.destroy(); return; } // Expired/revoked candidate streams cannot deliver cached private events.
         for (const event of batch.events) {
           cursor = Number(event._seq);
           if (!res.write(`id: ${cursor}\ndata: ${JSON.stringify(event)}\n\n`)) {

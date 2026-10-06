@@ -22,6 +22,9 @@ export const teamEnsure = z.object({ teamBotId, mode: teamMode, name: z.string()
 export const teamScope = z.object({ teamBotId, mode: teamMode }).strict();
 const candidateUrl=z.string().url().max(2048).refine(value=>{const u=new URL(value);return u.protocol==='https:' && !u.username && !u.password && !u.search && !u.hash;});
 const candidateToken=z.string().regex(/^[a-f0-9]{64}$/);
+export const teamCandidateScope=teamScope.extend({bindingId:z.string().regex(/^[a-f0-9]{32}$/),contextId:ownerId,runId:ownerId}).strict();
+export const teamCandidateStart=teamCandidateScope.extend({conversationId:ownerId}).strict();
+export type TeamCandidateScope=z.infer<typeof teamCandidateScope>;
 export const teamCandidateConfig=teamScope.extend({bindingId:z.string().regex(/^[a-f0-9]{32}$/),contextId:ownerId,runId:ownerId,
   expiresAt:z.number().finite(),model:z.string().min(1).max(200),adapterId:z.enum(['collective-openai-chat-v1','collective-openai-responses-v1','collective-codex-responses-v1']),
   modelBaseUrls:z.object({reply:candidateUrl,learning:candidateUrl,utility:candidateUrl,subagent:candidateUrl}).strict(),

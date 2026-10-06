@@ -47,6 +47,15 @@ export async function listenBroker(broker: DockerBroker) {
       const grant=z.string().uuid().parse(req.headers['x-collective-team-grant']);
       return json(res,200,broker.prepareTeamCandidate(owner,await teamBody(req,32*1024),grant));
     }
+    if(req.method==='POST' && url==='/team/start-candidate'){
+      const grant=z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      return json(res,200,await broker.startTeamCandidate(owner,await teamBody(req,32*1024),grant));
+    }
+    if(req.method==='POST' && url==='/team/renew-candidate'){
+      const grant=z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      return json(res,200,broker.renewTeamCandidate(owner,await teamBody(req,32*1024),grant));
+    }
+    if(req.method==='POST' && url==='/team/retire-candidate')return json(res,200,await broker.retireTeamCandidate(owner,await teamBody(req,32*1024)));
     if (req.method === 'POST' && url === '/team/capture') {
       const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
       return json(res, 200, await broker.captureTeamResources(owner, await teamBody(req, 96 * 1024), grant));
@@ -104,7 +113,7 @@ export async function listenBroker(broker: DockerBroker) {
       (req.method === 'GET' && /^\/v1\/runs\/run_[a-z0-9]+$/.test(match[2]));
     const team = req.headers['x-collective-team-bot'];
     const { controller, nativeBindingId } = team !== undefined ? await broker.forTeamRequest(owner, teamBotId.parse(team), teamMode.parse(req.headers['x-collective-team-mode']),
-      match[1], z.string().uuid().parse(req.headers['x-collective-team-grant'])) : cleanup ? broker.forCleanup(owner, match[1]) : await broker.forRequest(owner, match[1]);
+      match[1], z.string().uuid().parse(req.headers['x-collective-team-grant']),req.headers['x-collective-team-context']===undefined?undefined:{contextId:ownerId.parse(req.headers['x-collective-team-context']),runId:ownerId.parse(req.headers['x-collective-team-run'])}) : cleanup ? broker.forCleanup(owner, match[1]) : await broker.forRequest(owner, match[1]);
     await serveNative(controller, nativeBindingId, match[2], req, res);
   })().catch(e => {
     if (res.headersSent) return res.destroy();

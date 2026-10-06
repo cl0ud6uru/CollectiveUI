@@ -832,7 +832,7 @@ def test_settings(files):
         return 'connection_failed'
 
 
-def assert_no_other_native(name, home):
+def assert_no_other_native(name, home, exclusive_runtime=False):
     # This preflight is a collision detector, not a lock honored by arbitrary native CLI.
     # Operators must stop UI ownership before starting independent native writers.
     for proc in Path('/proc').iterdir():
@@ -847,11 +847,15 @@ def assert_no_other_native(name, home):
                          '/hermes_cli/' in a or '/tui_gateway/' in a for a in argv)
             if '/opt/collective-bridge.py' in argv:
                 at = argv.index('/opt/collective-bridge.py')
-                if argv[at + 1] in ('gateway', 'gateway-candidate') and argv[at + 2] == name:
+                if argv[at + 1] in ('gateway', 'gateway-candidate') and (exclusive_runtime or argv[at + 2] == name):
                     raise ValueError('profile already has a native process')
                 continue  # separate broker-owned profiles hold their own inode locks
+            if exclusive_runtime and any(a.startswith(str(SOURCE) + '/') for a in argv):
+                native = True
             if not native:
                 continue
+            if exclusive_runtime:
+                raise ValueError('another native process owns this runtime')
             env = dict(item.split('=', 1) for item in (proc / 'environ').read_bytes().decode(errors='replace').split('\0') if '=' in item)
             selected = None
             for i, arg in enumerate(argv):
@@ -986,11 +990,20 @@ def main():
         if identity != expected:
             raise ValueError('profile identity changed')
         home = ROOT.joinpath(*parts)
+        # Current Stop ends the whole container. Team gateways require an exclusive
+        # lifetime runtime lock; ordinary broker gateways share it and retain their
+        # prior per-profile behavior when no Team gateway is present.
+        with directory([]) as fd:
+            runtime_lock = os.open('.collectiveui-team-runtime.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        runtime_stat = os.fstat(runtime_lock)
+        if not stat.S_ISREG(runtime_stat.st_mode) or runtime_stat.st_nlink != 1:
+            raise ValueError('unsafe native runtime lock')
+        fcntl.flock(runtime_lock, (fcntl.LOCK_EX if candidate else fcntl.LOCK_SH) | fcntl.LOCK_NB)
         # One lifetime lock per canonical profile, released by the kernel after container exit.
         with directory(parts) as fd:
             lock = os.open('.collectiveui-native.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert_no_other_native(name, home)
+        assert_no_other_native(name, home, exclusive_runtime=candidate)
         with directory(parts) as fd:
             recover_settings(fd)
             recover_codex_device(fd)

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { LocalController, LocalError } from '../local-hermes/controller';
 import { runtimeKey, BrokerConfig, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver } from './docker';
 import { bindingSchema, ownerId, runtimeOwnerId, phases, profileName, teamAuthorization, teamEnsure, teamScope, teamResourceSelection,
-  teamCandidateConfig, type TeamCandidateConfig, type DockerBinding, type DockerStatus, type TeamBinding, type TeamMode, type TeamGrant, type TeamModelPolicy } from './types';
+  teamCandidateConfig, teamCandidateScope, teamCandidateStart, type TeamCandidateConfig, type DockerBinding, type DockerStatus, type TeamBinding, type TeamMode, type TeamGrant, type TeamModelPolicy } from './types';
 import { beginResourceUpdate, type TeamResourceUpdatePlan } from '../lib/hermes-team/updates';
 import { validateTeamResourceSnapshot } from '../lib/hermes-team/resources';
 import { codexAction, codexStatus, codexStates, type CodexStatus } from './oauth';
@@ -19,6 +19,8 @@ const updateReceipt = z.object({ format: z.literal(1), operationId: z.string().r
 const resourceOperation = z.object({ bindingId: z.string(), planHash: z.string().regex(/^[a-f0-9]{64}$/), status: z.enum(['applying', 'complete', 'needs-attention', 'aborted']), receipt: updateReceipt.optional() });
 const teamRevoke = teamScope.extend({ requestId: z.string().regex(/^revoke:[a-f0-9]{64}$/).optional(), digest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict().refine(v => !!v.requestId === !!v.digest);
 const revokeReceipt = z.object({ actor: ownerId, teamBotId: ownerId, mode: z.enum(['member', 'admin']), digest: z.string().regex(/^[a-f0-9]{64}$/), result: z.object({ stopped: z.boolean(), interruption: z.enum(['none', 'runtime-wide']) }).optional() });
+const candidateReceipt = teamCandidateStart.extend({actor:ownerId,digest:z.string().regex(/^[a-f0-9]{64}$/),
+  state:z.enum(['starting','ready','needs_attention','stopped']),nativeBindingId:z.string().optional()}).strict();
 const storedSchema = z.object({ owner: runtimeOwnerId, generation: z.number().int(), phase: z.enum(phases), error: z.string().nullable(), cleanupRequired: z.boolean().default(false),
   bindings: z.array(bindingSchema), confirmed: z.array(z.string()).default([]), pending: z.record(z.string(), z.object({ profile: profileName, name: z.string() })),
   logins: z.record(z.string(), z.object({ bindingId: z.string(), sessionId: z.string().uuid(), state: z.enum(codexStates), expiresAt: z.number() })).default({}),
@@ -28,38 +30,135 @@ const storedSchema = z.object({ owner: runtimeOwnerId, generation: z.number().in
   teams: z.record(z.string(), teamOperation).default({}),
   resourceOperations: z.record(z.string(), resourceOperation).default({}),
   revocations: z.record(z.string(), revokeReceipt).default({}),
+  candidateReceipts:z.record(z.string(),candidateReceipt).default({}),
   tests: z.record(z.string(), z.object({ bindingId: z.string(), revision: z.string(), checkedAt: z.string(), code: z.enum(testCodes) })).default({}) });
 type Stored = z.infer<typeof storedSchema>;
 const sConnection = (s: Stored, id: string, revision: string) => s.connections[id]?.revision === revision ? s.connections[id] : null;
 const teamOwner = (actor: string, bot: string, mode: TeamMode) => mode === 'admin' ? `team-admin:${bot}` : actor;
 const teamKey = (bot: string, mode: TeamMode) => `${mode}:${bot}`;
 const teamProfile = (owner: string, bot: string, mode: TeamMode) => `cui-team-${createHash('sha256').update(JSON.stringify([owner, bot, mode])).digest('hex').slice(0, 32)}`;
+type Candidate = {actor:string;config:TeamCandidateConfig;binding:TeamBinding;controller:LocalController;grantId:string;
+  phase:'prepared'|'starting'|'ready'|'retiring';generation:number;conversationId?:string;nativeBindingId?:string;
+  start?:Promise<{started:true;modelAccessAvailable:true;nativeBindingId:string;interruption:'runtime-wide'}>;release:(()=>void)[];timer?:NodeJS.Timeout};
 
 /** Durable control journal is outside every native container. Profiles cannot edit their app binding. */
 export class DockerBroker {
   /** Candidate grants exist only in broker memory. Never persist them in readable native profiles or state JSON. */
-  private candidateConfigs=new Map<string,{actor:string;config:TeamCandidateConfig;controller:LocalController}>();
+  private candidateConfigs=new Map<string,Candidate>();
+  private candidateOwners=new Map<string,Candidate>();
+  private candidateRetires=new Map<string,Promise<{confirmed:true;runtimeWide:true}>>();
+  private candidateCurrent(entry:Candidate) {
+    const {config,binding}=entry, s=this.state(binding.ownerId);
+    if (!this.config.teamCandidateRuntimeEnabled || !['starting','ready'].includes(entry.phase)
+      || this.candidateOwners.get(binding.ownerId)!==entry || s?.generation!==entry.generation || s.phase!=='ready'
+      || s.cleanupRequired || config.expiresAt<=Date.now()) throw new LocalError(409,'The native Team context ended or was interrupted.');
+    const current=this.teamBinding(entry.actor,config.teamBotId,config.mode,entry.grantId);
+    if(current.bindingId!==binding.bindingId || current.identity!==binding.identity || current.profile!==binding.profile)
+      throw new LocalError(409,'The retained native Team binding changed.');
+  }
   prepareTeamCandidate(actor:string,raw:unknown,grantId:string){
     const config=teamCandidateConfig.parse(raw);
     const binding=this.teamBinding(actor,config.teamBotId,config.mode,grantId);
     if(binding.bindingId!==config.bindingId || config.expiresAt<=Date.now() || config.expiresAt>Date.now()+120_000)throw new LocalError(409,'Invalid native Team candidate context.');
     const prior=this.candidateConfigs.get(binding.bindingId);
-    if(prior && prior.config.expiresAt>Date.now() && (prior.actor!==actor || prior.config.contextId!==config.contextId))throw new LocalError(409,'Another native Team context holds this profile.');
+    if(prior && prior.config.expiresAt>Date.now()) {
+      if(prior.actor!==actor || JSON.stringify(prior.config)!==JSON.stringify(config))throw new LocalError(409,'Another native Team context holds this profile.');
+      prior.grantId=grantId;return {prepared:true,modelAccessAvailable:false};
+    }
+    if(prior && prior.phase!=='prepared')throw new LocalError(409,'Retire the prior native Team context before preparing another.');
     if (!this.driver.candidateTransport) throw new LocalError(409, 'The native candidate bootstrap is unavailable.');
-    // Construct the actual native-run consumer, but never call start(). Production chat admission still denies Team runs.
-    // A future verified route must validate the whole native lifecycle before this dormant controller may be started.
     const transport=this.driver.candidateTransport(binding.ownerId,binding.profile,binding.identity,config);
     const dir=path.join(this.config.stateDir,runtimeKey(binding.ownerId),binding.bindingId,'candidate');
     mkdirSync(dir,{recursive:true,mode:0o700});
+    const entry={} as Candidate;
     const controller=new LocalController({trust:'single-user-exclusive-profile',source:'/opt/hermes',python:'/opt/hermes/.venv/bin/python',
       profileHome:`/opt/data/profiles/${binding.profile}`,workDir:`/opt/data/profiles/${binding.profile}/workspace`,accountHome:'/opt/data/home',
       stateDir:dir,socketPath:this.config.socketPath,label:'Team Docker Hermes candidate'}, {
-        validate:async()=>{this.teamBinding(actor,config.teamBotId,config.mode,grantId);if(config.expiresAt<=Date.now() || !await this.driver.running(binding.ownerId))throw new LocalError(409,'The native Team candidate context expired.');},
-        transport:()=>transport,
+        validate:async()=>{this.candidateCurrent(entry);if(!await this.driver.running(binding.ownerId))throw new LocalError(409,'The native Team runtime stopped.');this.candidateCurrent(entry);},
+        authorize:()=>this.candidateCurrent(entry),
+        admission:{sessionId:()=>`portal-${entry.conversationId}-${config.teamBotId}`,receipt:()=>`portal-${config.runId}`},
+        transport:()=>({spawn:()=>{this.candidateCurrent(entry);return transport.spawn();},stop:()=>{entry.phase='retiring';return transport.stop();}}),
       });
-    this.candidateConfigs.set(binding.bindingId,{actor,config,controller});
-    // Preparing adapter configuration is not runtime/model admission. controller() and forTeamRequest() still refuse it.
+    Object.assign(entry,{actor,config,binding,controller,grantId,phase:'prepared',generation:this.state(binding.ownerId)!.generation,release:[]});
+    this.candidateConfigs.set(binding.bindingId,entry);
     return {prepared:true,modelAccessAvailable:false};
+  }
+  /** Protected application IPC only: the caller has verified the durable run/route/actor immediately before dispatch. */
+  startTeamCandidate(actor:string,raw:unknown,grantId:string) {
+    if(!this.config.teamCandidateRuntimeEnabled)throw new LocalError(409,'Active native Team adapters are disabled.');
+    const scope=teamCandidateStart.parse(raw), binding=this.teamBinding(actor,scope.teamBotId,scope.mode,grantId);
+    ownerId.parse(`portal-${scope.conversationId}-${scope.teamBotId}`);ownerId.parse(`portal-${scope.runId}`);
+    const entry=this.candidateConfigs.get(binding.bindingId);
+    if(!entry || entry.actor!==actor || entry.config.runId!==scope.runId || entry.config.contextId!==scope.contextId || scope.bindingId!==binding.bindingId)
+      throw new LocalError(403,'This prepared native context belongs to another run or actor.');
+    entry.grantId=grantId;
+    if(entry.start) {
+      if(entry.conversationId!==scope.conversationId)throw new LocalError(409,'This native context belongs to another conversation.');
+      this.candidateCurrent(entry);return entry.start;
+    }
+    const s=this.state(binding.ownerId)!;
+    if(s.candidateReceipts[scope.contextId])throw new LocalError(409,'This native context has a retained start receipt. Retire uncertain work; do not replay startup.');
+    if(Object.values(s.candidateReceipts).some(r=>r.state!=='stopped'))throw new LocalError(409,'Retire the retained native context before starting another.');
+    if(Object.keys(s.candidateReceipts).length>=10000)throw new LocalError(409,'Native Team receipt capacity reached.');
+    if(this.candidateOwners.has(binding.ownerId))throw new LocalError(409,'Another native context holds this runtime.');
+    entry.phase='starting';entry.conversationId=scope.conversationId;entry.generation=s.generation;
+    this.candidateOwners.set(binding.ownerId,entry);
+    // Hashes bind the exact reviewed bootstrap without persisting plaintext opaque grants.
+    s.candidateReceipts[scope.contextId]={...scope,actor,digest:createHash('sha256').update(JSON.stringify(entry.config)).digest('hex'),state:'starting'};this.save(s);
+    entry.start=this.exclusive(binding.ownerId,async()=>{
+      let runtimeTouched=false;
+      try {
+        this.candidateCurrent(entry);
+        if(this.jobs.has(binding.ownerId)||this.maintaining.has(binding.ownerId)||this.pendingLogin(binding.ownerId)||this.unsettledNetwork(s))throw new LocalError(409,'Runtime preparation or maintenance must settle before native startup.');
+        for(const sibling of s.bindings){const controller=this.controllers.get(sibling.bindingId);if(controller)entry.release.push(controller.holdForSettings());}
+        // Current cancellation is runtime-wide. Restart only after every known sibling proves idle.
+        runtimeTouched=true;await this.driver.stop(binding.ownerId);this.candidateCurrent(entry);
+        for(const sibling of s.bindings){await this.controllers.get(sibling.bindingId)?.stop();this.controllers.delete(sibling.bindingId);}
+        if(!this.driver.reopen)throw new LocalError(503,'Retained native runtime restart is unavailable.');
+        await this.driver.reopen(binding.ownerId);this.candidateCurrent(entry);
+        this.controllers.set(binding.bindingId,entry.controller);
+        await entry.controller.start();this.candidateCurrent(entry);
+        const pair=entry.controller.pair({runtimeId:entry.controller.runtimeId,ownerId:runtimeKey(binding.ownerId),name:binding.name,exclusive:true});
+        entry.nativeBindingId=pair.bindingId;entry.phase='ready';
+        s.candidateReceipts[scope.contextId].state='ready';s.candidateReceipts[scope.contextId].nativeBindingId=pair.bindingId;this.save(s);
+        entry.timer=setTimeout(()=>{entry.phase='retiring';void this.stop(binding.ownerId).catch(()=>{});},Math.max(1,entry.config.expiresAt-Date.now()));
+        return {started:true as const,modelAccessAvailable:true as const,nativeBindingId:pair.bindingId,interruption:'runtime-wide' as const};
+      }catch(error){
+        if(!runtimeTouched){entry.phase='retiring';entry.release.forEach(fn=>fn());this.candidateOwners.delete(binding.ownerId);this.candidateConfigs.delete(binding.bindingId);s.candidateReceipts[scope.contextId].state='stopped';this.save(s);throw error;}
+        entry.phase='retiring';s.candidateReceipts[scope.contextId].state='needs_attention';this.save(s);
+        // Cleanup occurs inside this owner queue; calling broker.stop here would deadlock its queue.
+        try{await this.driver.stop(binding.ownerId);await entry.controller.stop();s.cleanupRequired=false;s.phase='stopped';}
+        catch{s.cleanupRequired=true;s.phase='error';}
+        this.controllers.delete(binding.bindingId);entry.release.forEach(fn=>fn());this.candidateOwners.delete(binding.ownerId);
+        this.save(s);throw error;
+      }
+    });
+    return entry.start;
+  }
+  /** Renew actor authority only; this never extends the immutable native context lifetime. */
+  renewTeamCandidate(actor:string,raw:unknown,grantId:string) {
+    const scope=teamCandidateScope.parse(raw),binding=this.teamBinding(actor,scope.teamBotId,scope.mode,grantId);
+    const entry=this.candidateConfigs.get(binding.bindingId);
+    if(!entry || entry.phase!=='ready' || entry.actor!==actor || scope.bindingId!==binding.bindingId
+      || scope.runId!==entry.config.runId || scope.contextId!==entry.config.contextId)
+      throw new LocalError(403,'This native renewal belongs to another context.');
+    entry.grantId=grantId;this.candidateCurrent(entry);
+    return {renewed:true,expiresAt:entry.config.expiresAt};
+  }
+  /** Terminal/revoked runs may only retire their exact retained receipt. Completed replay never stops a newer context. */
+  async retireTeamCandidate(actor:string,raw:unknown) {
+    ownerId.parse(actor);const scope=teamCandidateScope.parse(raw),owner=teamOwner(actor,scope.teamBotId,scope.mode),s=this.state(owner);
+    const receipt=s?.candidateReceipts[scope.contextId];
+    if(!receipt || receipt.actor!==actor || receipt.bindingId!==scope.bindingId || receipt.runId!==scope.runId || receipt.teamBotId!==scope.teamBotId || receipt.mode!==scope.mode)
+      throw new LocalError(403,'This native retirement receipt belongs to another context.');
+    if(receipt.state==='stopped')return {confirmed:true,runtimeWide:true};
+    const active=this.candidateOwners.get(owner);
+    if(active && active.config.contextId!==scope.contextId)throw new LocalError(409,'Another native context owns this runtime.');
+    const jobKey=JSON.stringify([owner,scope.contextId]),prior=this.candidateRetires.get(jobKey);
+    if(prior)return prior;
+    const job=this.stop(owner).then(()=>{receipt.state='stopped';this.save(s!);return {confirmed:true as const,runtimeWide:true as const};});
+    this.candidateRetires.set(jobKey,job);
+    try{return await job;}finally{this.candidateRetires.delete(jobKey);}
   }
   private states = new Map<string, Stored>();
   private jobs = new Map<string, Promise<void>>();
@@ -79,6 +178,9 @@ export class DockerBroker {
   }
   owners() { return [...this.states.keys()]; }
   async expireLeases() {
+    for(const [owner,entry] of this.candidateOwners) {
+      try{this.candidateCurrent(entry);}catch{entry.phase='retiring';await this.stop(owner).catch(()=>{});}
+    }
     // One expired Team grant cannot be kept alive by an unrelated personal-runtime lease.
     // Stop is currently container-wide; invalidation fences every sibling before cleanup.
     const expired = new Map<string, { actor: string; teamBotId: string; mode: TeamMode }>();
@@ -180,10 +282,15 @@ export class DockerBroker {
       }
     });
   }
-  async forTeamRequest(actor: string, bot: string, mode: TeamMode, id: string, grantId: string): Promise<Awaited<ReturnType<DockerBroker['forRequest']>>> {
+  async forTeamRequest(actor: string, bot: string, mode: TeamMode, id: string, grantId: string, scope?:{runId:string;contextId:string}): Promise<Awaited<ReturnType<DockerBroker['forRequest']>>> {
     const binding = this.teamBinding(actor, bot, mode, grantId);
     if (binding.bindingId !== id) throw new LocalError(403, 'This Team Bot profile belongs to another context.');
-    throw new LocalError(409, 'Model connection needed. Team Bot model routes are not verified for replies, learning and subagents.');
+    const entry=this.candidateConfigs.get(id);
+    if(!this.config.teamCandidateRuntimeEnabled || !scope || !entry || entry.actor!==actor || entry.config.runId!==scope.runId || entry.config.contextId!==scope.contextId || entry.phase!=='ready' || !entry.nativeBindingId)
+      throw new LocalError(409, 'Model connection needed. Team Bot model routes are not verified for replies, learning and subagents.');
+    entry.grantId=grantId;this.candidateCurrent(entry);
+    if(!await this.driver.running(binding.ownerId))throw new LocalError(409,'The native Team runtime stopped.');
+    this.candidateCurrent(entry);return {controller:entry.controller,nativeBindingId:entry.nativeBindingId};
   }
   /** All sibling controllers must be idle before a runtime-wide stop. No native writes
    * may overlap the volume helper. Interrupted updates can recover while already stopped. */
@@ -311,6 +418,8 @@ export class DockerBroker {
     try { return await job; } finally { this.revokeJobs.delete(jobKey); }
   }
   private async revokeTeamScope(actor: string, scope: { teamBotId: string; mode: TeamMode }) {
+    const affected=this.candidateOwners.get(teamOwner(actor,scope.teamBotId,scope.mode));
+    if(affected?.actor===actor)affected.phase='retiring';
     for(const [id,value] of this.candidateConfigs)if(value.actor===actor && value.config.teamBotId===scope.teamBotId && value.config.mode===scope.mode)this.candidateConfigs.delete(id);
     const owner = teamOwner(actor, scope.teamBotId, scope.mode);
     const hadGrant = [...this.teamGrants.values()].some(grant => grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode);
@@ -321,13 +430,14 @@ export class DockerBroker {
     if (!operation && !hadGrant) return { stopped: true, interruption: 'none' as const };
     const retainedGrant = [...this.teamGrants.values()].some(grant => teamOwner(grant.actor, grant.teamBotId, grant.mode) === owner && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode && grant.until > Date.now());
     if (retainedGrant) {
+      if(affected && affected.actor!==actor)return {stopped:false,interruption:'none' as const};
       const controller = operation?.bindingId ? this.controllers.get(operation.bindingId) : undefined;
       let idle = !controller;
       if (controller) try { const release = controller.holdForSettings(); release(); idle = true; } catch {}
       // Maintainers share one working profile. An idle revoked/expired tab cannot revoke
       // another maintainer's fresh grant. Native admission stays disabled until active work
       // has actor/grant attribution, so future cancellation can identify the affected turn.
-      if (idle) return { stopped: false, interruption: 'none' as const };
+      if (idle && affected?.actor!==actor) return { stopped: false, interruption: 'none' as const };
     }
     if (operation) { operation.state = 'revoked'; operation.interruption = 'runtime-wide'; this.save(s); }
     // Pinned Docker transport cannot prove profile-scoped cancellation. Fence sibling grants
@@ -373,6 +483,8 @@ export class DockerBroker {
         || (operation.receipt && operation.receipt.planHash !== operation.planHash)) throw new Error('Retained resource operation binding mismatch');
       for (const [id, receipt] of Object.entries(state.revocations)) if (!/^revoke:[a-f0-9]{64}$/.test(id)
         || teamOwner(receipt.actor, receipt.teamBotId, receipt.mode) !== state.owner) throw new Error('Retained revocation receipt scope mismatch');
+      for(const [id,receipt] of Object.entries(state.candidateReceipts))if(id!==receipt.contextId || teamOwner(receipt.actor,receipt.teamBotId,receipt.mode)!==state.owner
+        || !state.bindings.some(b=>b.bindingId===receipt.bindingId && b.teamBotId===receipt.teamBotId && b.purpose===`team-${receipt.mode}`))throw new Error('Retained native candidate receipt scope mismatch');
       if (!['stopped', 'disabled'].includes(state.phase)) {
         for (const login of Object.values(state.logins)) if (login.state === 'pending') login.state = 'interrupted';
         state.phase = 'interrupted'; state.cleanupRequired = true; state.error = 'Broker restarted. Retry to reconcile the retained runtime and profiles; uncertain chat work is not replayed.';
@@ -389,7 +501,7 @@ export class DockerBroker {
     let s = this.states.get(owner);
     if (!s && create) {
       if (this.states.size >= this.config.maxUsers) throw new LocalError(409, 'Personal runtime capacity reached.');
-      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {}, teams: {}, resourceOperations: {}, revocations: {} };
+      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {}, teams: {}, resourceOperations: {}, revocations: {}, candidateReceipts:{} };
       const dir = path.join(this.config.stateDir, runtimeKey(owner));
       mkdirSync(dir, { mode: 0o700 }); this.driver.setNetwork?.(owner, s.network!); this.states.set(owner, s); this.save(s);
     }
@@ -649,6 +761,9 @@ export class DockerBroker {
   }
   async stop(owner: string) {
     const s = this.state(owner); if (!s) return;
+    const candidate=this.candidateOwners.get(owner);
+    if(candidate){candidate.phase='retiring';clearTimeout(candidate.timer);}
+    for(const [id,entry] of this.candidateConfigs)if(entry.binding.ownerId===owner)this.candidateConfigs.delete(id);
     for (const [id, grant] of this.teamGrants) if (teamOwner(grant.actor, grant.teamBotId, grant.mode) === owner) this.teamGrants.delete(id);
     for (const login of Object.values(s.logins)) if (login.state === 'pending') login.state = 'interrupted';
     ++s.generation; s.cleanupRequired = true; s.phase = 'stopping'; s.error = null; this.save(s);
@@ -658,6 +773,8 @@ export class DockerBroker {
       try { if (urgent) await urgent; await this.driver.stop(owner); }
       catch { s.phase = 'error'; s.error = 'Native cleanup is unconfirmed. Data is retained; operator reconciliation is required.'; this.save(s); throw new LocalError(503, s.error); }
       for (const b of s.bindings) { await this.controllers.get(b.bindingId)?.stop(); this.controllers.delete(b.bindingId); }
+      if(candidate){candidate.release.forEach(fn=>fn());this.candidateOwners.delete(owner);}
+      for(const receipt of Object.values(s.candidateReceipts))if(receipt.state!=='stopped')receipt.state='stopped';
       s.cleanupRequired = false; s.phase = 'stopped'; this.save(s);
     });
   }
@@ -665,6 +782,7 @@ export class DockerBroker {
     this.authorized(owner);
     const s = this.state(owner);
     if (this.maintaining.has(owner)) throw new LocalError(409, 'Runtime maintenance is in progress. Reload after it settles.');
+    if(this.candidateOwners.has(owner))throw new LocalError(409,'A native Team context owns this runtime. Finish or stop it before opening a sibling profile.');
     if (!s || s.phase !== 'ready' || !await this.driver.running(owner)) throw new LocalError(409, 'Enable your Hermes runtime first.');
     return s;
   }

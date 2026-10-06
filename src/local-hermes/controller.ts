@@ -45,7 +45,8 @@ export class LocalController {
   private error: string | null = null;
   private storageFailed = false;
   private stateFile: string;
-  constructor(readonly config: ControllerConfig, private container?: { validate: () => Promise<void>; transport: () => RpcTransport }) {
+  constructor(readonly config: ControllerConfig, private container?: { validate: () => Promise<void>; transport: () => RpcTransport; authorize?: () => void;
+    admission?:{sessionId:()=>string;receipt:()=>string} }) {
     this.runtimeId = installationId(config);
     this.stateFile = path.join(config.stateDir, "bindings.json");
     try { this.stored = Stored.parse(JSON.parse(readFileSync(this.stateFile, "utf8"))); }
@@ -122,7 +123,7 @@ export class LocalController {
       await lock.writeFile(JSON.stringify({ controllerPid: process.pid, runtimeId: this.runtimeId })); await lock.close();
       await assertNoOtherHermes(this.config);
       }
-      this.rpc = new NativeRpc(this.config, f => this.onFrame(f), () => this.onExit(), () => this.cleanupFailed(), this.container?.transport());
+      this.rpc = new NativeRpc(this.config, f => this.onFrame(f), () => this.onExit(), () => this.cleanupFailed(), this.container?.transport(), this.container?.authorize);
       await this.rpc.start();
       // Only after exclusive startup proves there is no previous live owner can old receipts settle interrupted.
       for (const receipt of Object.values(this.stored.receipts)) if (receipt.status === "running") receipt.status = "interrupted";
@@ -174,10 +175,13 @@ export class LocalController {
     return () => { this.settingsHold = false; };
   }
   begin(bindingId: string, raw: unknown, receipt: string) {
+    this.container?.authorize?.();
     if (this.settingsHold) throw new LocalError(409, 'Profile settings are being updated or tested. Try again after they settle.');
     this.assertStorage();
     const binding = this.assertBinding(bindingId);
     const input = z.object({ input: z.string().max(64000), session_id: id, instructions: z.string().max(128000).optional(), model: z.never().optional(), attachments: nativeAttachments.optional() }).strict().refine(v => !!v.input.trim() || !!v.attachments?.length, "Enter a message or attachment").parse(raw);
+    if(this.container?.admission && (input.session_id!==this.container.admission.sessionId() || receipt!==this.container.admission.receipt()))
+      throw new LocalError(403,'This native admission belongs to another run or conversation.');
     const digest = createHash("sha256").update(JSON.stringify([input.input, input.attachments ?? []])).digest("hex");
     id.parse(receipt);
     const previous = this.stored.receipts[receipt];
@@ -388,7 +392,13 @@ export class LocalController {
       if (active(r) && r.terminalCandidate && rpc?.alive && rpc === this.rpc && !this.stopping) void this.settleNative(r);
     }
   }
+  private assertRunScope(runId:string) {
+    if(this.container?.admission && this.stored.receipts[this.container.admission.receipt()]?.runId!==runId)
+      throw new LocalError(403,'This native run belongs to another context.');
+  }
   getRun(runId: string) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const r = this.runs.get(runId);
     if (r) return { run_id: r.id, status: r.status, output: r.output, error: r.error };
@@ -400,6 +410,8 @@ export class LocalController {
       error: "Turn replay expired. The transcript remains in Hermes; do not resend this admission." };
   }
   events(runId: string, after: number) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const r = this.runs.get(runId);
     if (!r) throw new LocalError(404, "Local replay is unavailable; check the retained run receipt");
@@ -407,6 +419,8 @@ export class LocalController {
     return { events: r.events.filter(e => Number(e._seq) > after), ended: !active(r) };
   }
   approve(runId: string, raw: unknown) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const { request_id, choice } = z.object({ request_id: id, choice: z.enum(["once", "deny"]) }).strict().parse(raw);
     const r = this.runs.get(runId), pending = r?.approvals.get(request_id);
@@ -415,6 +429,8 @@ export class LocalController {
     this.rpc.answer(pending.nativeId, { choice });
   }
   async nativeView(runId: string): Promise<ManagedRunView> {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const r = this.runs.get(runId);
     if (!r?.nativeId || !this.rpc?.alive || this.liveSessions.get(r.sessionKey) !== r.nativeId)
@@ -429,6 +445,8 @@ export class LocalController {
       prompts: [...r.inputs.values()].map(p => p.prompt), queued: r.queued ?? '', features: this.status().capabilities };
   }
   async nativeControl(runId: string, raw: unknown) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const input = managedControl.parse(raw), r = this.runs.get(runId);
     if (!r || !active(r) || r.cancel || !r.nativeId || !this.rpc?.alive || this.liveSessions.get(r.sessionKey) !== r.nativeId)
@@ -479,6 +497,7 @@ export class LocalController {
     } finally { r.controlAdmissions = (r.controlAdmissions ?? 1) - 1; }
   }
   async cancel(runId: string) {
+    this.assertRunScope(runId);
     const r = this.runs.get(runId);
     if (!r) { this.getRun(runId); return; }
     if (!active(r)) return;

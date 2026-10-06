@@ -31,6 +31,8 @@ export const BrokerConfig = z.object({
   network: networkMode.default('internet'),
   maxProfiles: z.number().int().min(1).max(64).default(16),
   teamBotsEnabled: z.boolean().default(false),
+  /** Active native candidates require a separate operator flag and server-verified admission. */
+  teamCandidateRuntimeEnabled: z.boolean().default(false),
 }).strict();
 export type BrokerConfig = z.infer<typeof BrokerConfig>;
 const exec = promisify(execFile);
