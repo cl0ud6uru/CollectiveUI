@@ -1,5 +1,5 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { db, type DbOrTx } from "@/db";
+import { db, type DbOrTx, type Tx } from "@/db";
 import { groupMappings, groups, userExternalGroups, users, type User } from "@/db/schema";
 
 export type ExternalGroup = { externalId: string; displayName?: string };
@@ -23,9 +23,9 @@ const list = (v?: string) =>
  * Upsert the user keyed on lower-cased UPN (so a hybrid user signing in via Entra or LDAP lands
  * on the same account) and replace their external group memberships for this source.
  */
-export async function syncUserOnSignIn(identity: SignInIdentity): Promise<User> {
+export async function syncUserOnSignIn(identity: SignInIdentity, transaction?: Tx): Promise<User> {
   const upn = identity.upn.trim().toLowerCase();
-  return db.transaction(async (tx) => {
+  const sync = async (tx: Tx) => {
     const [user] = await tx
       .insert(users)
       .values({
@@ -61,7 +61,8 @@ export async function syncUserOnSignIn(identity: SignInIdentity): Promise<User> 
       );
     }
     return user;
-  });
+  };
+  return transaction ? sync(transaction) : db.transaction(sync);
 }
 
 export type Principal = {

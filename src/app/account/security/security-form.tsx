@@ -22,6 +22,8 @@ export function SecurityForm({ initial, passwordOnly = false }: { initial: Summa
   const triggerRef = useRef<HTMLElement | null>(null);
   const stepRef = useRef<HTMLHeadingElement>(null);
   const resultRef = useRef<HTMLHeadingElement>(null);
+  const ldap = initial.ldap;
+  const passwordLabel = ldap ? "company password" : "CollectiveUI password";
   const protectedAccount = initial.totp || initial.passkeys.length > 0;
   const post = (body: Record<string, unknown>) => securityPost("/api/account/security", body);
   useEffect(() => { if (passkeyProof) stepRef.current?.focus(); }, [passkeyProof]);
@@ -131,19 +133,19 @@ export function SecurityForm({ initial, passwordOnly = false }: { initial: Summa
       {op === "add-passkey" ? <>
         <h3 className="font-semibold">First, confirm it’s you</h3>
         <p className="text-sm">{initial.passkeys.length > 0
-          ? "Use an existing passkey, or enter your CollectiveUI password and a verification code below. Then you’ll choose where to save your new passkey."
+          ? `Use an existing passkey, or enter your ${passwordLabel} and a verification code below. Then you’ll choose where to save your new passkey.`
           : initial.totp
             ? "Enter your CollectiveUI password and a code from your authenticator app. Then you’ll choose where to save your passkey."
-            : "Enter the password you use to sign in to CollectiveUI. Then you’ll choose where to save your passkey."}</p>
+            : `Enter your ${passwordLabel}. Then you’ll choose where to save your passkey.`}</p>
         {initial.passkeys.length > 0 && <>
           <Button className="min-h-11 w-full" variant="outline" disabled={pending} onClick={() => void perform(true)}>Use an existing passkey</Button>
           <p className="text-center text-sm text-muted">Or use your password and {initial.totp ? "authenticator or recovery code" : "a saved recovery code"}</p>
         </>}
       </> : <p>Verify your identity again for this change. Verification expires in five minutes. Completed changes sign out every session.</p>}
-      {(op === "disable" || op === "remove-passkey") && <p className="text-sm">Verify your current password and a code before removing a sign-in method. If you forgot your password, use a passkey to change it first.</p>}
+      {(op === "disable" || op === "remove-passkey") && <p className="text-sm">{ldap ? "Verify your company password and a recovery code before removing a sign-in method. Contact IT if you forgot your company password." : "Verify your current password and a code before removing a sign-in method. If you forgot your password, use a passkey to change it first."}</p>}
       {op === "disable" && <p role="note" className="font-semibold">This removes all passkeys, your authenticator app and recovery codes, returning this account to password-only sign-in.</p>}
       {op === "password" && <><div><Label htmlFor="new-security-password">New password</Label><Input id="new-security-password" type="password" autoComplete="new-password" value={value} onChange={e => setValue(e.target.value)} minLength={15} maxLength={256} required /></div><div><Label htmlFor="confirm-security-password">Confirm new password</Label><Input id="confirm-security-password" type="password" autoComplete="new-password" value={confirm} onChange={e => setConfirm(e.target.value)} required /></div></>}
-      <div><Label htmlFor="reauth-password">Current password</Label><Input id="reauth-password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} maxLength={256} required disabled={pending} /></div>
+      <div><Label htmlFor="reauth-password">{ldap ? "Current company password" : "Current password"}</Label><Input id="reauth-password" type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} maxLength={ldap ? 512 : 256} required disabled={pending} /></div>
       {protectedAccount && <>
         <div><Label htmlFor="reauth-code">{recovery ? "Recovery code" : "Authenticator code"}</Label><Input id="reauth-code" value={code} onChange={e => setCode(e.target.value)} autoComplete="one-time-code" inputMode={recovery ? "text" : "numeric"} maxLength={44} required disabled={pending} /></div>
         {initial.totp ? <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={recovery} disabled={pending} onChange={e => { setRecovery(e.target.checked); setCode(""); }} />Use a recovery code</label> : <p className="text-sm text-muted">Enter one of the recovery codes you saved when you first set up account protection.</p>}
@@ -156,8 +158,8 @@ export function SecurityForm({ initial, passwordOnly = false }: { initial: Summa
     {!passwordOnly && <Button className="min-h-11" variant="ghost" disabled={pending} onClick={close}>Cancel</Button>}
   </div>;
   return <div className="space-y-6" aria-busy={pending}>
-    <p>Passkeys let you sign in with your device PIN or biometric verification. They may sync between devices. An authenticator app adds a code after your password.</p>
-    <p className="rounded-lg border border-border p-4">{protectedAccount ? "Extra protection is active. Password-only sign-in is blocked." : "Your account currently uses a password. Adding a passkey or authenticator app will block password-only sign-in and provide recovery codes."}</p>
+    <p>{ldap ? "Company passkeys let you sign in with your device PIN or biometrics. CollectiveUI checks your directory account and refreshes your group access at sign-in. Entra sign-in and its passkeys are managed separately by your organization." : "Passkeys let you sign in with your device PIN or biometric verification. They may sync between devices. An authenticator app adds a code after your password."}</p>
+    <p className="rounded-lg border border-border p-4">{protectedAccount ? "Extra protection is active. Password-only sign-in is blocked." : ldap ? "Your account currently uses your company password. Adding a passkey will block password-only LDAP sign-in and provide recovery codes." : "Your account currently uses a password. Adding a passkey or authenticator app will block password-only sign-in and provide recovery codes."}</p>
     {!passwordOnly && <><section className="space-y-3"><h2 className="text-xl font-semibold">Passkeys</h2>
       {initial.passkeys.length ? <ul className="space-y-3">{initial.passkeys.map(k => <li key={k.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-3">
         <div><p className="font-medium">{k.name}</p><p className="text-xs text-muted">{k.deviceType === "multiDevice" ? "Sync-capable passkey" : "Device passkey"} · {k.lastUsedAt ? `Last used ${new Date(k.lastUsedAt).toLocaleDateString()}` : "Not used yet"}</p></div>
@@ -166,12 +168,12 @@ export function SecurityForm({ initial, passwordOnly = false }: { initial: Summa
       <Button disabled={pending || initial.passkeys.length >= 10} onClick={() => select("add-passkey")}>Add passkey</Button>
       <p className="text-sm text-muted">You can use this device, a nearby phone or a security key. Keep a second passkey or recovery codes for a lost device. Removing the last factor requires the explicit disable action below.</p>
     </section>
-    <section className="space-y-3"><h2 className="text-xl font-semibold">Authenticator app</h2><p>{initial.totp ? "Enabled" : "Not enabled"}</p>
+    {!ldap && <section className="space-y-3"><h2 className="text-xl font-semibold">Authenticator app</h2><p>{initial.totp ? "Enabled" : "Not enabled"}</p>
       <Button disabled={pending || (initial.totp && !initial.passkeys.length)} variant="outline" onClick={() => select(initial.totp ? "remove-totp" : "add-totp")}>{initial.totp ? "Remove authenticator app" : "Set up authenticator app"}</Button>
-    </section>
+    </section>}
     <section className="space-y-3"><h2 className="text-xl font-semibold">Recovery and password</h2><p>{initial.recoveryCount} recovery codes remaining.</p>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending || !protectedAccount} onClick={() => select("recovery")}>Regenerate recovery codes</Button><Button variant="outline" disabled={pending} onClick={() => select("password")}>Change password</Button><Button variant="outline" disabled={pending || !protectedAccount} onClick={() => select("disable")}>Disable extra protection</Button></div>
-      <p className="text-sm text-muted">If you lose every factor and recovery code, contact your operator. A password reset preserves your factors; support cannot read your authenticator secret or bypass verification here.</p>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={pending || !protectedAccount} onClick={() => select("recovery")}>Regenerate recovery codes</Button>{!ldap && <Button variant="outline" disabled={pending} onClick={() => select("password")}>Change password</Button>}<Button variant="outline" disabled={pending || !protectedAccount} onClick={() => select("disable")}>Disable extra protection</Button></div>
+      <p className="text-sm text-muted">If you lose every factor and recovery code, contact your operator. {ldap ? "Company password resets preserve your passkeys. Use your company password and a saved recovery code if you lose every passkey. Your IT team manages company passwords." : "A password reset preserves your factors; support cannot read your authenticator secret or bypass verification here."}</p>
     </section>
     </>}
     {passwordOnly ? <section className="space-y-4 rounded-lg border border-border p-4"><h2 className="text-xl font-semibold">Change password</h2>{editor}</section> : <Dialog open={!!op} onOpenChange={open => { if (!open) close(); }}>

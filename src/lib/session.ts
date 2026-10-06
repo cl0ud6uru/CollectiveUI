@@ -80,8 +80,11 @@ export async function requirePasswordPrincipal() {
 
 /** Factor management needs a specific current Auth.js session, never an account-wide version alone. */
 export async function requireSecurityActor() {
-  const p = await requirePasswordPrincipal();
+  if (await requestBearer() !== undefined) throw new HttpError(401, "Sign in on the web to change security settings");
   const session = await auth();
+  if (!session?.user?.id) throw new HttpError(401, "Unauthorized");
+  const p = await loadPrincipal(session.user.id);
+  if (!p || p.user.sessionVersion !== session.user.sessionVersion) throw new HttpError(401, "Unauthorized");
   if (!session?.user.sessionId) throw new HttpError(401, "Sign in again before changing security settings");
   return { id: p.user.id, sessionVersion: session.user.sessionVersion, sessionId: session.user.sessionId };
 }

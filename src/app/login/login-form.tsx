@@ -2,12 +2,12 @@
 
 import { startAuthentication, type PublicKeyCredentialRequestOptionsJSON } from "@collective/webauthn-browser";
 import { securityPost, type SecurityResult } from "@/lib/auth/security-client";
-import { useActionState, useState } from "react";
-import { ChevronDown, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { signIn as completeSignIn } from "next-auth/react";
-import { entraLogin, ldapLogin } from "./actions";
+import { entraLogin } from "./actions";
 import { useReportLoginMood } from "./login-mood";
 
 function MicrosoftLogo() {
@@ -34,9 +34,8 @@ export function LoginForm({
   local?: boolean;
   error?: string;
 }) {
-  const [ldapError, action, pending] = useActionState(ldapLogin, null);
   const [showLdap, setShowLdap] = useState(!entra);
-  useReportLoginMood(pending ? "working" : (ldapError ?? error) ? "attention" : "idle");
+
 
   if (!entra && !ldap && !local) {
     return (
@@ -48,12 +47,12 @@ export function LoginForm({
 
   return (
     <div className="space-y-4">
-      {(error || ldapError) && (
+      {error && (
         <div role="alert" className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
-          {ldapError ?? error}
+          {error}
         </div>
       )}
-      {local && <LocalLogin callbackUrl={callbackUrl} />}
+      {local && <CredentialLogin callbackUrl={callbackUrl} />}
       {entra && (
         <form action={entraLogin}>
           <input type="hidden" name="callbackUrl" value={callbackUrl} />
@@ -74,30 +73,29 @@ export function LoginForm({
         </button>
       )}
       {ldap && (
-        <form id="company-login" hidden={!showLdap} action={action} className="space-y-4" aria-busy={pending}>
-          <input type="hidden" name="callbackUrl" value={callbackUrl} />
-          <div><Label htmlFor="username">Company username</Label><Input id="username" name="username" placeholder="you@company.com" autoComplete="username" autoCapitalize="none" spellCheck={false} required className="h-12 rounded-xl px-4" /></div>
-          <div><Label htmlFor="password">Password</Label><Input id="password" name="password" type="password" placeholder="Enter your password" autoComplete="current-password" required className="h-12 rounded-xl px-4" /></div>
-          <Button type="submit" className="login-primary h-12 w-full text-base" disabled={pending}>
-            {pending && <Loader2 aria-hidden="true" className="h-4 w-4 motion-safe:animate-spin" />} {pending ? "Signing in…" : "Continue"}
-          </Button>
-        </form>
+        <div id="company-login" hidden={!showLdap}>
+          <CredentialLogin callbackUrl={callbackUrl} provider="ldap" />
+        </div>
       )}
     </div>
   );
 }
 
-function LocalLogin({ callbackUrl }: { callbackUrl: string }) {
+function CredentialLogin({ callbackUrl, provider = "local" }: { callbackUrl: string; provider?: "local" | "ldap" }) {
+  const ldap = provider === "ldap";
+  const usernameId = ldap ? "username" : "local-username";
+  const passwordId = ldap ? "password" : "local-password";
+  const codeId = `${provider}-factor-code`;
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [flow, setFlow] = useState("");
   const [replenished, setReplenished] = useState<SecurityResult>();
   const [savedCodes, setSavedCodes] = useState(false);
-  const [recovery, setRecovery] = useState(false);
+  const [recovery, setRecovery] = useState(ldap);
   useReportLoginMood(pending ? "working" : error ? "attention" : "idle");
-  const endpoint = "/api/auth/local-security";
+  const endpoint = `/api/auth/${provider}-security`;
   async function complete(ticket: string, mustChangePassword = false) {
-    const result = await completeSignIn("local", { ticket, redirect: false, redirectTo: "/" });
+    const result = await completeSignIn(provider, { ticket, redirect: false, redirectTo: "/" });
     if (!result?.ok || result.error) throw new Error("Unable to sign in");
     // A full navigation also clears any cached UI from the previous identity/session.
     // The target is navigation only; the proxy/session layer independently enforces password changes.
@@ -139,21 +137,21 @@ function LocalLogin({ callbackUrl }: { callbackUrl: string }) {
     <button type="button" className="min-h-11 underline" disabled={!savedCodes || pending} onClick={() => { setReplenished(undefined); setError(""); }}>Start sign-in again</button>
   </section>;
   return <div className="space-y-4">
-    <form action={password} className="space-y-4" aria-label="Local account" aria-busy={pending}>
+    <form action={password} className="space-y-4" aria-label={ldap ? "Company account" : "Local account"} aria-busy={pending}>
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
       {flow ? <>
-        <p role="status">Password verified. Enter an authenticator app code or a saved recovery code to finish signing in.</p>
-        <div><Label htmlFor="factor-code">{recovery ? "Recovery code" : "Authenticator code"}</Label><Input id="factor-code" name="code" autoComplete="one-time-code" inputMode={recovery ? "text" : "numeric"} autoFocus maxLength={recovery ? 44 : 6} required /></div>
-        <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={recovery} onChange={e => setRecovery(e.target.checked)} />Use a recovery code</label>
+        <p role="status">{ldap ? "Company password verified. Enter a saved recovery code to finish signing in." : "Password verified. Enter an authenticator app code or a saved recovery code to finish signing in."}</p>
+        <div><Label htmlFor={codeId}>{recovery ? "Recovery code" : "Authenticator code"}</Label><Input id={codeId} name="code" autoComplete="one-time-code" inputMode={recovery ? "text" : "numeric"} autoFocus maxLength={recovery ? 44 : 6} required /></div>
+        {!ldap && <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={recovery} onChange={e => setRecovery(e.target.checked)} />Use a recovery code</label>}
         <Button type="submit" disabled={pending} className="w-full">Verify and sign in</Button>
         <button type="button" className="min-h-11 text-sm underline" disabled={pending} onClick={() => setFlow("")}>Start again</button>
       </> : <>
-        <div><Label htmlFor="local-username">Local username or email</Label><Input id="local-username" name="username" autoComplete="username webauthn" autoCapitalize="none" spellCheck={false} maxLength={254} required className="h-12 rounded-xl px-4" /></div>
-        <div><Label htmlFor="local-password">Local password</Label><Input id="local-password" name="password" type="password" autoComplete="current-password" maxLength={256} required className="h-12 rounded-xl px-4" /></div>
-        <Button type="submit" disabled={pending} className="login-primary h-12 w-full text-base">{pending ? "Signing in…" : "Sign in with local account"}</Button>
+        <div><Label htmlFor={usernameId}>{ldap ? "Company username" : "Local username or email"}</Label><Input id={usernameId} name="username" autoComplete="username webauthn" autoCapitalize="none" spellCheck={false} maxLength={254} required className="h-12 rounded-xl px-4" /></div>
+        <div><Label htmlFor={passwordId}>{ldap ? "Password" : "Local password"}</Label><Input id={passwordId} name="password" type="password" autoComplete="current-password" maxLength={ldap ? 512 : 256} required className="h-12 rounded-xl px-4" /></div>
+        <Button type="submit" disabled={pending} className="login-primary h-12 w-full text-base">{pending ? "Signing in…" : ldap ? "Continue" : "Sign in with local account"}</Button>
       </>}
       <p className="text-xs text-muted">Lost a device? Use another passkey, or your password and a recovery code. For a lost password, contact your administrator. Password resets keep your security factors.</p>
     </form>
-    <Button type="button" variant="outline" disabled={pending} onClick={passkey} className="h-12 w-full">Sign in with a passkey</Button>
+    <Button type="button" variant="outline" disabled={pending} onClick={passkey} className="h-12 w-full">{ldap ? "Sign in with a company passkey" : "Sign in with a passkey"}</Button>
   </div>;
 }

@@ -131,11 +131,11 @@ Open **http://localhost:3000**, sign in with the account you just created, choos
 
 See [local setup and troubleshooting](docs/getting-started.md) for the optional LDAP demo, development tools and common startup problems.
 
-## Local account security
+## Account security
 
 Local users can open **Settings → Account Security** to add a passkey or authenticator app. Passkeys provide passwordless sign-in with required device PIN/biometric verification and may sync across devices. TOTP adds a code after the password. Adding the first factor blocks password-only sign-in, provides recovery codes and revokes existing sessions. Existing users are not enrolled by migration.
 
-Use a stable HTTPS `AUTH_URL` in production; development supports `http://localhost:<port>`. TOTP requires an explicitly configured 32-byte base64 encryption key, including in development. Save recovery codes privately and keep a second passkey. Password resets preserve enrolled factors. Entra MFA stays with the identity provider; LDAP behavior is unchanged. See [security design, recovery and verification](docs/security/local-mfa.md) before enabling this on an installation.
+Use a stable HTTPS `AUTH_URL` in production; development supports `http://localhost:<port>`. TOTP requires an explicitly configured 32-byte base64 encryption key, including in development. Save recovery codes privately and keep a second passkey. Password resets preserve enrolled factors. LDAP users can also enroll CollectiveUI passkeys in Settings, then sign in with a company passkey. Enrollment blocks password-only LDAP sign-in; recovery requires the company password and a saved recovery code. Entra passkeys and MFA stay with the identity provider and require separate enrollment. See [security design, recovery and verification](docs/security/local-mfa.md) before enabling this on an installation.
 
 ## Current limitations
 
@@ -143,7 +143,7 @@ Use a stable HTTPS `AUTH_URL` in production; development supports `http://localh
 - Group chats and delegated bots cannot ask for tool approval. Native durable turns can delegate synchronously or asynchronously. Related follow-ups use the specialist's `continue_*` tool with an earlier task ID, preserving the child conversation and one Recent entry; unrelated work uses `ask_*` to start a new task. Follow-ups queue in order and require the same owner, originating chat, source bot, target and current permissions. Hermes continuation is not supported. [Continuation design and verification](docs/testing/delegation-followups.md).
 - Optional workspaces have no network access or per-workspace disk quota. Set up isolation and host storage limits before enabling them.
 - Managed Hermes provisioning has mock-backed contract tests, not live deployment conformance. It is not a claim of tested isolation or real-provider readiness.
-- This release has no general model-usage quotas or cost caps, and uploaded files have no malware scanning. Local passkeys and TOTP are optional; directory MFA remains provider-specific.
+- This release has no general model-usage quotas or cost caps, and uploaded files have no malware scanning. Passkeys are optional for local and LDAP accounts; local TOTP is optional, and Entra authentication policy remains provider-managed.
 
 See the [development status and backlog](TODO.md), [service-bot restrictions](docs/service-bots.md) and [Hermes architecture](docs/architecture/hermes.md) for the full context.
 

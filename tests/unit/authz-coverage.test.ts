@@ -26,6 +26,7 @@ function urlOf(file: string) {
 
 // Public routes and actions that intentionally run without a session, and how each one authenticates instead.
 const PUBLIC_HANDLERS: Record<string, string> = {
+  "/api/auth/ldap-security": "Same-origin, rate-limited, browser-bound LDAP recovery and passkey challenges; no session",
   "/api/auth/local-security": "Same-origin, rate-limited, browser-bound factor challenges and tickets only; no session",
   "/api/auth/[...nextauth]": "Auth.js sign-in endpoints",
   "/api/routines/webhook/[id]": "HMAC signature or bearer secret per routine",
