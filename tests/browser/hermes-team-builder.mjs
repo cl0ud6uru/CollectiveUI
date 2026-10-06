@@ -37,9 +37,10 @@ await writeFile(entry, `
 import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client';
 import { BotBuilder } from '${root}/src/components/bots/bot-builder';
 window.fixtureCreates=[]; window.fixtureUpdates=[];
-const converted = location.pathname === '/converted';
+const converted = location.pathname.startsWith('/converted');
+const convertedDisabled = location.pathname === '/converted-disabled';
 const initial = {name:'Fixture Team',avatar:null,description:null,instructions:'',boundaries:'',appId:converted?'fixture-native':'fixture-hermes',visibility:'org',groupIds:[],userIds:[],maxSteps:10,starters:[],tools:[],delegateIds:[]};
-createRoot(document.getElementById('root')).render(<BotBuilder botId={converted?'converted-team':undefined} initial={initial} apps={[{id:'fixture-hermes',name:'Fixture Hermes',supportsTools:true,agentServer:true},{id:'fixture-native',name:'Fixture native',supportsTools:true}]} groups={[]} users={[]} tools={[]} delegates={[]} knowledge={[]} newChatId="fixture-preview" isAdmin teamConfig={{enabled:converted,modelPolicy:'admin_provided',maintainerIds:['admin'],expectedVersion:7}} teamMaintainers={[{id:'admin',name:'Fixture admin'},{id:'admin2',name:'Second admin'}]} teamModelOptions={[{value:'admin_provided',available:true}]}/>);
+createRoot(document.getElementById('root')).render(<BotBuilder botId={converted?'converted-team':undefined} initial={initial} apps={[{id:'fixture-hermes',name:'Fixture Hermes',supportsTools:true,agentServer:true},{id:'fixture-native',name:'Fixture native',supportsTools:true}]} groups={[]} users={[]} tools={[]} delegates={[]} knowledge={[]} newChatId="fixture-preview" isAdmin teamConfig={{enabled:converted&&!convertedDisabled,modelPolicy:'admin_provided',maintainerIds:['admin'],expectedVersion:7}} teamMaintainers={[{id:'admin',name:'Fixture admin'},{id:'admin2',name:'Second admin'}]} teamModelOptions={[{value:'admin_provided',available:true}]}/>);
 `);
 const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src'), 'next/navigation': navigation, sonner, ...aliases }, plugins: [{ name: 'fixture-components', setup(build) { build.onResolve({filter:/^\.\//}, args => localStubs.has(args.path) && args.importer.endsWith('/bot-builder.tsx') ? {path:stubs} : undefined); } }] });
 const updates = []; let rejectNext = true;
@@ -85,6 +86,12 @@ try {
   await enable.uncheck(); await page.getByRole('button', {name:'Update',exact:true}).click();
   await expect.poll(() => updates.length).toBe(4);
   expect(updates[3]).toEqual({method:'PUT',path:'/api/bots/converted-team/team',body:{enabled:false,maintainerIds:['admin'],modelPolicy:{mode:'admin_provided'},expectedVersion:7}});
+  await page.goto(`http://127.0.0.1:${server.address().port}/converted-disabled`);
+  const reenable = page.getByRole('checkbox', {name:'Share a Hermes Team Bot',exact:false});
+  await expect(reenable).toBeVisible(); await expect(reenable).not.toBeChecked();
+  await reenable.check(); await page.getByRole('button', {name:'Update',exact:true}).click();
+  await expect.poll(() => updates.length).toBe(5);
+  expect(updates[4]).toEqual({method:'PUT',path:'/api/bots/converted-team/team',body:{enabled:true,maintainerIds:['admin'],modelPolicy:{mode:'admin_provided'},expectedVersion:7}});
   expect(await page.evaluate(() => window.fixtureCreates.length)).toBe(0);
   expect(errors).toEqual([]);
   console.log('PASS: actual bot editor Team PUT 503 retry creates once; successful version advances sequential edits without remount or repeated settings writes; converted native-engine Team settings remain available; strict policy payload; synthetic actions/HTTP only.');
