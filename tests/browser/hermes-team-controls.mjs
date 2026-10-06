@@ -121,6 +121,9 @@ try {
   await page.evaluate(() => { window.fixtureSupported(true); window.fixtureStatus({ state: 'connection_needed' }); });
   await expect(page.getByRole('button', { name: 'Publish changes', exact: true })).toBeDisabled();
   await expect(page.getByRole('link', { name: 'Settings', exact: true })).toBeVisible();
+  await page.evaluate(() => window.fixtureStatus({ state: 'revoked' }));
+  await expect(mode).toBeDisabled();
+  await expect(page.getByText('Your access to this Team Bot was removed. Ask an admin if you need access again.')).toBeVisible();
   await page.evaluate(() => window.fixtureStatus({ state: 'ready' }));
   await page.getByRole('button', { name: 'Publish changes', exact: true }).click(); await expect(review).toBeVisible();
   await review.getByText(longPath, { exact: true }).click();

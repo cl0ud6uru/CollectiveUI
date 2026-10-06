@@ -2,7 +2,7 @@
 
 import { UserPicker, type UserOption } from "@/components/user-picker";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { FileText, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
 import {
@@ -158,6 +158,8 @@ export function BotBuilder({
   const router = useRouter();
   const [form, setForm] = useState<BotInput>(initial);
   const [team, setTeam] = useState(teamConfig);
+  // A failed follow-up Team settings request must retry the already-created bot.
+  const createdBotId = useRef<string | null>(null);
   const [tab, setTab] = useState<"create" | "configure">(botId ? "configure" : "create");
   const [pending, start] = useTransition();
   const [idea, setIdea] = useState("");
@@ -183,11 +185,13 @@ export function BotBuilder({
   function save() {
     start(async () => {
       try {
-        if (botId) {
-          await updateBot(botId, form);
-          await saveTeamSettings(botId);
+        const existingId = botId ?? createdBotId.current;
+        if (existingId) {
+          await updateBot(existingId, form);
+          await saveTeamSettings(existingId);
           toast.success("Bot updated");
-          router.refresh();
+          if (botId) router.refresh();
+          else router.push(`/bots/${existingId}/edit`);
         } else {
           let id: string;
           if (personalNew) {
@@ -199,6 +203,7 @@ export function BotBuilder({
             ({ id } = await createPersonalHermesBot(request));
             sessionStorage.removeItem(storageKey);
           } else ({ id } = await createBot(form));
+          createdBotId.current = id;
           await saveTeamSettings(id);
           toast.success("Bot created");
           router.push(`/bots/${id}/edit`);
@@ -211,7 +216,7 @@ export function BotBuilder({
 
   async function saveTeamSettings(id: string) {
     if (!team || !isAdmin || engine !== "hermes" || JSON.stringify(team) === JSON.stringify(teamConfig)) return;
-    const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(team) });
+    const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: team.enabled, maintainerIds: team.maintainerIds, modelPolicy: { mode: team.modelPolicy }, expectedVersion: team.expectedVersion ?? 0 }) });
     if (!response.ok) {
       const data = await response.json();
       throw new Error(`Bot configuration saved, but Team Bot settings need attention: ${data.error ?? "save was not confirmed"}`);
