@@ -14,12 +14,14 @@ import { modelToolName } from '@/lib/agent/tools/mcp';
 import { candidateHash, candidateObjectHash, loadCandidateContext, lockCandidateContext, validateCandidateContext } from './candidate-context';
 import { nativeRequestId, type CandidateResponse } from './candidate-model';
 import { candidateResourceAdapterId } from './candidate-resource-adapter';
+import { resolveMemberMcpConnection, memberMcpToolConnection } from '@/lib/mcp/member-connections';
+import { connectMemberMcp, redactMemberMcpValue } from '@/lib/mcp/member-transport';
 import { VERIFIED_TEAM_MODEL_ROUTES, type VerifiedTeamModelRoute } from './model-policy';
 import { authorizeTeamTool, canonicalTeamToolInput, createTeamConnectorService, TeamToolPolicyError, VERIFIED_TEAM_TOOL_ADAPTERS,
   type TeamToolApproval, type TeamToolAuthority, type VerifiedTeamToolAdapter } from './tool-policy';
 
 export const candidateToolName=(id:string)=>`team_${candidateHash(id).slice(0,32)}`;
-type Dependencies={ routes?:readonly VerifiedTeamModelRoute[]; adapters?:readonly VerifiedTeamToolAdapter[]; connect?:typeof connectMcp };
+type Dependencies={ routes?:readonly VerifiedTeamModelRoute[]; adapters?:readonly VerifiedTeamToolAdapter[]; connect?:typeof connectMcp; connectMember?:typeof connectMemberMcp };
 type Scope={ contextId:string; authorization:string|null; routes:readonly VerifiedTeamModelRoute[]; adapters:readonly VerifiedTeamToolAdapter[] };
 
 export async function assertCandidateMcpEnabled(q:DbOrTx=db) {
@@ -28,9 +30,7 @@ export async function assertCandidateMcpEnabled(q:DbOrTx=db) {
 
 async function resolvedToolAuthority(current:Awaited<ReturnType<typeof loadCandidateContext>>,capabilityId:string,q:DbOrTx=db) {
   const capability=current.run.definition.toolPolicy.capabilities.find(c=>c.capabilityId===capabilityId);
-  // No personal MCP connection schema exists today. Never turn this into a company connection.
-  if(capability?.connectionMode==='member_connection')throw new HttpError(409,'Native member MCP connections are not supported by this build.');
-  const [server]=capability?.connectionId ? await q.select().from(mcpServers).where(eq(mcpServers.id,capability.connectionId)) : [];
+  const [server]=capability?.connectionId ? await q.select().from(mcpServers).where(eq(mcpServers.id,capability.connectionId)).for('share') : [];
   const settings=await getSetting('tools',q);
   const disabled=settings.disabledTools.includes('mcp') || !!server && settings.disabledTools.includes(`mcp:${server.id}`);
   const enforcedNames=['mcp',...(capability?.action ? [capability.action,candidateToolName(capability.capabilityId)] : []),
@@ -48,12 +48,15 @@ async function resolvedToolAuthority(current:Awaited<ReturnType<typeof loadCandi
   const policy={...current.run.definition.toolPolicy,capabilities:current.run.definition.toolPolicy.capabilities.map(c=>c.capabilityId===capabilityId ? {...c,requireApproval:c.requireApproval || requireApproval} : c)};
   const usable=!disabled && server?.status==='enabled' && server.trust==='trusted' && !server.toolsDrift && !!server.toolsSnapshot?.length
     && server.toolsHash===snapshotHash(server.toolsSnapshot);
+  const member=usable && server && capability?.connectionMode==='member_connection' ? await resolveMemberMcpConnection(current.context.actorId,server,q):null;
   const authority:TeamToolAuthority={userId:current.context.actorId,botId:current.context.botId,userEnabled:true,botEnabled:true,audienceAllowed:true,
     policyVersion:current.run.definition.version,hermesRevision:HERMES_COMMIT,policy,
-    connection:usable ? {id:server.id,version:server.policyRevision,mode:'approved_team_connection',status:'active',expiresAt:current.context.expiresAt.getTime(),approvedForBotId:current.context.botId}:null};
+    connection:usable && server && capability ? capability.connectionMode==='member_connection'
+      ? memberMcpToolConnection(current.context.actorId,capability,server,member)
+      : {id:server.id,version:server.policyRevision,mode:'approved_team_connection',status:'active',expiresAt:current.context.expiresAt.getTime(),approvedForBotId:current.context.botId}:null};
   const def=server?.toolsSnapshot?.find(t=>t.name===capability?.action);
   if(capability?.connectionMode!=='disabled' && (!def || capability?.adapterId!==candidateResourceAdapterId(def) || server?.toolPolicy[def.name]?.enabled===false))authority.connection=null;
-  return {...current,capability,server,authority};
+  return {...current,capability,server,member,authority};
 }
 
 async function toolAuthority(scope:Scope,capabilityId:string,q:DbOrTx=db) {
@@ -99,13 +102,14 @@ export async function executeCandidateTool(request:Request,contextId:string,name
     loadAuthority:async()=> (await toolAuthority(scope,capability.capabilityId)).authority,
     loadApproval,
     dispatch:async(argumentsValue,attribution,approvedId)=>{
+      const callInputHash=attribution.connectionBindingHash?candidateObjectHash({inputHash,bindingHash:attribution.connectionBindingHash}):inputHash;
       const claimed=await db.transaction(async tx=>{
         await lockCandidateContext(tx,current.context);
         const resolved=await toolAuthority(scope,capability.capabilityId,tx);
         const fresh=authorizeTeamTool(current.context.actorId,toolRequest,resolved.authority,scope.adapters);
         if(canonicalTeamToolInput(fresh.attribution)!==canonicalTeamToolInput(attribution))throw new HttpError(409,'Native tool authority changed.');
         const [prior]=await tx.select().from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,contextId),eq(hermesTeamCandidateRequests.kind,'tool'),eq(hermesTeamCandidateRequests.requestId,requestId))).for('update');
-        if(prior){if(prior.inputHash!==inputHash)throw new HttpError(409,'The native tool UUID changed content.');if(prior.state==='complete' && prior.response)return {response:prior.response,id:prior.id};throw new HttpError(409,'The native action is unresolved.');}
+        if(prior){if(prior.inputHash!==callInputHash)throw new HttpError(409,'The native tool UUID changed content or connection.');if(prior.state==='complete' && prior.response)return {response:prior.response,id:prior.id};throw new HttpError(409,'The native action is unresolved.');}
         // A lost process may leave its durable claim running. A fresh nonce must
         // not turn unknown execution into a new action or consume another approval.
         const unresolved=await tx.select({id:hermesTeamCandidateRequests.id}).from(hermesTeamCandidateRequests).where(and(
@@ -118,7 +122,7 @@ export async function executeCandidateTool(request:Request,contextId:string,name
         if(approval)await tx.update(hermesTeamCandidateApprovals).set({state:'consumed',updatedAt:new Date()}).where(eq(hermesTeamCandidateApprovals.id,approval.id));
         const calls=await tx.select({id:hermesTeamCandidateRequests.id}).from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,contextId),eq(hermesTeamCandidateRequests.kind,'tool')));
         if(calls.length>=32)throw new HttpError(409,'This native run exhausted its tool allowance.');
-        const id=randomUUID();await tx.insert(hermesTeamCandidateRequests).values({id,contextId,requestId,kind:'tool',inputHash,state:'running'});
+        const id=randomUUID();await tx.insert(hermesTeamCandidateRequests).values({id,contextId,requestId,kind:'tool',inputHash:callInputHash,state:'running'});
         return {response:null,id};
       });
       if(claimed.response)return claimed.response;
@@ -139,6 +143,7 @@ export async function executeCandidateTool(request:Request,contextId:string,name
         mcpInputValidator(def.inputSchema,true)(argumentsValue);
         const p=resolved.principal;
         const authorize=async()=>{
+          if(abort.signal.aborted)throw new HttpError(403,'The connector request was cancelled.');
           const fresh=await toolAuthority(scope,capability.capabilityId);const checked=authorizeTeamTool(current.context.actorId,toolRequest,fresh.authority,scope.adapters);
           if(candidateObjectHash(checked.attribution)!==candidateObjectHash(attribution))throw new HttpError(403,'Native connector permission changed.');
           const actor=fresh.principal;
@@ -146,18 +151,23 @@ export async function executeCandidateTool(request:Request,contextId:string,name
             botId:attribution.botId,conversationId:fresh.run.run.conversationId,service:{id:`hermes-team:${attribution.botId}`,grant:contextId,revision:attribution.policyVersion,
               server:fresh.server!.id,tool:attribution.action,run:attribution.runId,call:requestId}};
         };
-        client=await (dependencies.connect??connectMcp)(resolved.server,{subject:{kind:'user',id:p.user.id,upn:p.user.upn,email:p.user.email,name:p.user.name,groups:p.groupIds},authorize,
+        const caller={subject:{kind:'user' as const,id:p.user.id,upn:p.user.upn,email:p.user.email,name:p.user.name,groups:p.groupIds},authorize,
           botId:attribution.botId,conversationId:resolved.run.run.conversationId,service:{id:`hermes-team:${attribution.botId}`,grant:contextId,revision:attribution.policyVersion,
-            server:resolved.server.id,tool:attribution.action,run:attribution.runId,call:requestId}});
+            server:resolved.server.id,tool:attribution.action,run:attribution.runId,call:requestId}};
+        watch=setTimeout(()=>void check(),250);
+        client=resolved.capability?.connectionMode==='member_connection'
+          ? resolved.member ? await (dependencies.connectMember??connectMemberMcp)(resolved.server,resolved.member,caller,abort.signal)
+            : (()=>{throw new HttpError(409,'Connect your own account for this capability.');})()
+          : await (dependencies.connect??connectMcp)(resolved.server,caller);
         // Recheck the exact scope after initialize and immediately before tools/call.
         const checked=await toolAuthority(scope,capability.capabilityId);
         const fresh=authorizeTeamTool(p.user.id,toolRequest,checked.authority,scope.adapters);
         if(candidateObjectHash(fresh.attribution)!==candidateObjectHash(attribution))throw new HttpError(403,'The tool scope changed during connection setup.');
-        watch=setTimeout(()=>void check(),250);
         const result=await client.callTool({name:attribution.action,arguments:argumentsValue as Record<string,unknown>,options:{signal:abort.signal,timeout:Math.min(45000,resolved.server.timeoutMs)}});
         const completed=await toolAuthority(scope,capability.capabilityId);
         if(candidateObjectHash(authorizeTeamTool(p.user.id,toolRequest,completed.authority,scope.adapters).attribution)!==candidateObjectHash(attribution))throw new HttpError(403,'The action authority changed.');
-        const response=json(capResult(redactMcpValue(result as McpCallResult,resolved.server),Math.min(64000,resolved.server.resultBudgetKb*1024)));
+        const clean=resolved.member ? redactMemberMcpValue(result as McpCallResult,resolved.server,resolved.member):redactMcpValue(result as McpCallResult,resolved.server);
+        const response=json(capResult(clean,Math.min(64000,resolved.server.resultBudgetKb*1024)));
         await db.update(hermesTeamCandidateRequests).set({state:'complete',response,updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,claimed.id));return response;
       }catch{
         await db.update(hermesTeamCandidateRequests).set({state:'needs_attention',updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,claimed.id));

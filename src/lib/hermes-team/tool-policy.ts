@@ -45,6 +45,8 @@ export type TeamToolConnection = {
   /** Team service grants are bound to this bot. Personal credentials are bound to the current member. */
   approvedForBotId?: string;
   userId?: string;
+  /** Exact personal account and endpoint revision; never plaintext credentials. */
+  bindingHash?: string;
 };
 export type TeamToolAuthority = {
   userId: string;
@@ -68,6 +70,7 @@ export type TeamToolAttribution = {
   connectionId: string;
   connectionVersion: number;
   connectionMode: "approved_team_connection" | "member_connection";
+  connectionBindingHash?: string;
   action: string;
   resourceIds: readonly string[];
   inputHash: string;
@@ -82,6 +85,7 @@ export type TeamToolApproval = {
   capabilityId: string;
   connectionId: string;
   connectionVersion: number;
+  connectionBindingHash?: string;
   inputHash: string;
   status: "approved" | "rejected" | "pending";
   expiresAt: number;
@@ -167,7 +171,8 @@ export function authorizeTeamTool(
   if (!connection || !connection.id || connection.id !== capability.connectionId || connection.mode !== capability.connectionMode
     || connection.status !== "active" || !Number.isFinite(connection.expiresAt) || connection.expiresAt <= now
     || !Number.isSafeInteger(connection.version) || connection.version < 1
-    || (connection.mode === "approved_team_connection" ? connection.approvedForBotId !== request.botId : connection.userId !== userId))
+    || (connection.mode === "approved_team_connection" ? connection.approvedForBotId !== request.botId
+      : connection.userId !== userId || !/^[a-f0-9]{64}$/.test(connection.bindingHash ?? "")))
     return reject("connection_needed", capability.connectionMode === "member_connection" ? "Connect your account to use this capability." : "This bot's team connection needs attention.");
   // Clone plain input before parsing so the adapter cannot accidentally pass hidden, inherited or mutable caller state.
   const raw = JSON.parse(canonicalTeamToolInput(request.input));
@@ -180,6 +185,7 @@ export function authorizeTeamTool(
   return { attribution: {
     userId, botId: request.botId, runId: request.runId, policyVersion: authority.policyVersion, capabilityId: capability.capabilityId,
     adapterId: adapter.id, connectionId: connection.id, connectionVersion: connection.version, connectionMode: connection.mode,
+    ...(connection.bindingHash ? { connectionBindingHash: connection.bindingHash } : {}),
     action: scoped.action, resourceIds, inputHash, requireApproval: capability.requireApproval || capability.effect === "write",
   }, arguments: JSON.parse(argumentsJson) };
 }
@@ -190,7 +196,8 @@ export function assertTeamToolApproval(attribution: TeamToolAttribution, approva
   if (!approval.id || !Number.isFinite(now) || !Number.isFinite(approval.expiresAt) || approval.expiresAt <= now
     || approval.userId !== attribution.userId || approval.botId !== attribution.botId || approval.runId !== attribution.runId
     || approval.policyVersion !== attribution.policyVersion || approval.capabilityId !== attribution.capabilityId
-    || approval.connectionId !== attribution.connectionId || approval.connectionVersion !== attribution.connectionVersion || approval.inputHash !== attribution.inputHash)
+    || approval.connectionId !== attribution.connectionId || approval.connectionVersion !== attribution.connectionVersion
+    || approval.connectionBindingHash !== attribution.connectionBindingHash || approval.inputHash !== attribution.inputHash)
     return reject("approval_stale", "This tool action changed. Review it again.");
 }
 

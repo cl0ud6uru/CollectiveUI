@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { capResult, cleanDescription, mcpResultToModelOutput, MAX_DESCRIPTION_CHARS, stripHidden } from "@/lib/mcp/hygiene";
+import { redactMcpSecrets, redactMcpValue } from '@/lib/mcp/client';
+import { AAD, encrypt } from '@/lib/crypto';
 
 const TAGS = "\u{E0049}\u{E0067}\u{E006E}\u{E006F}\u{E0072}\u{E0065}"; // "Ignore" in Unicode tag characters
+
+describe('MCP credential echo cleaning', () => {
+  it.each(['Bearer', 'Basic'])('masks normalized %s wire headers and bare tokens from legacy shared storage', scheme => {
+    vi.stubEnv('ENCRYPTION_KEY', 'synthetic-shared-echo-fixture-only'); vi.stubEnv('ENCRYPTION_KEYS', ''); vi.stubEnv('ENCRYPTION_PRIMARY_KID', '');
+    try {
+      const token = 'shared-trim-secret-74381', stored = `  ${scheme} ${token}  `;
+      const server = { id: 'synthetic-shared', headersEnc: encrypt(JSON.stringify({ Authorization: stored }), AAD.mcpHeaders), identitySecretEnc: null };
+      const result = { content: [{ type: 'text', text: `echo ${stored} ${scheme} ${token} ${token}` }], structuredContent: { [token]: token } };
+      const clean = redactMcpValue(result, server);
+      expect(JSON.stringify(clean)).not.toContain(token); expect(clean.content[0].text).toContain('[redacted]');
+      expect(clean.structuredContent).toEqual({ '[redacted]': '[redacted]' });
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it('retains unrelated text and ignores empty normalization masks', () => {
+    expect(redactMcpSecrets({ text: 'normal result' }, ['', '   '])).toEqual({ text: 'normal result' });
+  });
+});
 
 describe("MCP text cleaning", () => {
   it("strips characters that hide text from reviewers, and keeps normal text and emoji", () => {

@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { and,eq } from 'drizzle-orm';
 import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
+vi.mock('server-only',()=>({}));
 import type { Principal } from '@/lib/auth/groups';
 const fixture=vi.hoisted(()=>({client:null as PGlite|null,revoke:vi.fn(),human:null as Principal|null}));
 vi.mock('@/lib/docker-hermes/client',()=>({dockerControl:fixture.revoke,dockerFetch:vi.fn()}));

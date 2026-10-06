@@ -94,10 +94,15 @@ describe("Team Bot fixed native tool capability policy", () => {
       expect(() => authorize(authority({ connection: bad }))).toThrow("connection needs attention");
     const member = authority({
       policy: { capabilities: [{ ...authority().policy.capabilities[0], connectionMode: "member_connection", connectionId: "member-connection" }] },
-      connection: { id: "member-connection", mode: "member_connection", userId: "alice", version: 1, status: "active", expiresAt: now + 1000 },
+      connection: { id: "member-connection", mode: "member_connection", userId: "alice", version: 1, status: "active", expiresAt: now + 1000, bindingHash: "a".repeat(64) },
     });
     expect(authorize(member).attribution.connectionMode).toBe("member_connection");
     expect(() => authorize({ ...member, connection: { ...member.connection!, userId: "bob" } })).toThrow("Connect your account");
+    expect(() => authorize({ ...member, connection: { ...member.connection!, bindingHash: undefined } })).toThrow("Connect your account");
+    const attribution = authorize(member).attribution;
+    expect(attribution.connectionBindingHash).toBe("a".repeat(64));
+    expect(() => assertTeamToolApproval(attribution, approval(attribution, { connectionBindingHash: "b".repeat(64) }), now)).toThrow("changed");
+    expect(() => assertTeamToolApproval(attribution, approval(attribution, { connectionBindingHash: "a".repeat(64) }), now)).not.toThrow();
   });
 
   it("revokes capabilities when the actor, bot or audience is disabled; ownership alone is insufficient", () => {

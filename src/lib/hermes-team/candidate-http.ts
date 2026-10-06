@@ -22,7 +22,7 @@ export async function candidateModelHttp(request:Request,params:{contextId:strin
   }catch(error){return failure(error);}
 }
 const rpc=z.object({jsonrpc:z.literal('2.0'),id:z.union([z.string().max(200),z.number().finite()]).optional(),method:z.string().max(100),params:z.record(z.string(),z.unknown()).optional()}).strict();
-export async function candidateMcpHttp(request:Request,contextId:string,dependencies:{routes?:readonly VerifiedTeamModelRoute[];adapters?:readonly VerifiedTeamToolAdapter[];connect?:typeof import('@/lib/mcp/client').connectMcp;approvalWaitMs?:number}={}){
+export async function candidateMcpHttp(request:Request,contextId:string,dependencies:{routes?:readonly VerifiedTeamModelRoute[];adapters?:readonly VerifiedTeamToolAdapter[];connect?:typeof import('@/lib/mcp/client').connectMcp;connectMember?:typeof import('@/lib/mcp/member-transport').connectMemberMcp;approvalWaitMs?:number}={}){
   try{
     const message=rpc.parse(await readCandidateJson(request));
     // Even initialize/notifications must check an opaque grant, current audience and current model route.
