@@ -33,5 +33,7 @@ export function mcpInventory(list: RpcRecord, status: RpcRecord, catalog: RpcRec
   };
 }
 export function probeSummary(result: RpcRecord) {
-  return { ok: result.ok === true, oauthNeeded: result.oauth_needed === true, tools: rows(result.tools).map(t => str(t.name)), prompts: Number.isSafeInteger(result.prompts) ? Number(result.prompts) : 0, resources: Number.isSafeInteger(result.resources) ? Number(result.resources) : 0 };
+  return { ok: result.ok === true, oauthNeeded: result.oauth_needed === true,
+    oauthTokensPresent: typeof result.oauth_tokens_present === 'boolean' ? result.oauth_tokens_present : null,
+    tools: rows(result.tools).map(t => str(t.name)), prompts: Number.isSafeInteger(result.prompts) ? Number(result.prompts) : 0, resources: Number.isSafeInteger(result.resources) ? Number(result.resources) : 0 };
 }

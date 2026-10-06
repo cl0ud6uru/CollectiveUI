@@ -11,6 +11,12 @@ import { remoteAccess } from './store';
 import { ownedNativeSession } from './sessions';
 import { administrationInput, mcpInventory, probeSummary, settingValue, settingValues } from './administration-contract';
 
+function assertIdle(current: { status: string; queueRequestId?: string | null } | undefined,
+  view: { running: boolean; uncertain?: boolean; queuePending?: boolean } | undefined) {
+  if (!current || current.status !== 'idle' || current.queueRequestId || !view || view.running || view.uncertain || view.queuePending)
+    throw new HttpError(409, 'Finish this native turn before administering Hermes.');
+}
+
 export async function nativeAdministration(ownerId: string, connectionId: string, sessionId: string, raw: unknown) {
   const input = administrationInput.parse(raw);
   // Bind both connection ownership and profile to the persisted session, never to browser input.
@@ -18,7 +24,7 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(p => p.name === row.profile)) throw new HttpError(404, 'Hermes profile not found.');
   const hub = nativeHub(ownerId, connectionId);
-  const snapshot = await hub.refresh(row);
+  await hub.refresh(row);
   const runtimeId = hub.sessions.get(row.id)?.row.runtimeId;
   if (!runtimeId) throw new HttpError(409, 'Open this Hermes conversation before changing settings.');
   const params = { profile: row.profile, session_id: runtimeId };
@@ -28,7 +34,14 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     assertRemoteHermesAdmission(await getSetting('remoteHermes', tx));
     if (input.operation === 'inspect') {
       const read = async (key: 'reasoning' | 'fast', session: boolean) => {
-        try { return { supported: true, value: settingValue(key, await hub.socket.call('config.get', { profile: row.profile, ...(session ? { session_id: runtimeId } : {}), key })) }; }
+        try {
+          // At the pinned native version config.get fast loses auto/cold. The fixed
+          // status word returns the actual tier (including lazy session pins) before any write.
+          const result = key === 'fast'
+            ? await hub.socket.call('config.set', { profile: row.profile, ...(session ? { session_id: runtimeId, scope: 'session' } : { scope: 'global' }), key, value: 'status' })
+            : await hub.socket.call('config.get', { profile: row.profile, ...(session ? { session_id: runtimeId } : {}), key });
+          return { supported: true, value: settingValue(key, result) };
+        }
         catch (error) { if (error instanceof HttpError && error.status === 501) return { supported: false, value: '' }; throw error; }
       };
       const session = { reasoning: await read('reasoning', true), fast: await read('fast', true) };
@@ -43,7 +56,7 @@ export async function nativeAdministration(ownerId: string, connectionId: string
       return { session, profile, mcp, profileName: row.profile };
     }
     const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
-    if (!current || current.status !== 'idle' || snapshot.running) throw new HttpError(409, 'Finish this native turn before administering Hermes.');
+    assertIdle(current, hub.sessions.get(row.id)?.view);
     if (input.operation === 'test') {
       const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});
       if (!inventory.servers.some(s => s.name === input.name)) throw new HttpError(404, 'MCP server not found in this profile.');
@@ -84,7 +97,7 @@ export async function nativeAdministration(ownerId: string, connectionId: string
         await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
         assertRemoteHermesAdmission(await getSetting('remoteHermes', tx));
         const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
-        if (!current || current.status !== 'idle' || hub.sessions.get(row.id)?.view.running) throw new HttpError(409, 'Finish this native turn before administering Hermes.');
+        assertIdle(current, hub.sessions.get(row.id)?.view);
         return dispatch();
       });
     }
