@@ -1282,3 +1282,25 @@ export type UserCredential = typeof userCredentials.$inferSelect;
 export type Attachment = typeof attachments.$inferSelect;
 export type AgentRun = typeof agentRuns.$inferSelect;
 export type RunEvent = typeof runEvents.$inferSelect;
+
+// Owner-scoped, short-lived ActivityKit update-token registrations (never push-to-start tokens).
+export const liveActivities = pgTable("live_activities", {
+  sessionId: text("session_id").notNull().references(() => mobileSessions.id, { onDelete: "cascade" }),
+  activityId: text("activity_id").notNull(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  runId: text("run_id").notNull().references(() => agentRuns.id, { onDelete: "cascade" }),
+  tokenEnc: text("token_enc").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  tokenVersion: bigint("token_version", { mode: "number" }).notNull(),
+  fingerprint: text("fingerprint"),
+  deliveryTimestamp: integer("delivery_timestamp").notNull().default(0),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  attempts: integer("attempts").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+}, t => [primaryKey({ columns: [t.sessionId, t.activityId] }),
+  uniqueIndex("live_activities_token_idx").on(t.tokenHash),
+  uniqueIndex("live_activities_run_idx").on(t.sessionId, t.runId),
+  index("live_activities_due_idx").on(t.nextAttemptAt),
+]);

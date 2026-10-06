@@ -15,10 +15,11 @@ RUN npm ci
 
 FROM base AS runtime-deps
 COPY package.json package-lock.json ./
-# Next's optional Playwright peer is marked devOptional, so npm still installs it with --omit=dev.
-# The worker never uses Next's experimental browser-test integration; remove its tools and bin links.
+# Optional Next/Drizzle peers used only by tests are marked devOptional, so npm still
+# installs them with --omit=dev. The worker uses node-postgres; remove test tooling.
 RUN npm ci --omit=dev \
     && rm -rf node_modules/@playwright/test node_modules/playwright node_modules/playwright-core \
+              node_modules/@electric-sql/pglite \
               node_modules/.bin/playwright node_modules/.bin/playwright-core \
     && npm cache clean --force
 
