@@ -232,12 +232,13 @@ export async function stopRuns(principal: Principal, conversationId: string): Pr
     .select({ id: agentRuns.id, status: agentRuns.status })
     .from(agentRuns)
     .where(
-      and(or(eq(agentRuns.conversationId, conversationId), inArray(agentRuns.id, db.select({ id: delegatedTasks.childRunId }).from(delegatedTasks).where(and(eq(delegatedTasks.originConversationId, conversationId), eq(delegatedTasks.userId, principal.user.id))))), eq(agentRuns.userId, principal.user.id), inArray(agentRuns.status, [...HOLDING_STATUSES])),
+      and(or(eq(agentRuns.conversationId, conversationId), inArray(agentRuns.id, db.select({ id: delegatedTasks.childRunId }).from(delegatedTasks).where(and(eq(delegatedTasks.originConversationId, conversationId), eq(delegatedTasks.userId, principal.user.id))))), eq(agentRuns.userId, principal.user.id),
+        or(inArray(agentRuns.status, [...HOLDING_STATUSES]), and(eq(agentRuns.executionMode, "async_delegate"), eq(agentRuns.status, "waiting")))),
     );
   let cancelled = 0;
   let signalled = 0;
   for (const run of open) {
-    if ((run.status === "queued" || run.status === "waiting_tasks") && (await abortQueuedRun(run.id, { status: "cancelled" }, { waitingTasks: true }))) {
+    if (["queued", "waiting_tasks", "waiting"].includes(run.status) && (await abortQueuedRun(run.id, { status: "cancelled" }, { waitingTasks: true, waitingApproval: true }))) {
       cancelled++;
       continue;
     }
@@ -245,11 +246,11 @@ export async function stopRuns(principal: Principal, conversationId: string): Pr
     // finished meanwhile is left alone; a human-approval pause keeps its approval answerable.
     const status = await db.transaction(async (tx) => {
       await lockUserRuns(tx, principal.user.id);
-      const [cur] = await tx.select({ status: agentRuns.status }).from(agentRuns).where(eq(agentRuns.id, run.id)).for("update");
-      return cur && (isActive(cur.status) || cur.status === "waiting_tasks") ? requestCancelTx(tx, run.id) : null;
+      const [cur] = await tx.select({ status: agentRuns.status, executionMode: agentRuns.executionMode }).from(agentRuns).where(eq(agentRuns.id, run.id)).for("update");
+      return cur && (isActive(cur.status) || cur.status === "waiting_tasks" || (cur.status === "waiting" && cur.executionMode === "async_delegate")) ? requestCancelTx(tx, run.id) : null;
     });
-    if ((status === "queued" || status === "waiting_tasks") && await abortQueuedRun(run.id, { status: "cancelled" }, { waitingTasks: true })) cancelled++;
-    else if (status && (isActive(status) || status === "waiting_tasks")) signalled++;
+    if (status && ["queued", "waiting_tasks", "waiting"].includes(status) && await abortQueuedRun(run.id, { status: "cancelled" }, { waitingTasks: true, waitingApproval: true })) cancelled++;
+    else if (status && (isActive(status) || status === "waiting_tasks" || status === "waiting")) signalled++;
   }
   return { cancelled, signalled };
 }
@@ -287,7 +288,7 @@ export async function stopRunFor(principal: Principal, conversationId: string, m
 export async function abortQueuedRun(
   runId: string,
   to: { status: "cancelled" | "failed"; error?: string },
-  opts: { ifUnclaimedForMs?: number; waitingTasks?: boolean } = {},
+  opts: { ifUnclaimedForMs?: number; waitingTasks?: boolean; waitingApproval?: boolean } = {},
 ): Promise<AgentRun | null> {
   const done = await db.transaction(async (tx) => {
     // `ifUnclaimedForMs` (the tail's queue timeout): only when it has waited that long by the database's clock and no
@@ -303,7 +304,8 @@ export async function abortQueuedRun(
     const [cur] = await tx
       .select()
       .from(agentRuns)
-      .where(and(eq(agentRuns.id, runId), inArray(agentRuns.status, opts.waitingTasks ? ["queued", "waiting_tasks"] : ["queued"]), ...unclaimed))
+      .where(and(eq(agentRuns.id, runId), or(inArray(agentRuns.status, opts.waitingTasks ? ["queued", "waiting_tasks"] : ["queued"]),
+        opts.waitingApproval ? and(eq(agentRuns.executionMode, "async_delegate"), eq(agentRuns.status, "waiting")) : undefined), ...unclaimed))
       .for("update");
     if (!cur) return null;
     const [row] = await tx

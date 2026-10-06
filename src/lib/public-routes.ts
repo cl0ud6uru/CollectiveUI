@@ -18,7 +18,7 @@ export function isPublicPath(pathname: string): boolean {
 const MOBILE_API = [
   /^\/api\/mobile\/v1\/[A-Za-z0-9_/-]+$/,
   /^\/api\/chat$/,
-  /^\/api\/chat\/[A-Za-z0-9_-]+(?:\/(?:stream|stop))?$/,
+  /^\/api\/chat\/[A-Za-z0-9_-]+(?:\/(?:stream|stop|approvals))?$/,
   /^\/api\/files(?:\/[A-Za-z0-9]+)?$/,
   /^\/api\/workspace\/files$/,
   /^\/api\/search$/,

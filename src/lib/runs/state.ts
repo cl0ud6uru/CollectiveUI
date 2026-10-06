@@ -132,7 +132,7 @@ export async function pauseRun(
         heartbeatAt: sql`now()`,
         updatedAt: sql`now()`,
       })
-      .where(and(eq(agentRuns.id, run.id), eq(agentRuns.holder, holder), eq(agentRuns.status, "running"), eq(agentRuns.executionMode, "worker")))
+      .where(and(eq(agentRuns.id, run.id), eq(agentRuns.holder, holder), eq(agentRuns.status, "running"), inArray(agentRuns.executionMode, ["worker", "async_delegate"])))
       .returning();
     if (!row) return null;
     const drafts: EventDraft[] = [...closing.map((chunk) => ({ kind: "chunk" as const, chunk })), { kind: "segment-end" }];
@@ -203,7 +203,7 @@ export async function requeueRunTx(tx: Tx, runId: string, userId: string, chunks
     .from(agentRuns)
     .where(and(eq(agentRuns.id, runId), eq(agentRuns.userId, userId)))
     .for("update");
-  if (!cur || cur.executionMode !== "worker" || cur.status !== "waiting") return null;
+  if (!cur || !["worker", "async_delegate"].includes(cur.executionMode) || cur.status !== "waiting" || cur.cancelRequestedAt) return null;
   const appended = chunks.length
     ? await appendEventsTx(
         tx,

@@ -19,6 +19,8 @@ export type AgentCtx = {
   execution?: { holder: string; deadlineAt: number; segment?: number };
   /** Available only in a durable native turn. Registering a task suspends at the next completed model step. */
   awaitTask?: (taskId: string) => void;
+  /** Native durable children can relay workspace requests to their human owner. Never a bot approval grant. */
+  relayWorkspaceApproval?: boolean;
   /**
    * A routine's first segment (nobody watching live): the instructions say so, personal plans refuse unless an admin
    * allows it, and no memories are extracted. Routine continuations (after an Inbox approval) aren't background.

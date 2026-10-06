@@ -45,6 +45,35 @@ final class ChatModel {
     var unavailableReason: String? = nil
 
     var messages: [UIMessage] = []
+    var delegatedApprovals: [DelegatedApproval] = []
+    var answeringDelegate = false
+    var delegateApprovalError: String?
+
+    func refreshDelegatedApprovals() async {
+        guard !isNew, let api = app.api else { return }
+        do { delegatedApprovals = try await api.delegatedApprovals(conversationId: conversationId) }
+        catch { delegatedApprovals = [] }
+        if isReadOnly && !isStreaming { await load(showSpinner: false) }
+    }
+
+    func answerDelegate(_ request: DelegatedApproval, approved: Bool) async {
+        guard !answeringDelegate, request.expiresAt > Date(), let api = app.api else { return }
+        answeringDelegate = true
+        delegateApprovalError = nil
+        defer { answeringDelegate = false }
+        do { try await api.answerDelegatedApproval(conversationId: conversationId, request: request, approved: approved) }
+        catch { delegateApprovalError = error.localizedDescription }
+        await refreshDelegatedApprovals()
+    }
+
+    func stopDelegate(_ request: DelegatedApproval) async {
+        guard !answeringDelegate, let api = app.api else { return }
+        answeringDelegate = true
+        defer { answeringDelegate = false }
+        do { try await api.stop(conversationId: request.conversationId, messageId: nil) }
+        catch { delegateApprovalError = error.localizedDescription }
+        await refreshDelegatedApprovals()
+    }
     var isLoading: Bool = false
     var loadError: String? = nil
     var isStreaming: Bool = false

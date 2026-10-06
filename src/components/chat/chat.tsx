@@ -15,6 +15,7 @@ import { NativeSearchControl } from "./native-search-control";
 import type { NativeSearchMode } from "@/lib/native-search-policy";
 import { Composer, type ComposerHandle, type UploadedFile } from "./composer";
 import { AssistantMessage, hasContent, UserMessage, type BranchInfo } from "./message";
+import { DelegatedApprovals } from "./delegated-approvals";
 import { ShareButton } from "./share-dialog";
 import { useShell } from "./shell-context";
 import { TargetPicker } from "./target-picker";
@@ -701,6 +702,7 @@ export function Chat({
               }}
             >
               <div className={cn("mx-auto w-full max-w-3xl px-4 pb-8 pt-4 md:px-6", bubbles ? "space-y-3" : "space-y-6", overlayHeader && styles.messages)}>
+                <DelegatedApprovals conversationId={conversationId} />
                 {messages.map((m, i) => [
                   <TimeDivider key={`t-${m.id}`} at={m.metadata?.createdAt} previous={i > 0 ? messages[i - 1].metadata?.createdAt : undefined} />,
                   m.role === "user" ? (

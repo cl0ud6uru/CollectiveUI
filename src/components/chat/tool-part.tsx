@@ -148,7 +148,7 @@ export function ToolPartView({
   const Icon = d.icon;
 
   if ((name === "workspace_bash" || name === "workspace_write" || name === "workspace_edit") && part.state === "approval-requested" && !part.approval.isAutomatic) {
-    return <WorkspaceApproval name={name} part={part} botName={botName} onApprove={onApprove} onDeny={onDeny} onAlwaysAllow={part.approval.requestReason === ENFORCED_APPROVAL_REASON ? undefined : onAlwaysAllow} />;
+    return <WorkspaceApproval name={name} part={part} botName={botName} disabled={readOnly} onApprove={onApprove} onDeny={onDeny} onAlwaysAllow={part.approval.requestReason === ENFORCED_APPROVAL_REASON ? undefined : onAlwaysAllow} />;
   }
   if (name === "workspace_bash" && ["input-available", "approval-responded", "output-available"].includes(part.state)) {
     return <BashResult part={part as never} live={live} />;

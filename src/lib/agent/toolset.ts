@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { db } from "@/db";
-import { botTools, groups, mcpServers, toolGrants, type Bot, type McpServer, type Skill } from "@/db/schema";
+import { aiApps, botTools, groups, mcpServers, toolGrants, type Bot, type McpServer, type Skill } from "@/db/schema";
 import { HttpError, listAccessibleMcpServers } from "@/lib/authz";
 import type { McpCaller } from "@/lib/mcp/client";
 import type { IdentitySubject } from "@/lib/mcp/identity";
@@ -211,7 +211,10 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   const choices = await discoverDelegates(ctx);
   const delegates = choices.map(choice => choice.bot);
   for (const choice of choices) {
-    entries.push(delegateEntry(ctx, choice.bot, choice.mode));
+    const [receiverApp] = ctx.awaitTask ? await db.select().from(aiApps).where(eq(aiApps.id, choice.bot.appId!)) : [];
+    const receiverTools = ctx.awaitTask && receiverApp?.provider !== "hermes" ? await db.select().from(botTools).where(eq(botTools.botId, choice.bot.id)) : [];
+    const durableWorkspace = !!ctx.awaitTask && !ctx.inGroup && receiverTools.some(t => t.toolKey === "workspace");
+    entries.push(delegateEntry(ctx, choice.bot, choice.mode, durableWorkspace));
     if (ctx.awaitTask && ctx.usage?.runId && !ctx.inGroup)
       entries.push(continueDelegateEntry(ctx, choice.bot, choice.mode));
   }
@@ -258,8 +261,8 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
       mcp: entry.mcp,
       grantable: entry.grantable,
     });
-    // Delegated sub-agents and group-chat turns cannot pause for a human; deny instead.
-    if (decision === "user-approval" && (ctx.depth > 0 || ctx.inGroup)) {
+    // Only a durable native workspace child can pause for its owning human. Inline/group/other tools keep denying.
+    if (decision === "user-approval" && (ctx.inGroup || (ctx.depth > 0 && !(ctx.relayWorkspaceApproval && entry.key === "workspace")))) {
       return {
         type: "denied",
         reason: `${entry.name} needs the user's approval, which isn't possible here. Ask the user to open a direct chat with ${bot.name} to do this.`,
@@ -298,17 +301,17 @@ async function identitySubject(ctx: AgentCtx, servers: McpServer[]): Promise<Ide
   return { kind: "user", id: u.id, upn: u.upn, email: u.email, name: u.name, groups: names };
 }
 
-function delegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: DelegationMode): ToolEntry {
+function delegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: DelegationMode, durableWorkspace = false): ToolEntry {
   const name = `ask_${slugify(delegate.name).replace(/-/g, "_") || delegate.id}`.slice(0, 50) + `_${delegate.id.slice(-10)}`;
   return {
     name,
     key: `delegate:${delegate.id}`,
     tool: tool({
-      description: `Start a NEW task with the specialist bot "${delegate.name}". Its job: ${delegate.description ?? "n/a"}. Give it a complete, self-contained task description. For a related follow-up, use this specialist's continue_* tool with the taskId from its earlier result when offered. New or unrelated work must use this ask_* tool. ${ctx.awaitTask ? "Choose sync to ask and wait in this turn, or async to schedule durable independent work. Async results resume this reply automatically; do not start the same task twice. You may start several different async tasks in one model step." : "This context supports synchronous delegation only."}`,
+      description: `Start a NEW task with the specialist bot "${delegate.name}". Its job: ${delegate.description ?? "n/a"}. Give it a complete, self-contained task description. For a related follow-up, use this specialist's continue_* tool with the taskId from its earlier result when offered. New or unrelated work must use this ask_* tool. ${durableWorkspace ? "This workspace specialist runs durably so its actions can pause for the human owner's approval. Both mode values schedule independent work and return a queued receipt; this reply resumes after the result arrives. Never approve on behalf of the human or repeat an accepted assignment." : ctx.awaitTask ? "Choose sync to ask and wait in this turn, or async to schedule durable independent work. Async results resume this reply automatically; do not start the same task twice. You may start several different async tasks in one model step." : "This context supports synchronous delegation only."}`,
       inputSchema: z.object({ task: z.string().min(1).max(200_000).describe("Self-contained task for the specialist"), mode: z.enum(ctx.awaitTask ? ["sync", "async"] : ["sync"]).default("sync") }),
       async *execute({ task, mode }, { abortSignal, toolCallId }) {
         try {
-          if (mode === "async") {
+          if (mode === "async" || durableWorkspace) {
             abortSignal?.throwIfAborted();
             const { startAsyncDelegation } = await import("@/lib/delegation/async");
             yield await startAsyncDelegation(ctx, delegate.id, task, `${ctx.toolCallPrefix ?? ""}${toolCallId}`, authorizationMode);

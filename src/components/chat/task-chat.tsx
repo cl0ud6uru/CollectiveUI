@@ -11,6 +11,7 @@ import { AssistantMessage, UserMessage } from "./message";
 import { StartSideChat } from "./start-side-chat";
 import { useShell } from "./shell-context";
 import { useTaskRead } from "./use-task-read";
+import { DelegatedApprovals } from "./delegated-approvals";
 
 const terminalKey = (task: NonNullable<ConversationSnapshot["task"]>) => `${task.runId}:${task.status}:${task.lastSeq}`;
 
@@ -19,7 +20,7 @@ export function TaskChat({ snapshot }: { snapshot: ConversationSnapshot }) {
   const [task, setTask] = useState(snapshot.task!);
   const [error, setError] = useState<string | null>(null);
   const { setMobileOpen } = useShell();
-  const active = ["queued", "running", "waiting_tasks"].includes(task.status);
+  const active = ["queued", "running", "waiting", "waiting_tasks"].includes(task.status);
   const [renderedTerminal, setRenderedTerminal] = useState<string | null>(active ? null : terminalKey(snapshot.task!));
   const streamRunId = useRef(task.runId);
   const refresh = useCallback(async () => {
@@ -90,6 +91,7 @@ export function TaskChat({ snapshot }: { snapshot: ConversationSnapshot }) {
       }}><Square className="h-3 w-3" />Stop</button>}
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6"><div className="mx-auto max-w-3xl space-y-6">
+      <DelegatedApprovals conversationId={snapshot.conversationId} />
       {messages.map((message, i) => message.role === "user" ? <div key={message.id}><p className="mb-2 text-right text-xs text-muted">Assignment from {task.assigner}</p><UserMessage message={message} readOnly /></div>
         : <AssistantMessage key={message.id} message={message} streaming={status === "streaming" && i === messages.length - 1} isLast={i === messages.length - 1} botName={task.receiver} readOnly onApprove={() => {}} onDeny={() => {}} />)}
       {displayedError && <p className="text-sm text-danger">{displayedError}</p>}

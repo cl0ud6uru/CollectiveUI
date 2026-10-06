@@ -1147,7 +1147,7 @@ export const agentRuns = pgTable(
     check("agent_runs_seq_check", sql`${t.boundarySeq} <= ${t.lastSeq}`),
     check("agent_runs_execution_mode_check", sql`${t.executionMode} in ('worker', 'inline_delegate', 'async_delegate')`),
     check("agent_runs_inline_check", sql`${t.executionMode} <> 'inline_delegate' or (${t.status} not in ('queued', 'waiting', 'waiting_tasks') and ${t.routineRunId} is null and ${t.segment} = 0)`),
-    check("agent_runs_async_check", sql`${t.executionMode} <> 'async_delegate' or (${t.routineRunId} is null and ${t.background} and ${t.status} <> 'waiting')`),
+    check("agent_runs_async_check", sql`${t.executionMode} <> 'async_delegate' or (${t.routineRunId} is null and ${t.background})`),
   ],
 );
 

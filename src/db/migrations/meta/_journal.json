@@ -232,6 +232,13 @@
       "when": 1791227678210,
       "tag": "0032_remote_hermes_reservations",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791258419235,
+      "tag": "0033_delegated_workspace_approvals",
+      "breakpoints": true
     }
   ]
 }
