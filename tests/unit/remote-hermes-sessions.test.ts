@@ -10,7 +10,7 @@ vi.mock('@/db', () => ({ db: {
     const { params } = new PgDialect().sqlToQuery(condition as Parameters<PgDialect['sqlToQuery']>[0]);
     return Promise.resolve(params.includes(f.owner) ? [{ session: { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: f.status } }] : []);
   } }) }) }),
-  update: () => ({ set: (values: Record<string, unknown>) => ({ where: async () => { f.updates.push(values); } }) }),
+  update: () => ({ set: (values: Record<string, unknown>) => ({ where: () => Object.assign(Promise.resolve().then(() => { f.updates.push(values); }), { returning: async () => { f.updates.push(values); f.status = String(values.status ?? f.status); return [{ id: 'session', status: f.status, runtimeId: 'runtime' }]; } }) }) }),
   transaction: async (run: (tx: unknown) => Promise<unknown>) => run({
     select: () => ({ from: (table: { [key: symbol]: unknown }) => {
       const tableName = table[Symbol.for('drizzle:Name')];
@@ -18,7 +18,7 @@ vi.mock('@/db', () => ({ db: {
       return { where: () => Object.assign(Promise.resolve(rows), { for: async () => { if (tableName === 'settings' && f.disableAtLock) f.enabled = false; return rows; } }) };
     } }),
     insert: () => ({ values: async (value: Record<string, unknown>) => { f.admissions++; f.receipt = { digest: String(value.digest) }; } }),
-    update: () => ({ set: (values: Record<string, unknown>) => ({ where: async () => { f.status = String(values.status); } }) }),
+    update: () => ({ set: (values: Record<string, unknown>) => ({ where: () => { const result = Promise.resolve().then(() => { f.status = String(values.status ?? f.status); return [{ id: 'session', status: f.status, runtimeId: 'runtime', ...values }]; }); return Object.assign(result, { returning: () => result }); } }) }),
   }),
 } }));
 import { nativeControl, nativeSnapshot, submitNativePrompt } from '@/lib/remote-hermes/sessions';

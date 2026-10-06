@@ -218,6 +218,13 @@
       "when": 1791220000001,
       "tag": "0030_remote_hermes_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791220000002,
+      "tag": "0031_remote_hermes_reservations",
+      "breakpoints": true
     }
   ]
 }

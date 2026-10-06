@@ -63,7 +63,9 @@ export class DashboardClient {
   }
   async sessions(profile: string) {
     const query = new URLSearchParams({ profile, limit: '100', archived: 'include', order: 'recent' });
-    return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(100) }).parse(await this.call(`/api/sessions?${query}`)).sessions;
+    // Hermes appends older pinned sessions after the requested recent page.
+    // Keep those selectable, within the existing byte limit and a bounded item limit.
+    return z.object({ sessions: z.array(z.object({ id: z.string().min(1).max(200), title: z.string().max(500).nullable().optional(), model: z.string().max(200).nullable().optional(), archived: z.boolean().optional() })).max(2000) }).parse(await this.call(`/api/sessions?${query}`)).sessions;
   }
   async passwordLogin(username: string, password: string): Promise<DashboardSecrets> {
     const providers = z.object({ providers: z.array(z.preprocess(nativeFields, z.object({ name: z.string(), supportsPassword: z.boolean().optional() }))).max(100) }).parse(await this.call('/api/auth/providers')).providers;

@@ -100,9 +100,14 @@ export const remoteHermesSessions = pgTable('remote_hermes_sessions', {
   title: text('title').notNull().default('New Hermes chat'),
   status: text('status').$type<'idle' | 'admitting' | 'running' | 'waiting' | 'uncertain'>().notNull().default('idle'),
   admissionAt: timestamp('admission_at', { withTimezone: true }),
+  admissionRequestId: text('admission_request_id'),
+  revision: integer('revision').notNull().default(0),
+  queueRequestId: text('queue_request_id'),
+  queueStatus: text('queue_status').$type<'admitting' | 'queued' | 'uncertain'>(),
   createdAt: createdAt(), updatedAt: updatedAt(),
 }, t => [uniqueIndex('remote_hermes_session_native_idx').on(t.connectionId, t.profile, t.storedId),
-  check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`)]);
+  check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`),
+  check('remote_hermes_queue_check', sql`(${t.queueRequestId} is null) = (${t.queueStatus} is null) and (${t.queueStatus} is null or ${t.queueStatus} in ('admitting','queued','uncertain'))`)]);
 
 /** Write-ahead receipts prevent an HTTP retry from submitting the same prompt twice. No prompt text is stored. */
 export const remoteHermesTurns = pgTable('remote_hermes_turns', {
