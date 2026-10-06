@@ -54,6 +54,12 @@ struct ChatView: View {
         .task {
             await model.activate()
         }
+        .task(id: model.conversationId) {
+            while !Task.isCancelled {
+                await model.refreshDelegatedApprovals()
+                do { try await Task.sleep(for: .seconds(2)) } catch { break }
+            }
+        }
         .onDisappear {
             model.deactivate()
         }
@@ -277,6 +283,24 @@ struct ChatView: View {
 
                 // Measure every row: changing lazy estimates above the growing reply
                 // can move the reader even while automatic following is paused.
+                ForEach(model.delegatedApprovals) { request in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("\(request.botName) needs your approval").font(.headline)
+                        Text("Assigned by \(request.assignerName) · Only you can approve this action.").font(.caption).foregroundStyle(.secondary)
+                        if let tool = request.tool {
+                            Text(TextUtilities.toolDisplayName(tool.toolName)).font(.subheadline)
+                            ScrollView { Text(tool.input?.prettyPrinted() ?? "").font(.system(.caption, design: .monospaced)).textSelection(.enabled) }.frame(maxHeight: 240)
+                        }
+                        ViewThatFits {
+                            HStack { delegateButtons(request) }
+                            VStack { delegateButtons(request) }
+                        }
+                        .disabled(model.answeringDelegate || request.expiresAt <= Date())
+                        Text("Expires \(request.expiresAt.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(12).background(PortalTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                }
+                if let error = model.delegateApprovalError { Text(error).font(.caption).foregroundStyle(PortalTheme.danger) }
                 ForEach(model.messages) { message in
                     MessageView(message: message, model: model,
                         marksLatestParagraph: message.role == .assistant && message.id == latestMessageId)
@@ -313,6 +337,13 @@ struct ChatView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, compactHeader ? 0 : 12)
             .padding(.top, compactHeader ? 8 : headerHeight + 20)
+    }
+
+    @ViewBuilder
+    private func delegateButtons(_ request: DelegatedApproval) -> some View {
+        Button(request.tool?.toolName == "workspace_bash" ? "Run" : "Allow once") { Task { await model.answerDelegate(request, approved: true) } }.buttonStyle(.borderedProminent)
+        Button("Deny", role: .destructive) { Task { await model.answerDelegate(request, approved: false) } }.buttonStyle(.bordered)
+        Button("Stop task", role: .destructive) { Task { await model.stopDelegate(request) } }.buttonStyle(.bordered)
     }
 
     @ViewBuilder

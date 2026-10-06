@@ -1,10 +1,10 @@
 # Native asynchronous delegated tasks
 
-The existing `ask_*` tools accept `{ task, mode: "sync" | "async" }` in durable native turns. The default remains `sync`: ask a specialist and wait within the current turn. `async` creates a durable assignment, then suspends the assigning reply until its accepted assignments finish. The receiver's linked task conversation shows its assignment, live work, result and status in receiver activity/history. Its canonical home and `/new` behavior remain unchanged.
+The existing `ask_*` tools accept `{ task, mode: "sync" | "async" }` in durable native turns. The default remains `sync` for inline specialists. Native specialists configured with workspace tools use durable async execution for either mode value, so workspace actions can pause for the owning human. `async` creates a durable assignment, then suspends the assigning reply until its accepted assignments finish. The receiver's linked task conversation shows its assignment, live work, result and status in receiver activity/history. Its canonical home and `/new` behavior remain unchanged.
 
 While the parent waits, its header says **Waiting for delegated tasks…** and Stop cancels the parent and descendants. The parent keeps its conversation slot but releases its worker slot, so other chats and tasks can run. The receiver has its own queue and worker slots (`TASK_RUN_CONCURRENCY`, default 4). Closing either page does not cancel work. The saved result returns to the original assistant message; its next segment continues automatically. Each finished async task also creates one local Inbox item. Browser status comes from authorized run/task state, not a simulated activity timer.
 
-Task conversations remain read-only execution records. Start a side chat for follow-up, or ask for another attempt in a new human message in the originating chat. Interrupted/failed tasks do not restart automatically. Actions already dispatched may have run; retrying a request may repeat their effects.
+Task conversations retain read-only assignment transcripts and provide owner-only workspace approval controls. Start a side chat for follow-up, or ask for another attempt in a new human message in the originating chat. Interrupted/failed tasks do not restart automatically. Actions already dispatched may have run; retrying a request may repeat their effects.
 
 ## Lifecycle and recovery
 
@@ -25,6 +25,16 @@ Finished transcripts remain the owner's history after execution access ends. Ter
 Async children are always unattended. Automatic routine continuations retain unattended billing restrictions, queue routing and instructions across task waits. Only an explicit human approval response makes a routine continuation interactive. Service bots and managed Hermes remain direct-only; all async paths require native engines. Normal manually linked synchronous Hermes behavior is unchanged.
 
 Limits are depth 2, eight admitted tasks per root assistant reply, four running tasks per root, and sixteen open async tasks per human. The root deadline is shared with descendants. Each native run persists its used model steps and maximum across continuations, so suspension does not reset its step allowance. These are bounded execution limits, not a monetary spending cap. Child prompts are self-contained; no automatic receiver home history, selected memories, user instructions or memory extraction is added. Explicitly configured memory tools keep the human's existing scope.
+
+## Delegated workspace approvals
+
+A native async child saves its signed workspace request in its own assistant message, checkpoints its remaining deadline/steps, releases the worker lease and enters `waiting`. The owning human sees the same durable request in the original coordinator chat and the task chat, on web and iOS. The coordinator has no approval tool or authority to answer for the human. Group and inline contexts still deny required approvals; non-workspace delegated tools retain their existing policy.
+
+`GET/POST /api/chat/[id]/approvals` derives scope from the stored task, root source, owner and run. A response contains only the run ID, opaque approval ID and human decision; tool name, input and signature come from storage. The user/run/message locks serialize decisions across views. Partial decisions keep the child waiting until every request is answered. Duplicate matching decisions do not create another segment or enqueue another execution; conflicting decisions fail. Approval signatures bind task/run and current tool authority, so changed configuration fails closed at dispatch. Commands never offer an Always allow option.
+
+Waiting requests survive worker restarts without execution. Committed queued continuations recover after lost queue delivery. Stale running work becomes interrupted and is never automatically retried. Stop cancels pending children even if they pause concurrently; expiry, session/edge revocation and parent cancellation end their requests through bounded, ordered recovery batches. Approval waiting counts toward the existing sixteen-open-task limit. Human approval leaves child background/billing restrictions intact.
+
+Migration `0033_delegated_workspace_approvals` permits the existing async run to enter `waiting` while preserving the background and no-routine constraints. Apply migrations with matching web/worker code; no historical inline task or denied action is replayed.
 
 ## Data and migration ordering
 
@@ -55,6 +65,9 @@ Synthetic transports and disposable loopback databases only:
 
 - `tests/integration/async-delegation.test.ts`: `collective_coordinator_async_test`; real worker execution with a local model, nested waits, exactly-once receipts/continuations, concurrency limits, queue/checkpoint gating, Stop races, stale-worker interruption, mixed approval, deadline/step budgets, revocation and bounded recovery; coordinator-to-manual nesting, current-source checks, MCP authorization without network calls, result-time revocation, and service conversion. Repeat with `DATABASE_POOL_MAX=1`.
 - `tests/integration/async-migration.test.ts`: `ASYNC_MIGRATION_TEST=1`, `collective_async_upgrade_test`; fresh and foundation0019 upgrades plus migration replay and database constraints.
+- `tests/unit/delegated-approvals.test.ts`: all migrations in embedded PostgreSQL, real native executor and signed SDK approvals; two-view races, partial decisions, denial, original file bytes, owner/admin scope, revocation, queue recovery, Stop-pause race and recovery batch rotation. Fixture queue/model/workspace transports only.
+- `tests/browser/delegated-approvals.mjs`: real approval cards in coordinator/task views, reload, cross-view state and mobile denial.
+- CollectiveKit bearer/expiry/decision fixtures and iOS simulator build.
 - Existing delegation and run executor/web regressions verify synchronous and approval behavior.
 - `tests/async-delegation.playwright.config.ts`: `ASYNC_BROWSER=1`, `collective_coordinator_async_browser_test`, production app on 3068, local mock on 4068, one chat worker slot and one task worker slot. Uses automatic coordinator discovery without a manual source link, plus a queued manual assignment. Covers closing the origin, failed reconnect, parent continuation, Stop, saved terminal history, queued attachment, canonical-home preservation and mobile overflow.
 

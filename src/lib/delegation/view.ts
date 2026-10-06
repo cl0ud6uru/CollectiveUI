@@ -25,7 +25,7 @@ export async function taskView(p: Principal, conversationId: string, q: DbOrTx =
     .innerJoin(agentRuns, eq(agentRuns.id, delegatedTasks.childRunId))
     .where(and(eq(delegatedTasks.userId, p.user.id), eq(delegatedTasks.childConversationId, conversationId), eq(agentRuns.status, "queued"), sql`${delegatedTasks.id} <> ${task.id}`));
   let executionUnavailable: string | null = null;
-  if (["queued", "running", "waiting_tasks"].includes(run.status)) {
+  if (["queued", "running", "waiting", "waiting_tasks"].includes(run.status)) {
     try { await assertTaskExecution(task, q); } catch { executionUnavailable = "Live access to this assignment ended. Its saved history remains available."; }
   }
   const [origin] = task.originConversationId ? await q.select({ id: conversations.id }).from(conversations)

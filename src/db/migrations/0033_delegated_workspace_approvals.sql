@@ -1,0 +1,2 @@
+ALTER TABLE "agent_runs" DROP CONSTRAINT "agent_runs_async_check";--> statement-breakpoint
+ALTER TABLE "agent_runs" ADD CONSTRAINT "agent_runs_async_check" CHECK ("agent_runs"."execution_mode" <> 'async_delegate' or ("agent_runs"."routine_run_id" is null and "agent_runs"."background"));

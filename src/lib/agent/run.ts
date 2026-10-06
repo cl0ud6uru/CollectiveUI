@@ -88,7 +88,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   const ctx: AgentCtx = { principal, conversationId: conversation.id, bot, app, depth: delegated?.task.depth ?? 0, background, toolSettings, usage, nativeSearchMode: conversation.nativeSearchMode,
     ...(opts.run?.holder && opts.run.deadlineAt ? { execution: { holder: opts.run.holder, deadlineAt: opts.run.deadlineAt, segment: opts.run.segment } } : {}),
     ...(native ? { awaitTask: (taskId: string) => { if (!native.taskIds.includes(taskId)) native.taskIds.push(taskId); } } : {}),
-    ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace } : {}) };
+    ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace,
+      relayWorkspaceApproval: nativeEligible && delegated.task.mode === "async" } : {}) };
   const { delegatedAuthorityBinding, DelegationAuthorityChangedError } = await import("@/lib/delegation/authority");
   const authority = delegated ? await delegatedAuthorityBinding(ctx, true) : null;
   const toolset = await buildToolset(ctx);
@@ -169,7 +170,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       messages,
       tools: toolset.tools,
       toolApproval: toolset.approval,
-      experimental_toolApprovalSecret: toolApprovalSecret(toolset.approvalBinding),
+      experimental_toolApprovalSecret: toolApprovalSecret(delegated && nativeEligible
+        ? `${toolset.approvalBinding ?? ""}:${delegated.task.id}:${opts.run!.id}:${authority}` : toolset.approvalBinding),
       stopWhen: [isStepCount(maxSteps), () => !!native?.taskIds.length],
       ...(native ? { onStepEnd: () => { native.stepsUsed++; } } : {}),
       temperature: app.temperature ?? undefined,

@@ -183,6 +183,26 @@ export async function reconcileAsyncParent(parentId: string): Promise<void> {
 
 /** Owner-visible notifications and continuation recovery are backed by DB state, not a process callback. */
 export async function reconcileAsyncTasks(): Promise<number> {
+  const waiting = await db.select({ task: delegatedTasks, run: agentRuns }).from(delegatedTasks)
+    .innerJoin(agentRuns, eq(agentRuns.id, delegatedTasks.childRunId))
+    .where(and(eq(delegatedTasks.mode, "async"), eq(agentRuns.status, "waiting"))).orderBy(asc(agentRuns.updatedAt), asc(agentRuns.id)).limit(100);
+  for (const { task, run } of waiting) {
+    const ended = await db.transaction(async tx => {
+      await lockUserRuns(tx, run.userId);
+      const [current] = await tx.select().from(agentRuns).where(and(eq(agentRuns.id, run.id), eq(agentRuns.status, "waiting"))).for("update");
+      if (!current) return null;
+      await tx.update(agentRuns).set({ updatedAt: sql`now()` }).where(eq(agentRuns.id, current.id));
+      let error: string | null = current.cancelRequestedAt ? "Stopped before approval was used." : null;
+      if (!error) try { await assertTaskExecution(task, tx); } catch (err) { if (!(err instanceof HttpError)) throw err; error = err.message; }
+      if (!error) return null; // A paused approval survives worker restarts without dispatching any tool.
+      const { finishFromLogTx } = await import("@/lib/runs/sweeper");
+      return finishFromLogTx(tx, current, { status: ["waiting"] }, { status: current.cancelRequestedAt ? "cancelled" : "failed", error });
+    });
+    if (ended) {
+      // The result recovery below handles owner notifications and parent continuation. Avoid recursive hooks.
+      if (ended.message) await logToolCalls({ runId: ended.run.id, conversationId: ended.run.conversationId, userId: ended.run.userId, botId: ended.run.botId }, ended.message).catch(() => {});
+    }
+  }
   const finished = await db.select({ task: delegatedTasks, run: agentRuns }).from(delegatedTasks)
     .innerJoin(agentRuns, eq(agentRuns.id, delegatedTasks.childRunId))
     .where(and(eq(delegatedTasks.mode, "async"), isNull(delegatedTasks.notifiedAt), inArray(agentRuns.status, ["succeeded", "failed", "cancelled", "interrupted"]))).limit(100);

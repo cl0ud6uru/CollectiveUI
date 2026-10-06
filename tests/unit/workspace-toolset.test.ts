@@ -161,4 +161,13 @@ describe("buildToolset workspace wiring", () => {
       expect(ts.approval(call("workspace_read", { path: "a" }))).toBeUndefined();
     }
   });
+  it("durable native delegates relay workspace approvals while group and inline contexts keep denying",async()=>{
+    const ts=await buildToolset(newCtx({depth:1,relayWorkspaceApproval:true}));
+    expect(ts.approval(call("workspace_bash",{command:"printf fixture"}))).toBe("user-approval");
+    expect(ts.approval(call("workspace_write",{path:"art.svg",content:"fixture"}))).toBe("user-approval");
+    expect(ts.approval(call("workspace_bash",{command:"rm -rf ~"}))).toMatchObject({type:"denied"});
+    const group=await buildToolset(newCtx({depth:1,inGroup:true,relayWorkspaceApproval:true}));
+    expect(group.approval(call("workspace_bash",{command:"printf fixture"}))).toMatchObject({type:"denied"});
+  });
+
 });

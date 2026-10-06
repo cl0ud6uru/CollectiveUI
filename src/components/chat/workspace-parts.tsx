@@ -42,6 +42,7 @@ export function WorkspaceApproval({
   onApprove,
   onDeny,
   onAlwaysAllow,
+  disabled = false,
 }: {
   name: string;
   part: Part;
@@ -49,6 +50,7 @@ export function WorkspaceApproval({
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
   onAlwaysAllow?: (id: string, toolName: string) => void;
+  disabled?: boolean;
 }) {
   const id = part.approval!.id;
   const who = botName ?? "The bot";
@@ -82,7 +84,7 @@ export function WorkspaceApproval({
         <Pre tone="add">{str("new_string") || "(removed)"}</Pre>
       </div>
     );
-  } else {
+  } else if (name === "workspace_write") {
     const content = str("content");
     title = (
       <>
@@ -91,6 +93,9 @@ export function WorkspaceApproval({
       </>
     );
     body = <Pre>{content.length > 20_000 ? `${content.slice(0, 20_000)}\n…` : content}</Pre>;
+  } else {
+    title = <>{who} wants to {name.replace("workspace_", "")} in your workspace</>;
+    body = <Pre>{JSON.stringify(input, null, 2)}</Pre>;
   }
 
   return (
@@ -98,15 +103,15 @@ export function WorkspaceApproval({
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5 text-sm font-medium">{title}</div>
       <div className="px-4 py-3">{body}</div>
       <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
-        <Button size="sm" onClick={() => onApprove(id)}>
+        <Button size="sm" disabled={disabled} onClick={() => onApprove(id)}>
           <Check className="h-4 w-4" /> {name === "workspace_bash" ? "Run" : "Allow once"}
         </Button>
         {name !== "workspace_bash" && onAlwaysAllow && (
-          <Button size="sm" variant="outline" onClick={() => onAlwaysAllow(id, name)}>
+          <Button size="sm" disabled={disabled} variant="outline" onClick={() => onAlwaysAllow(id, name)}>
             Always allow
           </Button>
         )}
-        <Button size="sm" variant="ghost" onClick={() => onDeny(id)}>
+        <Button size="sm" disabled={disabled} variant="ghost" onClick={() => onDeny(id)}>
           <X className="h-4 w-4" /> Deny
         </Button>
         {name === "workspace_bash" && <span className="ml-auto text-xs text-subtle">Commands always ask. Your workspace has no network.</span>}

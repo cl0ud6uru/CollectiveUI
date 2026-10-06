@@ -130,7 +130,7 @@ export async function admitDelegation(ctx: AgentCtx, receiverId: string, prompt:
       throw new HttpError(429, "This turn reached its delegated task budget.");
     if (mode === "async") {
       const [{ count }] = await tx.select({ count: sql<number>`count(*)::int` }).from(agentRuns)
-        .where(and(eq(agentRuns.userId, userId), eq(agentRuns.executionMode, "async_delegate"), inArray(agentRuns.status, ["queued", "running", "waiting_tasks"])));
+        .where(and(eq(agentRuns.userId, userId), eq(agentRuns.executionMode, "async_delegate"), inArray(agentRuns.status, ["queued", "running", "waiting", "waiting_tasks"])));
       if (count >= MAX_USER_OPEN_ASYNC_TASKS) throw new HttpError(429, "You have too many asynchronous tasks in progress.");
       const [previous] = await tx.select({ id: delegatedTasks.id }).from(delegatedTasks)
         .where(and(eq(delegatedTasks.userId, userId), eq(delegatedTasks.rootMessageId, rootMessageId), eq(delegatedTasks.inputHash, inputHash), eq(delegatedTasks.mode, "async")));
