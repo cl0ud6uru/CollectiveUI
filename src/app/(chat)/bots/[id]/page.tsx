@@ -28,7 +28,7 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
   const docker = !!app && isDockerHermes(app);
   const local = !!app && isLocalHermes(app);
   const canEdit = canEditBot(p, bot);
-  const learned = app && app.provider !== "hermes" && bot.executionMode !== "service" ? await learningViews(p, bot.id) : null;
+  const learned = !bot.hermesTeam && app && app.provider !== "hermes" && bot.executionMode !== "service" ? await learningViews(p, bot.id) : null;
   const publication = bot.executionMode === "service" ? await servicePublicationStatus(bot) : null;
   const capabilities = bot.executionMode === "service" ? await activeServiceGrants(bot.id) : [];
   const [[owner], skills, myRoutines, mems, activity] = await Promise.all([
