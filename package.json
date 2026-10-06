@@ -25,7 +25,8 @@
     "test:e2e": "playwright test",
     "test:integration": "vitest run --project integration",
     "test:sandbox": "SANDBOX_DOCKER=1 vitest run --project sandbox",
-    "local-account": "tsx scripts/local-account.ts"
+    "local-account": "tsx scripts/local-account.ts",
+    "test:hermes-ui": "node tests/browser/remote-hermes-workspace.mjs"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "5.0.94",
@@ -36,6 +37,8 @@
     "@ai-sdk/openai": "4.0.75",
     "@ai-sdk/openai-compatible": "3.0.55",
     "@ai-sdk/react": "4.0.116",
+    "@collective/webauthn-browser": "npm:@simplewebauthn/browser@14.0.0",
+    "@collective/webauthn-server": "npm:@simplewebauthn/server@14.0.3",
     "@fontsource-variable/inter": "^5.3.0",
     "ai": "7.0.113",
     "ajv": "8.20.0",
@@ -69,9 +72,8 @@
     "tailwind-merge": "^3.7.0",
     "tsx": "^4.23.15",
     "unpdf": "^1.8.1",
-    "zod": "^4.6.5",
-    "@collective/webauthn-server": "npm:@simplewebauthn/server@14.0.3",
-    "@collective/webauthn-browser": "npm:@simplewebauthn/browser@14.0.0"
+    "ws": "8.22.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
@@ -83,12 +85,21 @@
     "@types/qrcode": "1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "8.18.2",
     "drizzle-kit": "^0.31.11",
+    "esbuild": "0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^5.0.1"
+  },
+  "overrides": {
+    "katex": "$katex",
+    "source-map-js": "1.2.2",
+    "mammoth": {
+      "argparse": "2.0.1"
+    }
   },
   "engines": {
     "node": ">=22.18"

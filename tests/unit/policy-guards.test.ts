@@ -93,9 +93,12 @@ describe("vendor policy guards", () => {
     expect(hits.map(rel)).toEqual([]);
   });
 
-  it("ChatGPT tokens are only written by the credential store, under its row lock", () => {
+  it("encrypted account tokens are only written by their dedicated credential stores", () => {
     const writers = code.filter((f) => /secretEnc\s*:/.test(readFileSync(f, "utf8")) && !f.endsWith("schema.ts"));
-    expect(writers.map(rel).sort()).toEqual([path.join("src", "lib", "llm", "chatgpt", "store.ts")]);
+    expect(writers.map(rel).sort()).toEqual([
+      path.join("src", "lib", "llm", "chatgpt", "store.ts"),
+      path.join("src", "lib", "remote-hermes", "store.ts"),
+    ]);
   });
 });
 
