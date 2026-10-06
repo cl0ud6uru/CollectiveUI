@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("@/lib/agent/learning/store", () => ({ learningIsEnabled: async () => false, learnedSkillsForBot: async () => [] }));
 import { botDelegates, botTools, toolGrants, type AiApp, type Bot } from "@/db/schema";
 import type { SandboxSettings } from "@/lib/settings";
 

@@ -40,6 +40,7 @@ export default async function AdminToolsPage() {
           botCreation: t.botCreation,
           utilityAppId: t.utilityAppId,
           embeddingAppId: t.embeddingAppId,
+          learningEnabled: t.learningEnabled,
         }}
         tools={[...BUILTIN_TOOLS.map((b) => ({ key: b.key, label: b.label })), { key: "mcp", label: "All MCP servers" }]}
         utilityApps={utilityApps}

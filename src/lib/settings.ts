@@ -53,6 +53,8 @@ export type ToolSettings = {
   /** app used for background tasks (titles, memory extraction) and embeddings */
   utilityAppId?: string;
   embeddingAppId?: string;
+  /** Automatic private/shared procedure learning for native caller bots. */
+  learningEnabled?: boolean;
 };
 
 /**

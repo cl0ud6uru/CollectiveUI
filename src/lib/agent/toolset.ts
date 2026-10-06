@@ -24,7 +24,7 @@ import { knowledgeTool } from "./tools/knowledge";
 import { m365Tools } from "./tools/m365";
 import { connectedMcpTools, mcpTools, modelToolName } from "./tools/mcp";
 import { memoryTools } from "./tools/memory";
-import { skillsForBot, skillTool } from "./tools/skills";
+import { skillsForBot, skillTool, learnedSkillsForTurn } from "./tools/skills";
 import { nativeSearchFor } from "./native-search";
 import { webTools } from "./tools/web";
 import { workspaceTools } from "./tools/workspace";
@@ -138,8 +138,6 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
           break;
         case "skills": {
           skills = await skillsForBot(bot.id, bot.ownerId);
-          const s = skillTool(ctx, skills);
-          if (s) entries.push(s);
           break;
         }
         case "m365":
@@ -162,6 +160,17 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
       console.error(`[agent] failed to load tool ${t.toolKey}`, err);
       warnings.push(`Tool "${t.toolKey}" is unavailable right now.`);
     }
+  }
+
+  if (!disabled.has("skills") && bot.executionMode !== "service") {
+    try {
+      skills.push(...await learnedSkillsForTurn(ctx));
+    } catch (err) {
+      console.error("[agent] learned skills unavailable", err);
+      warnings.push("Learned procedures are unavailable right now.");
+    }
+    const s = skillTool(ctx, skills);
+    if (s) entries.push(s);
   }
 
   // MCP servers: one access check for all of them. Servers with an accepted tool snapshot connect lazily, on

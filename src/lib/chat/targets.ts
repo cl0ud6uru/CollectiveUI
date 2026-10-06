@@ -5,6 +5,7 @@ import { db } from "@/db";
 import type { Principal } from "@/lib/auth/groups";
 import { getAccessibleModel, getUsableBot, listAccessibleBots, listAccessibleModels, HttpError } from "@/lib/authz";
 import { skillsForBot } from "@/lib/agent/tools/skills";
+import { learnedSkillsForBot, learningIsEnabled } from "@/lib/agent/learning/store";
 import { getSetting } from "@/lib/settings";
 import { loadGroupMembers } from "@/lib/agent/group";
 import { getChatGPTCredential } from "@/lib/llm/chatgpt/store";
@@ -76,7 +77,9 @@ export async function resolveTargetOption(
     if (bot) {
       const resolved = await resolveTurnTarget(p, { botId: bot.id, appId: null }).catch(() => null);
       const hermes = resolved?.app.provider === "hermes";
-      const skills = hermes ? [] : (await skillsForBot(bot.id, bot.ownerId)).map((s) => ({ slug: s.slug, name: s.name, description: s.description }));
+      const available = hermes ? [] : await skillsForBot(bot.id, bot.ownerId);
+      if (!hermes && bot.executionMode !== "service" && await learningIsEnabled(p)) available.push(...await learnedSkillsForBot(bot.id, p.user.id));
+      const skills = available.map((s) => ({ slug: s.slug, name: s.name, description: s.description }));
       return { target: botOption(bot, hermes), skills };
     }
     return { target: null, skills: [] };

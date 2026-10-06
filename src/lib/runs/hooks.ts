@@ -29,9 +29,13 @@ export function approvalBodyFor(routineName: string, message: PortalUIMessage | 
 /**
  * After a run transition applied (exactly once per transition, after commit): routine bookkeeping via
  * afterRoutineTurn (waiting → awaiting_approval + approval Inbox item; succeeded → result + optional email;
- * failed/cancelled/interrupted → failed + error item). No-op for runs without routine_run_id.
+ * failed/cancelled/interrupted → failed + error item), plus learning reviews for completed native caller turns.
  */
 export async function afterRunTransition(run: AgentRun, status: AgentRunStatus, message: PortalUIMessage | null, error?: string | null): Promise<void> {
+  if (status === "succeeded" && run.botId && !run.background && run.executionMode === "worker") {
+    const { scheduleLearningReview } = await import("@/lib/agent/learning/review");
+    await scheduleLearningReview(run.id).catch(err => console.error("[learning] review scheduling failed", err));
+  }
   if (run.executionMode === "async_delegate") {
     const { reconcileAsyncParent, reconcileAsyncTasks } = await import("@/lib/delegation/async");
     const [task] = await db.select({ parentRunId: delegatedTasks.parentRunId }).from(delegatedTasks).where(eq(delegatedTasks.childRunId, run.id));

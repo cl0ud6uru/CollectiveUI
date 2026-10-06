@@ -148,6 +148,11 @@ export function SettingsView({
           </>
         )}
 
+        {tab === "Personalization" && <label className="flex items-center justify-between rounded-xl border border-border p-4 text-sm">
+          <span><span className="block font-medium">Bot learning</span><span className="text-muted">Learn personal preferences and reusable bot procedures from completed work. Requires Memory to be on.</span></span>
+          <Switch defaultChecked={prefs.learningEnabled !== false} onCheckedChange={v => start(async () => { await updatePrefs({ learningEnabled: v }); toast.success(v ? "Bot learning on" : "Bot learning off"); })} />
+        </label>}
+
         {tab === "Memory" && (
           <>
             <p className="text-sm text-muted">Shared memory, available to every assistant and bot. Bots also keep their own memories (see each bot&apos;s page).</p>
