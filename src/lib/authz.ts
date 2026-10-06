@@ -172,6 +172,10 @@ export async function getUsableBot(p: Principal, botId: string, q: DbOrTx = db):
 
 export async function getEditableBot(p: Principal, botId: string): Promise<Bot> {
   const bot = await getAccessibleBot(p, botId);
+  if (bot.hermesTeam) {
+    const { authorizeTeam } = await import('@/lib/hermes-team/store');
+    await authorizeTeam(p, botId, 'admin', db, true);
+  }
   if (!canEditBot(p, bot)) throw forbidden("Only an authorized bot editor can change it");
   return bot;
 }

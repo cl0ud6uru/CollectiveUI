@@ -36,7 +36,10 @@ export async function teamChatStatus(p: Principal, botId: string, conversationId
   const context = conversationId ? await authorizeTeamConversation(p, conversationId) : undefined;
   if (context && context.profile.botId !== botId) throw new HttpError(404, 'Team conversation not found.');
   const mode = context?.chat.mode ?? 'member';
-  const auth = context ?? await authorizeTeam(p, botId, mode);
+  const auth = context ?? await authorizeTeam(p, botId, mode).catch(async e => {
+    if (!(e instanceof HttpError) || e.status !== 403 || conversationId) throw e;
+    return authorizeTeam(p, botId, 'admin');
+  });
   let canMaintain = false;
   try { await authorizeTeam(p, botId, 'admin'); canMaintain = true; } catch (e) { if (!(e instanceof HttpError) || e.status !== 403) throw e; }
   const [profile] = context ? [context.profile] : await db.select().from(hermesTeamProfiles)

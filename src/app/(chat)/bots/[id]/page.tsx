@@ -32,10 +32,10 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
   const capabilities = bot.executionMode === "service" ? await activeServiceGrants(bot.id) : [];
   const [[owner], skills, myRoutines, mems, activity] = await Promise.all([
     db.select({ name: users.name }).from(users).where(eq(users.id, bot.ownerId)),
-    skillsForBot(bot.id, bot.ownerId),
-    db.select().from(routines).where(and(eq(routines.botId, bot.id), eq(routines.ownerId, p.user.id))).orderBy(routines.createdAt),
-    db.select().from(memories).where(and(eq(memories.botId, bot.id), eq(memories.userId, p.user.id))).orderBy(desc(memories.updatedAt)),
-    db
+    bot.hermesTeam ? [] : skillsForBot(bot.id, bot.ownerId),
+    bot.hermesTeam ? [] : db.select().from(routines).where(and(eq(routines.botId, bot.id), eq(routines.ownerId, p.user.id))).orderBy(routines.createdAt),
+    bot.hermesTeam ? [] : db.select().from(memories).where(and(eq(memories.botId, bot.id), eq(memories.userId, p.user.id))).orderBy(desc(memories.updatedAt)),
+    bot.hermesTeam ? [] : db
       .select()
       .from(toolCalls)
       .where(and(eq(toolCalls.botId, bot.id), eq(toolCalls.userId, p.user.id)))
@@ -69,12 +69,12 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           <Link prefetch={false} href={`/?bot=${bot.id}`} className="flex items-center gap-2 rounded-full bg-fg px-5 py-2.5 text-sm font-medium text-bg hover:opacity-85">
             <MessageSquare className="h-4 w-4" /> Open home chat
           </Link>
-          <StartSideChat botId={bot.id} className="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover" />
+          {!bot.hermesTeam && <StartSideChat botId={bot.id} className="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover" />}
           <Link href={`/bots/${bot.id}/chats`} className="rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover">Chat history</Link>
           {docker && <Link href={`/bots/${bot.id}/settings`} className="rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover">Hermes settings</Link>}
           <BotPetSettings botId={bot.id} botName={bot.name} botAvatar={bot.avatar} />
-          {!local && <UseAsTemplateButton botId={bot.id} />}
-          {canEdit && !local && <ShareTemplateButton botId={bot.id} />}
+          {!local && !bot.hermesTeam && <UseAsTemplateButton botId={bot.id} />}
+          {canEdit && !local && !bot.hermesTeam && <ShareTemplateButton botId={bot.id} />}
           {canEdit && (
             <Link href={`/bots/${bot.id}/edit`} className="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm font-medium hover:bg-hover">
               <Pencil className="h-4 w-4" /> Edit
@@ -82,7 +82,11 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           )}
         </div>
       </div>
-      {local && !docker ? <div className="rounded-xl border border-border p-5 text-sm space-y-2">
+      {bot.hermesTeam ? <div className="rounded-xl border border-border p-5 text-sm space-y-2">
+        <h2 className="font-semibold">Hermes Team Bot</h2>
+        <p>Open the chat to use your private conversation. Maintainers can switch to Admin mode to share working skills and native memory, then review Publish changes.</p>
+        <p>Model access must be verified before replies are available. Native learning stays with each private instance until a maintainer publishes selected resources.</p>
+      </div> : local && !docker ? <div className="rounded-xl border border-border p-5 text-sm space-y-2">
         <h2 className="font-semibold">Local Hermes · private pilot</h2>
         <p>Persona, skills, tools, memory and saved sessions live in the selected native Hermes profile. This bot supports direct text chat, native tool approvals and Stop.</p>
         <p>Profile editing, native slash execution, file uploads, groups and routines are not available here yet.</p>

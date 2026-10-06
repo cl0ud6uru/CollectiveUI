@@ -216,7 +216,7 @@ export function BotBuilder({
   }
 
   async function saveTeamSettings(id: string) {
-    if (!team || !isAdmin || (engine !== "hermes" && !teamConfig?.enabled) || JSON.stringify(team) === JSON.stringify(savedTeam.current)) return;
+    if (!team || !isAdmin || (engine !== "hermes" && !(teamConfig && teamConfig.expectedVersion > 0)) || JSON.stringify(team) === JSON.stringify(savedTeam.current)) return;
     const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: team.enabled, maintainerIds: team.maintainerIds, modelPolicy: { mode: team.modelPolicy }, expectedVersion: team.expectedVersion ?? 0 }) });
     const data = await response.json();
     if (!response.ok) {
@@ -445,7 +445,7 @@ export function BotBuilder({
                 </div>
               )}
 
-              {isAdmin && (engine === "hermes" || teamConfig?.enabled) && !personalNew && team && <HermesTeamPolicy value={team} onChange={setTeam} maintainers={teamMaintainers} modelOptions={teamModelOptions} disabled={pending} />}
+              {isAdmin && (engine === "hermes" || (teamConfig && teamConfig.expectedVersion > 0)) && !personalNew && team && <HermesTeamPolicy value={team} onChange={setTeam} maintainers={teamMaintainers} modelOptions={teamModelOptions} disabled={pending} />}
 
               {isAdmin && engine === "native" && (
                 <Field label="Connector permissions" hint="Service bots are managed by admins and grant only reviewed MCP capabilities through direct chats.">
