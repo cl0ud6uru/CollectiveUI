@@ -430,6 +430,7 @@ final class ChatModel {
                     self.isNew = false
                     if self.pendingDraft?.messageId == answeredId { self.pendingDraft = nil }
                 } catch {
+                    guard generation == self.streamGeneration else { return }
                     if !error.isUnauthorized {
                         self.inlineError = "Couldn't confirm that the server stopped the reply. Reopen this chat to check its status."
                     }

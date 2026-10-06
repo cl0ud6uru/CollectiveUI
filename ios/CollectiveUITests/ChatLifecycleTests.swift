@@ -59,6 +59,7 @@ private final class ChatFixture: @unchecked Sendable {
     var user: UIMessage?
     var didStop = false
     var stopDelay: TimeInterval = 0
+    var stopStatus = 200
     private var replyCount = 0
     private var replyId = "reply-a"
     init(_ scenario: Scenario) { self.scenario = scenario }
@@ -83,7 +84,7 @@ private final class ChatFixture: @unchecked Sendable {
                 + (scenario == .normal ? "data: [DONE]\n\n" : "")
             return .init(contentType: "text/event-stream", data: Data(sse.utf8), finish: scenario == .normal)
         }
-        if path.hasSuffix("/stop") { didStop = true; return .init(delay: stopDelay) }
+        if path.hasSuffix("/stop") { didStop = true; return .init(status: stopStatus, delay: stopDelay) }
         if path == "/api/chat/chat-a" {
             var rows: [JSONValue] = []
             if let user {
@@ -224,6 +225,41 @@ final class ChatLifecycleTests: XCTestCase {
         XCTAssertFalse(chat.isStopping)
         XCTAssertTrue(chat.conversationState.stoppedReplies.isEmpty)
         XCTAssertEqual(chat.messages.last?.id, "reply-2")
+    }
+
+    func testOldFailedStopCannotShowAnErrorOnAReplacementReply() async {
+        prepare(.normal)
+        fixture.stopDelay = 0.5
+        fixture.stopStatus = 500
+        let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
+        chat.composerText = "First question"
+        chat.send()
+        chat.stop()
+        await waitUntil { !chat.isStreaming && fixture.didStop }
+        XCTAssertTrue(chat.isStopping, "Old failed Stop acknowledgement is still pending")
+        chat.composerText = "Next question"
+        chat.send()
+        await waitUntil { !chat.isStreaming }
+        try? await Task.sleep(nanoseconds: 550_000_000)
+        XCTAssertNil(chat.inlineError, "A stale HTTP 500 must not report a Stop error on the replacement reply")
+        XCTAssertFalse(chat.isStopping)
+        XCTAssertTrue(chat.conversationState.stoppedReplies.isEmpty)
+        XCTAssertEqual(chat.messages.last?.id, "reply-2")
+        XCTAssertEqual(chat.messages.last?.plainText, "Partial reply")
+    }
+
+    func testCurrentFailedStopStillReportsConfirmationError() async {
+        prepare(.normal)
+        fixture.stopDelay = 0.1
+        fixture.stopStatus = 500
+        let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
+        chat.composerText = "Question"
+        chat.send()
+        chat.stop()
+        await waitUntil { fixture.didStop && !chat.isStreaming && !chat.isStopping }
+        XCTAssertEqual(chat.inlineError, "Couldn't confirm that the server stopped the reply. Reopen this chat to check its status.")
+        XCTAssertTrue(chat.conversationState.stoppedReplies.isEmpty)
+        XCTAssertEqual(chat.messages.last?.plainText, "Partial reply")
     }
 }
 
