@@ -110,7 +110,7 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
         const response = await fetch(`${base}/updates`, { cache: "no-store", signal: controller.signal });
         const preview = await response.json() as HermesTeamUpdateReview & { error?: string };
         if (!response.ok) throw new Error(preview.error ?? "Native member updates are unavailable. Your content is preserved.");
-        if (controller.signal.aborted || !preview.nativeUpdatesSupported || preview.pendingRequestId || !["ready", "connection_needed"].includes(preview.state) || preview.installedRevision === preview.targetRevision) return;
+        if (controller.signal.aborted || preview.nativeUpdatesSupported !== true || preview.pendingRequestId || !["ready", "connection_needed"].includes(preview.state) || preview.installedRevision === preview.targetRevision) return;
         automaticAttempts.current.add(key);
         const applied = await fetch(`${base}/updates`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expectedInstalledRevision: preview.installedRevision, targetRevision: preview.targetRevision, requestId: crypto.randomUUID() }) });
         const result = await applied.json();
@@ -124,7 +124,7 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
     <HermesTeamControls view={view} busy={busy} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
       onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>} onLoadRevisions={loadRevisions} onCaptureRollback={captureRollback}
       onLoadUpdates={loadUpdates} onApplyUpdate={input => update("updates", input)} onResolveUpdate={input => update("updates/resolve", input)}
-      onRollbackUpdate={input => update("updates/rollback", input)} onCancelUpdate={requestId => update("updates/cancel", { requestId })} />
+      onRollbackUpdate={input => update("updates", input)} onCancelUpdate={requestId => update("updates/cancel", { requestId })} />
     {updateError?.scope === scope && view.mode === "member" && <p role="alert" className="mx-auto w-full max-w-3xl px-4 pb-2 text-xs text-danger">{updateError.message}</p>}
   </>;
   return <section aria-label="Hermes Team Bot status" className="mx-auto w-full max-w-3xl px-4 py-2 text-sm text-muted">
