@@ -63,7 +63,7 @@ try {
  await nav.getByRole('button',{name:'See all history'}).click();await expect(nav.locator('#sidebar-recent a')).toHaveCount(4);await nav.getByRole('button',{name:'Show less history'}).click();
  await nav.getByRole('button',{name:'Search chats',exact:true}).click();await expect(page.getByRole('dialog',{name:'Search chats'})).toBeVisible();await page.getByRole('button',{name:'Close search'}).click();
  await nav.getByRole('link',{name:'Browse bots',exact:true}).click();expect(await page.evaluate(()=>window.fixtureNavigation)).toBe('/bots');
- await nav.getByRole('link',{name:'Hermes',exact:true}).click();expect(await page.evaluate(()=>window.fixtureNavigation)).toBe('/hermes');
+ await expect(nav.getByRole('link',{name:'Hermes',exact:true})).toHaveCount(0);
  await nav.getByRole('link',{name:'Inbox',exact:false}).click();expect(await page.evaluate(()=>window.fixtureNavigation)).toBe('/inbox');
  await nav.getByRole('button',{name:'Jason Hartley',exact:false}).click();await expect(page.getByRole('menuitem',{name:'Admin panel'})).toBeVisible();await page.keyboard.press('Escape');
  await nav.evaluate(el=>el.querySelector('.overflow-y-auto').scrollTop=0);await page.mouse.move(700,20);await nav.screenshot({path:path.join(shots,'desktop.png')});

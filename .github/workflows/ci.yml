@@ -55,6 +55,10 @@ jobs:
           node tests/browser/hermes-team-restore.mjs
           BOT_RECENT_USE_SCREENSHOT_DIR="$RUNNER_TEMP/bot-recent-use-screenshots" node tests/browser/bot-recent-use.mjs
           SIDEBAR_ROSTER_SCREENSHOT_DIR="$RUNNER_TEMP/sidebar-roster-screenshots" node tests/browser/sidebar-roster-design.mjs
+      - name: Exercise native Remote Hermes commands and confirmed session controls on desktop and mobile
+        run: |
+          node tests/browser/remote-hermes-commands.mjs
+          node tests/browser/remote-hermes-workspace.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: bot-recent-use-screenshots
@@ -92,6 +96,12 @@ jobs:
           python tests/fixtures/docker-hermes-network.py
           python tests/fixtures/hermes-team-native-contract.py
           python tests/fixtures/hermes-team-pinned-bridge.py
+      - name: Verify Remote Hermes commands and session YOLO against the actual pinned protocol
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+        run: |
+          python tests/fixtures/remote-hermes-command-contract.py "$HERMES_SOURCE" f97608f178d1ffeca59860195ab7da295f7c8e5f > "$RUNNER_TEMP/remote-hermes-command-contract.json"
+          cmp tests/fixtures/remote-hermes-command-contract.json "$RUNNER_TEMP/remote-hermes-command-contract.json"
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -442,7 +442,6 @@ export function Sidebar() {
       </div>
 
       <div className="shrink-0 px-2 pb-2">
-        <NavItem href="/hermes" icon={Bot} label="Hermes" active={pathname.startsWith("/hermes")} onClick={() => setMobileOpen(false)} />
         <NavItem href="/bots" icon={LayoutGrid} label="Browse bots" active={pathname.startsWith("/bots")} onClick={() => setMobileOpen(false)} />
         <NavItem href="/inbox" icon={Bell} label="Inbox" badge={inboxUnread} active={pathname === "/inbox"} onClick={() => setMobileOpen(false)} />
       </div>

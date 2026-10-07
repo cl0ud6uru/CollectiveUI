@@ -6,7 +6,7 @@ vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, pri
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
 vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
-  return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; constructor(_target: unknown, frame: (value: unknown) => void) { f.frame = frame; } close() {} } };
+  return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown) => void) { f.frame = frame; } close() {} } };
 });
 vi.mock('@/db', () => {
   const dialect = new PgDialect();
@@ -88,20 +88,20 @@ it('does not let an older warm snapshot overwrite a newer durable admission', as
 });
 
 it('releases a command rejected by both optional methods and retains its no-replay receipt', async () => {
-  f.call.mockImplementation(async (method: string) => { if (method === 'session.resume') return idle; throw new NativeRpcError(-32601); });
-  await expect(nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/unsupported' })).rejects.toThrow('does not support');
+  f.call.mockImplementation(async (method: string) => { if (method === 'session.resume') return idle; if (method === 'commands.catalog') return { pairs: [['/help', 'Help']] }; throw new NativeRpcError(-32601); });
+  await expect(nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/help' })).rejects.toThrow('does not support');
   expect(f.row.status).toBe('idle'); expect(f.receipts).toHaveLength(1);
-  expect(await nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/unsupported' })).toHaveProperty('output');
+  expect(await nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/help' })).toHaveProperty('output');
   expect(f.call.mock.calls.filter(c => ['slash.exec', 'command.dispatch'].includes(c[0]))).toHaveLength(2);
   f.call.mockImplementation(async (method: string) => method === 'session.resume' ? idle : { status: 'streaming' });
   await expect(submitNativePrompt('owner', 'connection', 'session', id2, 'Next prompt')).resolves.toEqual({ accepted: true, duplicate: false });
 });
 
 it('keeps an ambiguous command result uncertain and never falls back or replays it', async () => {
-  f.call.mockImplementation(async (method: string) => { if (method === 'session.resume') return idle; throw new Error('Lost acknowledgement'); });
-  await expect(nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/something' })).rejects.toThrow('Lost acknowledgement');
+  f.call.mockImplementation(async (method: string) => { if (method === 'session.resume') return idle; if (method === 'commands.catalog') return { pairs: [['/compress', 'Compress']] }; throw new Error('Lost acknowledgement'); });
+  await expect(nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/compress' })).rejects.toThrow('Lost acknowledgement');
   expect(f.row.status).toBe('uncertain');
-  await nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/something' });
+  await nativeControl('owner', 'connection', 'session', 'command', { requestId: id1, text: '/compress' });
   expect(f.call.mock.calls.filter(c => c[0] === 'slash.exec')).toHaveLength(1);
   expect(f.call.mock.calls.filter(c => c[0] === 'command.dispatch')).toHaveLength(0);
   await expect(submitNativePrompt('owner', 'connection', 'session', id2, 'Next')).rejects.toThrow('Finish or stop');
