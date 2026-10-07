@@ -6,8 +6,8 @@ import { mkdir, mkdtemp, readFile, rm, chmod } from 'node:fs/promises';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { and, eq, inArray } from 'drizzle-orm';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import type { Principal } from '@/lib/auth/groups';
 const fixture = vi.hoisted(() => ({ enabled: process.env.DOCKER_HERMES_TEAM_ACTIVE_IMAGE_TEST === '1', client: null as PGlite | null, queued: [] as string[] }));
@@ -24,7 +24,7 @@ import { db, schema } from '@/db';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { configureTeam, reserveTeamProfile } from '@/lib/hermes-team/store';
 import { openTeamConversation } from '@/lib/hermes-team/conversations';
-import { startTeamCandidateRun, settleTeamCandidateRun } from '@/lib/hermes-team/candidate-startup';
+import { startTeamCandidateRun, settleTeamCandidateRun, retireStoredTeamCandidateRun } from '@/lib/hermes-team/candidate-startup';
 import { nativeLearningHandoffHttp } from '@/lib/hermes-team/candidate-learning';
 import { candidateModelHttp, candidateMcpHttp } from '@/lib/hermes-team/candidate-http';
 import { candidateWireMetadata } from '@/lib/hermes-team/candidate-wire-metadata';
@@ -39,6 +39,8 @@ import { DockerBroker } from '@/docker-hermes/broker';
 import { listenBroker } from '@/docker-hermes/main';
 import type { TeamCandidateConfig } from '@/docker-hermes/types';
 import { HERMES_COMMIT } from '@/local-hermes/config';
+import nativeContract from '@/local-hermes/team-candidate-contract.json';
+import { redactSecrets } from '@/lib/redact';
 
 const PIN = 'nousresearch/hermes-agent@sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283';
 const exec = promisify(execFile);
@@ -54,8 +56,32 @@ const route: VerifiedTeamModelRoute = { id: 'app:provider', adapterId: 'collecti
 /** Observe issued configuration only. Production Docker commands, framing, bootstrap and native gateway stay unchanged. */
 class ObservedDriver extends DockerDriver {
   candidates: TeamCandidateConfig[] = [];
+  stderr = ''; nativeErrors: string[] = [];
+  safe(text: string) {
+    for (const value of ['synthetic-never-live-provider-key', 'synthetic-hosted-image-fixture-only', ...this.candidates.flatMap(candidate =>
+      [...Object.values(candidate.modelTokens), candidate.toolToken, ...(candidate.learningToken ? [candidate.learningToken] : [])])])
+      text = text.replaceAll(value, '[redacted]');
+    // Hex grants and content hashes have the same shape; diagnostics may omit both rather than leak split grant fragments.
+    return redactSecrets(text).replace(/\b[a-f0-9]{32,}\b/gi, '[redacted-hex]').slice(-16000);
+  }
   override candidateTransport(owner: string, profile: string, identity: string, config: TeamCandidateConfig) {
-    this.candidates.push(config); return super.candidateTransport(owner, profile, identity, config);
+    this.candidates.push(config); const transport = super.candidateTransport(owner, profile, identity, config);
+    return { ...transport, spawn: () => {
+      const child = transport.spawn(); let lines = '';
+      child.stderr.on('data', part => { this.stderr = this.safe(this.stderr + String(part)); });
+      child.stdout.on('data', part => {
+        lines = (lines + String(part)).slice(-32000);
+        for (;;) {
+          const end = lines.indexOf('\n'); if (end < 0) break;
+          const line = lines.slice(0, end); lines = lines.slice(end + 1);
+          try { const frame = JSON.parse(line); if (frame.error) {
+            this.nativeErrors.push(this.safe(JSON.stringify({ code: frame.error.code, message: frame.error.message })).slice(0, 2048));
+            if (this.nativeErrors.length > 8) this.nativeErrors.shift();
+          } } catch { /* NativeRpc still validates the original frames; this listener observes only bounded errors. */ }
+        }
+      });
+      return child;
+    } };
   }
 }
 function completion(calls: Array<{ name: string; arguments: unknown }> = [], content = 'Learned the useful procedure.') {
@@ -93,12 +119,62 @@ try:
  with httpx.Client(trust_env=False,follow_redirects=False,timeout=3) as client: response=client.get(sys.argv[1])
  print(json.dumps({'trusted':True,'status':response.status_code}))
 except httpx.ConnectError: print(json.dumps({'trusted':False}))`;
+/** Passive, bounded source/package/log inventory. No native module, skill or bootstrap is executed. */
+const IMAGE_DIAGNOSTICS = `import hashlib,importlib.metadata,json,os,pathlib,re,stat,sys
+data=json.loads(sys.stdin.buffer.read(8193)); root=pathlib.Path('/opt/hermes'); home=pathlib.Path('/opt/data/profiles')/data['profile']
+if not re.fullmatch(r'cui-team-[a-f0-9]{32}',data['profile']): raise RuntimeError('Invalid fixture profile')
+s=home.lstat()
+if home.is_symlink() or data['identity']!=str(s.st_dev)+':'+str(s.st_ino): raise RuntimeError('Fixture retained identity changed')
+checked=0; changed=[]
+for name,expected in data['hashes'].items():
+ if not re.fullmatch(r'[A-Za-z0-9_./-]{1,200}',name) or name.startswith('/') or '..' in name.split('/'): raise RuntimeError('Invalid fixed source contract path')
+ p=root/name
+ try:
+  if p.is_symlink() or not p.is_file() or p.stat().st_size>2000000: raise RuntimeError('Source contract file unavailable')
+  actual=hashlib.sha256(p.read_bytes()).hexdigest(); checked+=1
+  if actual!=expected: changed.append(name)
+ except FileNotFoundError: changed.append(name+' (missing)')
+packages={}
+for name in ('openai','httpx','mcp','pydantic','certifi'):
+ try: packages[name]=importlib.metadata.version(name)
+ except importlib.metadata.PackageNotFoundError: packages[name]='missing'
+logs=[]; folder=home/'logs'
+if folder.is_dir() and not folder.is_symlink():
+ for p in sorted(folder.iterdir())[:16]:
+  if not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}',p.name) or not p.name.endswith(('.log','.jsonl')): continue
+  fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+  try:
+   st=os.fstat(fd)
+   if not stat.S_ISREG(st.st_mode): continue
+   os.lseek(fd,max(0,st.st_size-1024),os.SEEK_SET); logs.append({'name':p.name,'size':st.st_size,'tail':os.read(fd,1024).decode('utf-8','replace')})
+  finally: os.close(fd)
+print(json.dumps({'checked':checked,'changed':changed,'python':sys.version.split()[0],'packages':packages,'logs':logs}))`;
+
+describe('official-image fixture diagnostic safety without Docker', () => {
+  it('masks every issued purpose/tool/learning grant, synthetic company credential and bounded stderr', () => {
+    const config = BrokerConfig.parse({ stateDir: '/tmp/synthetic-image-diagnostics', socketPath: '/tmp/synthetic-image-diagnostics.sock', bridgePath: '/tmp/synthetic-bridge.py', image: PIN, namespace: 'cui-image-diagnostics' });
+    const driver = new ObservedDriver(config);
+    const tokens = { reply: 'a'.repeat(64), learning: 'b'.repeat(64), utility: 'c'.repeat(64), subagent: 'd'.repeat(64) };
+    driver.candidates.push({ teamBotId: 'image-team', mode: 'admin', bindingId: 'binding', runId: 'run', contextId: 'context', expiresAt: 1,
+      model: route.model, adapterId: 'collective-openai-chat-v1', modelBaseUrls: { reply: 'https://test.invalid', learning: 'https://test.invalid', utility: 'https://test.invalid', subagent: 'https://test.invalid' },
+      modelTokens: tokens, toolUrl: 'https://test.invalid', toolToken: 'e'.repeat(64), learningToken: 'f'.repeat(64) });
+    const secrets = [...Object.values(tokens), 'e'.repeat(64), 'f'.repeat(64), 'synthetic-never-live-provider-key', 'synthetic-hosted-image-fixture-only'];
+    const sanitized = driver.safe(secrets.join('\n')); for (const secret of secrets) expect(sanitized).not.toContain(secret);
+    expect(driver.safe('x'.repeat(100000))).toHaveLength(16000);
+    const partial = driver.safe(tokens.reply.slice(0, 32)); expect(driver.safe(partial + tokens.reply.slice(32))).not.toMatch(/a{32}/);
+  });
+  it('compiles the fixed passive Python inventory without executing native code or inspecting Docker', async () => {
+    await exec('/usr/bin/python3', ['-c', 'import sys; compile(sys.argv[1], "<fixed-passive-image-diagnostics>", "exec")', IMAGE_DIAGNOSTICS],
+      { env: ENV, timeout: 10000 });
+  });
+});
 
 const suite = fixture.enabled ? describe : describe.skip;
 suite('HOSTED official pinned image: active Team gateway, native learning and cancellation', () => {
   let root: string, config: BrokerConfig, driver: ObservedDriver, broker: DockerBroker, ipc: Awaited<ReturnType<typeof listenBroker>> | undefined;
   let gateway: Server | undefined, origin: string, owner: string, admin: Principal;
   let binding: Awaited<ReturnType<DockerBroker['ensureTeam']>>;
+  const diagnosticNames = new Set<string>();
   const calls: Array<{ contextId: string; purpose: string }> = [], statuses: number[] = [], handoffs: unknown[] = [];
   const counts = new Map<string, number>();
   let scenario: 'teach' | 'cancel' = 'teach', cancelEntered = false, cancelDisconnected = false, rejected = 0;
@@ -129,6 +205,37 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
       child.on('close', code => { clearTimeout(timer); if (code === 0) resolve(stdout); else reject(new Error(`Fixed image fixture refused setup: ${stderr}`)); });
       child.stdin.end(input);
     });
+  }
+  async function startupDiagnostics() {
+    const name = `${driver.name(owner)}-diagnostic-${randomUUID().replaceAll('-', '')}`; diagnosticNames.add(name);
+    const [volume] = JSON.parse(await docker(['volume', 'inspect', `${driver.name(owner)}-data`], 10000));
+    expect(volume.Labels['collective.namespace']).toBe(config.namespace); expect(volume.Labels['collective.owner']).toBe(runtimeKey(owner));
+    const id = (await docker(['create', '--pull', 'never', '--interactive', '--name', name, '--label', `collective.namespace=${config.namespace}`,
+      '--label', `collective.owner=${runtimeKey(owner)}`, '--label', 'collective.purpose=team-image-diagnostics', '--network', 'none', '--read-only',
+      '--user', '10000:10000', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--pids-limit', '32', '--memory', '256m',
+      '--memory-swap', '256m', '--cpus', '1', '--restart', 'no', '--log-driver', 'none',
+      '--mount', `type=volume,src=${driver.name(owner)}-data,dst=/opt/data,readonly`, '--env', 'HOME=/nonexistent', '--env', 'PYTHONDONTWRITEBYTECODE=1',
+      '--entrypoint', '/opt/hermes/.venv/bin/python', PIN, '-B', '-c', IMAGE_DIAGNOSTICS], 10000)).trim();
+    try {
+      const [entry] = JSON.parse(await docker(['inspect', id], 10000));
+      expect(entry.Name).toBe(`/${name}`); expect(entry.Config.Image).toBe(PIN); expect(entry.HostConfig.NetworkMode).toBe('none');
+      expect(entry.HostConfig.ReadonlyRootfs).toBe(true); expect(entry.Config.User).toBe('10000:10000'); expect(entry.HostConfig.CapDrop).toEqual(['ALL']);
+      expect(entry.Mounts).toHaveLength(1); expect(entry.Mounts[0]).toMatchObject({ Type: 'volume', Name: `${driver.name(owner)}-data`, Destination: '/opt/data', RW: false });
+      expect(entry.Config.Labels['collective.namespace']).toBe(config.namespace); expect(entry.Config.Labels['collective.owner']).toBe(runtimeKey(owner));
+      expect(entry.Config.Labels['collective.purpose']).toBe('team-image-diagnostics');
+      return driver.safe(await imageInput(['start', '--attach', '--interactive', id], JSON.stringify({ profile: binding.profile, identity: binding.identity, hashes: nativeContract.sourceHashes }))).slice(0, 8000);
+    } finally { await docker(['container', 'rm', '--force', id], 10000); diagnosticNames.delete(name); }
+  }
+  async function startCandidate(parent: { id: string; holder: string | null; segment: number }) {
+    try { return await startTeamCandidateRun(admin, 'image-team', parent.id, { holder: parent.holder!, segment: parent.segment, routes: [route] }); }
+    catch (error) {
+      let inventory: string;
+      try { inventory = await startupDiagnostics(); } catch (cause) { inventory = driver.safe(`Passive image diagnostics unavailable: ${String(cause)}`); }
+      let state: unknown;
+      try { const { State } = await ownedRuntime(); state = { status: State.Status, exitCode: State.ExitCode, oomKilled: State.OOMKilled, error: String(State.Error).slice(0, 1024) }; }
+      catch { state = 'Owned runtime state unavailable'; }
+      throw new Error(driver.safe(`${String(error)}; runtime state=${JSON.stringify(state)}; native stderr=${driver.stderr.slice(-4000)}; native RPC errors=${JSON.stringify(driver.nativeErrors.slice(-4)).slice(0, 3000)}; passive image inventory=${inventory}`));
+    }
   }
   async function provider(purpose: string, init?: RequestInit) {
     const body = JSON.parse(String(init?.body)); expect(body.model).toBe(route.model); expect(body.max_tokens).toBe(256);
@@ -226,6 +333,24 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     await db.update(schema.hermesTeamProfiles).set({ state: 'ready', binding }).where(eq(schema.hermesTeamProfiles.id, profile.id));
   }, 300000);
 
+  beforeEach(async () => {
+    const unsettled = await db.select().from(schema.hermesTeamCandidateContexts);
+    if (unsettled.some(context => context.retirementState !== 'confirmed')) throw new Error('The previous fixture native writer did not confirm shutdown.');
+  });
+  afterEach(async () => {
+    if (!admin || !binding || !driver) return;
+    // Test failure cannot lend a still-running context to the next case. Retire through the production retained cleanup path first.
+    const contexts = await db.select().from(schema.hermesTeamCandidateContexts);
+    for (const context of contexts) expect(await retireStoredTeamCandidateRun(context.runId)).toEqual({ confirmed: true, runtimeWide: true });
+    const unfinished = await db.select().from(schema.agentRuns).where(and(eq(schema.agentRuns.userId, admin.user.id), eq(schema.agentRuns.botId, 'image-team'),
+      inArray(schema.agentRuns.status, ['queued', 'running', 'waiting', 'waiting_tasks'])));
+    for (const run of unfinished) {
+      await db.update(schema.agentRuns).set({ status: 'cancelled', cancelRequestedAt: new Date() }).where(eq(schema.agentRuns.id, run.id));
+      await settleTeamCandidateRun(run.id, false, [route]);
+    }
+    expect(await driver.running(owner)).toBe(false);
+  }, 90000);
+
   afterAll(async () => {
     const errors: unknown[] = [];
     try { await ipc?.close(); } catch (error) { errors.push(error); }
@@ -233,27 +358,29 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     if (config && driver && owner) {
       const name = driver.name(owner);
       // Exact namespace + owner + expected name + immutable image. No daemon-wide pruning or unowned cleanup.
-      let targets: string[] = [];
-      try { targets = (await docker(['container', 'ls', '-a', '--filter', `label=collective.namespace=${config.namespace}`, '--format', '{{.ID}}'])).trim().split(/\s+/).filter(Boolean); }
+      const targets = new Set([name, ...diagnosticNames]);
+      try { for (const target of (await docker(['container', 'ls', '-a', '--filter', `label=collective.namespace=${config.namespace}`, '--format', '{{.Names}}'], 10000)).trim().split(/\s+/).filter(Boolean)) targets.add(target); }
       catch (error) { errors.push(error); }
       for (const id of targets) try {
-          const [entry] = JSON.parse(await docker(['inspect', id]));
+          const found = (await docker(['container', 'ls', '-a', '--filter', `name=^/${id}$`, '--format', '{{.ID}}'], 10000)).trim(); if (!found) continue;
+          const [entry] = JSON.parse(await docker(['inspect', found], 10000));
           if (entry.Config.Image !== PIN || entry.Config.Labels['collective.owner'] !== runtimeKey(owner) || entry.Config.Labels['collective.namespace'] !== config.namespace
-            || !(entry.Name === `/${name}` || entry.Name.startsWith(`/${name}-resources-`))) throw new Error('Refuse cleanup of altered fixture container ownership.');
-          await docker(['container', 'rm', '--force', entry.Id]);
+            || !(entry.Name === `/${name}` || entry.Name.startsWith(`/${name}-resources-`) || (diagnosticNames.has(entry.Name.slice(1)) && entry.Config.Labels['collective.purpose'] === 'team-image-diagnostics')))
+            throw new Error('Refuse cleanup of altered fixture container ownership.');
+          await docker(['container', 'rm', '--force', entry.Id], 10000);
       } catch (error) { errors.push(error); }
       for (const suffix of ['-data', '-team-updates']) try {
-        const volume = `${name}${suffix}`, found = (await docker(['volume', 'ls', '--filter', `name=^${volume}$`, '--format', '{{.Name}}'])).trim(); if (!found) continue;
-        const [entry] = JSON.parse(await docker(['volume', 'inspect', volume]));
+        const volume = `${name}${suffix}`, found = (await docker(['volume', 'ls', '--filter', `name=^${volume}$`, '--format', '{{.Name}}'], 10000)).trim(); if (!found) continue;
+        const [entry] = JSON.parse(await docker(['volume', 'inspect', volume], 10000));
         if (entry.Labels['collective.owner'] !== runtimeKey(owner) || entry.Labels['collective.namespace'] !== config.namespace) throw new Error('Refuse cleanup of altered fixture volume ownership.');
-        await docker(['volume', 'rm', volume]);
+        await docker(['volume', 'rm', volume], 10000);
       } catch (error) { errors.push(error); }
       try {
-        const network = `${name}-internet`, found = (await docker(['network', 'ls', '--filter', `name=^${network}$`, '--format', '{{.ID}}'])).trim();
+        const network = `${name}-internet`, found = (await docker(['network', 'ls', '--filter', `name=^${network}$`, '--format', '{{.ID}}'], 10000)).trim();
         if (found) {
-          const [entry] = JSON.parse(await docker(['network', 'inspect', found]));
+          const [entry] = JSON.parse(await docker(['network', 'inspect', found], 10000));
           if (entry.Labels['collective.owner'] !== runtimeKey(owner) || entry.Labels['collective.namespace'] !== config.namespace || Object.keys(entry.Containers ?? {}).length) throw new Error('Refuse cleanup of altered fixture network ownership.');
-          await docker(['network', 'rm', found]);
+          await docker(['network', 'rm', found], 10000);
         }
       } catch (error) { errors.push(error); }
     }
@@ -266,7 +393,7 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     await db.insert(schema.messages).values({ id: 'image-user-message', conversationId: chat.conversationId, role: 'user', parts: [{ type: 'text', text: 'Teach a useful procedure.' }] });
     await db.insert(schema.agentRuns).values({ id: 'image-parent', userId: admin.user.id, botId: 'image-team', conversationId: chat.conversationId, messageId: 'image-assistant-message' });
     const parent = (await claimRun('image-parent', 'hosted-image-parent-worker'))!;
-    const active = await startTeamCandidateRun(admin, 'image-team', parent.id, { holder: parent.holder!, segment: parent.segment, routes: [route] });
+    const active = await startCandidate(parent);
     expect(active.target.profile).toBe(binding.bindingId);
     const run = await startRun(active.target, { input: 'Teach a useful procedure: validate input, record the decision, then report the result.', ...nativeAdmission(active.contextId, chat.conversationId, parent.id) });
     const events: string[] = []; for await (const event of runEvents(active.target, run)) events.push(event.event);
@@ -278,7 +405,7 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     expect(await active.retire()).toEqual({ confirmed: true, runtimeWide: true }); expect(await driver.running(owner)).toBe(false);
     await settleTeamCandidateRun(parent.id, true, [route]); expect(fixture.queued).toHaveLength(1);
     const child = (await claimRun(fixture.queued[0], 'hosted-image-learning-worker'))!;
-    const learning = await startTeamCandidateRun(admin, 'image-team', child.id, { holder: child.holder!, segment: child.segment, routes: [route] });
+    const learning = await startCandidate(child);
     expect(learning.contextId).not.toBe(active.contextId); expect(driver.candidates).toHaveLength(2);
     expect(driver.candidates[1].runPurpose).toBe('learning'); expect(driver.candidates[1].learningToken).toBeUndefined();
     await executeTeamLearningSegment(child, child.holder!, learning, new AbortController()); await settleTeamCandidateRun(child.id, true, [route]);
@@ -300,7 +427,7 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     const chat = await openTeamConversation(admin, 'image-team', 'admin');
     await db.insert(schema.agentRuns).values({ id: 'image-cancel', userId: admin.user.id, botId: 'image-team', conversationId: chat.conversationId, messageId: 'image-cancel-message' });
     const parent = (await claimRun('image-cancel', 'hosted-image-cancel-worker'))!;
-    const active = await startTeamCandidateRun(admin, 'image-team', parent.id, { holder: parent.holder!, segment: parent.segment, routes: [route] });
+    const active = await startCandidate(parent);
     expect(active.target.profile).toBe(binding.bindingId);
     const run = await startRun(active.target, { input: 'Wait for the synthetic cancelled operation.', ...nativeAdmission(active.contextId, chat.conversationId, parent.id) });
     await until(() => cancelEntered, value => value); await stopRun(active.target, run);
