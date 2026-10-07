@@ -4,7 +4,7 @@ import { isDelegationTool } from "@/lib/delegation/policy";
 import { workspaceArtifact } from "@/lib/chat/workspace-artifacts";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { getToolOrDynamicToolName, type ToolUIPart, type DynamicToolUIPart } from "ai";
 import {
   AlertTriangle,
@@ -119,7 +119,9 @@ function repliedIn(output: DelegateOutput): string | null {
 }
 
 export function DelegationCard({ output }: { output: DelegateOutput }) {
+  const [expanded, setExpanded] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
+  const detailsId = useId();
   const pets = useOptionalPets();
   const { visible } = usePetEnvironment();
   useEffect(() => { if (output.taskId) window.dispatchEvent(new Event("bot-work-changed")); }, [output.taskId, output.status]);
@@ -127,10 +129,13 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
   const working = output.status === "working";
   const still = output.botId ? pets?.pets[output.botId]?.motion === "still" : false;
   const steps = output.steps ?? [];
-  const meta = [output.label, repliedIn(output)].filter(Boolean).join(" · ");
+  const statusLabel = repliedIn(output) ?? ({
+    working: "Working", queued: "Queued", done: "Completed", error: "Failed", cancelled: "Stopped", interrupted: "Interrupted",
+  } as Record<string, string>)[output.status] ?? output.status;
+  const meta = [statusLabel, output.label].filter(Boolean).join(" · ");
   return (
     <div data-delegation-card={output.status} className="mt-2 flex flex-col gap-3 rounded-[14px] border border-border bg-surface/50 p-4">
-      <div className="flex items-center gap-3">
+      <div className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2 sm:gap-3">
         <span className={cn("inline-flex shrink-0", !working && visible && !still && "delegate-bob")}>
           {output.botId ? (
             <BotAvatar botId={output.botId} value={output.avatar} size={44} state={working ? "working" : "idle"} activity={working ? "working" : "decorative"} />
@@ -140,17 +145,27 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
             </span>
           )}
         </span>
-        <div className="flex min-w-0 grow flex-col gap-px">
-          <span className="truncate text-sm font-semibold text-fg">{botName || "Delegated task"}</span>
-          {meta && <span className="truncate text-xs text-muted">{meta}</span>}
-        </div>
+        <button
+          type="button"
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${botName || "delegated task"} response`}
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          aria-describedby={meta ? `${detailsId}-status` : undefined}
+          onClick={() => setExpanded((value) => !value)}
+          className="col-span-2 flex min-h-11 min-w-0 items-center gap-1.5 rounded-lg text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:col-span-1"
+        >
+          <span className="flex min-w-0 grow flex-col gap-px">
+            <span className="truncate text-sm font-semibold text-fg">{botName || "Delegated task"}</span>
+            {meta && <span id={`${detailsId}-status`} className="truncate text-xs text-muted">{meta}</span>}
+          </span>
+          {expanded ? <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" /> : <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" />}
+        </button>
         {output.conversationId && output.taskId && (
-          <Link href={`/c/${encodeURIComponent(output.conversationId)}`} className="shrink-0 rounded-lg border border-border px-3 py-2 text-[13px] leading-none text-fg hover:bg-hover">
+          <Link href={`/c/${encodeURIComponent(output.conversationId)}`} className="col-start-2 row-start-2 w-fit rounded-lg border border-border px-3 py-2 text-[13px] leading-none text-fg hover:bg-hover sm:col-start-3 sm:row-start-1">
             Open task
           </Link>
         )}
       </div>
-      {output.status === "done" && output.answer && <Markdown text={output.answer} className="markdown-bubble text-fg" />}
       {working && (
         <div className="flex items-center gap-2 text-muted">
           <Loader2 className="h-4 w-4 animate-spin" /> {botName || "The delegate"} is working…
@@ -158,22 +173,25 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
       )}
       {output.status === "queued" && <div className="text-muted">Scheduled independently. This reply will continue when the task returns.</div>}
       {output.error && <div className="text-danger">{output.error}</div>}
-      {steps.length > 0 && (
-        <div className="text-xs text-muted">
-          <button type="button" aria-expanded={stepsOpen} onClick={() => setStepsOpen((o) => !o)} className="flex items-center gap-1 hover:text-fg">
-            {stepsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} {steps.length} {steps.length === 1 ? "step" : "steps"}
-          </button>
-          {stepsOpen && (
-            <div className="mt-2 space-y-1">
-              {steps.map((s, i) => (
-                <div key={i} className="flex items-center gap-1.5">
-                  {s.status === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : s.status === "error" || s.status === "denied" ? <X className="h-3 w-3 text-danger" /> : <Check className="h-3 w-3" />} {s.status === "running" ? describe(s.tool).running : s.status === "error" || s.status === "denied" ? `${s.tool}: ${s.status}` : describe(s.tool).done}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      <div id={detailsId} hidden={!expanded} className="space-y-3">
+        {expanded && output.status === "done" && output.answer && <Markdown text={output.answer} className="markdown-bubble text-fg" />}
+        {expanded && steps.length > 0 && (
+          <div className="text-xs text-muted">
+            <button type="button" aria-expanded={stepsOpen} onClick={() => setStepsOpen((o) => !o)} className="flex items-center gap-1 hover:text-fg">
+              {stepsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} {steps.length} {steps.length === 1 ? "step" : "steps"}
+            </button>
+            {stepsOpen && (
+              <div className="mt-2 space-y-1">
+                {steps.map((s, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    {s.status === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : s.status === "error" || s.status === "denied" ? <X className="h-3 w-3 text-danger" /> : <Check className="h-3 w-3" />} {s.status === "running" ? describe(s.tool).running : s.status === "error" || s.status === "denied" ? `${s.tool}: ${s.status}` : describe(s.tool).done}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

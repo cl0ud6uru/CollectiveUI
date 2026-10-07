@@ -14,7 +14,7 @@ const original = path.resolve('src/db/migrations');
 type Entry = { idx: number; when: number; tag: string };
 type Journal = { entries: Entry[] };
 type Row = Record<string, unknown>;
-type Snapshot = { id: string; prevId: string; tables: Record<string, { columns: Record<string, unknown> }> };
+type Snapshot = { id: string; prevId: string; tables: Record<string, { columns: Record<string, unknown>; checkConstraints: Record<string, unknown> }> };
 const legacyTables = ['users', 'groups', 'group_members', 'app_access', 'bot_access', 'bot_user_access',
   'provider_connections', 'ai_apps', 'bots', 'docker_hermes_enrollments', 'hermes_connections',
   'hermes_provisions', 'conversations', 'messages', 'agent_runs', 'hermes_chat_settings', 'hermes_run_contexts',
@@ -36,6 +36,9 @@ async function assertRetained(client: PGlite, before: Record<string, Row[]>) {
         expect({ pinned, use_count, last_used_at, last_curated_at }).toEqual({ pinned: false, use_count: 0, last_used_at: null, last_curated_at: null });
         return row;
       });
+    }
+    if (table === 'bot_learning_revisions' && data.length && !Object.hasOwn(data[0], 'kind')) {
+      after = after.map(({ kind, ...row }) => { expect(kind).toBe('preference'); return row; });
     }
     expect(after).toEqual(data);
   }
@@ -106,9 +109,9 @@ async function seedLearning(client: PGlite, usage = false) {
   await client.query(`INSERT INTO bot_learnings(id,bot_id,user_id,topic,kind,status,content,verification,version) VALUES
     ('private-learning','company-bot','upgrade-owner','private-topic','preference','active',$1,'Synthetic evidence',2),
     ('shared-learning','company-bot',null,'shared-topic','procedure','pending',$1,'Synthetic evidence',1)`, [content]);
-  await client.query(`INSERT INTO bot_learning_revisions(id,learning_id,version,status,content,verification,source_conversation_id,source_run_id) VALUES
-    ('learning-revision-1','private-learning',1,'active',$1,'Original evidence','company-chat','learning-run'),
-    ('learning-revision-2','private-learning',2,'active',$1,'Updated evidence','company-chat','learning-run')`, [content]);
+  await client.query(`INSERT INTO bot_learning_revisions(id,learning_id,version,status,content,verification,source_conversation_id,source_run_id${usage ? ',kind' : ''}) VALUES
+    ('learning-revision-1','private-learning',1,'active',$1,'Original evidence','company-chat','learning-run'${usage ? ",'preference'" : ''}),
+    ('learning-revision-2','private-learning',2,'active',$1,'Updated evidence','company-chat','learning-run'${usage ? ",'preference'" : ''})`, [content]);
   await client.exec("INSERT INTO bot_learning_reviews(run_id,attempts) VALUES ('learning-run',2)");
   if (usage) await seedLearningUsage(client);
 }
@@ -166,6 +169,7 @@ describe('combined main and Team Bot upgrade history (PGlite, no pgvector or nat
       expect(snapshots[1].tables[`public.${table}`]).toBeDefined();
       const usage = structuredClone(snapshots[2].tables[`public.${table}`]);
       if (table === 'bot_learnings') for (const column of ['pinned', 'use_count', 'last_used_at', 'last_curated_at']) delete usage.columns[column];
+      if (table === 'bot_learning_revisions') { delete usage.columns.kind; delete usage.checkConstraints.bot_learning_revisions_kind_check; }
       expect(usage).toEqual(snapshots[1].tables[`public.${table}`]);
       for (const next of snapshots.slice(3)) expect(next.tables[`public.${table}`]).toEqual(snapshots[2].tables[`public.${table}`]);
     }
