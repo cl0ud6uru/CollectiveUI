@@ -38,7 +38,7 @@
     "src/db/migrations/0034_ldap_passkeys.sql": "6539f754083c56f51a8b6c24b847bd48b69671f8d38728a9fb2a9ad74b7a6ee1",
     "src/db/migrations/0035_direct_user_permissions.sql": "12f9c01360083e2df13da4c5c0916375eefc65b6bb7a5b6651f925fd31a4c803",
     "src/db/migrations/0036_native_bot_learning.sql": "371693508b94c493800acb766858f75e4072edf63f50dd8f09226ece10752759",
-    "src/db/migrations/0037_learning_usage.sql": "d1908a864c1c591bdd315772e1f8bcc287620cab55445904e53bd4542e821fee",
+    "src/db/migrations/0037_learning_usage.sql": "d17fee9fa281276de8b2a61234fb3c86307b7cbe4bfc22a1b9b46a18f37d4cf1",
     "src/db/migrations/0038_hermes_team_bots.sql": "c507c684be7b4e1698812a75a5fb24cebfbbd5bdbd1de5615c566e9ca489cf6b",
     "src/db/migrations/0039_hermes_team_revision_immutability.sql": "4f04d286c316db08ffa5236a22a68de94ed8486a06e18b55f2b66a9680300338",
     "src/db/migrations/0040_hermes_team_admission.sql": "97be7fd4dd31902b61524b942cdbc364a585f1aae3109bdb4c0f0042c823b92d",
@@ -82,13 +82,13 @@
     "src/db/migrations/meta/0034_snapshot.json": "7ff8ac8a9c4d332068e3e9266c9a3e2e02b7f792197637793025b2e09dd11199",
     "src/db/migrations/meta/0035_snapshot.json": "a98b8d64c0ad58f3dad55917b07eb17dd59987483f6cb0f7f6bae186a7040b42",
     "src/db/migrations/meta/0036_snapshot.json": "0600b88c86cd913c4a526074a858ceeadba7da05d0b0434facca0722df79f661",
-    "src/db/migrations/meta/0037_snapshot.json": "6ebc7661baf30a6c281bec6ecfa18d92844ef763b535dea31a5d013aa9120536",
-    "src/db/migrations/meta/0038_snapshot.json": "c533a40e15401e277060846fabfbd3e3e397e102fe75b0c6438cb859f63ff15a",
-    "src/db/migrations/meta/0039_snapshot.json": "2836d9c6a8838fdf378d5f4b5612516a6eb54d6cc9979bdebc2b84f4582917ae",
-    "src/db/migrations/meta/0040_snapshot.json": "e3f4b3bf8b86602f523d49a074cdaebadc0c318f5c4ff6637398104ed46d3ee2",
-    "src/db/migrations/meta/0041_snapshot.json": "af7453d8bb0898d863db089fc49d00ad4c2bcd6dafab13edbbac54b90c04ec25",
-    "src/db/migrations/meta/0042_snapshot.json": "f81bfc1cc55d3f5144c58dee8803c4f487b5a60d4ddfd5b407d03e96fe138bda",
-    "src/db/migrations/meta/0043_snapshot.json": "542dd5a6d0d4a41d39fa5baa84d70793a34e58c8da9bcbc4adedf5395e75a04d"
+    "src/db/migrations/meta/0037_snapshot.json": "4b392b2976f67207cdc12f81dfbbc69f6ac8de0c7f308f60299df078ecc3117e",
+    "src/db/migrations/meta/0038_snapshot.json": "e462390af40dc6013156b8c69a97e731d5523408ce3042ad3e2f341ce54de394",
+    "src/db/migrations/meta/0039_snapshot.json": "0d89f9ef12b85cf5dd93b3425caa2030ab2738394e0cb3eaa29a19bc314805e0",
+    "src/db/migrations/meta/0040_snapshot.json": "f6a6881adb49d5c6656e057666b612168a3f3a405ffd5a6da086d4de7199e003",
+    "src/db/migrations/meta/0041_snapshot.json": "4a8c184793d01a57473cae9b254a5abf6a0f083dd4a21e43abff60dbaeb6bfe3",
+    "src/db/migrations/meta/0042_snapshot.json": "109fe8f55dead54c202308b5b1e802e27994b93282e5590761ee68d3fbffb292",
+    "src/db/migrations/meta/0043_snapshot.json": "248973e7ee0e14f6ef39344a16c1595cdf96820f7a1ff0a697f4e086b4de127d"
   },
   "journalEntries": [
     {

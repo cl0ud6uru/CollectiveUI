@@ -169,6 +169,8 @@ export function Chat({
 
   const hermesCommands = hermes ? {
     models: catalog?.models.available ? catalog.models.items : [],
+    routes: catalog?.modelRoutes ?? [],
+    requested: catalog?.requestedModel ?? null,
     discoveryNote: !catalog ? (catalogState?.scope === commandScope && catalogState.error ? "Discovery unavailable; local controls still work." : "Checking Hermes capabilities… Local controls are ready.")
       : catalog.capabilityWarning ?? (!catalog.skills.available ? "Skills discovery unavailable. /skills explains; chat still works." : "Skills are discoverable with /skills; native invocation is not available yet."),
   } : undefined;
