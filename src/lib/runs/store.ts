@@ -16,6 +16,7 @@ import { newId } from "@/lib/ids";
 import { enqueueRun } from "@/lib/jobs";
 import { afterRunTransition } from "./hooks";
 import { lockUserRuns } from "./lock";
+import { recordBotSendTx } from "@/lib/bots/recent-use";
 import { snapshotHermesSettings } from "./hermes-context";
 import { notifyRun, readRunState, type RunState } from "./log";
 import { stopProviderRun } from "./provider-stop";
@@ -106,6 +107,10 @@ export async function startRun(i: {
     // Conversion, audience/policy changes and member choice use the same bot-before-user lock order.
     if (i.conversation.botId) await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, i.conversation.botId)).for('share');
     await lockUserRuns(tx, userId);
+    // Lock personal preferences before conversation writes, matching home/side-chat user-before-conversation
+    // locking. The record commits only if message/run admission below succeeds; every denial rolls it back.
+    if (i.userMessage?.role === "user" && i.bot?.id === i.conversation.botId)
+      await recordBotSendTx(tx, i.principal, i.conversation);
     let app = i.app;
     const currentTeam = await teamUsesNativeLearning(conversationId, tx);
     if (currentTeam) {

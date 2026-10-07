@@ -134,6 +134,33 @@ describe("native optional skill picking", () => {
     expect(await picked.tools.use_skill.execute!({ slug: "slug-b" }, {} as never)).toHaveProperty("error");
     expect(execute).not.toHaveBeenCalled(); expect(h.decide).toHaveBeenCalledTimes(1);
   });
+  it("keeps selected skills usable across another bot's send and sidebar moves", async () => {
+    const ctx = context();
+    ctx.principal.user.prefs = { customInstructions: "Follow the current request", memoryEnabled: true, learningEnabled: true };
+    h.principal.mockResolvedValue(ctx.principal);
+    const changeNavigation = (sentAt: string) => h.principal.mockResolvedValue({ ...ctx.principal,
+      user: { ...ctx.principal.user, prefs: { ...ctx.principal.user.prefs, botOrder: ["other", "bot"], botLastSentAt: { other: sentAt } } } });
+    h.decide.mockImplementation(async (_p, _input, q) => { changeNavigation("2026-10-07T12:00:00Z"); return result(q); });
+    const set = toolset(); const execute = vi.fn(set.tools.use_skill.execute!); set.tools.use_skill.execute = execute;
+    const picked = (await skillPicking(ctx, set, "Read"))!;
+    expect(picked?.skills.map(s => s.id)).toEqual(["a", "pinned", "policy"]);
+    changeNavigation("2026-10-07T12:01:00Z");
+    expect(await picked.tools.use_skill.execute!({ slug: "slug-a" }, {} as never)).toMatchObject({ skillId: "a", version: 1 });
+    expect(execute).toHaveBeenCalledTimes(1); expect(h.decide).toHaveBeenCalledTimes(1);
+  });
+  it.each(["customInstructions", "memoryEnabled", "learningEnabled"] as const)("still rejects %s changes during selection and selected-skill use", async preference => {
+    const ctx = context(); const set = toolset();
+    const execute = vi.fn(set.tools.use_skill.execute!); set.tools.use_skill.execute = execute;
+    const picked = (await skillPicking(ctx, set, "Read"))!;
+    const changed = { ...ctx.principal, user: { ...ctx.principal.user,
+      prefs: { [preference]: preference === "customInstructions" ? "Changed guidance" : false } } };
+    h.principal.mockResolvedValue(changed);
+    expect(await picked.tools.use_skill.execute!({ slug: "slug-a" }, {} as never)).toHaveProperty("error");
+    expect(execute).not.toHaveBeenCalled();
+    h.principal.mockResolvedValue(ctx.principal);
+    h.decide.mockImplementation(async (_p, _input, q) => { h.principal.mockResolvedValue(changed); return result(q); });
+    expect(await skillPicking(ctx, toolset(), "Read")).toBeUndefined();
+  });
   it.each(["canonical", "alias"])("keeps the full catalog when narrowing changes %s slug resolution", async collision => {
     const catalog = [skill("a", { slug: "learned-shared-report" }), skills[1], skill("policy", {
       mandatory: true, slug: collision === "canonical" ? "learned-shared-report" : "learned-policy",

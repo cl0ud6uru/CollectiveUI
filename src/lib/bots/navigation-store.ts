@@ -5,7 +5,8 @@ import { users, userBotPrefs } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { HttpError, listAccessibleBots } from "@/lib/authz";
 import { defaultCoordinator } from "@/lib/coordinator/store";
-import { changeBotNavigation, orderBots } from "./navigation";
+import { canMoveNavigationBot, changeBotNavigation, orderBots } from "./navigation";
+import { loadBotLastSentAt } from "./recent-use";
 
 const id = z.string().min(1).max(128);
 const inputSchema = z.discriminatedUnion("kind", [
@@ -25,9 +26,12 @@ export async function saveBotNavigation(p: Principal, raw: unknown) {
     // Same coordinator rule as the layout, so unsaved bots get the order the user sees before their first move.
     const coordinatorId = (await defaultCoordinator(fresh))?.bot.id;
     const byBot = new Map(prefs.map(pref => [pref.botId, pref]));
-    const ordered = orderBots(accessible.map(b => ({ id: b.id, name: b.name, pinned: byBot.get(b.id)?.pinned ?? false, hidden: byBot.get(b.id)?.hidden ?? false, coordinator: b.id === coordinatorId })), user.prefs.botOrder);
+    const lastSentAt = await loadBotLastSentAt(user.id, accessible.map(b => b.id), tx);
+    const ordered = orderBots(accessible.map(b => ({ id: b.id, name: b.name, pinned: byBot.get(b.id)?.pinned ?? false, hidden: byBot.get(b.id)?.hidden ?? false, coordinator: b.id === coordinatorId, lastSentAt: lastSentAt.get(b.id) ?? null })), user.prefs.botOrder);
     if (!ordered.some(b => b.id === input.botId) || (input.kind === "move" && !ordered.some(b => b.id === input.targetId)))
       throw new HttpError(403, "This bot is no longer available in your navigation. Refresh and try again.");
+    if (input.kind === "move" && !canMoveNavigationBot(ordered.find(b => b.id === input.botId)!, ordered.find(b => b.id === input.targetId)!))
+      throw new HttpError(400, "Move bots within pins or equal recent use. Pin a bot to keep a chosen position.");
     const next = changeBotNavigation(ordered, input);
     if (input.kind === "preference") {
       const bot = next.find(b => b.id === input.botId)!;

@@ -147,4 +147,27 @@ describe("native MCP tool shortlisting", () => {
     h.decide.mockResolvedValue({ status: "ok", answers: [{ type: "predicate", name: "invented", probability: 1 }] });
     expect(await toolShortlisting(context(), toolset(), "Read")).toBeUndefined();
   });
+  it("keeps a shortlist valid across another bot's send and sidebar moves", async () => {
+    const ctx = context();
+    ctx.principal.user.prefs = { customInstructions: "Follow the current request", memoryEnabled: true, learningEnabled: true };
+    h.principal.mockResolvedValue(ctx.principal);
+    h.decide.mockImplementation(async (_p, _input, q) => {
+      h.principal.mockResolvedValue({ ...ctx.principal, user: { ...ctx.principal.user,
+        prefs: { ...ctx.principal.user.prefs, botOrder: ["other", "bot"], botLastSentAt: { other: "2026-10-07T12:00:00Z" } } } });
+      return answer(q);
+    });
+    const set = toolset();
+    expect(await toolShortlisting(ctx, set, "Read")).toEqual(Object.keys(set.tools).filter(n => n !== "finance__invoice_send"));
+    expect(h.decide).toHaveBeenCalledTimes(1); expect(h.execute).not.toHaveBeenCalled();
+  });
+  it.each(["customInstructions", "memoryEnabled", "learningEnabled"] as const)("still rejects %s changes during shortlisting", async preference => {
+    const ctx = context();
+    h.decide.mockImplementation(async (_p, _input, q) => {
+      h.principal.mockResolvedValue({ ...ctx.principal, user: { ...ctx.principal.user,
+        prefs: { [preference]: preference === "customInstructions" ? "Changed guidance" : false } } });
+      return answer(q);
+    });
+    expect(await toolShortlisting(ctx, toolset(), "Read")).toBeUndefined();
+    expect(h.decide).toHaveBeenCalledTimes(1);
+  });
 });

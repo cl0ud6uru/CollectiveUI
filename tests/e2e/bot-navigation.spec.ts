@@ -45,6 +45,8 @@ test("directory pins synchronize immediately; keyboard moves retain focus and su
   await expect(page.getByRole("button", { name: "Unpin Charlie", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: "Unpin Charlie", exact: true })).toBeEnabled();
   await expect.poll(() => order(page)).toEqual(["navC", "navA", "navB"]);
+  await page.getByRole("button", { name: "Pin Alpha", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Unpin Alpha", exact: true })).toBeEnabled();
   await nav(page).getByRole("button", { name: "Charlie options", exact: true }).focus();
   await page.keyboard.press("Enter");
   await page.getByRole("menuitem", { name: "Move down", exact: true }).focus();
@@ -142,7 +144,7 @@ test("large rosters show pins plus five others, keep the moved and active rows, 
     await pool.query("INSERT INTO user_bot_prefs(user_id,bot_id,pinned) VALUES('navigation-admin','navG',true)");
     await login(page);
     // Six unpinned bots: the sixth (Foxtrot) waits behind "See all"; the pinned Golf is always shown.
-    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navE", "navG"]);
+    await expect.poll(() => order(page)).toEqual(["navG", "navA", "navB", "navC", "navD", "navE"]);
     await expect(nav(page).getByRole("link", { name: "See all", exact: true })).toHaveAttribute("href", "/bots");
     // Moving the fifth row down crosses the limit; the moved row stays mounted and keeps focus.
     await nav(page).getByRole("button", { name: "Reorder Echo", exact: true }).focus();
@@ -151,19 +153,20 @@ test("large rosters show pins plus five others, keep the moved and active rows, 
     await down.focus(); await page.keyboard.press("Enter");
     await expect(nav(page).getByRole("button", { name: "Echo options", exact: true })).toBeFocused();
     await expect(nav(page).getByRole("status")).toHaveText("Moved Echo after Foxtrot");
-    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navE", "navG"]);
-    // Moves continue to cross pinned entries without losing focus.
+    await expect.poll(() => order(page)).toEqual(["navG", "navA", "navB", "navC", "navD", "navF", "navE"]);
+    // A never-used bot cannot cross the pinned group. The last unpinned row has no next move.
     await nav(page).getByRole("button", { name: "Echo options", exact: true }).press("Enter");
-    await down.focus(); await page.keyboard.press("Enter");
+    await expect(down).toHaveAttribute("aria-disabled", "true");
+    await page.keyboard.press("Escape");
     await expect(nav(page).getByRole("button", { name: "Echo options", exact: true })).toBeFocused();
-    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navG", "navE"]);
+    await expect.poll(() => order(page)).toEqual(["navG", "navA", "navB", "navC", "navD", "navF", "navE"]);
     await expect(nav(page).locator('[data-navigation-bot="navG"] [aria-label="Pinned"]')).toHaveCount(1);
     // After reload the limit applies again; opening Echo keeps it visible as the active bot.
     await page.reload();
-    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navG"]);
+    await expect.poll(() => order(page)).toEqual(["navG", "navA", "navB", "navC", "navD", "navF"]);
     await page.goto("/?bot=navE");
     await page.waitForURL(/\/c\//);
-    await expect.poll(() => order(page)).toEqual(["navA", "navB", "navC", "navD", "navF", "navG", "navE"]);
+    await expect.poll(() => order(page)).toEqual(["navG", "navA", "navB", "navC", "navD", "navF", "navE"]);
     await expect(nav(page).locator('[data-navigation-bot="navE"] a[aria-current="page"]')).toHaveCount(1);
   } finally {
     await pool.query("DELETE FROM conversations WHERE bot_id IN ('navD','navE','navF','navG')");
@@ -222,7 +225,7 @@ test("collapsed rail uses selected avatars, persists selection and has keyboard 
   await expect(page.getByRole("navigation").getByRole("link", { name: "Hermes", exact: true })).toHaveClass(/(?:^|\s)bg-hover(?:\s|$)/);
 });
 
-test("overflow keeps saved order, searches and selects bots, restores focus on Escape and filters revoked access", async ({ page }) => {
+test("overflow keeps pin and recent-send order, searches and selects bots, restores focus on Escape and filters revoked access", async ({ page }) => {
   const extra = [["railD", "Delta"], ["railE", "Echo"], ["railF", "Foxtrot"], ["railG", "Golf"], ["railH", "Hotel"]];
   for (const [id, name] of extra) await pool.query("INSERT INTO bots(id,owner_id,name,visibility) VALUES($1,'navigation-admin',$2,'org')", [id, name]);
   try {
@@ -239,7 +242,7 @@ test("overflow keeps saved order, searches and selects bots, restores focus on E
       await page.addStyleTag({ content: "nextjs-portal { display: none; }" });
       await page.screenshot({ path: `${process.env.RAIL_SCREENSHOT_DIR}/rail-overflow.png`, animations: "disabled" });
     }
-    expect(await popover.locator('[aria-label="All bot results"] > a').evaluateAll(links => links.map(link => link.getAttribute("href")))).toEqual(["navC", "navA", "navB", ...extra.map(([id]) => id)].map(id => `/?bot=${id}`));
+    expect(await popover.locator('[aria-label="All bot results"] > a').evaluateAll(links => links.map(link => link.getAttribute("href")))).toEqual(["railH", "navC", "navA", "navB", ...extra.filter(([id]) => id !== "railH").map(([id]) => id)].map(id => `/?bot=${id}`));
     await popover.getByRole("textbox").fill("nothing matches");
     await expect(popover.getByRole("status")).toHaveText("No bots found");
     await page.keyboard.press("Escape"); await expect(more).toBeFocused();

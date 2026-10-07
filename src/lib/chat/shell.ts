@@ -6,6 +6,7 @@ import { aiApps, conversationBots, conversations, folders, inboxItems, userBotPr
 import type { Principal } from "@/lib/auth/groups";
 import { listAccessibleBots, listAccessibleModels } from "@/lib/authz";
 import { orderBots } from "@/lib/bots/navigation";
+import { loadBotLastSentAt } from "@/lib/bots/recent-use";
 import { getPublicBranding } from "@/lib/branding/store";
 import { defaultCoordinator } from "@/lib/coordinator/store";
 import { mergeRecentTasks } from "@/lib/chat/recent-task-state";
@@ -74,7 +75,8 @@ export async function loadShell(p: Principal) {
     hermes: a.provider === "hermes",
     ...(a.provider === "chatgpt" && planStatus ? { personalPlan: { provider: "chatgpt" as const, status: planStatus } } : {}),
   }));
-  // Activity changes only row content; personal navigation order survives every layout refresh.
+  const lastSentAt = await loadBotLastSentAt(p.user.id, bots.map(b => b.id));
+  // Only this person's recorded accepted sends affect recency; roster/task activity is display-only.
   const botOptions: TargetOption[] = orderBots(bots.map((b) => ({
     kind: "bot" as const,
     coordinator: b.id === coordinator?.bot.id,
@@ -88,6 +90,7 @@ export async function loadShell(p: Principal) {
     hermesTeam: b.hermesTeam,
     pinned: prefByBot.get(b.id)?.pinned ?? false,
     hidden: prefByBot.get(b.id)?.hidden ?? false,
+    lastSentAt: lastSentAt.get(b.id) ?? null,
     preview: roster.get(b.id)?.preview ?? null,
     lastAt: roster.get(b.id)?.lastAt ?? null,
     status: roster.get(b.id)?.status ?? null,

@@ -14,6 +14,7 @@ import { canonicalJson, toolHash } from "@/lib/mcp/snapshot";
 import { offeredTools } from "@/lib/mcp/servers";
 import { currentSkillsForTurn } from "./tools/skills";
 import { mcpToolsetBinding } from "./toolset-binding";
+import { agentPreferences } from "./preferences";
 import type { AgentCtx, ToolEntry } from "./types";
 import type { Toolset } from "./toolset";
 
@@ -53,7 +54,7 @@ async function catalog(ctx: AgentCtx, toolset: Toolset) {
   }
   const binding = mcpToolsetBinding(authorities, toolset.entries);
   if (!toolset.approvalBinding || binding !== toolset.approvalBinding) throw new Error("Tool authorization changed");
-  return { principal, binding: digest([binding, skills, principal.user.prefs]), servers,
+  return { principal, binding: digest([binding, skills, agentPreferences(principal.user.prefs)]), servers,
     candidates: entries.filter(e => servers.get(e.key.slice(4))?.toolsSnapshot && typeof e.tool.description === "string"),
     required: [bot.instructions, bot.boundaries, app.systemPrompt, principal.user.prefs?.customInstructions,
       ...[...toolset.skills, ...skills].flatMap(s => [s.instructions, s.boundaries])].filter(Boolean).join("\n"),
