@@ -96,6 +96,20 @@ describe('native Hermes socket', () => {
     const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
     await expect(socket.connect()).rejects.toThrow('does not support native approval'); expect(socket.state).toBe('disconnected');
   });
+  it('binds sensitive sends to a verified socket epoch and refuses reconnects or stale snapshots', async () => {
+    const { server, url } = await fixture(); let active: import('ws').WebSocket; let connections = 0; const methods: string[] = [];
+    server.on('connection', ws => { ++connections; active = ws; ws.send(ready); ws.on('message', raw => {
+      const input = JSON.parse(String(raw)); methods.push(input.method); ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: input.method === 'client.capabilities' ? { server_requests: ['approval'] } : { session_id: 'runtime' } }));
+    }); });
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
+    expect(() => socket.callConnected('config.set', {}, 1)).toThrow('verified Hermes connection changed'); expect(connections).toBe(0);
+    const snapshot = await socket.callWithEpoch('session.resume', {}); expect(snapshot.epoch).toBe(socket.connectionEpoch);
+    await socket.callConnected('config.set', { value: 'on' }, snapshot.epoch); expect(methods.filter(m => m === 'config.set')).toHaveLength(1);
+    active!.terminate(); await vi.waitFor(() => expect(socket.state).toBe('reconnecting'));
+    expect(() => socket.callConnected('config.set', {}, snapshot.epoch)).toThrow('verified Hermes connection changed');
+    await socket.connect(); expect(connections).toBe(2);
+    expect(() => socket.callConnected('config.set', {}, snapshot.epoch)).toThrow('verified Hermes connection changed'); expect(methods.filter(m => m === 'config.set')).toHaveLength(1);
+  });
 });
 describe('native Hermes UI projections', () => {
   it('keeps an admitted queued message active between turns for disablement and recovery', () => {

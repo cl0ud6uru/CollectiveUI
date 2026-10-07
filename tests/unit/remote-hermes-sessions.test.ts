@@ -23,6 +23,8 @@ vi.mock('@/db', () => ({ db: {
 } }));
 import { remoteAccess } from '@/lib/remote-hermes/store';
 import { browseNativeSessions, nativeHistory, nativeControl, nativeSnapshot, openNativeSession, submitNativePrompt } from '@/lib/remote-hermes/sessions';
+import { NativeRpcError } from '@/lib/remote-hermes/socket';
+import contract from '../fixtures/remote-hermes-command-contract.json';
 const receipt = '9fd64d53-084f-4898-96e0-59ea8fdc623f';
 describe('remote native session admission and continuity', () => {
   beforeEach(() => {
@@ -81,5 +83,85 @@ describe('remote native session admission and continuity', () => {
     expect(await submitNativePrompt('owner', 'connection', 'session', receipt, 'Only once')).toEqual({ accepted: true, duplicate: true });
     expect(f.call).toHaveBeenCalledOnce();
     await expect(submitNativePrompt('owner', 'connection', 'session', receipt, 'Different message')).rejects.toThrow('different content');
+  });
+  function commandRuntime(result: Record<string, unknown> = { output: 'Native help', warning: 'Review warning' }) {
+    f.call.mockImplementation(async (method: string) => method === 'commands.catalog'
+      ? { ...contract.catalog, pairs: [...contract.catalog.pairs, ['/fixture-skill', 'Synthetic skill']], skills: { '/fixture-skill': { usage: 0, origin: 'local' } } }
+      : result);
+  }
+  it('authorizes command discovery and execution before making any RPC', async () => {
+    commandRuntime();
+    await expect(nativeControl('intruder', 'connection', 'session', 'catalog')).rejects.toThrow('not found');
+    await expect(nativeControl('intruder', 'connection', 'session', 'command', { text: '/help', requestId: receipt })).rejects.toThrow('not found');
+    expect(f.call).not.toHaveBeenCalled();
+  });
+  it('dispatches advertised skills directly to the upstream skill protocol and returns an unsent prefill', async () => {
+    commandRuntime({ type: 'skill', message: 'Human-reviewed skill task', display: 'Skill loaded', notice: 'Check draft' });
+    expect(await nativeControl('owner', 'connection', 'session', 'command', { text: '/fixture-skill do work', requestId: receipt }))
+      .toMatchObject({ prefill: 'Human-reviewed skill task', output: 'Skill loaded\nCheck draft' });
+    expect(f.call).toHaveBeenCalledWith('command.dispatch', { session_id: 'runtime', profile: 'default', name: 'fixture-skill', arg: 'do work' }, 60000);
+    expect(f.call.mock.calls.some(c => ['slash.exec', 'prompt.submit'].includes(c[0]))).toBe(false);
+  });
+  it('runs native commands with server-owned identities and repeats receipts without dispatching twice', async () => {
+    commandRuntime();
+    const input = { text: '/help', requestId: receipt };
+    expect(await nativeControl('owner', 'connection', 'session', 'command', input)).toMatchObject({ output: 'Native help\nReview warning' });
+    expect(await nativeControl('owner', 'connection', 'session', 'command', input)).toMatchObject({ output: expect.stringContaining('already submitted') });
+    expect(f.call.mock.calls.filter(c => c[0] === 'slash.exec')).toHaveLength(1);
+    expect(f.call).toHaveBeenCalledWith('slash.exec', { session_id: 'runtime', profile: 'default', command: 'help' }, 60000);
+  });
+  it('falls back only on method-not-found, never on ambiguous 4018 or transport errors', async () => {
+    commandRuntime();
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'commands.catalog') return contract.catalog;
+      if (method === 'slash.exec') throw new NativeRpcError(-32601);
+      return { type: 'exec', output: 'Compatible fallback' };
+    });
+    expect(await nativeControl('owner', 'connection', 'session', 'command', { text: '/help', requestId: receipt })).toMatchObject({ output: 'Compatible fallback' });
+    expect(f.call).toHaveBeenCalledWith('command.dispatch', { session_id: 'runtime', profile: 'default', name: 'help', arg: '' }, 60000);
+  });
+  it.each([new NativeRpcError(4018), new Error('Acknowledgement lost')])('does not retry a potentially executed command (%s)', async error => {
+    commandRuntime();
+    f.call.mockImplementation(async (method: string) => { if (method === 'commands.catalog') return contract.catalog; throw error; });
+    const input = { text: '/compress', requestId: receipt };
+    await expect(nativeControl('owner', 'connection', 'session', 'command', input)).rejects.toThrow();
+    expect(f.updates).toContainEqual(expect.objectContaining({ status: 'uncertain' }));
+    expect(await nativeControl('owner', 'connection', 'session', 'command', input)).toMatchObject({ output: expect.stringContaining('already submitted') });
+    expect(f.call.mock.calls.filter(c => c[0] === 'slash.exec')).toHaveLength(1);
+    expect(f.call.mock.calls.some(c => c[0] === 'command.dispatch')).toBe(false);
+  });
+  it('explains an unsupported catalog version and leaves the session unreserved', async () => {
+    f.call.mockRejectedValue(new NativeRpcError(-32601));
+    const catalog = await nativeControl('owner', 'connection', 'session', 'catalog');
+    expect(catalog.warning).toContain('compatible command catalog');
+    await expect(nativeControl('owner', 'connection', 'session', 'command', { text: '/compress', requestId: receipt })).rejects.toThrow('not advertised');
+    expect(f.admissions).toBe(0);
+  });
+  it.each(['/yolo on', '/approvals off', '/skills approval off', '/config', '/plugins', '/unknown'])('refuses unsupported command %s before dispatch', async text => {
+    commandRuntime();
+    await expect(nativeControl('owner', 'connection', 'session', 'command', { text, requestId: receipt })).rejects.toThrow();
+    expect(f.admissions).toBe(0); expect(f.call.mock.calls.every(c => c[0] === 'commands.catalog')).toBe(true);
+  });
+  it('allows typed stop while active, blocks native session mutations while active, and reads approval status without changing it', async () => {
+    commandRuntime(); f.status = 'running';
+    await expect(nativeControl('owner', 'connection', 'session', 'command', { text: '/compress', requestId: receipt })).rejects.toThrow('unfinished work');
+    expect(f.admissions).toBe(0);
+    await nativeControl('owner', 'connection', 'session', 'command', { text: '/stop', requestId: receipt });
+    expect(f.call).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime', profile: 'default' });
+    expect(await nativeControl('owner', 'connection', 'session', 'command', { text: '/yolo', requestId: receipt })).toMatchObject({ output: expect.stringContaining('effective approval bypass') });
+    expect(f.call.mock.calls.some(c => c[0] === 'config.set')).toBe(false);
+  });
+  it('rechecks policy under the lock before a native command dispatch', async () => {
+    commandRuntime(); f.disableAtLock = true;
+    await expect(nativeControl('owner', 'connection', 'session', 'command', { text: '/help', requestId: receipt })).rejects.toThrow('disabled');
+    expect(f.admissions).toBe(0); expect(f.call.mock.calls.every(c => c[0] === 'commands.catalog')).toBe(true);
+  });
+  it.each(['/help', '!yolo'])('never sends raw command syntax %s through prompt admission', async text => {
+    await expect(submitNativePrompt('owner', 'connection', 'session', receipt, text)).rejects.toThrow();
+    expect(f.call).not.toHaveBeenCalled(); expect(f.admissions).toBe(0);
+  });
+  it('permits explicit literal slash text through the ordinary prompt path', async () => {
+    await submitNativePrompt('owner', 'connection', 'session', receipt, '//help');
+    expect(f.call).toHaveBeenCalledWith('prompt.submit', { session_id: 'runtime', profile: 'default', text: '/help' });
   });
 });
