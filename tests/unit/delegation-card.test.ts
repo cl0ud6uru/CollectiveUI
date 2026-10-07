@@ -20,21 +20,28 @@ describe("delegation card", () => {
     expect(html).toContain('data-activity="working"');
     expect(html).not.toContain("delegate-bob");
     expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain("2 steps");
+    expect(html).toContain('aria-label="Expand Gemma 4 response"');
+    expect(html).toContain("hidden=");
+    expect(html).not.toContain("2 steps");
     expect(html).not.toContain("Searched the web");
     expect(html).not.toContain("replied in");
   });
 
-  it("renders a finished answer as markdown with host, reply time and an Open task link", () => {
+  it("collapses a finished answer and steps while keeping identity, reply time and its task link", () => {
     const html = card({ status: "done", answer: "**Still kicking!** Alive and well.", startedAt: "2026-10-06T12:00:00.000Z", finishedAt: "2026-10-06T12:00:04.200Z", steps: [{ tool: "web_search", status: "done" }] });
     expect(html).toContain('data-delegation-card="done"');
-    expect(html).toContain("<strong>Still kicking!</strong> Alive and well.");
-    expect(html).not.toMatch(/[“"]Still kicking/);
-    expect(html).toContain("Mac Mini · replied in 4s");
+    expect(html).not.toContain("Still kicking!");
+    expect(html).toContain('aria-label="Expand Gemma 4 response"');
+    expect(html).toContain('aria-expanded="false"');
+    const detailsId = html.match(/aria-controls="([^"]+)"/)?.[1];
+    expect(detailsId).toBeTruthy();
+    expect(html).toContain(`id="${detailsId}" hidden=""`);
+    expect(html).toContain(`aria-describedby="${detailsId}-status"`);
+    expect(html).toContain("replied in 4s · Mac Mini");
     expect(html).toContain('href="/c/conv-1"');
     expect(html).toContain("Open task");
     expect(html).toContain("delegate-bob");
-    expect(html).toContain("1 step");
+    expect(html).not.toContain("1 step");
     expect(html).not.toContain("is working");
   });
 
@@ -45,7 +52,7 @@ describe("delegation card", () => {
     expect(html).toMatch(/>G<\/span>/);
     expect(html).not.toContain("Open task");
     expect(html).not.toContain("step");
-    expect(card({ status: "done", answer: "Done." })).toContain(">Mac Mini<");
+    expect(card({ status: "done", answer: "Done." })).toContain("Completed · Mac Mini");
   });
 
   it("keeps queued and error states inside the card with their current copy", () => {
@@ -59,6 +66,16 @@ describe("delegation card", () => {
     expect(failed).toContain('class="text-danger">The delegated task deadline expired.</div>');
     expect(failed).not.toContain("animate-spin");
     expect(failed).not.toContain("steps");
+  });
+
+  it.each([
+    ["error", "Failed"], ["cancelled", "Stopped"], ["interrupted", "Interrupted"],
+  ])("keeps %s status and errors visible while its body is collapsed", (status, label) => {
+    const html = card({ status, error: "This task needs attention.", steps: [{ tool: "web_search", status: "error" }] });
+    expect(html).toContain(`${label} · Mac Mini`);
+    expect(html).toContain("This task needs attention.");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("1 step");
   });
 
   it.each([
