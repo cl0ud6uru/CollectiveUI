@@ -119,6 +119,19 @@ describe("native optional skill picking", () => {
     expect(await picked.tools.use_skill.execute!({ slug: "slug-b" }, {} as never)).toHaveProperty("error");
     expect(execute).not.toHaveBeenCalled(); expect(h.decide).toHaveBeenCalledTimes(1);
   });
+  it.each(["canonical", "alias"])("keeps the full catalog when narrowing changes %s slug resolution", async collision => {
+    const catalog = [skill("a", { slug: "learned-shared-report" }), skills[1], skill("policy", {
+      mandatory: true, slug: collision === "canonical" ? "learned-shared-report" : "learned-policy",
+      aliases: ["learned-shared-report"],
+    })];
+    h.catalog.mockResolvedValue(catalog);
+    h.decide.mockImplementation(async (_p, _input, q) => result(q, [0.05, 0.95]));
+    const set = toolset(catalog); const original = set.tools.use_skill;
+    expect(await skillPicking(context(), set, "Read")).toBeUndefined();
+    expect(set.tools.use_skill).toBe(original); expect(set.skills).toBe(catalog);
+    expect(h.decide).toHaveBeenCalledTimes(1);
+    expect(console.info).toHaveBeenCalledWith("[decisions]", expect.objectContaining({ outcome: "ambiguous" }));
+  });
   it("makes no request for inaccessible/unsupported provider, no catalog or exhausted deadline", async () => {
     h.app.mockRejectedValueOnce(new Error("No access")); await skillPicking(context(), toolset(), "Read");
     h.app.mockImplementation(async (_p, id) => id === "main" ? context().app : { provider: "chatgpt", enabled: true, credentialMode: "user" });

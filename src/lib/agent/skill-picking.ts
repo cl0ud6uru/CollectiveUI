@@ -78,6 +78,12 @@ export async function skillPicking(ctx: AgentCtx, toolset: Toolset, input: strin
         digest(provider) !== digest(await providerContextFor(nextApp)) ||
         digest(fresh.skills.map(revision)) !== digest(next.skills.map(revision))) { outcome = "stale"; return; }
     const selected = offered.filter(s => protectedSkill(s) || chosen.has(s.id));
+    const originalSkills = toolset.skills;
+    // Authored and learned stores can legally share slugs. Keep the original catalog if narrowing changes resolution.
+    if (selected.flatMap(s => [s.slug, ...(s.aliases ?? [])]).some(slug => {
+      const shown = findSkill(selected, slug); const loaded = findSkill(originalSkills, slug);
+      return !shown || !loaded || revision(shown) !== revision(loaded);
+    })) { outcome = "ambiguous"; return; }
     const advertised = skillTool(ctx, selected);
     const original = toolset.tools.use_skill;
     if (!advertised || !original?.execute) return;
@@ -89,7 +95,8 @@ export async function skillPicking(ctx: AgentCtx, toolset: Toolset, input: strin
         try {
           const current = await freshCatalog(ctx);
           const s = findSkill(selected, (args as { slug: string }).slug);
-          if (!s || !current.skills.some(t => t.id === s.id && revision(t) === revision(s))) return { error: "Skill access or version changed. Start a new turn to refresh the skill catalog." };
+          const loaded = findSkill(originalSkills, (args as { slug: string }).slug);
+          if (!s || !loaded || revision(s) !== revision(loaded) || !current.skills.some(t => t.id === s.id && revision(t) === revision(s))) return { error: "Skill access or version changed. Start a new turn to refresh the skill catalog." };
         } catch { return { error: "Skill access or version changed. Start a new turn to refresh the skill catalog." }; }
         return original.execute!(args, callOptions);
       },
