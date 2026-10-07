@@ -43,6 +43,7 @@ export async function commandCatalog(t: Target): Promise<HermesCommandCatalog | 
   return {
     backend: "hermes", commands: isLocalHermes(t.app) ? HERMES_COMMANDS.filter(c => !["model", "skills", "tools"].includes(c.name)) : HERMES_COMMANDS, ...discovery,
     models: discovery.models.available ? { available: true, items: discovery.models.items.filter((m) => allowed.includes(m) && m !== "default") } : discovery.models,
+    modelRoutes: discovery.models.available ? discovery.models.items.filter((m) => m !== "default").map((id) => ({ id, allowed: allowed.includes(id) })) : [],
     requestedModel: settings?.model ?? null, revision: settings?.revision ?? 0,
   };
 }
@@ -119,6 +120,8 @@ export async function executeHermesCommand(p: Principal, input: CommandTarget & 
     if (!args) return { title: "Model request", revision: catalog.revision, lines: [
       `Requested: ${catalog.requestedModel ?? "Hermes default"}.`,
       catalog.models.available ? `Allowed routes: ${catalog.models.items.join(", ") || "none configured by the admin"}.` : catalog.models.reason,
+      ...(catalog.models.available && catalog.modelRoutes.some((r) => !r.allowed)
+        ? [`Advertised by Hermes but not enabled by an admin: ${catalog.modelRoutes.filter((r) => !r.allowed).map((r) => r.id).join(", ")}. An admin can add them under Allowed model routes on this app.`] : []),
       "Use /model <route> or /model default while the chat is idle.", MODEL_NOTE,
     ] };
     if (!catalog.models.available || !catalog.models.items.includes(args)) throw new HttpError(400, "That model route is not currently advertised and allowed. Use /model to see available choices.");
