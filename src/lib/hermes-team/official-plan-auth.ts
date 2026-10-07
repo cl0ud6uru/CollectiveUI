@@ -129,6 +129,11 @@ export async function cancelOfficialPlanAuth(p:Principal){return db.transaction(
 export async function operateOfficialPlanAuth(p:Principal,kind:'refresh'|'revoke',services:OfficialAuthServices=officialAuthServices()){
  const claimed=await db.transaction(async tx=>{
   await ownerLock(tx,p);const row=await selected(p,tx);if(!row)throw new HttpError(404,'Official account not found.');
+  if(kind==='revoke' && row.status==='revoked'){
+   const [prior]=await tx.select({state:officialPlanAuthOperations.state}).from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.userId,p.user.id),eq(officialPlanAuthOperations.connectionId,row.id),eq(officialPlanAuthOperations.kind,'revoke'),eq(officialPlanAuthOperations.credentialRevision,row.revision-1)));
+   // The cleared envelope is never reopened. Only the exact completed receipt proves remote logout.
+   return {already:{disconnected:true as const,remoteRevocationConfirmed:prior?.state==='complete'}};
+  }
   if(kind==='refresh' && row.status!=='active')throw new HttpError(409,'Reconnect the official account first.');
   const [prior]=await tx.select().from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.connectionId,row.id),eq(officialPlanAuthOperations.credentialRevision,row.revision),eq(officialPlanAuthOperations.kind,kind))).for('update');
   if(prior)throw new HttpError(409,'The official token operation was already claimed. Reconnect if its result is uncertain.');
@@ -137,6 +142,7 @@ export async function operateOfficialPlanAuth(p:Principal,kind:'refresh'|'revoke
   if(kind==='revoke')await closeAccount(tx,row,'revoked');
   return {row,bundle,operation};
  });
+ if('already' in claimed)return claimed.already;
  try{
   if(kind==='revoke'){
    if(claimed.bundle.refresh)await oauthForm(services,await services.verifier.revocationEndpoint(),new URLSearchParams({token:claimed.bundle.refresh,token_type_hint:'refresh_token',client_id:claimed.row.clientId}),true);

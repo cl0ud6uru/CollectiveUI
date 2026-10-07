@@ -134,6 +134,13 @@ describe('Dormant exact official loopback OAuth controllers and durable rotating
  });
  it('clears only the owner secret before remote revoke and truthfully records an unconfirmed remote result',async()=>{
   await connect();fetcher.mockClear();fetcher.mockRejectedValue(new Error('synthetic unavailable revoke'));expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});const row=(await db.select().from(schema.officialPlanConnections))[0];expect(row.status).toBe('revoked');expect(()=>openOfficialPlanSecret(row)).toThrow();await expect(officialPlanMetadata('alice','synthetic-model')).rejects.toMatchObject({status:409});expect((await db.select().from(schema.officialPlanAuthOperations))[0]).toMatchObject({kind:'revoke',state:'needs_attention'});expect(fetcher).toHaveBeenCalledOnce();
+  expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});expect(fetcher).toHaveBeenCalledOnce();
+ });
+ it('handles concurrent and completed disconnect replay without decrypting the cleared envelope or repeating remote I/O',async()=>{
+  await connect();fetcher.mockClear();let reached!:()=>void;let finish!:(value:Response)=>void;const ready=new Promise<void>(resolve=>{reached=resolve;}),deferred=new Promise<Response>(resolve=>{finish=resolve;});
+  fetcher.mockImplementation(async()=>{reached();return deferred;});const first=operateOfficialPlanAuth(alice,'revoke',services);await ready;
+  expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});await expect(operateOfficialPlanAuth(bob,'revoke',services)).rejects.toMatchObject({status:404});expect(fetcher).toHaveBeenCalledOnce();
+  finish(new Response(null));expect(await first).toEqual({disconnected:true,remoteRevocationConfirmed:true});expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:true});expect(fetcher).toHaveBeenCalledOnce();expect(await db.select().from(schema.officialPlanAuthOperations)).toHaveLength(1);
  });
  it('enforces immutable attempt/operation identity and keeps another owner from deleting or selecting it',async()=>{
   const attempt=await connect();await expect(db.update(schema.officialPlanAuthAttempts).set({userId:'bob'}).where(eq(schema.officialPlanAuthAttempts.id,attempt.attemptId))).rejects.toThrow();await expect(operateOfficialPlanAuth(bob,'refresh',services)).rejects.toMatchObject({status:404});
