@@ -53,6 +53,7 @@ jobs:
           node tests/browser/hermes-team-publication.mjs
           node tests/browser/hermes-team-updates.mjs
           node tests/browser/hermes-team-restore.mjs
+          DELEGATION_CARD_SCREENSHOTS="$RUNNER_TEMP/delegation-card-screenshots" node tests/browser/delegation-card.mjs
           BOT_RECENT_USE_SCREENSHOT_DIR="$RUNNER_TEMP/bot-recent-use-screenshots" node tests/browser/bot-recent-use.mjs
       - name: Exercise native Remote Hermes commands and confirmed session controls on desktop and mobile
         run: |
@@ -62,6 +63,11 @@ jobs:
         with:
           name: bot-recent-use-screenshots
           path: ${{ runner.temp }}/bot-recent-use-screenshots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: delegation-card-screenshots
+          path: ${{ runner.temp }}/delegation-card-screenshots
 
   native-hermes:
     name: Pinned native Hermes settings, Team profiles and synthetic OAuth

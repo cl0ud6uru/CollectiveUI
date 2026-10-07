@@ -66,10 +66,20 @@ try {
     { from: path.join(root, 'src/app/globals.css') },
   );
   let pendingApproval = true;
+  let activityResponse = null;
+  let activityStatus = 200;
+  let activityRequests = 0;
   const decisions = [];
   server = createServer(async (req, res) => {
     if (req.url === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(js.contents); }
-    else if (req.url === '/bundle.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.css + (petCss?.text ?? '')); }
+    else if (req.url === '/inter.woff2') { res.setHeader('Content-Type', 'font/woff2'); res.end(await readFile(path.join(root, 'node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2'))); }
+    else if (req.url === '/bundle.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.css + (petCss?.text ?? '') + `\n@font-face { font-family: Inter; font-style: normal; font-weight: 100 900; font-display: swap; src: url('/inter.woff2') format('woff2'); } :root { --font-inter: Inter; }`); }
+    else if (req.url.includes('/api/delegation/')) {
+      res.setHeader('Content-Type', 'application/json');
+      res.statusCode = activityStatus;
+      activityRequests++;
+      res.end(JSON.stringify(activityResponse ?? { taskId: 'unrelated', status: 'queued', steps: [], completed: 0 }));
+    }
     else if (req.url.endsWith('/approvals')) {
       res.setHeader('Content-Type', 'application/json');
       if (req.method === 'POST') {
@@ -89,9 +99,13 @@ try {
     const page = await browser.newPage({ viewport });
     const errors = [];
     page.on('pageerror', error => { errors.push(error.message); console.error('Browser fixture page error:', error.message); });
+    page.on('console', message => {
+      if (message.type() === 'error' && !message.text().startsWith('Failed to load resource:')) errors.push(message.text());
+    });
     // Synthetic component fixtures must never contact production endpoints or load remote assets.
     await page.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
     await page.goto(`${origin}/?sanitized=1`);
+    await page.evaluate(() => document.fonts.ready);
     await expect(page.getByText('The assignment is no longer authorized to return a result.', { exact: true })).toBeVisible();
     await expect(page.getByText('Delegated task', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Open task', exact: true })).toHaveCount(0);
@@ -127,12 +141,8 @@ try {
     await page.evaluate(() => window.updateDelegation({ label: 'Updated host' }));
     await expect(page.getByText('replied in 25s · Updated host', { exact: true })).toBeVisible();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    const steps = page.getByRole('button', { name: '1 step', exact: true });
-    await steps.focus(); await page.keyboard.press('Enter');
-    await expect(steps).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByText('Searched the web', { exact: true })).toBeVisible();
+    await expect(page.locator('[aria-label="Recent tool steps"]').getByText('Searching the web', { exact: true })).toBeVisible();
     if (screenshots) await page.screenshot({ path: path.join(screenshots, `${viewport.width}-expanded.png`), fullPage: true });
-    await page.keyboard.press('Space'); await expect(steps).toHaveAttribute('aria-expanded', 'false');
     await page.getByRole('button', { name: 'Collapse Gemma 4 response', exact: true }).focus();
     await page.keyboard.press('Space');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
@@ -148,10 +158,55 @@ try {
     for (const state of ['queued', 'working', 'error', 'cancelled', 'interrupted']) {
       await page.goto(`${origin}/?state=${state}`);
       await expect(page.getByRole('button', { name: 'Expand Gemma 4 response', exact: true })).toHaveAttribute('aria-expanded', 'false');
-      if (state === 'queued') await expect(page.getByText('Scheduled independently. This reply will continue when the task returns.', { exact: true })).toBeVisible();
-      if (state === 'working') await expect(page.getByText('Gemma 4 is working…', { exact: true })).toBeVisible();
+      if (state === 'queued') {
+        await expect(page.getByText('Queued · Mac Mini', { exact: true })).toBeVisible();
+        await page.getByRole('button', { name: 'Expand Gemma 4 response', exact: true }).click();
+        await expect(page.getByText('Waiting to start. This reply will continue when the task returns.', { exact: true })).toBeVisible();
+      }
+      if (state === 'working') await expect(page.getByText('Working… · Mac Mini', { exact: true })).toBeVisible();
       if (['error', 'cancelled', 'interrupted'].includes(state)) await expect(page.getByText('The task needs attention.', { exact: true })).toBeVisible();
     }
+    activityResponse = { taskId: 'task-1', status: 'working', steps: [{ tool: 'workspace_grep', status: 'done' }, { tool: 'workspace_read', status: 'done' }, { tool: 'workspace_bash', status: 'running' }], completed: 2 };
+    await page.goto(`${origin}/?state=queued`);
+    await expect(page.getByText('Running a command · 2 completed', { exact: true })).toBeVisible();
+    const liveToggle = page.getByRole('button', { name: 'Expand Gemma 4 response', exact: true });
+    if (screenshots) {
+      await page.evaluate(() => document.documentElement.classList.add('dark'));
+      await page.screenshot({ path: path.join(screenshots, `${viewport.width}-live-collapsed-dark.png`), fullPage: true });
+    }
+    await liveToggle.click();
+    const liveDetails = page.locator('[aria-label="Recent tool steps"]');
+    await expect(liveDetails.getByText('Running a command', { exact: true })).toBeVisible();
+    await expect(liveDetails.getByText('Searching files', { exact: true })).toBeVisible();
+    await expect(liveDetails.getByText('Done', { exact: true })).toHaveCount(2);
+    await page.mouse.move(0, 0);
+    if (screenshots) await page.screenshot({ path: path.join(screenshots, `${viewport.width}-live-expanded-dark.png`), fullPage: true });
+    activityResponse = { ...activityResponse, phase: 'approval', steps: [{ tool: 'workspace_bash', status: 'waiting' }] };
+    await expect(page.getByText('Waiting for approval · 2 completed', { exact: true })).toBeVisible({ timeout: 6000 });
+    await expect(page.getByText('Waiting for approval before the next tool can run.', { exact: true })).toBeVisible();
+    activityResponse = { ...activityResponse, status: 'done', phase: undefined, steps: [{ tool: 'workspace_bash', status: 'done' }], completed: 3 };
+    await expect(page.locator('[data-delegation-card]')).toHaveAttribute('data-delegation-card', 'done', { timeout: 6000 });
+    await expect(page.getByRole('button', { name: 'Collapse Gemma 4 response', exact: true })).toHaveAttribute('aria-expanded', 'true');
+    const finalRequests = activityRequests;
+    await page.waitForTimeout(2200);
+    expect(activityRequests).toBe(finalRequests);
+    activityStatus = 500;
+    activityResponse = { taskId: 'task-1', status: 'working', steps: [{ tool: 'workspace_bash', status: 'running' }], completed: 2 };
+    await page.goto(`${origin}/?state=queued`);
+    await expect(page.getByText('Live activity unavailable · Mac Mini', { exact: true })).toBeVisible();
+    activityStatus = 200;
+    await expect(page.getByText('Running a command · 2 completed', { exact: true })).toBeVisible({ timeout: 6000 });
+    activityStatus = 403;
+    await expect(page.getByText('Live activity unavailable · Mac Mini', { exact: true })).toBeVisible({ timeout: 6000 });
+    await page.getByRole('button', { name: 'Expand Gemma 4 response', exact: true }).click();
+    await expect(page.getByText('Live access to this assignment is unavailable. Open task to view its saved history.', { exact: true })).toBeVisible();
+    await expect(page.locator('[aria-label="Recent tool steps"]')).toHaveCount(0);
+    await page.evaluate(() => window.updateDelegation({ status: 'done' }));
+    await expect(page.getByText('replied in 25s · Mac Mini', { exact: true })).toBeVisible();
+    await expect(page.getByText('Live activity unavailable · Mac Mini', { exact: true })).toHaveCount(0);
+    activityStatus = 200;
+    activityResponse = null;
+
     pendingApproval = true;
     await page.goto(`${origin}/?approval=1&state=working`);
     await expect(page.getByRole('button', { name: 'Expand Gemma 4 response', exact: true })).toHaveAttribute('aria-expanded', 'false');

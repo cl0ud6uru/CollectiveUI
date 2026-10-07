@@ -59,6 +59,28 @@ suite("linked delegated tasks (Postgres + local mock only)", () => {
     const { runHost } = await import("@/lib/runs/host");
     return admitDelegation(ctx, receiverId, prompt, call, runHost().instanceId);
   }
+  it("reads exact task activity without arguments, unrelated events or revoked live access", async () => {
+    const { db, schema } = await import("@/db");
+    const { taskActivity } = await import("@/lib/delegation/activity");
+    const ctx = await context();
+    const { task } = await admit(ctx, "activity-call");
+    await db.insert(schema.runEvents).values([
+      { runId: task.childRunId!, seq: 1, segment: 0, chunk: { type: "tool-input-available", toolCallId: "live", toolName: "workspace_bash", input: { command: "private-argument-sentinel" } } },
+      { runId: task.childRunId!, seq: 2, segment: 0, chunk: { type: "tool-output-available", toolCallId: "live", preliminary: true, output: "private-output-sentinel" } },
+      { runId: ctx.usage!.runId!, seq: 1, segment: 0, chunk: { type: "reset-step" } },
+    ]);
+    const activity = await taskActivity(ctx.principal, task.id);
+    expect(activity).toEqual({ taskId: task.id, status: "working", completed: 0, steps: [{ tool: "workspace_bash", status: "running" }] });
+    expect(JSON.stringify(activity)).not.toContain("private-");
+    await expect(taskActivity({ ...ctx.principal, user: { ...ctx.principal.user, id: "someone-else" } }, task.id)).rejects.toMatchObject({ status: 404 });
+    await expect(taskActivity({ ...ctx.principal, user: { ...ctx.principal.user, sessionVersion: ctx.principal.user.sessionVersion + 1 } }, task.id)).rejects.toMatchObject({ status: 403 });
+    await db.delete(schema.botDelegates).where(and(eq(schema.botDelegates.botId, sourceId), eq(schema.botDelegates.delegateBotId, receiverId)));
+    try {
+      await expect(taskActivity(ctx.principal, task.id)).rejects.toMatchObject({ status: 403 });
+      await db.update(schema.agentRuns).set({ status: "cancelled" }).where(eq(schema.agentRuns.id, task.childRunId!));
+      expect(await taskActivity(ctx.principal, task.id)).toMatchObject({ status: "cancelled", steps: [{ status: "error" }] });
+    } finally { await db.insert(schema.botDelegates).values({ botId: sourceId, delegateBotId: receiverId }); }
+  });
   it("atomically admits one child for duplicate calls, with a separate owned transcript and no routine hook", async () => {
     const { db, schema } = await import("@/db");
     const ctx = await context();
