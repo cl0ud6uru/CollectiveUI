@@ -291,7 +291,9 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
       { name: 'memory', arguments: { action: 'add', target: 'memory', content: 'Private image fixture working note.' } },
     ]);
     if (purpose === 'learning' && count === 0) return completion([{ name: 'skill_manage', arguments: { operations: [{ action: 'create', name: 'learned-procedure', content: LEARNED }] } }]);
-    if (purpose === 'learning' && count === 1) return completion([{ name: 'skill_manage', arguments: { operations: [{ action: 'patch', name: 'learned-procedure', old_string: 'record the decision', new_string: 'record the reviewed decision' }] } }]);
+    // Pinned background review requires a native read before modifying a skill.
+    if (purpose === 'learning' && count === 1) return completion([{ name: 'skill_view', arguments: { name: 'learned-procedure' } }]);
+    if (purpose === 'learning' && count === 2) return completion([{ name: 'skill_manage', arguments: { operations: [{ action: 'patch', name: 'learned-procedure', old_string: 'record the decision', new_string: 'record the reviewed decision' }] } }]);
     expect(purpose).not.toBe('subagent');
     if (purpose === 'reply') expect((body.messages as Array<{ role: string }>).some(message => message.role === 'tool')).toBe(true);
     return completion([], purpose === 'learning' ? 'Improved the reusable skill.' : 'Learned the useful procedure.');
@@ -454,7 +456,7 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     expect(capture.resources.find(resource => resource.path === 'skills/learned-procedure/SKILL.md')?.content).toBe(IMPROVED);
     expect(JSON.stringify(capture)).not.toMatch(/Private image fixture working note|synthetic-never-live-provider-key/);
     expect(calls.filter(call => call.purpose === 'learning').every(call => call.contextId === learning.contextId)).toBe(true);
-    expect(calls.filter(call => call.purpose !== 'utility').map(call => call.purpose)).toEqual(['reply', 'reply', 'learning', 'learning', 'learning']);
+    expect(calls.filter(call => call.purpose !== 'utility').map(call => call.purpose)).toEqual(['reply', 'reply', 'learning', 'learning', 'learning', 'learning']);
     expect(statuses.every(status => status === 200)).toBe(true); expect(handoffs).toHaveLength(1);
     expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0]).toMatchObject({ state: 'complete', childRunId: child.id });
   }, 180000);
