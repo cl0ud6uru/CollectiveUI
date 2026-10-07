@@ -225,7 +225,7 @@ test("collapsed rail uses selected avatars, persists selection and has keyboard 
   await expect(page.getByRole("navigation").getByRole("link", { name: "Hermes", exact: true })).toHaveClass(/(?:^|\s)bg-hover(?:\s|$)/);
 });
 
-test("overflow keeps saved order, searches and selects bots, restores focus on Escape and filters revoked access", async ({ page }) => {
+test("overflow keeps pin and recent-send order, searches and selects bots, restores focus on Escape and filters revoked access", async ({ page }) => {
   const extra = [["railD", "Delta"], ["railE", "Echo"], ["railF", "Foxtrot"], ["railG", "Golf"], ["railH", "Hotel"]];
   for (const [id, name] of extra) await pool.query("INSERT INTO bots(id,owner_id,name,visibility) VALUES($1,'navigation-admin',$2,'org')", [id, name]);
   try {
@@ -242,7 +242,7 @@ test("overflow keeps saved order, searches and selects bots, restores focus on E
       await page.addStyleTag({ content: "nextjs-portal { display: none; }" });
       await page.screenshot({ path: `${process.env.RAIL_SCREENSHOT_DIR}/rail-overflow.png`, animations: "disabled" });
     }
-    expect(await popover.locator('[aria-label="All bot results"] > a').evaluateAll(links => links.map(link => link.getAttribute("href")))).toEqual(["navC", "navA", "navB", ...extra.map(([id]) => id)].map(id => `/?bot=${id}`));
+    expect(await popover.locator('[aria-label="All bot results"] > a').evaluateAll(links => links.map(link => link.getAttribute("href")))).toEqual(["railH", "navC", "navA", "navB", ...extra.filter(([id]) => id !== "railH").map(([id]) => id)].map(id => `/?bot=${id}`));
     await popover.getByRole("textbox").fill("nothing matches");
     await expect(popover.getByRole("status")).toHaveText("No bots found");
     await page.keyboard.press("Escape"); await expect(more).toBeFocused();
