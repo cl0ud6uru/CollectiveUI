@@ -22,6 +22,9 @@ export type HermesTeamView = {
   conflictCount: number;
   modelAccessAvailable?: boolean;
   modelAccessReason?: string;
+  modelPolicyMode?: "admin_provided" | "admin_default_personal_allowed" | "personal_required";
+  personalAllowed?: boolean;
+  personalRequired?: boolean;
 };
 
 const stateLabels: Record<HermesTeamView["state"], string> = {

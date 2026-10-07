@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { HermesTeamCandidateApprovals } from "./hermes-team-candidate-approvals";
 import { HermesTeamMemberConnections } from "./hermes-team-member-connections";
+import { HermesTeamModelAccess } from "./hermes-team-model-access";
 import { useRouter } from "next/navigation";
 import { HermesTeamControls, type HermesTeamMode, type HermesTeamView } from "./hermes-team-controls";
 import type { HermesTeamUpdateInput, HermesTeamResolveInput, HermesTeamUpdateReview, HermesTeamUpdateResult } from "./hermes-team-updates";
@@ -23,6 +24,7 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
   const [updateError, setUpdateError] = useState<{ scope: string; message: string } | null>(null);
   const automaticAttempts = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
+  const [modelOperation, setModelOperation] = useState<{ scope: string; pending: boolean } | null>(null);
   const scope = `${botId}:${started ? conversationId : "new"}`;
   const base = `/api/bots/${encodeURIComponent(botId)}/team`;
   async function publicationRequest(path: string, input?: unknown) {
@@ -54,12 +56,15 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
     return () => { controller.abort(); clearTimeout(timer); };
   }, [base, conversationId, started, scope, attempt]);
 
-  async function openMode(mode: HermesTeamMode) {
+  async function prepareConversation(mode: HermesTeamMode) {
     const response = await fetch(`${base}/open`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error ?? "Could not open this conversation mode.");
     if (typeof data.conversationId !== "string" || !data.conversationId.length) throw new Error("The server did not confirm a conversation. Try again.");
-    router.push(`/c/${encodeURIComponent(data.conversationId)}`);
+    return data.conversationId as string;
+  }
+  async function openMode(mode: HermesTeamMode) {
+    router.push(`/c/${encodeURIComponent(await prepareConversation(mode))}`);
   }
 
   async function prepareCapture(): Promise<HermesTeamCaptureInventory> {
@@ -123,9 +128,12 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
     return () => controller.abort();
   }, [base, scope, busy, view?.enabled, view?.mode, view?.state, view?.installedRevision, view?.publishedRevision]);
   if (view) return <>
+    {view.enabled && <HermesTeamModelAccess botId={botId} conversationId={conversationId} mode={view.mode} started={started} busy={busy} summary={view}
+      onPrepareConversation={prepareConversation} onNavigate={id => router.push(`/c/${encodeURIComponent(id)}`)} onChanged={() => setAttempt(value => value + 1)}
+      onBusyChange={pending => setModelOperation({ scope: `${scope}:${view.mode}`, pending })} />}
     {view.enabled && <HermesTeamMemberConnections botId={botId} contextKey={`${scope}:${view.mode}`} />}
     <HermesTeamCandidateApprovals key={scope} conversationId={conversationId} active={started && busy && view.enabled && view.state === "ready" && view.modelAccessAvailable === true} />
-    <HermesTeamControls view={view} busy={busy} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
+    <HermesTeamControls view={view} busy={busy || modelOperation?.scope === `${scope}:${view.mode}` && modelOperation.pending} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
       onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>} onLoadRevisions={loadRevisions} onCaptureRollback={captureRollback}
       onLoadUpdates={loadUpdates} onApplyUpdate={input => update("updates", input)} onResolveUpdate={input => update("updates/resolve", input)}
       onRollbackUpdate={input => update("updates", input)} onCancelUpdate={requestId => update("updates/cancel", { requestId })} />
