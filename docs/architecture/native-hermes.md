@@ -1,5 +1,7 @@
 # Native Hermes connections
 
+Native remote command discovery, supported commands and approval boundaries are documented in [Personal Remote Hermes commands](remote-hermes-commands.md).
+
 ## Scope and delivery
 
 Personal remote connections belong to the signed-in user. Admin-managed shared backends and isolated managed/local runtimes remain separate. Administrators can disable personal remote access while retaining saved connections and allowing admitted turns to finish, receive prompt answers and stop. New work and new sign-ins are blocked. Cloudflare Access and a connection wizard are deferred.
@@ -9,6 +11,7 @@ This first delivery provides a native **remote dashboard workspace**. It does no
 ## Available now
 
 - Admin → Settings: **Allow personal remote Hermes connections**, off by default. Public dashboards require HTTPS. Private dashboard bases require explicit approval because requests originate from the portal server. DNS answers are validated and pinned for HTTP and WebSocket connections; metadata destinations and automatic redirects are blocked.
+- **Allow confirmed session YOLO changes** is a separate administrator gate, off by default. On verified native runtimes, owners can confirm an explicit session on/off change from `/yolo` or Approval mode. The [command documentation](remote-hermes-commands.md) describes effective/inherited bypass, shared-client effects, compatibility and no-replay boundaries. Profile/process policy changes remain unavailable.
 - Settings → Connected accounts: native username/password sign-in and dashboard session-token access. Password sign-in selects the single advertised password provider and exchanges a PKCE authorization code. Cookies remain scoped to the attempt. Passwords are not stored. Access/refresh tokens use row/owner-bound authenticated encryption and never enter UI projections or audit payloads. Sign-in verifies authenticated profile discovery before saving, and token rotation is serialized and committed before later requests can fail.
 - **Open Hermes**: profile selection, native saved conversation browsing, new chats, native history, live assistant/tool output, native usage and context inspection. Local bindings retain both stored and runtime native identities. A connection uses one server-owned dashboard socket, negotiates readiness and server-request support, sends heartbeats and reconnects with session snapshots. The browser polls projected views; no dashboard credential is sent to the browser.
 - Native attachments: images use `image.attach_bytes`, PDFs use `pdf.attach`, other files use `file.attach`. Failed staging attempts detach known staged images. Approval cards support allow-once/deny; clarification uses native question IDs; sudo, secret and vault prompts send protected values directly to their pending native request without storing them in portal transcripts. Active turns support steering, one queued message and interruption. Commands/skills are discovered from Hermes. Command results that request inference become composer prefills for an explicit send.
