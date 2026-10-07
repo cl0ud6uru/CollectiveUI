@@ -1204,6 +1204,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {
@@ -1224,43 +1230,48 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "bot_learning_revisions_learning_id_bot_learnings_id_fk": {
           "name": "bot_learning_revisions_learning_id_bot_learnings_id_fk",
           "tableFrom": "bot_learning_revisions",
+          "tableTo": "bot_learnings",
           "columnsFrom": [
             "learning_id"
           ],
-          "tableTo": "bot_learnings",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "bot_learning_revisions_source_conversation_id_conversations_id_fk": {
           "name": "bot_learning_revisions_source_conversation_id_conversations_id_fk",
           "tableFrom": "bot_learning_revisions",
+          "tableTo": "conversations",
           "columnsFrom": [
             "source_conversation_id"
           ],
-          "tableTo": "conversations",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "bot_learning_revisions_kind_check": {
+          "name": "bot_learning_revisions_kind_check",
+          "value": "\"bot_learning_revisions\".\"kind\" in ('preference', 'procedure', 'policy')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.bot_learnings": {
