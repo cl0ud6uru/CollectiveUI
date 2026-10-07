@@ -1,0 +1,64 @@
+name: Office Bot
+
+on:
+  pull_request:
+    paths:
+      - 'docker/sandbox/**'
+      - 'src/lib/agent/**'
+      - 'src/lib/bots/office-*'
+      - 'src/lib/settings.ts'
+      - 'src/app/admin/bots/**'
+      - 'src/components/admin/office-bot-installer.tsx'
+      - 'tests/**/office-*'
+      - '.github/workflows/office-bot.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docker/sandbox/**'
+      - 'src/lib/bots/office-*'
+      - 'tests/**/office-*'
+      - '.github/workflows/office-bot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  office-files:
+    name: Office Bot installation and offline file round trips
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: office-test-only
+          POSTGRES_DB: collective_office_bot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Migrate the disposable test database
+        run: npm run db:migrate
+        env:
+          DATABASE_URL: postgres://postgres:office-test-only@127.0.0.1:5432/collective_office_bot_test
+      - name: Verify installation, permissions and attachment import
+        run: npx vitest run --project integration tests/integration/office-bot.test.ts
+        env:
+          DATABASE_URL: postgres://postgres:office-test-only@127.0.0.1:5432/collective_office_bot_test
+      - name: Build the Office sandbox image
+        run: npm run sandbox:image
+      - name: Verify real documents in fresh offline workspaces
+        run: npx vitest run --project sandbox tests/sandbox/office-files.test.ts
+        env:
+          SANDBOX_DOCKER: '1'
+          SANDBOX_TEST_RUNTIME: runc
