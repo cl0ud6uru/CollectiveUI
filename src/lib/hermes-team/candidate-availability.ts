@@ -31,8 +31,9 @@ export async function teamNativeAvailability(p:Principal,botId:string,mode:TeamM
  const retained=await q.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.profileId,profile.id));
  for(const context of retained){
   const requests=await q.select({state:hermesTeamCandidateRequests.state}).from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,context.id),inArray(hermesTeamCandidateRequests.state,['reserved','running','needs_attention'])));
-  const [run]=requests.length?await q.select({status:agentRuns.status,cancelRequestedAt:agentRuns.cancelRequestedAt}).from(agentRuns).where(eq(agentRuns.id,context.runId)):[];
-  if((requests.length && (context.revokedAt || context.expiresAt.getTime()<=Date.now() || !run || run.cancelRequestedAt || !['queued','running','waiting','waiting_tasks'].includes(run.status))) || requests.some(row=>row.state==='needs_attention') || (context.workerHolder && context.revokedAt && (context.retirementState!=='confirmed' || !context.nativeStoppedAt)))return {...unavailable('Reconcile the retained native request or confirm writer shutdown before starting more work.'),needsAttention:true};
+  const [run]=requests.length || context.workerHolder?await q.select({status:agentRuns.status,cancelRequestedAt:agentRuns.cancelRequestedAt}).from(agentRuns).where(eq(agentRuns.id,context.runId)):[];
+  const inactive=context.revokedAt || context.expiresAt.getTime()<=Date.now() || !run || run.cancelRequestedAt || !['queued','running','waiting','waiting_tasks'].includes(run.status);
+  if((requests.length && inactive) || requests.some(row=>row.state==='needs_attention') || (context.workerHolder && (inactive || context.retirementState==='needs_attention') && (context.retirementState!=='confirmed' || !context.nativeStoppedAt)))return {...unavailable('Reconcile the retained native request or confirm writer shutdown before starting more work.'),needsAttention:true};
   if(requests.length)return unavailable('Finish or reconcile the current native request before starting more work.');
  }
  const personalRoute=routes.find(route=>route.id===auth.definition.modelPolicy.personalRouteId);

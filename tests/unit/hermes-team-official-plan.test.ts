@@ -68,6 +68,16 @@ describe('Distinct official personal Responses candidate',()=>{
   const fetch=vi.fn<typeof globalThis.fetch>().mockImplementation(async(_url,init)=>{expect(JSON.parse(String(init?.body)).tools).toEqual([{type:'namespace',name:'collective_native',description:'Approved local native functions',tools:body.tools}]);expect(JSON.parse(String(init?.body))).not.toHaveProperty('max_output_tokens');return stream([{type:'function_call',namespace:'collective_native',name:'memory',arguments:'{"content":"Private useful procedure"}',call_id:'synthetic-memory',id:'fc_synthetic'}]);});
   const result=await candidateModelHttp(request(grant.modelTokens.reply,body),{contextId:grant.contextId,purpose:'reply',operation:['responses']},{routes,fetch});expect(result.status).toBe(200);const text=await result.text();expect(text).toContain('Private useful procedure');expect(text).not.toContain('collective_native');expect(fetch).toHaveBeenCalledOnce();
  });
+ it.each(['terminal','expired','retirement_attention'] as const)('fences an unconfirmed %s writer even when no revoke timestamp or request exists',async(kind)=>{
+  const {chat}=await run(),grant=await issueTeamCandidateContext(alice,'run','default',routes);
+  await db.update(schema.hermesTeamCandidateContexts).set({workerHolder:'retained-worker',retirementState:kind==='retirement_attention'?'needs_attention':'pending',...(kind==='expired'?{expiresAt:new Date(Date.now()-1000)}:{})}).where(eq(schema.hermesTeamCandidateContexts.id,grant.contextId));
+  if(kind==='terminal')await db.update(schema.agentRuns).set({status:'succeeded'}).where(eq(schema.agentRuns.id,'run'));
+  expect(await teamNativeAvailability(alice,'team','member',{conversationId:chat.conversationId,routes})).toMatchObject({available:false,needsAttention:true});
+  await db.update(schema.agentRuns).set({status:'succeeded'}).where(eq(schema.agentRuns.id,'run'));
+  await db.insert(schema.agentRuns).values({id:'successor',userId:'alice',botId:'team',conversationId:chat.conversationId,messageId:'successor-message'});
+  await expect(issueTeamCandidateContext(alice,'successor','default',routes)).rejects.toMatchObject({status:409});
+  expect(await db.select().from(schema.hermesTeamCandidateContexts)).toHaveLength(1);
+ });
  it('routes the actual native auxiliary title Chat request through official Responses and converts its result',async()=>{
   await run();const grant=await issueTeamCandidateContext(alice,'run','default',routes);
   const body={model:route.model,messages:[{role:'system',content:'Generate a short session title'},{role:'user',content:'A useful procedure'}],reasoning:{enabled:false},response_format:{type:'json_schema',json_schema:{name:'session_title',strict:true,schema:{type:'object',properties:{title:{type:'string'}},required:['title'],additionalProperties:false}}}};
