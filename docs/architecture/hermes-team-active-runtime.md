@@ -31,6 +31,12 @@ deny startup before native or provider work. A paused ordinary Hermes approval s
 cannot regrant this one-time native context; that continuation remains disabled until
 its complete lifecycle has verification evidence.
 
+The broker exposes grant-bound runtime capabilities from the derived owner’s retained
+network policy. Offline containers cannot prepare or start these HTTPS gateway clients;
+the application must show connection-needed guidance. Fresh Standard Internet and
+operator-approved proxy policies use the existing per-owner network controls. This
+capability check does not claim endpoint reachability or alter network policy.
+
 Chat post-turn review captures a bounded snapshot with a separate handoff token and
 waits for durable acknowledgement. It never launches the old native daemon thread.
 After parent success and confirmed writer shutdown, a durable child run starts the

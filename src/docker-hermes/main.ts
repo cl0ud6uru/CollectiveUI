@@ -43,6 +43,10 @@ export async function listenBroker(broker: DockerBroker) {
       const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
       return json(res, 200, await broker.ensureTeam(owner, teamEnsure.parse(await body(req)), grant));
     }
+    if (req.method === 'POST' && url === '/team/runtime-capabilities') {
+      const grant = z.string().uuid().parse(req.headers['x-collective-team-grant']);
+      return json(res, 200, broker.teamRuntimeCapabilities(owner, await teamBody(req, 4 * 1024), grant));
+    }
     if(req.method==='POST' && url==='/team/prepare-candidate'){
       const grant=z.string().uuid().parse(req.headers['x-collective-team-grant']);
       return json(res,200,broker.prepareTeamCandidate(owner,await teamBody(req,96*1024),grant));

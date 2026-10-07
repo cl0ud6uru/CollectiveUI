@@ -59,6 +59,7 @@ export class DockerBroker {
   prepareTeamCandidate(actor:string,raw:unknown,grantId:string){
     const config=teamCandidateConfig.parse(raw);
     const binding=this.teamBinding(actor,config.teamBotId,config.mode,grantId);
+    this.requireTeamGatewayNetwork(binding.ownerId);
     if(binding.bindingId!==config.bindingId || config.expiresAt<=Date.now() || config.expiresAt>Date.now()+120_000)throw new LocalError(409,'Invalid native Team candidate context.');
     const prior=this.candidateConfigs.get(binding.bindingId);
     if(prior && prior.config.expiresAt>Date.now()) {
@@ -87,6 +88,7 @@ export class DockerBroker {
   startTeamCandidate(actor:string,raw:unknown,grantId:string) {
     if(!this.config.teamCandidateRuntimeEnabled)throw new LocalError(409,'Active native Team adapters are disabled.');
     const scope=teamCandidateStart.parse(raw), binding=this.teamBinding(actor,scope.teamBotId,scope.mode,grantId);
+    this.requireTeamGatewayNetwork(binding.ownerId);
     ownerId.parse(`portal-${scope.conversationId}-${scope.teamBotId}`);ownerId.parse(`portal-${scope.runId}`);
     const entry=this.candidateConfigs.get(binding.bindingId);
     if(!entry || entry.actor!==actor || entry.config.runId!==scope.runId || entry.config.contextId!==scope.contextId || scope.bindingId!==binding.bindingId)
@@ -226,6 +228,18 @@ export class DockerBroker {
     if (!grant || grant.actor !== actor || grant.teamBotId !== bot || grant.mode !== mode || grant.until <= Date.now())
       throw new LocalError(403, 'Current Team Bot authorization is required. Reopen the bot.');
     return grant;
+  }
+  /** Protected capability query. Network policy comes from the retained, derived runtime owner. */
+  teamRuntimeCapabilities(actor: string, raw: unknown, grantId: string) {
+    const scope = teamScope.parse(raw);
+    this.authorizedTeam(actor, scope.teamBotId, scope.mode, grantId);
+    const network = this.state(teamOwner(actor, scope.teamBotId, scope.mode))?.network ?? this.config.network;
+    const reason = !this.config.teamCandidateRuntimeEnabled ? 'disabled' : network === 'none' ? 'network_blocked' : 'available';
+    return { available: reason === 'available', reason, network };
+  }
+  private requireTeamGatewayNetwork(owner: string) {
+    if ((this.state(owner)?.network ?? this.config.network) === 'none')
+      throw new LocalError(409, 'This runtime is offline. Ask an administrator to enable its approved Team gateway connection.');
   }
   teamBinding(actor: string, bot: string, mode: TeamMode, grantId: string): TeamBinding {
     const grant = this.authorizedTeam(actor, bot, mode, grantId);
