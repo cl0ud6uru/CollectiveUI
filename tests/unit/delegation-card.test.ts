@@ -14,7 +14,7 @@ describe("delegation card", () => {
   it("shows the working delegate inside the card with its steps collapsed", () => {
     const html = card({ status: "working", steps: [{ tool: "web_search", status: "done" }, { tool: "fetch_url", status: "running" }] });
     expect(html).toContain('data-delegation-card="working"');
-    expect(html).toContain("Gemma 4 is working…");
+    expect(html).toContain("Reading page · 1 completed");
     expect(html).toContain("animate-spin");
     expect(html).toContain('data-bot-avatar="bot-gemma"');
     expect(html).toContain('data-activity="working"');
@@ -58,7 +58,7 @@ describe("delegation card", () => {
   it("keeps queued and error states inside the card with their current copy", () => {
     const queued = card({ status: "queued" });
     expect(queued).toContain('data-delegation-card="queued"');
-    expect(queued).toContain("Scheduled independently. This reply will continue when the task returns.");
+    expect(queued).toContain("Queued · Mac Mini");
     expect(queued).not.toContain("is working");
 
     const failed = card({ status: "error", error: "The delegated task deadline expired." });

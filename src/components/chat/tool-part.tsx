@@ -13,6 +13,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Circle,
+  Clock,
   FilePen,
   FileText,
   FolderTree,
@@ -35,6 +37,7 @@ import { isGrantable, isHermesTool } from "@/lib/agent/tool-names";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
+import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
@@ -120,21 +123,45 @@ function repliedIn(output: DelegateOutput): string | null {
 
 export function DelegationCard({ output }: { output: DelegateOutput }) {
   const [expanded, setExpanded] = useState(false);
-  const [stepsOpen, setStepsOpen] = useState(false);
   const detailsId = useId();
   const pets = useOptionalPets();
   const { visible } = usePetEnvironment();
-  useEffect(() => { if (output.taskId) window.dispatchEvent(new Event("bot-work-changed")); }, [output.taskId, output.status]);
+  const { activity, unavailable } = useTaskActivity(output.taskId, output.status);
+  const status = activity?.status ?? output.status;
+  useEffect(() => { if (output.taskId) window.dispatchEvent(new Event("bot-work-changed")); }, [output.taskId, status]);
   const botName = typeof output.bot === "string" ? output.bot.trim() : "";
-  const working = output.status === "working";
+  const working = status === "working" && !unavailable;
   const still = output.botId ? pets?.pets[output.botId]?.motion === "still" : false;
-  const steps = output.steps ?? [];
-  const statusLabel = repliedIn(output) ?? ({
+  const steps = (unavailable ? [] : activity?.steps ?? output.steps ?? []).map(s => {
+    if (["running", "preparing", "waiting"].includes(s.status ?? "") && !["queued", "working"].includes(status)) return { ...s, status: "error" };
+    if (status === "queued" && ["running", "preparing"].includes(s.status ?? "")) return { ...s, status: "waiting" };
+    return s;
+  });
+  const active = steps.filter(s => ["running", "preparing", "waiting"].includes(s.status ?? ""));
+  const current = active.find(s => s.status === "running") ?? active[0];
+  const completed = activity?.completed ?? steps.filter(s => s.status === "done").length;
+  const statusLabel = repliedIn({ ...output, status }) ?? ({
     working: "Working", queued: "Queued", done: "Completed", error: "Failed", cancelled: "Stopped", interrupted: "Interrupted",
-  } as Record<string, string>)[output.status] ?? output.status;
-  const meta = [statusLabel, output.label].filter(Boolean).join(" · ");
+  } as Record<string, string>)[status] ?? status;
+  const detailLabel = (s: { tool: string; status?: string }) => s.status === "preparing" ? `Preparing ${s.tool.replace(/_/g, " ")}` : describe(s.tool).running;
+  const activityLabel = unavailable ? "Live activity unavailable" : status === "queued" ? "Queued"
+    : working ? activity?.phase === "delegates" ? "Waiting for delegated tasks"
+      : current?.status === "waiting" || activity?.phase === "approval" ? "Waiting for approval"
+        : current ? detailLabel(current) : "Working…" : statusLabel;
+  const compactActivity = working && !!(current || activity?.phase);
+  const countSuffix = active.length > 1 ? ` · +${active.length - 1} active` : completed ? ` · ${completed} completed` : "";
+  const meta = compactActivity
+    ? `${activityLabel}${countSuffix}`
+    : [activityLabel, output.label].filter(Boolean).join(" · ");
+  const waitingMessage = unavailable ? "Live access to this assignment is unavailable. Open task to view its saved history."
+    : status === "queued" ? "Waiting to start. This reply will continue when the task returns."
+      : working ? activity?.phase === "delegates" ? "Waiting for delegated tasks to return."
+        : current?.status === "waiting" || activity?.phase === "approval" ? "Waiting for approval before the next tool can run."
+          : "The agent is working. Tool steps will appear here as they start."
+        : status === "done" ? "Task completed. Open task to read the reply." : "No tool steps were recorded for this task.";
+  const recent = steps.slice(-3);
   return (
-    <div data-delegation-card={output.status} className="mt-2 flex flex-col gap-3 rounded-[14px] border border-border bg-surface/50 p-4">
+    <div data-delegation-card={status} className="mt-2 flex flex-col gap-3 rounded-[14px] border border-border bg-surface/50 p-4">
       <div className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-2 sm:gap-3">
         <span className={cn("inline-flex shrink-0", !working && visible && !still && "delegate-bob")}>
           {output.botId ? (
@@ -150,47 +177,50 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
           aria-label={`${expanded ? "Collapse" : "Expand"} ${botName || "delegated task"} response`}
           aria-expanded={expanded}
           aria-controls={detailsId}
-          aria-describedby={meta ? `${detailsId}-status` : undefined}
+          aria-describedby={`${detailsId}-status`}
           onClick={() => setExpanded((value) => !value)}
           className="col-span-2 flex min-h-11 min-w-0 items-center gap-1.5 rounded-lg text-left hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:col-span-1"
         >
-          <span className="flex min-w-0 grow flex-col gap-px">
-            <span className="truncate text-sm font-semibold text-fg">{botName || "Delegated task"}</span>
-            {meta && <span id={`${detailsId}-status`} className="truncate text-xs text-muted">{meta}</span>}
+          <span className="flex min-w-0 grow flex-col gap-1">
+            <span className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-fg">
+              {working && <Circle aria-hidden="true" className="h-2 w-2 shrink-0 fill-current text-success" />}
+              <span className="truncate">{botName || "Delegated task"}</span>
+            </span>
+            <span id={`${detailsId}-status`} className="flex min-w-0 items-center gap-1 text-xs text-muted" title={meta}>
+              {working && !current?.status?.includes("waiting") && !activity?.phase ? <Loader2 aria-hidden="true" className="h-3 w-3 shrink-0 animate-spin motion-reduce:animate-none" />
+                : (status === "queued" || working) && <Clock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+              <span className="truncate" role="status" aria-label={meta}>{compactActivity ? <>{activityLabel}<span className="hidden text-subtle sm:inline">{countSuffix}</span></> : meta}</span>
+            </span>
           </span>
           {expanded ? <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" /> : <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 text-muted" />}
         </button>
         {output.conversationId && output.taskId && (
-          <Link href={`/c/${encodeURIComponent(output.conversationId)}`} className="col-start-2 row-start-2 w-fit rounded-lg border border-border px-3 py-2 text-[13px] leading-none text-fg hover:bg-hover sm:col-start-3 sm:row-start-1">
+          <Link href={`/c/${encodeURIComponent(output.conversationId)}`} className="col-start-2 row-start-2 w-fit rounded-lg border border-border px-3 py-2 text-[13px] leading-none text-fg hover:bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:col-start-3 sm:row-start-1">
             Open task
           </Link>
         )}
       </div>
-      {working && (
-        <div className="flex items-center gap-2 text-muted">
-          <Loader2 className="h-4 w-4 animate-spin" /> {botName || "The delegate"} is working…
-        </div>
-      )}
-      {output.status === "queued" && <div className="text-muted">Scheduled independently. This reply will continue when the task returns.</div>}
-      {output.error && <div className="text-danger">{output.error}</div>}
-      <div id={detailsId} hidden={!expanded} className="space-y-3">
-        {expanded && output.status === "done" && output.answer && <Markdown text={output.answer} className="markdown-bubble text-fg" />}
-        {expanded && steps.length > 0 && (
-          <div className="text-xs text-muted">
-            <button type="button" aria-expanded={stepsOpen} onClick={() => setStepsOpen((o) => !o)} className="flex items-center gap-1 hover:text-fg">
-              {stepsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />} {steps.length} {steps.length === 1 ? "step" : "steps"}
-            </button>
-            {stepsOpen && (
-              <div className="mt-2 space-y-1">
-                {steps.map((s, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    {s.status === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : s.status === "error" || s.status === "denied" ? <X className="h-3 w-3 text-danger" /> : <Check className="h-3 w-3" />} {s.status === "running" ? describe(s.tool).running : s.status === "error" || s.status === "denied" ? `${s.tool}: ${s.status}` : describe(s.tool).done}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+      {(output.error || status === "error") && <div className="text-danger">{output.error ?? "The delegated task failed. Open task for details."}</div>}
+      <div id={detailsId} hidden={!expanded} className="space-y-3 border-t border-border pt-3">
+        {expanded && <>
+          {recent.length > 0 && <div className="space-y-2 text-xs text-muted" aria-label="Recent tool steps">
+            {recent.map((s, i) => {
+              const running = s.status === "running" || s.status === "preparing";
+              const failed = s.status === "error" || s.status === "denied";
+              return <div key={i} className="flex min-w-0 items-center gap-2">
+                {running ? <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+                  : s.status === "waiting" ? <Clock aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                    : failed ? <X aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-danger" /> : <Check aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+                <span className={cn("min-w-0 grow truncate", running && "text-fg")} title={detailLabel(s)}>{detailLabel(s)}</span>
+                <span className="shrink-0 text-subtle">{s.status === "preparing" ? "Preparing" : running ? "Running" : s.status === "waiting" ? "Waiting" : s.status === "denied" ? "Denied" : failed ? "Failed" : "Done"}</span>
+              </div>;
+            })}
+            {steps.length > 3 && <p className="text-subtle">Showing 3 recent steps. Open task for the full history.</p>}
+          </div>}
+          {(!steps.length || status === "queued" || current?.status === "waiting" || activity?.phase || unavailable) && <p className="text-xs text-muted">{waitingMessage}</p>}
+          {status === "done" && output.answer ? <Markdown text={output.answer} className="markdown-bubble text-fg" />
+            : status === "done" && steps.length > 0 && <p className="text-xs text-muted">{waitingMessage}</p>}
+        </>}
       </div>
     </div>
   );
