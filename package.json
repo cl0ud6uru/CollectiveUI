@@ -21,6 +21,7 @@
     "sandboxd": "node src/sandboxd/index.ts",
     "sandboxd:dev": "node --watch --env-file=.env.sandboxd src/sandboxd/index.ts",
     "sandbox:image": "scripts/build-sandbox-image.sh",
+    "workspace:check": "node scripts/check-workspace-host.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:integration": "vitest run --project integration",

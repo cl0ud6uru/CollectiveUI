@@ -3,9 +3,9 @@
 #   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml up -d --build
 # (or put COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml in .env). Before the first start:
 #   scripts/build-sandbox-image.sh                  # the workspace image (docker/sandbox)
-#   DOCKER_GID=$(getent group docker | cut -d: -f3)  # in .env: the host's docker group id (a number)
+#   DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)  # in .env: the socket's actual group id (a number)
 #   SANDBOXD_SECRET=$(openssl rand -base64 32)       # in .env: shared by web, worker and sandboxd
-# Host setup (gVisor, userns-remap) is in the README under "Workspaces".
+# Host setup (gVisor, userns-remap) is in docs/operations.md under "Workspaces".
 services:
   sandboxd:
     build: { context: ., target: sandboxd }
@@ -28,7 +28,7 @@ services:
       SANDBOXD_MAX_EXEC_SECONDS: ${SANDBOXD_MAX_EXEC_SECONDS:-}
     # Access to the socket is root-equivalent on this host: keep sandboxd small, unprivileged and unreachable
     # from anything but web and worker. (A :ro mount wouldn't limit the API, so it isn't used.)
-    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env (getent group docker | cut -d: -f3)}"]
+    group_add: ["${DOCKER_GID:?set DOCKER_GID in .env (stat -c '%g' /var/run/docker.sock)}"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     read_only: true

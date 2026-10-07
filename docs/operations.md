@@ -120,6 +120,12 @@ Nothing secret enters a workspace: no model keys, ChatGPT sign-ins or portal tok
 
 **Host setup (once):**
 
+**Easy setup:** open **Admin → Workspaces → Easy setup** for an operator checklist and copyable commands. **Run setup check** checks the portal's configured connection, authenticated daemon response, Docker/image readiness and the saved isolation policy. It does not install software, change settings, grant access or run a command in a person's workspace. Health checks can run sandboxd's existing temporary gVisor probe; passing prerequisites does not establish worker connectivity, storage monitoring or a successful bot command/file test.
+
+For the stock Linux Compose add-on, run `npm run workspace:check` from the checkout on the Docker host (or `npm run workspace:check -- --env-file PATH`). This read-only preflight reports missing secrets by name without showing values, socket-group configuration, Docker availability, runsc registration, the configured image and Compose validation. It exits nonzero while prerequisites are missing and never installs, generates secrets, edits files or restarts services. For custom Compose deployments use the commands below with the actual files, env-file and project options; this helper validates only the stock files.
+
+The supported installer path is the existing Compose add-on below. Host runtime installation, secret generation and starting/recreating services remain deliberate operator steps. The portal receives no Docker socket. Workspaces and standard isolation still default off; changing workspaces from off to on now requires an explicit audience confirmation and a fresh server readiness check. You can save selected groups/people while access is off. All admins are included in selected access; empty selections therefore mean admins only. Recheck, enable a small trusted audience, then verify approval and command/file behavior using a native bot before expanding access.
+
 1. Install gVisor and register it with Docker. Prefer the [official apt package](https://gvisor.dev/docs/user_guide/install/); for a manual installation, extract the **entire** verified release:
    ```bash
    (
@@ -142,7 +148,7 @@ Nothing secret enters a workspace: no model keys, ChatGPT sign-ins or portal tok
 
    Keep the runtime's default flags: sandboxd won't use gVisor configured with `--overlay2=all:…` (workspace files would live in memory and be lost), and warns about network, ptrace or debug flags.
 2. Build the workspace image: `scripts/build-sandbox-image.sh` (tag `ai-portal-sandbox:p5`; set `BASE_IMAGE` to use a registry mirror with the same digest).
-3. Run `openssl rand -base64 32` and `getent group docker | cut -d: -f3` in your shell. Paste their outputs into `.env` as `SANDBOXD_SECRET` and `DOCKER_GID`; `.env` does not execute shell commands. Keep the secret in restricted operator files and share it only with web, worker and sandboxd.
+3. Run `openssl rand -base64 32` and `stat -c '%g' /var/run/docker.sock` in your shell. Paste their outputs into `.env` as `SANDBOXD_SECRET` and `DOCKER_GID`; `.env` does not execute shell commands. Keep the secret in restricted operator files and share it only with web, worker and sandboxd.
 4. Review the merged configuration before starting the add-on:
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.sandbox.yml config --quiet
@@ -151,7 +157,7 @@ Nothing secret enters a workspace: no model keys, ChatGPT sign-ins or portal tok
    docker compose -f docker-compose.yml -f docker-compose.sandbox.yml exec sandboxd node src/sandboxd/index.ts --check
    ```
    For custom production files, substitute their actual filenames and env-file/project options in every command. Compose [merges network mappings by name](https://docs.docker.com/reference/compose-file/merge/); the add-on does not generally replace existing network lists. Inspect the resulting web/worker networks and preserve their ingress and database connections. Only web, worker and sandboxd should join the internal `control` network. sandboxd should have no published port, app `env_file`, app secrets, database/upload mounts or public network. Docker socket access is **host-root-equivalent**, even with a non-root user, dropped capabilities and a read-only filesystem; protect the daemon and its control secret accordingly.
-5. **Admin → Workspaces** (`/admin/sandboxes`): check the health banner, turn workspaces on and choose who gets one. Selected access includes **all admins** as well as the selected users/groups. Then add the **Workspace** tools to an eligible native bot; external Hermes tools use a separate execution path.
+5. **Admin → Workspaces** (`/admin/sandboxes`): run the setup check, choose who gets access, turn workspaces on, confirm the audience and save. Selected access includes **all admins** as well as the selected users/groups. Then add the **Workspace** tools to an eligible native bot; external Hermes tools use a separate execution path. Ask the bot to run `printf 'workspace ready\n'`, approve the command, and verify its output plus a file write/read. No paid model or bot test runs as part of setup checks.
 
 **Limits and rollout:**
 
@@ -176,7 +182,7 @@ docker compose -f docker-compose.yml -f docker-compose.sandbox.yml exec sandboxd
 
 For externally built images, build `docker build --target sandboxd -t <new-daemon-tag> .`, update the deployment's sandboxd image tag, then recreate it. Confirm the running container's image ID matches the new build and that authenticated health works from web/worker. Restart recovery retains workspace volumes and counts existing containers; it cannot resume an in-memory command stream. Do not delete volumes to update code. Rebuild the workspace image separately when `docker/sandbox/` changes, then verify stop/start persistence and command timeout/isolation behavior.
 
-**Without gVisor** (e.g. Docker Desktop): set `SANDBOXD_RUNTIME=auto` (or `runc`) and, in **Admin → Workspaces**, allow standard isolation; that needs a typed confirmation, recorded with your name. Containers then share the host kernel, so a kernel bug could let a command escape. If you run this way on a shared host, consider Docker's [userns-remap](https://docs.docker.com/engine/security/userns-remap/), which maps container uids to unprivileged host uids (it applies to the whole daemon, and existing images and volumes have to be recreated). Rootless Docker also works, on cgroup v2 hosts with systemd, where it can still enforce limits.
+**Without gVisor** (e.g. Docker Desktop): set `SANDBOXD_RUNTIME=auto` (or `runc`) and, in **Admin → Workspaces**, allow standard isolation; that needs an explicit acknowledgement, recorded with your name. Containers then share the host kernel, so a kernel bug could let a command escape. If you run this way on a shared host, consider Docker's [userns-remap](https://docs.docker.com/engine/security/userns-remap/), which maps container uids to unprivileged host uids (it applies to the whole daemon, and existing images and volumes have to be recreated). Rootless Docker also works, on cgroup v2 hosts with systemd, where it can still enforce limits.
 
 **Local development:** build the image, then run sandboxd from the repo with its own env file (it never reads `.env.local`):
 
