@@ -397,7 +397,47 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
   it('rejects a source-hash mismatch and sibling native gateways before model transport; Stop releases the runtime lock', async () => {
     const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes-team-native-lock-'));
     let requests = 0;
-    const server = createServer((_req, res) => { requests++; res.writeHead(403); res.end(); });
+    let requestErrors = 0;
+    const metadata: Array<{ path: string; method: string; rpcMethod: string | null; jsonRpc: boolean; bytes: number; expectedToolGrant: boolean; denied: boolean }> = [];
+    // Native entry starts asynchronous MCP discovery before gateway.ready: the
+    // pinned transport probes HEAD, then attempts initialize after a 403. This
+    // server always denies requests and has no model or company connector handler.
+    // Keep diagnostics bounded and never capture bodies or opaque grant values.
+    const server = createServer((req, res) => {
+      requests++;
+      if (requests > 16) { res.writeHead(403); res.end(); return; }
+      const record = { path: (req.url ?? '').slice(0, 256), method: (req.method ?? '').slice(0, 16), rpcMethod: null as string | null,
+        jsonRpc: false, bytes: 0, expectedToolGrant: req.headers.authorization === `Bearer ${'e'.repeat(64)}`, denied: false };
+      metadata.push(record);
+      res.on('finish', () => { record.denied = true; });
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          record.bytes += chunk.length;
+          if (record.bytes > 4096) throw new Error('Bounded synthetic request exceeded');
+          chunks.push(Buffer.from(chunk));
+        }
+        if (record.bytes) {
+          const body = JSON.parse(Buffer.concat(chunks).toString());
+          record.rpcMethod = typeof body.method === 'string' ? body.method.slice(0, 64) : '<invalid>';
+          record.jsonRpc = body.jsonrpc === '2.0';
+        }
+        res.writeHead(403); res.end();
+      })().catch(() => { requestErrors++; res.writeHead(403); res.end(); });
+    });
+    const assertDeniedDiscovery = async (offset: number) => {
+      await until(() => metadata.slice(offset), records => records.some(record => record.rpcMethod === 'initialize' && record.denied), 15_000);
+      expect(requestErrors).toBe(0);
+      expect(requests).toBe(offset + 2);
+      expect(metadata.slice(offset)).toEqual([
+        { path: '/mcp', method: 'HEAD', rpcMethod: null, jsonRpc: false, bytes: 0, expectedToolGrant: true, denied: true },
+        { path: '/mcp', method: 'POST', rpcMethod: 'initialize', jsonRpc: true, bytes: expect.any(Number), expectedToolGrant: true, denied: true },
+      ]);
+      expect(metadata[offset + 1].bytes).toBeGreaterThan(0);
+      expect(metadata[offset + 1].bytes).toBeLessThanOrEqual(4096);
+      // Includes all four model-purpose routes, tools/call and unknown endpoints.
+      expect(metadata.filter(record => record.path !== '/mcp' || (record.method !== 'HEAD' && record.rpcMethod !== 'initialize'))).toEqual([]);
+    };
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const port = (server.address() as { port: number }).port;
     const driver = new PinnedSourceRuntimeDriver(temp, SOURCE!, path.resolve(PYTHON), port);
@@ -431,17 +471,25 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
         accountHome: path.join(home, 'home'), workDir: path.join(home, 'workspace'), stateDir, socketPath: path.join(temp, 'unused.sock'), label: 'Synthetic native lock' },
         () => {}, () => {}, () => {}, driver.candidateTransport('member', first.name, first.identity, config));
       await rpc.start().catch(error => { throw new Error(`${String(error)}; synthetic native stderr: ${driver.stderr}`); });
+      await assertDeniedDiscovery(0);
+      const beforeSiblings = requests;
       expect(await stopped(start('gateway', second.name, second.identity, candidateBootstrap(config)))).toContain('Resource temporarily unavailable');
       const personal = (await driver.profiles('member')).find(profile => profile.name === 'default')!;
       expect(await stopped(start('personal-gateway', personal.name, personal.identity))).toContain('Resource temporarily unavailable');
-      await rpc.call('ping'); expect(requests).toBe(0);
+      await rpc.call('ping'); expect(requests).toBe(beforeSiblings);
+      await assertDeniedDiscovery(0);
       await rpc.stop(); expect(await driver.running('member')).toBe(false);
+      expect(requests).toBe(beforeSiblings);
       await driver.reopen('member');
       const reopened = driver.candidateTransport('member', second.name, second.identity, config);
       const next = new NativeRpc({ trust: 'single-user-exclusive-profile', source: SOURCE!, python: path.resolve(PYTHON), profileHome: driver.home('member', second.name),
         accountHome: path.join(home, 'home'), workDir: path.join(home, 'workspace'), stateDir: path.join(temp, 'next-state'), socketPath: path.join(temp, 'unused.sock'), label: 'Synthetic second native lock' },
         () => {}, () => {}, () => {}, reopened);
-      rpc = next; await rpc.start(); await rpc.call('ping'); expect(requests).toBe(0);
+      rpc = next; await rpc.start(); await rpc.call('ping');
+      await assertDeniedDiscovery(beforeSiblings);
+      await rpc.stop(); expect(await driver.running('member')).toBe(false);
+      expect(requests).toBe(beforeSiblings + 2);
+      expect(requestErrors).toBe(0);
     } finally {
       await rpc?.stop(); await driver.close();
       for (const child of rawChildren) if (child.exitCode === null && child.signalCode === null && child.pid) process.kill(-child.pid, 'SIGKILL');
