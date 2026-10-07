@@ -16,7 +16,7 @@ const bundle=await build({entryPoints:[entry],write:false,bundle:true,platform:'
 const css=await postcss([tailwind({base:root})]).process(await readFile(path.join(root,'src/app/globals.css'),'utf8'),{from:path.join(root,'src/app/globals.css')});
 const model=(mode='member',policy='admin_default_personal_allowed')=>({mode,modelChoice:'default',definitionVersion:7,modelPolicyMode:policy,personalAllowed:policy!=='admin_provided',personalRequired:policy==='personal_required',modelAccessAvailable:false,modelAccessReason:'Model access is unavailable until your admin verifies a supported connection.',personalConnection:{state:'unavailable',message:'Personal model connection is unavailable in this build.'},connectAvailable:false,connectReason:'Your admin needs to verify ChatGPT setup before it is available.'});
 const models={'member-one':model(),'admin-one':model('admin'),'server-member':model(),'server-admin':model('admin')};
-let initial=model(),holdReadId='',releaseRead,holdPut=false,releasePut,holdOpen=false,releaseOpen,putFailure=0,commitFailure=false,readFailure=0;
+let initial=model(),holdReadId='',releaseRead,holdPut=false,releasePut,holdOpen=false,releaseOpen,putFailure=0,commitFailure=false,readFailure=0,statusFailure=0;
 const requests=[];
 const server=createServer(async(req,res)=>{
  if(req.url==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(bundle.outputFiles[0].contents);return;}
@@ -31,6 +31,7 @@ const server=createServer(async(req,res)=>{
    if(holdReadId===id){holdReadId='';await new Promise(resolve=>{releaseRead=resolve;});}
    if(readFailure){res.statusCode=readFailure;res.end(JSON.stringify({error:'This private model context is no longer available.'}));}else res.end(body);return;
   }
+  if(statusFailure){res.statusCode=statusFailure;res.end(JSON.stringify({error:'Team status is temporarily unavailable.'}));return;}
   const row=models[url.searchParams.get('conversationId')]??initial;
   res.end(JSON.stringify({enabled:true,mode:row.mode,canMaintain:true,state:'connection_needed',installedRevision:0,publishedRevision:0,conflictCount:0,modelAccessAvailable:false,modelAccessReason:row.modelAccessReason,modelPolicyMode:row.modelPolicyMode,personalAllowed:row.personalAllowed,personalRequired:row.personalRequired}));return;
  }
@@ -70,6 +71,21 @@ try{
  await choose('personal');models['member-one'].definitionVersion=8;await save.click();await expect(panel.getByRole('alert')).toHaveText('The model choice or Team policy changed. Reload before saving.');await expect(choice).toHaveCount(0);
  await refresh.click();await expect(choice).toContainText('Admin-provided model');await choose('personal');putFailure=409;await save.click();await expect(panel.getByRole('alert')).toHaveText('Finish active work before changing the model connection.');await expect(choice).toHaveCount(0);putFailure=0;await refresh.click();await expect(choice).toBeVisible();
 
+ // A parent status outage unmounts model controls. Its busy claim must be released on recovery.
+ holdPut=true;releasePut=undefined;await choose('personal');await save.click();await expect.poll(()=>typeof releasePut).toBe('function');const outagePut=releasePut;
+ statusFailure=503;await expect(page.getByRole('region',{name:'Hermes Team Bot status'}).getByRole('alert')).toHaveText('Team status is temporarily unavailable.',{timeout:7000});
+ const outageResponse=page.waitForResponse(response=>response.request().method()==='PUT'&&response.url().endsWith('/member-one/team/model'));outagePut();await (await outageResponse).finished();holdPut=false;
+ statusFailure=0;await page.getByRole('button',{name:'Try again',exact:true}).click();await expect(choice).toContainText('My ChatGPT');await expect(mode).toBeEnabled();
+
+ // An older unmounted save finishing after a newer same-context claim cannot release that newer claim.
+ holdPut=true;releasePut=undefined;await choose('default');await save.click();await expect.poll(()=>typeof releasePut).toBe('function');const abandonedPut=releasePut;
+ statusFailure=503;await expect(page.getByRole('region',{name:'Hermes Team Bot status'}).getByRole('alert')).toHaveText('Team status is temporarily unavailable.',{timeout:7000});
+ statusFailure=0;await page.getByRole('button',{name:'Try again',exact:true}).click();await expect(choice).toContainText('My ChatGPT');await expect(mode).toBeEnabled();
+ releasePut=undefined;await choose('default');await save.click();await expect.poll(()=>typeof releasePut).toBe('function');const currentPut=releasePut;await expect(mode).toBeDisabled();
+ const abandonedResponse=page.waitForResponse(response=>response.request().method()==='PUT'&&response.url().endsWith('/member-one/team/model'));abandonedPut();await (await abandonedResponse).finished();
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));await expect(mode).toBeDisabled();await expect(panel.getByRole('button',{name:'Saving model choice…'})).toBeDisabled();
+ currentPut();holdPut=false;await expect(panel.getByRole('alert')).toHaveText('The model choice or Team policy changed. Reload before saving.');await expect(mode).toBeEnabled();await refresh.click();await expect(choice).toContainText('Admin-provided model');
+
  // Even an in-flight write for the old private conversation cannot navigate or change Admin mode.
  holdPut=true;releasePut=undefined;await choose('personal');await save.click();await expect.poll(()=>typeof releasePut).toBe('function');const oldPut=releasePut;
  await page.evaluate(()=>{window.fixtureNavigation=undefined;window.fixtureContext({botId:'team',conversationId:'admin-one',started:true,busy:false});});
@@ -96,5 +112,5 @@ try{
  await page.evaluate(()=>window.fixtureContext({botId:'team',conversationId:'admin-one',started:true,busy:false}));
  for(const status of [401,403,404]){readFailure=status;await refresh.click();await expect(panel.getByRole('alert')).toHaveText('This private model context is no longer available.');await expect(choice).toHaveCount(0);readFailure=0;await refresh.click();await expect(choice).toBeVisible();}
  await expect(panel.getByRole('textbox')).toHaveCount(0);expect(requests.filter(req=>req.method==='PUT').every(req=>Object.keys(req.body).sort().join(',')==='expectedChoice,expectedDefinitionVersion,modelChoice')).toBe(true);expect(errors).toEqual([]);
- console.log('PASS Team model policy UI: fixed/admin/required policies, optional private CAS choice in both modes, same-profile active guard, uncertain response recovery, stale policy refresh, server-created initial context, no temporary IDs, old mode response/write discard, disabled unverified connect/no credential inputs, 320–1280px actual CSS; synthetic HTTP only');
+ console.log('PASS Team model policy UI: fixed/admin/required policies, optional private CAS choice in both modes, same-profile active guard, uncertain response recovery, stale policy refresh, same-context status outage recovery and exact busy claim release ordering, server-created initial context, no temporary IDs, old mode response/write discard, disabled unverified connect/no credential inputs, 320–1280px actual CSS; synthetic HTTP only');
 }finally{if(releaseRead)releaseRead();if(releasePut)releasePut();if(releaseOpen)releaseOpen();await browser.close();server.close();await rm(dir,{recursive:true,force:true});}

@@ -43,7 +43,7 @@ export function HermesTeamModelAccess(props: {
   onPrepareConversation: (mode: "member" | "admin") => Promise<string>;
   onNavigate: (conversationId: string) => void;
   onChanged: () => void;
-  onBusyChange: (pending: boolean) => void;
+  onBusyChange: (operationId: string, pending: boolean) => void;
   /** No public authentication action is installed until its account-specific method is verified. */
   onConnect?: () => Promise<void>;
 }) {
@@ -55,6 +55,7 @@ function ModelAccess({ conversationId, mode, started, busy, summary, onPrepareCo
   const [error, setError] = useState(""), [notice, setNotice] = useState(""), [pending, setPending] = useState(false), [uncertain, setUncertain] = useState(false);
   const [draft, setDraft] = useState<{ snapshot: string; choice: Choice } | null>(null);
   const held = useRef(false), epoch = useRef(0), alive = useRef(true), preparedId = useRef<string | null>(null);
+  const busyClaim = useRef<{ id: string; release: () => void } | null>(null);
   const base = (id: string) => `/api/conversations/${encodeURIComponent(id)}/team/model`;
   const snapshot = view ? `${view.definitionVersion}:${view.modelChoice}` : "new";
   const choice = draft?.snapshot === snapshot ? draft.choice : view?.modelChoice ?? "default";
@@ -68,7 +69,20 @@ function ModelAccess({ conversationId, mode, started, busy, summary, onPrepareCo
     if (!response.ok) throw Object.assign(new Error(result.error ?? "Your model settings could not be checked."), { status: response.status });
     return confirmedView(result);
   }
-  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  function claimBusy() {
+    const id = crypto.randomUUID();
+    const claim = { id, release: () => onBusyChange(id, false) };
+    busyClaim.current = claim; onBusyChange(id, true);
+    return claim;
+  }
+  function releaseBusy(claim: NonNullable<typeof busyClaim.current>) {
+    if (busyClaim.current?.id === claim.id) busyClaim.current = null;
+    claim.release();
+  }
+  useEffect(() => { alive.current = true; return () => {
+    alive.current = false;
+    busyClaim.current?.release(); busyClaim.current = null;
+  }; }, []);
   useEffect(() => {
     if (!summary.modelPolicyMode) return;
     const candidate = started ? conversationId : preparedId.current;
@@ -94,7 +108,7 @@ function ModelAccess({ conversationId, mode, started, busy, summary, onPrepareCo
   async function save(target?: Choice) {
     if (held.current || busy || uncertain || !policy || started && !view) return;
     const desired = target ?? choice;
-    held.current = true; epoch.current++; setPending(true); setError(""); setNotice(""); onBusyChange(true);
+    held.current = true; epoch.current++; setPending(true); setError(""); setNotice(""); const claim = claimBusy();
     try {
       const id = started ? conversationId : preparedId.current ?? await onPrepareConversation(mode);
       if (!alive.current) return;
@@ -116,14 +130,14 @@ function ModelAccess({ conversationId, mode, started, busy, summary, onPrepareCo
       if (!started) onNavigate(id);
     } catch (err) {
       if (alive.current) { epoch.current++; setView(null); setUncertain(true); setError(err instanceof Error ? err.message : "Your model choice was not confirmed. Refresh before trying again."); }
-    } finally { held.current = false; if (alive.current) { setPending(false); onBusyChange(false); } }
+    } finally { held.current = false; releaseBusy(claim); if (alive.current) setPending(false); }
   }
   async function connect() {
     if (held.current || busy || !view?.connectAvailable || !onConnect) return;
-    held.current = true; epoch.current++; setPending(true); onBusyChange(true); setError("");
+    held.current = true; epoch.current++; setPending(true); const claim = claimBusy(); setError("");
     try { await onConnect(); if (alive.current) { setView(null); setAttempt(value => value + 1); } }
     catch (err) { if (alive.current) setError(err instanceof Error ? err.message : "Your connection setup was not confirmed."); }
-    finally { held.current = false; if (alive.current) { epoch.current++; setPending(false); onBusyChange(false); } }
+    finally { held.current = false; releaseBusy(claim); if (alive.current) { epoch.current++; setPending(false); } }
   }
   const personal = personalAllowed && (personalRequired || choice === "personal");
   const needsDefault = policy === "admin_provided" && view?.modelChoice === "personal";

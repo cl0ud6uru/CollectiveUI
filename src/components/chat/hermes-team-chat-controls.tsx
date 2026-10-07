@@ -24,7 +24,7 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
   const [updateError, setUpdateError] = useState<{ scope: string; message: string } | null>(null);
   const automaticAttempts = useRef(new Set<string>());
   const [attempt, setAttempt] = useState(0);
-  const [modelOperation, setModelOperation] = useState<{ scope: string; pending: boolean } | null>(null);
+  const [modelOperation, setModelOperation] = useState<{ scope: string; operationId: string } | null>(null);
   const scope = `${botId}:${started ? conversationId : "new"}`;
   const base = `/api/bots/${encodeURIComponent(botId)}/team`;
   async function publicationRequest(path: string, input?: unknown) {
@@ -130,10 +130,11 @@ export function HermesTeamChatControls({ botId, conversationId, started, busy }:
   if (view) return <>
     {view.enabled && <HermesTeamModelAccess botId={botId} conversationId={conversationId} mode={view.mode} started={started} busy={busy} summary={view}
       onPrepareConversation={prepareConversation} onNavigate={id => router.push(`/c/${encodeURIComponent(id)}`)} onChanged={() => setAttempt(value => value + 1)}
-      onBusyChange={pending => setModelOperation({ scope: `${scope}:${view.mode}`, pending })} />}
+      onBusyChange={(operationId, pending) => setModelOperation(current => pending ? { scope: `${scope}:${view.mode}`, operationId }
+        : current?.scope === `${scope}:${view.mode}` && current.operationId === operationId ? null : current)} />}
     {view.enabled && <HermesTeamMemberConnections botId={botId} contextKey={`${scope}:${view.mode}`} />}
     <HermesTeamCandidateApprovals key={scope} conversationId={conversationId} active={started && busy && view.enabled && view.state === "ready" && view.modelAccessAvailable === true} />
-    <HermesTeamControls view={view} busy={busy || modelOperation?.scope === `${scope}:${view.mode}` && modelOperation.pending} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
+    <HermesTeamControls view={view} busy={busy || modelOperation?.scope === `${scope}:${view.mode}`} onOpenMode={openMode} onPrepareCapture={prepareCapture} onCapture={capture} onPublish={publish}
       onLoadRollout={() => publicationRequest("publish") as Promise<HermesTeamRolloutStatus>} onLoadRevisions={loadRevisions} onCaptureRollback={captureRollback}
       onLoadUpdates={loadUpdates} onApplyUpdate={input => update("updates", input)} onResolveUpdate={input => update("updates/resolve", input)}
       onRollbackUpdate={input => update("updates", input)} onCancelUpdate={requestId => update("updates/cancel", { requestId })} />
