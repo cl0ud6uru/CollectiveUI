@@ -109,7 +109,7 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     """
     required = ("run_agent.py", "agent/agent_runtime_helpers.py", "agent/agent_init.py", "agent/auxiliary_client.py",
                 "agent/background_review.py", "tools/delegate_tool.py", "tools/delegate_tool_config.py", "hermes_cli/runtime_provider.py",
-                "tools/mcp_tool_config.py", "tools/mcp_tool.py", "tools/mcp_tool_transport.py", "hermes_cli/config.py",
+                "tools/mcp_tool_config.py", "tools/mcp_tool.py", "tools/mcp_tool_transport.py", "hermes_cli/config.py", "hermes_cli/mcp_startup.py",
                 "tui_gateway/server.py", "tui_gateway/rpc_dispatch.py", "tui_gateway/method_ctx.py", "hermes_cli/backend_retirement.py", "agent/conversation_loop.py")
     source = Path(source)
     if not expected_sources or any(file not in expected_sources or hashlib.sha256((source / file).read_bytes()).hexdigest() != expected_sources[file] for file in required):
@@ -118,7 +118,7 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     import run_agent
     from agent import auxiliary_client, background_review
     from tools import delegate_tool, delegate_tool_config, mcp_tool_config
-    from hermes_cli import runtime_provider, config as native_config
+    from hermes_cli import runtime_provider, config as native_config, mcp_startup
     if getattr(run_agent.AIAgent, "_collective_team_candidate", False):
         raise RuntimeError("A native Team context is already installed in this process")
     learning = config.get("runPurpose", "chat") == "learning"
@@ -266,4 +266,11 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     if not hasattr(mcp_tool_config, "_load_mcp_config"):
         raise RuntimeError("Unsupported native MCP configuration hook")
     mcp_tool_config._load_mcp_config = lambda: {} if learning else {"collective_team": clients.mcp_configuration()}
+    # The pin probes raw on-disk config before starting discovery. Blank Team profiles
+    # deliberately have no MCP settings there. Override only this presence gate;
+    # native discovery/registration still consumes the fixed accessor above. Never
+    # inject the opaque tool grant into read_raw_config(), whose callers may save it.
+    if not hasattr(mcp_startup, "_has_configured_mcp_servers"):
+        raise RuntimeError("Unsupported native MCP discovery hook")
+    mcp_startup._has_configured_mcp_servers = lambda: not learning
     return TeamAgent

@@ -80,6 +80,9 @@ else:
 TeamAgent = bridge.install_candidate_bootstrap(payload, allow_synthetic_loopback=True)
 from tools import mcp_tool_config
 assert mcp_tool_config._load_mcp_config() == {"collective_team": clients.mcp_configuration()}
+from hermes_cli import config as native_config, mcp_startup
+assert mcp_startup._has_configured_mcp_servers() is True
+assert not native_config.read_raw_config().get("mcp_servers")
 asyncio.run(native_mcp())
 parent = TeamAgent(model="forbidden-model", provider="anthropic", api_key="forbidden-provider-token",
                    base_url="https://forbidden.test.invalid", enabled_toolsets=["memory", "skills"], quiet_mode=True,
