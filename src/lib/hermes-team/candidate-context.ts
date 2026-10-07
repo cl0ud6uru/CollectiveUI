@@ -76,7 +76,7 @@ export async function issueTeamCandidateContext(p: Principal, runId: string, cho
       const [priorRun] = await tx.select().from(agentRuns).where(eq(agentRuns.id, prior.runId));
       const unresolved = await tx.select({ id: hermesTeamCandidateRequests.id }).from(hermesTeamCandidateRequests)
         .where(and(eq(hermesTeamCandidateRequests.contextId, prior.id), inArray(hermesTeamCandidateRequests.state, ['reserved','running','needs_attention'])));
-      if(prior.revokedAt){if(unresolved.length)throw new HttpError(409,'Reconcile the retired native request before issuing another profile grant.');continue;}
+      if(prior.revokedAt){if(prior.workerHolder && (prior.retirementState!=='confirmed' || !prior.nativeStoppedAt))throw new HttpError(409,'Confirm the retired native writer stopped before issuing another profile grant.');if(unresolved.length)throw new HttpError(409,'Reconcile the retired native request before issuing another profile grant.');continue;}
       if (unresolved.length || (priorRun && OPEN.includes(priorRun.status) && !priorRun.cancelRequestedAt && prior.expiresAt.getTime() > Date.now()))
         throw new HttpError(409, 'Another native run or unresolved request holds this Team profile.');
       await tx.update(hermesTeamCandidateContexts).set({ revokedAt: new Date() }).where(eq(hermesTeamCandidateContexts.id, prior.id));

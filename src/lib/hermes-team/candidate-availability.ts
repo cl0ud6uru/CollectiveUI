@@ -1,6 +1,6 @@
 import { and,eq,inArray,isNull } from 'drizzle-orm';
 import { db,type DbOrTx } from '@/db';
-import { agentRuns,bots,conversations,hermesTeamChats,hermesTeamProfiles } from '@/db/schema';
+import { agentRuns,bots,conversations,hermesTeamCandidateContexts,hermesTeamCandidateRequests,hermesTeamChats,hermesTeamProfiles } from '@/db/schema';
 import type { Principal } from '@/lib/auth/groups';
 import { dockerControl,dockerFetch } from '@/lib/docker-hermes/client';
 import { LOCAL_ORIGIN } from '@/lib/local-hermes/client';
@@ -14,7 +14,7 @@ import { candidateWireMetadata } from './candidate-wire-metadata';
 import { loadTeamPersonalAccess } from './personal-access';
 import { CANDIDATE_MODEL_ADAPTERS } from './candidate-model-transport';
 import type { TeamMode } from './types';
-export type TeamNativeAvailability={available:false;reason:string;choice:'default'|'personal'}|{available:true;reason:string;choice:'default'|'personal';model:string;route:VerifiedTeamModelRoute;personalBindingHash?:string};
+export type TeamNativeAvailability={available:false;reason:string;choice:'default'|'personal';needsAttention?:true}|{available:true;reason:string;choice:'default'|'personal';model:string;route:VerifiedTeamModelRoute;personalBindingHash?:string};
 
 /** Readiness is exact server policy proof, not a successful login or a browser-selected provider. */
 export async function teamNativeAvailability(p:Principal,botId:string,mode:TeamMode,options:{conversationId?:string;routes?:readonly VerifiedTeamModelRoute[];q?:DbOrTx;preparedProfile?:typeof hermesTeamProfiles.$inferSelect}={}):Promise<TeamNativeAvailability>{
@@ -24,10 +24,17 @@ export async function teamNativeAvailability(p:Principal,botId:string,mode:TeamM
  if(options.preparedProfile && (!stored || stored.id!==profile?.id))throw new HttpError(403,'Invalid native readiness profile.');
  if(options.conversationId){const [row]=await q.select({chat:hermesTeamChats,conversation:conversations}).from(hermesTeamChats).innerJoin(conversations,eq(conversations.id,hermesTeamChats.conversationId)).where(eq(hermesTeamChats.conversationId,options.conversationId));
   if(!row || row.conversation.userId!==p.user.id || row.conversation.botId!==botId || row.chat.profileId!==profile?.id || row.chat.mode!==mode)throw new HttpError(404,'Team conversation not found.');choice=row.chat.modelChoice;}
- const unavailable=(reason:string):TeamNativeAvailability=>({available:false,reason,choice});
+ const unavailable=(reason:string):Extract<TeamNativeAvailability,{available:false}>=>({available:false,reason,choice});
  const routes=options.routes??VERIFIED_TEAM_MODEL_ROUTES;
  if(process.env.HERMES_TEAM_CANDIDATE_RUNTIME_ENABLED!=='1' || !routes.length)return unavailable('Team model access is unavailable in this build. An administrator must verify a supported native model route.');
  if(!profile?.binding || ['updating','needs_attention','revoked'].includes(profile.state))return unavailable('Prepare or reconcile this private Team instance before model work.');
+ const retained=await q.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.profileId,profile.id));
+ for(const context of retained){
+  const requests=await q.select({state:hermesTeamCandidateRequests.state}).from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,context.id),inArray(hermesTeamCandidateRequests.state,['reserved','running','needs_attention'])));
+  const [run]=requests.length?await q.select({status:agentRuns.status,cancelRequestedAt:agentRuns.cancelRequestedAt}).from(agentRuns).where(eq(agentRuns.id,context.runId)):[];
+  if((requests.length && (context.revokedAt || context.expiresAt.getTime()<=Date.now() || !run || run.cancelRequestedAt || !['queued','running','waiting','waiting_tasks'].includes(run.status))) || requests.some(row=>row.state==='needs_attention') || (context.workerHolder && context.revokedAt && (context.retirementState!=='confirmed' || !context.nativeStoppedAt)))return {...unavailable('Reconcile the retained native request or confirm writer shutdown before starting more work.'),needsAttention:true};
+  if(requests.length)return unavailable('Finish or reconcile the current native request before starting more work.');
+ }
  const personalRoute=routes.find(route=>route.id===auth.definition.modelPolicy.personalRouteId);
  const authority={userId:p.user.id,botId,userEnabled:!auth.principal.user.disabled,botEnabled:auth.bot.enabled&&auth.definition.enabled,audienceAllowed:true,
   policyVersion:auth.definition.version,hermesRevision:HERMES_COMMIT,policy:auth.definition.modelPolicy,
@@ -45,7 +52,8 @@ export async function teamNativeAvailability(p:Principal,botId:string,mode:TeamM
   if(!capabilities.ok)return unavailable('The native runtime capability needs operator verification.');
   const capability=await capabilities.json() as {available?:boolean;network?:string};
   if(capability.available!==true || !['internet','proxy'].includes(capability.network??''))return unavailable('This native runtime is disabled or its network policy cannot reach the server gateway.');
-  await authorizeTeam(p,botId,mode,q);
+  const final=await authorizeTeam(p,botId,mode,q);if(final.definition.version!==auth.definition.version)return unavailable('The Team model policy changed during verification.');
+  const freshTransport=await candidateWireMetadata(final.principal,selected,q);if(freshTransport.hash!==transport.hash || freshTransport.personalBindingHash!==transport.personalBindingHash)return unavailable('The model connection changed during verification.');
   return {available:true,reason:'Verified native model policy is available.',choice,model:selected.model,route:selected,personalBindingHash:transport.personalBindingHash};
  }catch{return unavailable('The model connection or its account-specific catalog needs verification.');}
 }
@@ -81,7 +89,8 @@ export async function teamConversationModelView(p:Principal,conversationId:strin
  if(personalAllowed && route?.integration==='openai_chatgpt_plan_usage'){
   try{await candidateWireMetadata(current.principal,route);state='connected';}catch{state='connection_needed';}
  }
- await authorizeTeamConversation(p,conversationId);
+ const final=await authorizeTeamConversation(p,conversationId);
+ if(final.chat.modelChoice!==current.chat.modelChoice || availability.choice!==current.chat.modelChoice || final.definition.version!==current.definition.version || final.profile.id!==current.profile.id || final.profile.installedRevision!==current.profile.installedRevision)throw new HttpError(409,'The private model choice or Team policy changed. Reload this connection view.');
  return {modelChoice:current.chat.modelChoice,definitionVersion:current.definition.version,modelPolicyMode:current.definition.modelPolicy.mode,personalAllowed,personalRequired,
   modelAccessAvailable:availability.available,modelAccessReason:availability.reason,personalConnection:{state,message:state==='connected'?'This private account has current verified model metadata.':state==='connection_needed'?'This private account needs a verified model connection.':'Personal model connection is unavailable in this build.'},
   connectAvailable:false,connectReason:'Official ChatGPT connection setup requires the supported authorization flow to be verified and enabled by an administrator.'};

@@ -33,7 +33,7 @@ export async function ensureTeamPrivateInstance(p: Principal, botId: string, mod
         .where(and(eq(hermesTeamOperations.profileId, profile.id), inArray(hermesTeamOperations.state, ['pending', 'needs_attention']))).limit(1);
       // Reopening must retain recovery fencing even when a native plan has not begun yet.
       const model=pending?null:await teamNativeAvailability(p,botId,mode,{q:tx,routes:dependencies.routes,conversationId:dependencies.conversationId,preparedProfile:{...previous,binding:native,state:'connection_needed'}});
-      const state = pending ? pending.state === 'needs_attention' || previous.state === 'needs_attention' ? 'needs_attention' : 'updating' : model?.available?'ready':'connection_needed';
+      const state = pending ? pending.state === 'needs_attention' || previous.state === 'needs_attention' ? 'needs_attention' : 'updating' : model && !model.available && model.needsAttention?'needs_attention':model?.available?'ready':'connection_needed';
       const [ready] = await tx.update(hermesTeamProfiles).set({ binding: native, state, updatedAt: new Date() }).where(eq(hermesTeamProfiles.id, profile.id)).returning();
       return ready;
     });

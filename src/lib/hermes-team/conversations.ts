@@ -51,7 +51,7 @@ export async function teamChatStatus(p: Principal, botId: string, conversationId
   const conflicts = profile ? await db.select({ id: hermesTeamResourceStates.packageId }).from(hermesTeamResourceStates)
     .where(and(eq(hermesTeamResourceStates.profileId, profile.id), eq(hermesTeamResourceStates.conflictRevision, auth.definition.publishedRevision))) : [];
   const model=await teamNativeAvailability(p,botId,mode,{conversationId,routes:dependencies.routes});
-  return { enabled: auth.definition.enabled, mode, canMaintain, state: profile?.state ?? 'preparing', installedRevision: profile?.installedRevision ?? null, publishedRevision: auth.definition.publishedRevision, conflictCount: conflicts.length,
+  return { enabled: auth.definition.enabled, mode, canMaintain, state: !model.available && model.needsAttention ? 'needs_attention' : profile?.state ?? 'preparing', installedRevision: profile?.installedRevision ?? null, publishedRevision: auth.definition.publishedRevision, conflictCount: conflicts.length,
     modelAccessAvailable:model.available,modelAccessReason:model.reason,modelPolicyMode:auth.definition.modelPolicy.mode,personalAllowed:auth.definition.modelPolicy.mode!=='admin_provided',personalRequired:auth.definition.modelPolicy.mode==='personal_required' };
 }
 
