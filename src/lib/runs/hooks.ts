@@ -5,6 +5,7 @@ import { bots, delegatedTasks, routineRuns, routines } from "@/db/schema";
 import { afterRoutineTurn } from "@/lib/agent/routine-runner";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import type { AgentRun, AgentRunStatus } from "./types";
+import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
 
 /** What a routine run records for a run that ended without success (the run's own error text when it has one). */
 export function routineErrorFor(status: AgentRunStatus, error?: string | null): string | undefined {
@@ -32,7 +33,7 @@ export function approvalBodyFor(routineName: string, message: PortalUIMessage | 
  * failed/cancelled/interrupted → failed + error item), plus learning reviews for completed native caller turns.
  */
 export async function afterRunTransition(run: AgentRun, status: AgentRunStatus, message: PortalUIMessage | null, error?: string | null): Promise<void> {
-  if (status === "succeeded" && run.botId && !run.background && run.executionMode === "worker") {
+  if (status === "succeeded" && run.botId && !run.background && run.executionMode === "worker" && !(await teamUsesNativeLearning(run.conversationId))) {
     const { scheduleLearningReview } = await import("@/lib/agent/learning/review");
     await scheduleLearningReview(run.id).catch(err => console.error("[learning] review scheduling failed", err));
   }

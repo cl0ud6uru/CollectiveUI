@@ -1,4 +1,5 @@
 import { nativeSearchMiddleware, type NativeSearchOptions } from "./native-search";
+import { db, type DbOrTx } from '@/db';
 import { nativeSearchCapability } from "@/lib/native-search-policy";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 import { freshDocker } from "@/lib/docker-hermes/store";
@@ -33,6 +34,8 @@ import { isLocalHermes, localBinding } from "@/lib/local-hermes/config";
 import { LOCAL_ORIGIN, localControl, localSocketPath, socketFetch } from "@/lib/local-hermes/client";
 
 export type ResolveModelOptions = {
+  /** Company utility admission can hold a transaction; reuse it for saved-provider reads. */
+  q?: DbOrTx;
   nativeSearch?: NativeSearchOptions;
   purpose: ModelPurpose;
   /** The acting user (chatting user or routine owner). */
@@ -83,9 +86,9 @@ function enabledKindOf(app: AppRow): EnabledKind {
 }
 
 /** Builds the provider context from an app row: parsed config and decoded credentials, never the environment. */
-export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}): Promise<ProviderContext> {
+export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}, q: DbOrTx = db): Promise<ProviderContext> {
   const kind = enabledKindOf(app);
-  const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId) : undefined;
+  const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId, q) : undefined;
   if (connection && kind !== connection.provider) throw new ProviderConfigError(app.name, "saved provider connection kind mismatch");
   const config = connection ? connectionConfig(connection, app.providerConfig) : readProviderConfig(kind, app.providerConfig);
   if (!config) throw new ProviderConfigError(app.name, `${kind}: invalid provider_config`);
@@ -148,7 +151,7 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
   if (opts.run?.hermes && app.provider !== "hermes") throw new ProviderUnavailableError("This run's backend changed. Start a new chat with the updated bot.");
   if (app.provider === "chatgpt") return resolveChatGPT(app, opts);
   if (app.provider === "hermes") return resolveHermes(app, opts);
-  const ctx = await providerContextFor(app);
+  const ctx = await providerContextFor(app, {}, opts.q);
   if (opts.nativeSearch) {
     const reason = nativeSearchCapability(app, ctx.baseUrl);
     if (reason) throw new ProviderUnavailableError(reason);
@@ -166,8 +169,8 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
 }
 
 /** Embedding model for an app that has one configured. Usage is recorded by the caller (src/lib/llm/embeddings.ts). */
-export async function resolveEmbeddingModel(app: AiApp): Promise<EmbedModel> {
-  const ctx = await providerContextFor(app);
+export async function resolveEmbeddingModel(app: AiApp, q: DbOrTx = db): Promise<EmbedModel> {
+  const ctx = await providerContextFor(app, {}, q);
   if (!app.embeddingModel || !supportsEmbeddings(ctx.kind)) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   if (!instance.embedding) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
