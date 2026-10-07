@@ -80,10 +80,25 @@ describe("native optional skill picking", () => {
   it("filters current company/bot/user grants and revisions before sending descriptions; never sends private instructions", async () => {
     h.catalog.mockResolvedValue([skills[0], skill("secret"), skill("b", { version: 2 })]);
     h.decide.mockImplementation(async (_p, _input, q) => result(q, [0.95]));
-    const picked = await skillPicking(context(), toolset(), "Read");
+    const picked = await skillPicking(context(), toolset(skills.slice(0, 2)), "Read");
     expect(picked?.skills.map(s => s.id)).toEqual(["a"]);
     const sent = JSON.stringify(h.decide.mock.calls[0].slice(1));
     expect(sent).toContain("Description a"); expect(sent).not.toMatch(/secret|Description b|Private steps|pinned|policy/);
+  });
+  it.each(["mandatory", "pinned", "reference"].flatMap(protection => ["revised", "revoked", "new"].map(change => ({ protection, change }))))("does not narrow around protected snapshot changes %j", async ({ protection, change }) => {
+    const ctx = context();
+    if (protection === "reference") { ctx.bot!.instructions = "Always use slug-protected"; h.bot.mockResolvedValue(ctx.bot); }
+    const protectedItem = skill("protected", { mandatory: protection === "mandatory", pinned: protection === "pinned" });
+    const original = [...skills.slice(0, 2), ...(change === "new" ? [] : [protectedItem])];
+    const catalog = [...skills.slice(0, 2), ...(change === "revoked" ? [] : [{ ...protectedItem, version: change === "revised" ? 2 : 1 }])];
+    h.catalog.mockResolvedValue(catalog);
+    const set = toolset(original);
+    expect(await skillPicking(ctx, set, "Read")).toBeUndefined(); expect(set.skills).toBe(original);
+    expect(h.decide).not.toHaveBeenCalled();
+  });
+  it.each(["mandatory", "pinned"])("keeps the full catalog if an optional skill becomes %s before selection", async protection => {
+    h.catalog.mockResolvedValue(skills.map(s => s.id === "a" ? { ...s, [protection]: true } : s));
+    expect(await skillPicking(context(), toolset(), "Read")).toBeUndefined(); expect(h.decide).not.toHaveBeenCalled();
   });
   it.each(["timeout", "unavailable", "refusal", "invalid"])("falls back on %s once", async status => {
     h.decide.mockResolvedValue({ status }); expect(await skillPicking(context(), toolset(), "Read")).toBeUndefined();

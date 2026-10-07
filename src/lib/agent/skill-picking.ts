@@ -17,7 +17,7 @@ const revision = (s: Skill) => digest([s.id, s.version, s.slug, s.aliases, s.nam
   s.expectedOutput, s.boundaries, s.pinned, s.mandatory, s.updatedAt]);
 const botBinding = (ctx: AgentCtx) => digest([ctx.bot?.id, ctx.bot?.ownerId, ctx.bot?.appId, ctx.bot?.executionMode,
   ctx.bot?.hermesTeam, ctx.bot?.instructions, ctx.bot?.boundaries, ctx.bot?.updatedAt,
-  ctx.app.id, ctx.app.provider, ctx.app.supportsTools, ctx.app.updatedAt, ctx.principal.user.prefs]);
+  ctx.app.id, ctx.app.provider, ctx.app.supportsTools, ctx.app.systemPrompt, ctx.app.updatedAt, ctx.principal.user.prefs]);
 const references = (s: Skill, text: string) => [s.slug, s.name, ...(s.aliases ?? [])].some(v => v && text.toLowerCase().includes(v.toLowerCase()));
 
 async function freshCatalog(ctx: AgentCtx) {
@@ -49,6 +49,8 @@ export async function skillPicking(ctx: AgentCtx, toolset: Toolset, input: strin
     const offered = fresh.skills.filter(s => toolset.skills.some(t => t.id === s.id && revision(t) === revision(s)));
     const instructions = [ctx.bot.instructions, ctx.bot.boundaries, ctx.app.systemPrompt, ctx.principal.user.prefs?.customInstructions].filter(Boolean).join("\n");
     const protectedSkill = (s: Skill) => s.pinned || s.mandatory || references(s, instructions);
+    // A new/revised/revoked protected skill cannot disappear through the snapshot intersection.
+    if ([...toolset.skills, ...fresh.skills].filter(protectedSkill).some(s => !offered.some(t => revision(t) === revision(s)))) return;
     const optional = offered.filter(s => !protectedSkill(s));
     if (!optional.length || optional.length > 20 || new Set(offered.map(s => s.id)).size !== offered.length) return;
     const app = await getAccessibleModel(fresh.ctx.principal, settings.providerAppId);
