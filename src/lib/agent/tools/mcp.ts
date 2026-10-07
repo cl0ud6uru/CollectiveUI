@@ -2,6 +2,7 @@ import type { MCPClient } from "@ai-sdk/mcp";
 import { dynamicTool, jsonSchema, type JSONSchema7 } from "ai";
 import type { BotToolConfig, McpServer } from "@/db/schema";
 import { connectMcp, mcpErrorMessage, redactMcpValue, type McpCaller } from "@/lib/mcp/client";
+import { McpToolError } from "@/lib/mcp/errors";
 import { authorizeMcpInvocation, checkedServiceGrant, type ServiceGrant } from "@/lib/mcp/authorization";
 import { assertArgumentConstraints } from "@/lib/bots/service-policy";
 import { mcpInputValidator } from "@/lib/mcp/input";
@@ -110,7 +111,7 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
           } catch (err) {
             if (ctx) await audit(ctx.principal.user.id, "mcp.call.denied", server.id, details);
             if (err instanceof McpToolsetClosedError) throw err;
-            throw new Error(`"${server.name}" is unavailable right now: ${mcpErrorMessage(err, server)}`);
+            throw new McpToolError(mcpErrorMessage(`"${server.name}" is unavailable right now: ${mcpErrorMessage(err, server)}`, server));
           }
           try {
             if (authority) await check(); // the connection handshake may outlive a revocation
@@ -126,7 +127,7 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
           } catch (err) {
             if (ctx) await audit(ctx.principal.user.id, "mcp.call.failed", server.id, details);
             if (abortSignal?.aborted) throw err;
-            throw new Error(`${def.name} on "${server.name}" failed: ${mcpErrorMessage(err, server)}`);
+            throw new McpToolError(mcpErrorMessage(`${def.name} on "${server.name}" failed: ${mcpErrorMessage(err, server)}`, server));
           } finally {
             if (grant) await releaseClient(client);
           }
