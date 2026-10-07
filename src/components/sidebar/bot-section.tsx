@@ -13,7 +13,7 @@ import { StartSideChat } from "@/components/chat/start-side-chat";
 import { cn } from "@/lib/utils";
 import { shortTime } from "./group-by-date";
 import { useShell } from "@/components/chat/shell-context";
-import { MAX_UNPINNED, visibleNavigationBots } from "@/lib/bots/navigation";
+import { canMoveNavigationBot, MAX_UNPINNED, visibleNavigationBots } from "@/lib/bots/navigation";
 
 /** Spread idle blinks so the roster doesn't blink in unison. */
 function blinkDelay(id: string) {
@@ -46,7 +46,7 @@ function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, on
     <div className={cn("group relative flex items-center rounded-lg hover:bg-hover", active && "bg-hover")}>
       <button type="button" draggable={!navigationPending && !b.hidden} disabled={navigationPending || b.hidden}
         onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={() => setMenuOpen(true)}
-        aria-label={`Reorder ${b.name}`} title="Drag to reorder, or open move actions"
+        aria-label={`Reorder ${b.name}`} title="Reorder pins or bots with equal recent use; pin to keep a chosen position"
         className="flex min-h-11 w-6 shrink-0 cursor-grab items-center justify-center rounded text-subtle hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 active:cursor-grabbing">
         <GripVertical className="h-4 w-4" />
       </button>
@@ -120,7 +120,7 @@ function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, on
   );
 }
 
-/** Personal ordering is independent of live activity and recent chat chronology. */
+/** Pins keep their chosen order; unpinned bots follow sent-message recency, independent of live activity. */
 export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOption[]; activeBotId?: string; onNavigate: () => void }) {
   const [showHidden, setShowHidden] = useState(false);
   const { navigationPending, navigationMessage, changeNavigation } = useShell();
@@ -132,7 +132,7 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
   // The last moved bot stays mounted past the limit until another move, so its focused row is never removed.
   const [moved, setMoved] = useState<string | null>(null);
   const visible = visibleNavigationBots(bots, activeBotId, moved);
-  // Move up/down steps through the full saved order, including bots beyond the sidebar limit.
+  // Move up/down within pins or equal recency, including bots beyond the sidebar limit.
   const movable = bots.filter(b => !b.hidden);
   const cancelDrag = () => { setDragging(null); setDrop(null); };
   if (!bots.length) return null;
@@ -151,7 +151,8 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
         <div key={b.id} data-navigation-bot={b.id}
           className={cn("relative", drop?.id === b.id && (drop.placement === "before" ? "before:absolute before:inset-x-0 before:top-0 before:border-t-2 before:border-accent" : "after:absolute after:inset-x-0 after:bottom-0 after:border-b-2 after:border-accent"), dragging === b.id && "opacity-50")}
           onDragOver={event => {
-            if (!dragging || dragging === b.id || b.hidden || navigationPending) return;
+            const source = bots.find(bot => bot.id === dragging);
+            if (!source || !canMoveNavigationBot(source, b) || navigationPending) { setDrop(null); return; }
             event.preventDefault(); event.dataTransfer.dropEffect = "move";
             const bounds = event.currentTarget.getBoundingClientRect();
             setDrop({ id: b.id, placement: event.clientY < bounds.y + bounds.height / 2 ? "before" : "after" });
@@ -160,12 +161,13 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
             event.preventDefault();
             if (dragging && drop?.id === b.id && !navigationPending) {
               const source = bots.find(bot => bot.id === dragging);
-              if (source) { setMoved(source.id); changeNavigation({ kind: "move", botId: dragging, targetId: b.id, placement: drop.placement }, `Moved ${source.name} ${drop.placement} ${b.name}`); }
+              if (source && canMoveNavigationBot(source, b)) { setMoved(source.id); changeNavigation({ kind: "move", botId: dragging, targetId: b.id, placement: drop.placement }, `Moved ${source.name} ${drop.placement} ${b.name}`); }
             }
             cancelDrag();
           }}>
           <BotRow b={b} active={b.id === activeBotId} onNavigate={onNavigate} onMove={() => setMoved(b.id)}
-            previous={movable[movable.findIndex(bot => bot.id === b.id) - 1]} next={movable[movable.findIndex(bot => bot.id === b.id) + 1]}
+            previous={movable.findLast((bot, i) => i < movable.indexOf(b) && canMoveNavigationBot(b, bot))}
+            next={movable.find((bot, i) => i > movable.indexOf(b) && canMoveNavigationBot(b, bot))}
             onDragStart={event => { setDragging(b.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", b.id); }} onDragEnd={cancelDrag} />
         </div>
       ))}

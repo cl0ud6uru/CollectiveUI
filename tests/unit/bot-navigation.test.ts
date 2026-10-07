@@ -19,8 +19,8 @@ describe("personal bot navigation", () => {
     expect(changeBotNavigation(next, { kind: "preference", botId: "2", pinned: true })).toEqual(next);
     expect(changeBotNavigation([{ ...roster[0], hidden: true }], { kind: "preference", botId: "0", pinned: true })[0]).toMatchObject({ pinned: true, hidden: false });
   });
-  it("moves before/after any visible bot, preserving pins and every other relative position", () => {
-    const bots = [{ ...roster[0], pinned: true }, ...roster.slice(1)];
+  it("moves within pins, preserving pin state and every other relative position", () => {
+    const bots = roster.map(b => ({ ...b, pinned: true }));
     const moved = changeBotNavigation(bots, { kind: "move", botId: "2", targetId: "0", placement: "before" });
     expect(ids(moved)).toEqual(["2", "0", "1"]);
     expect(moved[1].pinned).toBe(true);
@@ -33,7 +33,7 @@ describe("personal bot navigation", () => {
   });
   it("limits unpinned rows but keeps every pin, the active bot and the just-moved bot", () => {
     const many = ["A", "B", "C", "D", "E", "F", "G", "H"].map((name, i) => ({ id: `m${i}`, name, pinned: i === 7, hidden: i === 0 }));
-    // m0 is hidden, so the five unpinned rows are m1..m5; pinned m7 stays visible after them in saved order.
+    // Filtering retains the supplied presentation order; orderBots puts pins first before this step.
     expect(ids(visibleNavigationBots(many))).toEqual(["m1", "m2", "m3", "m4", "m5", "m7"]);
     expect(ids(visibleNavigationBots(many, "m6"))).toEqual(["m1", "m2", "m3", "m4", "m5", "m6", "m7"]);
     expect(ids(visibleNavigationBots(many, "m0"))).toEqual(["m0", "m1", "m2", "m3", "m4", "m5", "m7"]);

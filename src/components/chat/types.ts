@@ -33,6 +33,8 @@ export type TargetOption = {
   pinned?: boolean;
   coordinator?: boolean;
   hidden?: boolean;
+  /** Latest committed user message in a direct chat; activity/preview timestamps never affect navigation. */
+  lastSentAt?: string | null;
   /** Bot roster: the home chat's latest line, when it changed, and whether the bot is busy for this person. */
   preview?: string | null;
   lastAt?: string | null;

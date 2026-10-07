@@ -4,6 +4,7 @@ import { HermesTeamChatControls } from "./hermes-team-chat-controls";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { chatSendFetch } from "@/lib/chat/send-fetch";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
@@ -191,6 +192,7 @@ export function Chat({
     () =>
       new DefaultChatTransport<PortalUIMessage>({
         api: "/api/chat",
+        fetch: chatSendFetch(() => { if (!isNew && target?.kind === "bot") router.refresh(); }),
         // appId/botId arrive per request (see targetBody) and only matter for a brand-new conversation.
         prepareSendMessagesRequest: ({ messages, trigger, body }) => {
           const base = { ...body, conversationId };
@@ -210,7 +212,7 @@ export function Chat({
           };
         },
       }),
-    [conversationId],
+    [conversationId, router, isNew, target?.kind],
   );
 
   // Resume is decided once, on mount: a later server re-render (revalidatePath from a sidebar action) may flip the prop

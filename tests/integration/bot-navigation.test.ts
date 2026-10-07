@@ -32,6 +32,7 @@ run("personal navigation persistence and authorization", () => {
     const { saveBotNavigation } = await import("@/lib/bots/navigation-store");
     const { db, schema } = await import("@/db");
     await saveBotNavigation(alice, { kind: "preference", botId: ids[1], pinned: true });
+    await saveBotNavigation(alice, { kind: "preference", botId: ids[2], pinned: true });
     await saveBotNavigation(alice, { kind: "move", botId: ids[2], targetId: ids[1], placement: "before" });
     expect((await saved(alice)).botOrder?.filter(id => ids.includes(id))).toEqual([ids[2], ids[1], ids[0]]);
     expect((await saved(alice)).customInstructions).toBe("Keep this preference");
@@ -43,6 +44,7 @@ run("personal navigation persistence and authorization", () => {
     const { saveBotNavigation } = await import("@/lib/bots/navigation-store");
     const { db, schema } = await import("@/db");
     await Promise.all(Array.from({ length: 8 }, () => saveBotNavigation(bob, { kind: "preference", botId: ids[0], pinned: true })));
+    await saveBotNavigation(bob, { kind: "preference", botId: ids[1], pinned: true });
     await Promise.all([saveBotNavigation(bob, { kind: "move", botId: ids[1], targetId: ids[0], placement: "before" }), saveBotNavigation(bob, { kind: "preference", botId: ids[2], pinned: true })]);
     const order = (await saved(bob)).botOrder!;
     expect(new Set(order).size).toBe(order.length);

@@ -53,6 +53,11 @@ jobs:
           node tests/browser/hermes-team-publication.mjs
           node tests/browser/hermes-team-updates.mjs
           node tests/browser/hermes-team-restore.mjs
+          BOT_RECENT_USE_SCREENSHOT_DIR="$RUNNER_TEMP/bot-recent-use-screenshots" node tests/browser/bot-recent-use.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bot-recent-use-screenshots
+          path: ${{ runner.temp }}/bot-recent-use-screenshots
 
   native-hermes:
     name: Pinned native Hermes settings, Team profiles and synthetic OAuth

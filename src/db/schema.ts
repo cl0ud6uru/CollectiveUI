@@ -220,6 +220,8 @@ export const localAuthBootstrap = pgTable("local_auth_bootstrap", {
 export type UserPrefs = {
   /** Personal bot navigation only; inaccessible/deleted IDs are ignored on reads. */
   botOrder?: string[];
+  /** Server-recorded accepted direct-chat sends. Copied history and background work never write this map. */
+  botLastSentAt?: Record<string, string>;
   customInstructions?: string;
   memoryEnabled?: boolean;
   learningEnabled?: boolean;

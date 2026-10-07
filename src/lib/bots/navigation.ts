@@ -1,5 +1,5 @@
 /** Navigation preferences never grant access: callers supply only the current accessible roster. */
-export type NavigationBot = { id: string; name: string; pinned?: boolean; hidden?: boolean; coordinator?: boolean };
+export type NavigationBot = { id: string; name: string; pinned?: boolean; hidden?: boolean; coordinator?: boolean; lastSentAt?: string | null };
 export type BotNavigationChange =
   | { kind: "preference"; botId: string; pinned?: boolean; hidden?: boolean }
   | { kind: "move"; botId: string; targetId: string; placement: "before" | "after" };
@@ -11,8 +11,21 @@ export function orderBots<T extends NavigationBot>(bots: T[], saved: readonly st
     const bot = byId.get(id);
     if (bot) { ordered.push(bot); byId.delete(id); }
   }
-  return [...ordered, ...Array.from(byId.values()).sort((a, b) =>
+  const base = [...ordered, ...Array.from(byId.values()).sort((a, b) =>
     Number(!!b.pinned) - Number(!!a.pinned) || Number(!!b.coordinator) - Number(!!a.coordinator) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id))];
+  // Stable sorting retains chosen pin order and manual order for equal/never-used timestamps.
+  return base.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (a.pinned ? 0 : sentAt(b) - sentAt(a)));
+}
+
+function sentAt(bot: NavigationBot): number {
+  const time = bot.lastSentAt ? Date.parse(bot.lastSentAt) : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+/** Manual moves apply within pins or equal recency, without overriding the recent-send order. */
+export function canMoveNavigationBot(bot: NavigationBot, target: NavigationBot): boolean {
+  return bot.id !== target.id && !bot.hidden && !target.hidden && !!bot.pinned === !!target.pinned &&
+    (!!bot.pinned || sentAt(bot) === sentAt(target));
 }
 
 /** A move preserves pin state. Newly pinned bots join the end of the existing pins, without sorting other rows. */
@@ -20,7 +33,8 @@ export function changeBotNavigation<T extends NavigationBot>(bots: T[], change: 
   const bot = bots.find(b => b.id === change.botId);
   if (!bot) return bots;
   if (change.kind === "move") {
-    if (bot.hidden || change.botId === change.targetId || !bots.some(b => b.id === change.targetId && !b.hidden)) return bots;
+    const target = bots.find(b => b.id === change.targetId);
+    if (!target || !canMoveNavigationBot(bot, target)) return bots;
     const rest = bots.filter(b => b.id !== bot.id);
     rest.splice(rest.findIndex(b => b.id === change.targetId) + Number(change.placement === "after"), 0, bot);
     return rest;
@@ -34,7 +48,8 @@ export function changeBotNavigation<T extends NavigationBot>(bots: T[], change: 
     rest.splice(lastPin + 1, 0, next);
     return rest;
   }
-  return bots.map(b => b.id === bot.id ? next : b);
+  const changed = bots.map(b => b.id === bot.id ? next : b);
+  return orderBots(changed, changed.map(b => b.id));
 }
 
 /** Unpinned bots shown in the sidebar before "See all"; pinned bots are always shown. */
