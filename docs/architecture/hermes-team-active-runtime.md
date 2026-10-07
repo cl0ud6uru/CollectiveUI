@@ -23,6 +23,10 @@ keep a revoked actor's native work alive.
 audience access ends. Confirmed duplicate retirement cannot stop a newer context.
 Cancellation is currently runtime-wide. Startup refuses active siblings; unconfirmed
 cleanup fences further work and requires reconciliation rather than replay.
+If preparation fails before its write-ahead native startup receipt, exact retirement
+records a durable scope tombstone and returns `notStarted: true`. That proves the
+context had no native writers, blocks delayed prepare/start requests, and leaves any
+newer or personal native work running. Started scopes still require actual writer stop.
 
 The run worker constructs an in-memory Hermes target only after authoritative startup.
 The historical app ID stays attribution metadata; its provider configuration and

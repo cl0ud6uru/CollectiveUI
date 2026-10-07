@@ -21,6 +21,7 @@ const teamRevoke = teamScope.extend({ requestId: z.string().regex(/^revoke:[a-f0
 const revokeReceipt = z.object({ actor: ownerId, teamBotId: ownerId, mode: z.enum(['member', 'admin']), digest: z.string().regex(/^[a-f0-9]{64}$/), result: z.object({ stopped: z.boolean(), interruption: z.enum(['none', 'runtime-wide']) }).optional() });
 const candidateReceipt = teamCandidateStart.extend({actor:ownerId,digest:z.string().regex(/^[a-f0-9]{64}$/),
   state:z.enum(['starting','ready','needs_attention','stopped']),nativeBindingId:z.string().optional()}).strict();
+const candidateRetirement = teamCandidateScope.extend({actor:ownerId}).strict();
 const storedSchema = z.object({ owner: runtimeOwnerId, generation: z.number().int(), phase: z.enum(phases), error: z.string().nullable(), cleanupRequired: z.boolean().default(false),
   bindings: z.array(bindingSchema), confirmed: z.array(z.string()).default([]), pending: z.record(z.string(), z.object({ profile: profileName, name: z.string() })),
   logins: z.record(z.string(), z.object({ bindingId: z.string(), sessionId: z.string().uuid(), state: z.enum(codexStates), expiresAt: z.number() })).default({}),
@@ -31,6 +32,7 @@ const storedSchema = z.object({ owner: runtimeOwnerId, generation: z.number().in
   resourceOperations: z.record(z.string(), resourceOperation).default({}),
   revocations: z.record(z.string(), revokeReceipt).default({}),
   candidateReceipts:z.record(z.string(),candidateReceipt).default({}),
+  candidateRetirements:z.record(z.string(),candidateRetirement).default({}),
   tests: z.record(z.string(), z.object({ bindingId: z.string(), revision: z.string(), checkedAt: z.string(), code: z.enum(testCodes) })).default({}) });
 type Stored = z.infer<typeof storedSchema>;
 const sConnection = (s: Stored, id: string, revision: string) => s.connections[id]?.revision === revision ? s.connections[id] : null;
@@ -59,6 +61,7 @@ export class DockerBroker {
   prepareTeamCandidate(actor:string,raw:unknown,grantId:string){
     const config=teamCandidateConfig.parse(raw);
     const binding=this.teamBinding(actor,config.teamBotId,config.mode,grantId);
+    if (this.state(binding.ownerId)?.candidateRetirements[config.contextId]) throw new LocalError(409, 'This native context was retired before startup.');
     if (this.config.teamCandidateRuntimeEnabled) this.requireTeamGatewayNetwork(binding.ownerId);
     if(binding.bindingId!==config.bindingId || config.expiresAt<=Date.now() || config.expiresAt>Date.now()+120_000)throw new LocalError(409,'Invalid native Team candidate context.');
     const prior=this.candidateConfigs.get(binding.bindingId);
@@ -88,6 +91,8 @@ export class DockerBroker {
   startTeamCandidate(actor:string,raw:unknown,grantId:string) {
     if(!this.config.teamCandidateRuntimeEnabled)throw new LocalError(409,'Active native Team adapters are disabled.');
     const scope=teamCandidateStart.parse(raw), binding=this.teamBinding(actor,scope.teamBotId,scope.mode,grantId);
+    const s=this.state(binding.ownerId)!;
+    if (s.candidateRetirements[scope.contextId]) throw new LocalError(409, 'This native context was retired before startup.');
     this.requireTeamGatewayNetwork(binding.ownerId);
     ownerId.parse(`portal-${scope.conversationId}-${scope.teamBotId}`);ownerId.parse(`portal-${scope.runId}`);
     const entry=this.candidateConfigs.get(binding.bindingId);
@@ -99,7 +104,6 @@ export class DockerBroker {
       if(entry.conversationId!==scope.conversationId)throw new LocalError(409,'This native context belongs to another conversation.');
       this.candidateCurrent(entry);return entry.start;
     }
-    const s=this.state(binding.ownerId)!;
     if(s.candidateReceipts[scope.contextId])throw new LocalError(409,'This native context has a retained start receipt. Retire uncertain work; do not replay startup.');
     if(Object.values(s.candidateReceipts).some(r=>r.state!=='stopped'))throw new LocalError(409,'Retire the retained native context before starting another.');
     if(Object.keys(s.candidateReceipts).length>=10000)throw new LocalError(409,'Native Team receipt capacity reached.');
@@ -152,7 +156,27 @@ export class DockerBroker {
   async retireTeamCandidate(actor:string,raw:unknown) {
     ownerId.parse(actor);const scope=teamCandidateScope.parse(raw),owner=teamOwner(actor,scope.teamBotId,scope.mode),s=this.state(owner);
     const receipt=s?.candidateReceipts[scope.contextId];
-    if(!receipt || receipt.actor!==actor || receipt.bindingId!==scope.bindingId || receipt.runId!==scope.runId || receipt.teamBotId!==scope.teamBotId || receipt.mode!==scope.mode)
+    if (!receipt) {
+      const binding=s?.bindings.find(b=>b.bindingId===scope.bindingId && b.ownerId===owner && b.teamBotId===scope.teamBotId && b.purpose===`team-${scope.mode}`);
+      if(!s || !binding || !s.confirmed.includes(binding.bindingId)) throw new LocalError(403, 'This native retirement binding belongs to another scope.');
+      const prior=s.candidateRetirements[scope.contextId];
+      if (prior) {
+        if (JSON.stringify(prior)!==JSON.stringify({...scope,actor})) throw new LocalError(403, 'This native retirement receipt belongs to another context.');
+        return {confirmed:true,runtimeWide:true,notStarted:true};
+      }
+      const active=this.candidateOwners.get(owner),prepared=this.candidateConfigs.get(binding.bindingId);
+      if (active?.config.contextId===scope.contextId || (prepared?.config.contextId===scope.contextId &&
+        (prepared.actor!==actor || prepared.config.runId!==scope.runId || prepared.phase!=='prepared' || prepared.start)))
+        throw new LocalError(409, 'Native startup is uncertain. Confirm runtime shutdown before retiring this context.');
+      if(Object.keys(s.candidateRetirements).length>=10000)throw new LocalError(409,'Native Team retirement capacity reached.');
+      // No await: serialize with startTeamCandidate's write-ahead claim before any native dispatch.
+      // Absence of that durable claim proves this scope never started. Retain a tombstone BEFORE
+      // discarding dormant grants so a delayed prepare/start cannot revive the closed context.
+      s.candidateRetirements[scope.contextId]={...scope,actor};this.save(s);
+      if(prepared?.config.contextId===scope.contextId)this.candidateConfigs.delete(binding.bindingId);
+      return {confirmed:true,runtimeWide:true,notStarted:true};
+    }
+    if(receipt.actor!==actor || receipt.bindingId!==scope.bindingId || receipt.runId!==scope.runId || receipt.teamBotId!==scope.teamBotId || receipt.mode!==scope.mode)
       throw new LocalError(403,'This native retirement receipt belongs to another context.');
     if(receipt.state==='stopped')return {confirmed:true,runtimeWide:true};
     const active=this.candidateOwners.get(owner);
@@ -500,6 +524,9 @@ export class DockerBroker {
         || teamOwner(receipt.actor, receipt.teamBotId, receipt.mode) !== state.owner) throw new Error('Retained revocation receipt scope mismatch');
       for(const [id,receipt] of Object.entries(state.candidateReceipts))if(id!==receipt.contextId || teamOwner(receipt.actor,receipt.teamBotId,receipt.mode)!==state.owner
         || !state.bindings.some(b=>b.bindingId===receipt.bindingId && b.teamBotId===receipt.teamBotId && b.purpose===`team-${receipt.mode}`))throw new Error('Retained native candidate receipt scope mismatch');
+      for(const [id,receipt] of Object.entries(state.candidateRetirements))if(id!==receipt.contextId || state.candidateReceipts[id]
+        || teamOwner(receipt.actor,receipt.teamBotId,receipt.mode)!==state.owner
+        || !state.bindings.some(b=>b.bindingId===receipt.bindingId && b.teamBotId===receipt.teamBotId && b.purpose===`team-${receipt.mode}`))throw new Error('Retained native no-start retirement scope mismatch');
       if (!['stopped', 'disabled'].includes(state.phase)) {
         for (const login of Object.values(state.logins)) if (login.state === 'pending') login.state = 'interrupted';
         state.phase = 'interrupted'; state.cleanupRequired = true; state.error = 'Broker restarted. Retry to reconcile the retained runtime and profiles; uncertain chat work is not replayed.';
@@ -516,7 +543,7 @@ export class DockerBroker {
     let s = this.states.get(owner);
     if (!s && create) {
       if (this.states.size >= this.config.maxUsers) throw new LocalError(409, 'Personal runtime capacity reached.');
-      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {}, teams: {}, resourceOperations: {}, revocations: {}, candidateReceipts:{} };
+      s = { owner, generation: 0, phase: 'disabled', error: null, cleanupRequired: false, bindings: [], confirmed: [], pending: {}, tests: {}, logins: {}, network: this.config.network, onlineMode: this.config.network === 'proxy' ? 'proxy' : 'internet', networkRevision: 0, networks: {}, connections: {}, teams: {}, resourceOperations: {}, revocations: {}, candidateReceipts:{}, candidateRetirements:{} };
       const dir = path.join(this.config.stateDir, runtimeKey(owner));
       mkdirSync(dir, { mode: 0o700 }); this.driver.setNetwork?.(owner, s.network!); this.states.set(owner, s); this.save(s);
     }
