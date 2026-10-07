@@ -7,7 +7,7 @@ import { BotAvatar } from "@/components/bots/bot-avatar";
 import { Tip } from "@/components/ui/tooltip";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/components/ui/menu";
 import { cn } from "@/lib/utils";
-import { HERMES_COMMANDS } from "@/lib/chat/hermes-commands";
+import { HERMES_COMMANDS, routeProvider, type HermesModelRoute } from "@/lib/chat/hermes-commands";
 import { insertCommandIntoDraft, type ComposerCommand } from "@/lib/chat/composer-commands";
 import { VoiceControl } from "./voice-control";
 import type { VoiceTarget } from "@/lib/voice/client";
@@ -44,7 +44,7 @@ export const Composer = forwardRef<
     tools?: React.ReactNode;
     placeholder?: string;
     skills?: { slug: string; name: string; description: string }[];
-    hermesCommands?: { models: string[]; discoveryNote: string };
+    hermesCommands?: { models: string[]; routes: HermesModelRoute[]; requested: string | null; discoveryNote: string };
     /** What the "/" button lists; only commands this chat can run. Undefined hides the button. */
     commands?: ComposerCommand[];
     /** group chats: bots that can be @mentioned */
@@ -164,14 +164,29 @@ export const Composer = forwardRef<
   const commandQuery = /^\/(?:hermes\s+)?([\w-]*)$/i.exec(text)?.[1]?.toLowerCase();
   const modelQuery = /^\/(?:hermes\s+)?model\s+(\S*)$/i.exec(text)?.[1];
   const prefix = /^\/hermes\s/i.test(text) ? "/hermes " : "/";
-  const commandMatches = !hermesCommands || menuDismissed ? [] : modelQuery !== undefined
-    ? [...new Set(["default", ...hermesCommands.models])].filter((m) => m.startsWith(modelQuery)).map((m) => ({ value: `${prefix}model ${m}`, description: m === "default" ? "Clear this chat's model request" : "Request this route for future turns" }))
+  type Match = { value: string; description: string; group?: string; disabled?: boolean; current?: boolean };
+  /** Model picker: "default", then every route Hermes advertises grouped by provider; routes an admin hasn't enabled stay visible but can't be chosen. */
+  const modelMatches = (): Match[] => {
+    if (!hermesCommands || modelQuery === undefined) return [];
+    const routes: HermesModelRoute[] = hermesCommands.routes.length ? hermesCommands.routes : hermesCommands.models.map((id) => ({ id, allowed: true }));
+    const q = modelQuery.toLowerCase();
+    const current = hermesCommands.requested;
+    return [
+      ...("default".startsWith(q) ? [{ value: `${prefix}model default`, group: "Hermes default", description: "Clear this chat's model request", current: current === null }] : []),
+      ...routes.filter((r) => r.id.toLowerCase().includes(q)).sort((a, b) => routeProvider(a.id).localeCompare(routeProvider(b.id)) || a.id.localeCompare(b.id))
+        .map((r) => ({ value: `${prefix}model ${r.id}`, group: routeProvider(r.id), disabled: !r.allowed, current: current === r.id,
+          description: r.allowed ? "Request this route for future turns" : "Not enabled by an admin for this app" })),
+    ];
+  };
+  const commandMatches: Match[] = !hermesCommands || menuDismissed ? [] : modelQuery !== undefined
+    ? modelMatches()
     : commandQuery !== undefined ? HERMES_COMMANDS.filter((c) => c.name.startsWith(commandQuery)).map((c) => ({ value: `${prefix}${c.name}`, description: c.description })) : [];
   const selectedIndex = Math.min(menuIndex, Math.max(0, commandMatches.length - 1));
   useEffect(() => {
     if (commandMatches.length) document.getElementById(`hermes-command-${selectedIndex}`)?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex, commandMatches.length]);
   function insertCommand(value: string) {
+    if (commandMatches.find((c) => c.value === value)?.disabled) return;
     setText(`${value} `);
     setMenuIndex(0);
     setMenuDismissed(false);
@@ -215,11 +230,15 @@ export const Composer = forwardRef<
           <p className="px-2.5 py-1 text-xs text-subtle">Hermes controls · ↑↓ choose · Tab / Enter complete · Esc close</p>
           <div id="hermes-command-options" role="listbox" aria-label="Hermes commands" className="max-h-64 overflow-y-auto">
             {commandMatches.map((c, i) => (
-              <button key={c.value} id={`hermes-command-${i}`} role="option" aria-selected={i === selectedIndex}
-                onMouseDown={(e) => e.preventDefault()} onClick={() => insertCommand(c.value)}
-                className={cn("flex w-full gap-2 rounded-lg px-2.5 py-2 text-left text-sm", i === selectedIndex ? "bg-hover" : "hover:bg-hover")}>
-                <span className="shrink-0 font-mono">{c.value}</span><span className="text-muted">{c.description}</span>
-              </button>
+              <div key={c.value}>
+                {c.group && c.group !== commandMatches[i - 1]?.group && <p className="px-2.5 pb-0.5 pt-1.5 text-xs font-medium uppercase tracking-wide text-subtle">{c.group}</p>}
+                <button id={`hermes-command-${i}`} role="option" aria-selected={i === selectedIndex} aria-disabled={c.disabled || undefined}
+                  onMouseDown={(e) => e.preventDefault()} onClick={() => insertCommand(c.value)}
+                  className={cn("flex w-full gap-2 rounded-lg px-2.5 py-2 text-left text-sm", i === selectedIndex ? "bg-hover" : "hover:bg-hover", c.disabled && "opacity-50")}>
+                  <span className="shrink-0 font-mono">{c.value}</span><span className="text-muted">{c.description}</span>
+                  {c.current && <span className="ml-auto shrink-0 text-xs text-subtle">current</span>}
+                </button>
+              </div>
             ))}
           </div>
           <p className="px-2.5 py-1 text-xs text-subtle">{hermesCommands?.discoveryNote}</p>
@@ -318,7 +337,10 @@ export const Composer = forwardRef<
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault(); setMenuIndex((selectedIndex + (e.key === "ArrowDown" ? 1 : -1) + commandMatches.length) % commandMatches.length); return;
               }
-              if (e.key === "Tab" || (e.key === "Enter" && commandMatches[selectedIndex].value !== text.trim())) {
+              // A bare "/model" opens the picker instead of sending; the picker shows what is requested and what is allowed.
+              const bareModel = e.key === "Enter" && /^\/(?:hermes\s+)?model$/i.test(text.trim());
+              if (e.key === "Tab" || bareModel || (e.key === "Enter" && commandMatches[selectedIndex].value !== text.trim())) {
+                if (bareModel) { e.preventDefault(); insertCommand(`${prefix}model`); return; }
                 e.preventDefault(); insertCommand(commandMatches[selectedIndex].value); return;
               }
             }

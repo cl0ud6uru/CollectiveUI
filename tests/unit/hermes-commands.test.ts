@@ -86,3 +86,12 @@ describe("Hermes HTTP discovery", () => {
     expect(payload).toEqual({ input: "hello", session_id: "portal-two" });
   });
 });
+
+describe("routeProvider", () => {
+  it("groups prefixed route ids by provider and everything else together", async () => {
+    const { routeProvider } = await import("@/lib/chat/hermes-commands");
+    expect(routeProvider("openai/gpt-5")).toBe("openai");
+    expect(routeProvider("anthropic:sonnet")).toBe("anthropic");
+    expect(routeProvider("fast")).toBe("Routes");
+  });
+});
