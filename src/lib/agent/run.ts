@@ -125,12 +125,17 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       : [];
 
     const coordinator = await getSetting("coordinator");
-    const decisions = coordinator.enabled && coordinator.defaultBotId === bot?.id && app.provider !== "hermes"
+    const decisions = bot && app.provider !== "hermes"
       ? await getSetting("decisions") : null;
     const routedTools = decisions?.queenRouting
       ? await (await import("./queen-routing")).queenRouting(ctx, toolset, history, userText, {
           continuation: opts.continuation, signal: opts.abortSignal, stepsUsed: native?.stepsUsed,
         }) : undefined;
+    const picked = decisions?.skillPicking
+      ? await (await import("./skill-picking")).skillPicking(ctx, toolset, userText, {
+          continuation: opts.continuation, signal: opts.abortSignal, stepsUsed: native?.stepsUsed,
+        }) : undefined;
+    if (picked) { toolset.skills = picked.skills; toolset.tools = picked.tools; }
     const sections = buildInstructionSections({
       coordinator: coordinator.enabled && coordinator.defaultBotId === bot?.id && app.provider !== "hermes",
       app,

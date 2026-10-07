@@ -30,8 +30,8 @@ describe("Decisions admin settings gates", () => {
   it("validates the enabled provider and never performs inference during save", async () => {
     await saveDecisionsSettings({ queenRouting: true, providerAppId: "api" });
     expect(h.app).toHaveBeenCalledTimes(1); expect(h.provider).toHaveBeenCalledTimes(1);
-    expect(h.save).toHaveBeenCalledWith("decisions", { queenRouting: true, providerAppId: "api" });
-    expect(h.audit).toHaveBeenCalledWith("admin", "settings.decisions", undefined, { queenRouting: true, providerAppId: "api" });
+    expect(h.save).toHaveBeenCalledWith("decisions", { queenRouting: true, skillPicking: false, providerAppId: "api" });
+    expect(h.audit).toHaveBeenCalledWith("admin", "settings.decisions", undefined, { queenRouting: true, skillPicking: false, providerAppId: "api" });
     expect(h.revalidate).toHaveBeenCalledWith("/admin/tools");
   });
   it.each(["hermes", "chatgpt", "openai-compatible", "azure"])("denies enabling with %s even if UI is bypassed", async provider => {
@@ -50,6 +50,13 @@ describe("Decisions admin settings gates", () => {
   it("can switch off after losing the provider, without reading credentials", async () => {
     await saveDecisionsSettings({ queenRouting: false, providerAppId: "revoked" });
     expect(h.app).not.toHaveBeenCalled(); expect(h.provider).not.toHaveBeenCalled();
-    expect(h.save).toHaveBeenCalledWith("decisions", { queenRouting: false, providerAppId: "revoked" });
+    expect(h.save).toHaveBeenCalledWith("decisions", { queenRouting: false, skillPicking: false, providerAppId: "revoked" });
+  });
+  it("enables skill picking independently and enforces the same server capability gates", async () => {
+    await saveDecisionsSettings({ skillPicking: true, providerAppId: "api" });
+    expect(h.save).toHaveBeenCalledWith("decisions", { queenRouting: false, skillPicking: true, providerAppId: "api" });
+    await expect(saveDecisionsSettings({ skillPicking: true })).rejects.toThrow("Choose a company");
+    h.app.mockResolvedValue({ enabled: true, provider: "hermes", credentialMode: "org", baseUrl: null });
+    await expect(saveDecisionsSettings({ skillPicking: true, providerAppId: "api" })).rejects.toThrow("requires a company OpenAI");
   });
 });

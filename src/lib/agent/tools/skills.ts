@@ -2,7 +2,8 @@ import { and, eq, isNull, or } from "drizzle-orm";
 import { tool } from "ai";
 import { z } from "zod";
 import { db, type DbOrTx } from "@/db";
-import { skills, type Skill } from "@/db/schema";
+import { botTools, skills, type Skill } from "@/db/schema";
+import { getSetting } from "@/lib/settings";
 import type { AgentCtx, ToolEntry } from "../types";
 import { learnedSkillsForBot, learningIsEnabled, recordLearnedSkillUse } from "../learning/store";
 import { findSkill } from "../skill-lookup";
@@ -19,6 +20,15 @@ export async function skillsForBot(botId: string, ownerId: string, q: DbOrTx = d
     .from(skills)
     .where(and(eq(skills.ownerId, ownerId), or(eq(skills.botId, botId), isNull(skills.botId))))
     .orderBy(skills.name);
+}
+
+/** Rebuild the allowed catalog from current company, bot and personal learning gates. */
+export async function currentSkillsForTurn(ctx: AgentCtx): Promise<Skill[]> {
+  const settings = await getSetting("tools");
+  if (!ctx.bot || ctx.bot.hermesTeam || ctx.bot.executionMode !== "caller" || settings.disabledTools.includes("skills")) return [];
+  const configured = await db.select().from(botTools).where(and(eq(botTools.botId, ctx.bot.id), eq(botTools.toolKey, "skills")));
+  const saved = configured.length ? await skillsForBot(ctx.bot.id, ctx.bot.ownerId) : [];
+  return [...saved, ...await learnedSkillsForTurn({ ...ctx, toolSettings: settings })];
 }
 
 export function renderSkill(s: Skill) {

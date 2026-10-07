@@ -32,7 +32,8 @@ import { reviewNativeRun, scheduleLearningReview, recoverLearningReviews } from 
 import { successfulToolEvidence, lessonDisposition } from "@/lib/agent/learning/policy";
 import { curateLearnedSkills } from "@/lib/agent/learning/curator";
 import { selectMemories } from "@/lib/agent/memory";
-import { renderSkill, skillTool } from "@/lib/agent/tools/skills";
+import { currentSkillsForTurn, renderSkill, skillTool } from "@/lib/agent/tools/skills";
+import type { AgentCtx } from "@/lib/agent/types";
 import { findSkill, slashInvokedSkill } from "@/lib/agent/skill-lookup";
 
 let owner: Principal; let member: Principal; let boss: Principal;
@@ -80,6 +81,27 @@ beforeEach(async () => {
 afterAll(async () => { await fixture.client?.close(); });
 
 describe("native learning with real PostgreSQL migrations", () => {
+  it("rebuilds the picker catalog from current bot, company and personal skill grants", async () => {
+    await db.insert(schema.skills).values([
+      { id: "saved", ownerId: "owner", botId: "bot", slug: "saved", name: "Saved", description: "Allowed", instructions: "Steps" },
+      { id: "private", ownerId: "member", botId: "bot", slug: "private", name: "Private", description: "Other user", instructions: "Private steps" },
+    ]);
+    await db.insert(schema.botTools).values({ botId: "bot", toolKey: "skills", approval: "auto" });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson(), lesson({ kind: "policy", topic: "safety-policy" })] } });
+    await reviewNativeRun("run");
+    const policy = (await learningViews(owner, "bot")).find(row => row.kind === "policy")!;
+    if (policy.status === "pending") await changeLearning(owner, policy.id, policy.version, { status: "active" });
+    const [bot] = await db.select().from(schema.bots);
+    const ctx = { principal: boss, bot } as AgentCtx;
+    const catalog = await currentSkillsForTurn(ctx);
+    expect(catalog.map(s => s.id)).toContain("saved"); expect(catalog.map(s => s.id)).not.toContain("private");
+    expect(catalog.find(s => s.id === policy.id)?.mandatory).toBe(true);
+    await db.delete(schema.botTools);
+    expect((await currentSkillsForTurn(ctx)).map(s => s.id)).not.toContain("saved");
+    expect(await currentSkillsForTurn({ ...ctx, principal: { ...boss, user: { ...boss.user, prefs: { learningEnabled: false } } } })).toEqual([]);
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: ["skills"] } });
+    expect(await currentSkillsForTurn(ctx)).toEqual([]);
+  });
   it("learns a verified Action1 procedure for everyone, without installing updates or exposing the source chat", async () => {
     expect(await reviewNativeRun("run")).toBe(1);
     const shared = await learningViews(boss, "bot");
@@ -376,6 +398,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect((await learningViews(owner, "bot"))[0].useCount).toBe(1);
     expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
     await changeLearning(owner, saved.id, 1, { pinned: true });
+    expect((await learnedSkillsForBot("bot", "boss"))[0].pinned).toBe(true);
     await db.update(schema.botLearningReviews).set({ completedAt: null });
     fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 2, instructions: "Changed automatically." })] } });
     expect(await reviewNativeRun("run")).toBe(0);

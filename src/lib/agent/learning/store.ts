@@ -27,6 +27,7 @@ export async function learnedSkillsForBot(botId: string, userId: string, q: DbOr
     id: row.id, botId, ownerId: row.userId ?? "", slug: `learned-${row.userId ? "personal" : "shared"}-${row.topic}`,
     aliases: [`learned-${row.id}`],
     ...row.content, version: row.version, createdAt: row.createdAt, updatedAt: row.updatedAt,
+    pinned: row.pinned, mandatory: row.kind === "policy",
     description: `${row.userId ? "Personal" : "Shared bot"} learning: ${row.content.description}`,
   }));
 }
