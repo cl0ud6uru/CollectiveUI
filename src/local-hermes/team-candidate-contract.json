@@ -17,6 +17,8 @@
     "agent/agent_runtime_helpers.py": "b6454ff58e70702a45cd50e67f1ccc542d134c8cf4fa74d65dec9463c3c029f6",
     "agent/process_bootstrap.py": "32c754f552ad6e043267c6284e91677e2fa69d71e404e9c620c09ca51bb2da40",
     "agent/agent_init.py": "ce93f1d5acd4727d0005b46d7054d8892a55c820be40ebc7f594695f576b4d81",
+    "agent/transports/codex.py": "02b5cb1ba5603bb86fee315947a364f17678333e8f24b57bf4876aa1adcc292b",
+    "agent/codex_responses_adapter.py": "8923e37047274207d8867f5ae92ad308ebaa5ee27f55fb2df5139a2ad8f3115a",
     "tools/mcp_tool.py": "c8c99d7fdfb57a21ab112b005c51103db40d41a8d6fae3628fd5933936ca90ad",
     "tools/mcp_tool_transport.py": "915023c572f5cb56d0a99e7709a9d358be3a3c00cbd9f02fe7327815ffa7a8a0",
     "run_agent.py": "244da863d3c21591a3b5326dc14c2962d4e31131dda52df628502cd9fcbfea33",

@@ -2,7 +2,8 @@ import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {mkdtemp,mkdir,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {spawn,execFile,type ChildProcessWithoutNullStreams} from 'node:child_process';
+import {promisify} from 'node:util';
 import {DockerBroker} from '@/docker-hermes/broker';
 import {BrokerConfig,runtimeKey,type RuntimeDriver,type Profile} from '@/docker-hermes/docker';
 import {teamCandidateConfig,teamLearningSnapshot,type TeamCandidateConfig,type TeamMode} from '@/docker-hermes/types';
@@ -48,6 +49,10 @@ const begin=(controller:LocalController,nativeBindingId:string,p:Awaited<ReturnT
 const terminal=async(controller:LocalController,id:string)=>until(()=>['completed','interrupted','cancelled','failed'].includes(controller.getRun(id).status));
 
 describe('server-scoped active Team runtime',()=>{
+  it.skipIf(!process.env.HERMES_SOURCE).each(['collective-openai-responses-v1','collective-official-plan-responses-v1'])('selects the pinned generic Responses codec for %s without native Codex credentials',async adapter=>{
+    const result=await promisify(execFile)(process.env.HERMES_TEAM_CANDIDATE_PYTHON??'python',['tests/fixtures/hermes-team-responses-codec.py',adapter],{timeout:30000,maxBuffer:128*1024});
+    expect(JSON.parse(result.stdout.trim())).toEqual({codec:'codex_responses',authentication:'custom_server_gateway',externalCalls:0});
+  },40000);
   it('reports retained offline state through protected capabilities and refuses preparation before native work',async()=>{
     await broker.close();await mkdir(path.join(root,'offline-state'));config={...config,stateDir:path.join(root,'offline-state'),network:'none'};broker=new DockerBroker(config,driver);
     const grant=broker.authorizeTeam('alice',{teamBotId:'bot',mode:'member',modelPolicy:'personal_required'});
