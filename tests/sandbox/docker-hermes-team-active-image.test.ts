@@ -56,7 +56,7 @@ const route: VerifiedTeamModelRoute = { id: 'app:provider', adapterId: 'collecti
 /** Observe issued configuration only. Production Docker commands, framing, bootstrap and native gateway stay unchanged. */
 class ObservedDriver extends DockerDriver {
   candidates: TeamCandidateConfig[] = [];
-  stderr = ''; nativeErrors: string[] = [];
+  stderr = ''; nativeErrors: string[] = []; processSummary = '';
   safe(text: string) {
     for (const value of ['synthetic-never-live-provider-key', 'synthetic-hosted-image-fixture-only', ...this.candidates.flatMap(candidate =>
       [...Object.values(candidate.modelTokens), candidate.toolToken, ...(candidate.learningToken ? [candidate.learningToken] : [])])])
@@ -82,6 +82,21 @@ class ObservedDriver extends DockerDriver {
       });
       return child;
     } };
+  }
+  override async stop(owner: string) {
+    // Observe the real namespace before production Stop removes it. No arguments,
+    // environment values or profile content leave this fixed passive classifier.
+    if (this.candidates.length) {
+      try {
+        const [info] = JSON.parse(await docker(['inspect', this.name(owner)], 5000));
+        if (info.Config.Image !== PIN || info.Name !== `/${this.name(owner)}`
+          || info.Config.Labels['collective.namespace'] !== this.config.namespace
+          || info.Config.Labels['collective.owner'] !== runtimeKey(owner)) throw new Error('Owned runtime diagnostics refused.');
+        if (info.State.Running) this.processSummary = this.safe(await docker(['exec', '--user', '10000:10000', this.name(owner),
+          '/opt/hermes/.venv/bin/python', '-B', '-c', PROCESS_DIAGNOSTICS], 5000)).slice(0, 3000);
+      } catch (error) { this.processSummary = this.safe(`Passive process classification unavailable: ${String(error)}`); }
+    }
+    await super.stop(owner);
   }
 }
 function completion(calls: Array<{ name: string; arguments: unknown }> = [], content = 'Learned the useful procedure.') {
@@ -119,6 +134,27 @@ try:
  with httpx.Client(trust_env=False,follow_redirects=False,timeout=3) as client: response=client.get(sys.argv[1])
  print(json.dumps({'trusted':True,'status':response.status_code}))
 except httpx.ConnectError: print(json.dumps({'trusted':False}))`;
+/** Classify the exact production /proc admission predicates without serializing argv or environment data. */
+const PROCESS_DIAGNOSTICS = `import json,os,pathlib,re
+rows=[]; examined=0
+for proc in sorted(pathlib.Path('/proc').iterdir(),key=lambda p:int(p.name) if p.name.isdigit() else 0):
+ if not proc.name.isdigit() or int(proc.name)==os.getpid(): continue
+ examined+=1
+ if examined>128: break
+ try:
+  with (proc/'cmdline').open('rb') as f: raw=f.read(8193)
+  if len(raw)>8192: rows.append({'pid':int(proc.name),'cmdline':'oversized'}); continue
+  argv=raw.decode(errors='replace').split('\\0')
+  if not argv or not argv[0]: continue
+  known=any(pathlib.Path(a).name in ('hermes','hermes-agent','hermes.py') or a in ('hermes_cli','hermes_cli.main','tui_gateway.entry') or '/hermes_cli/' in a or '/tui_gateway/' in a for a in argv)
+  prefix=any(a.startswith('/opt/hermes/') for a in argv)
+  bridge='/opt/collective-bridge.py' in argv
+  comm=(proc/'comm').read_text()[:64].strip()
+  name=comm if re.fullmatch(r'[A-Za-z0-9_.-]{1,32}',comm) else 'other'
+  rows.append({'pid':int(proc.name),'name':name,'knownNative':known,'sourcePrefix':prefix,'bridge':bridge,'metadataReadable':os.access(proc/'environ',os.R_OK)})
+ except (FileNotFoundError,ProcessLookupError): continue
+ except PermissionError: rows.append({'pid':int(proc.name),'cmdline':'permission_denied'})
+print(json.dumps({'examined':min(examined,128),'truncated':examined>128,'processes':rows}))`;
 /** Passive, bounded source/package/log inventory. No native module, skill or bootstrap is executed. */
 const IMAGE_DIAGNOSTICS = `import hashlib,importlib.metadata,json,os,pathlib,re,stat,sys
 data=json.loads(sys.stdin.buffer.read(8193)); root=pathlib.Path('/opt/hermes'); home=pathlib.Path('/opt/data/profiles')/data['profile']
@@ -164,8 +200,9 @@ describe('official-image fixture diagnostic safety without Docker', () => {
     const partial = driver.safe(tokens.reply.slice(0, 32)); expect(driver.safe(partial + tokens.reply.slice(32))).not.toMatch(/a{32}/);
   });
   it('compiles the fixed passive Python inventory without executing native code or inspecting Docker', async () => {
-    await exec('/usr/bin/python3', ['-c', 'import sys; compile(sys.argv[1], "<fixed-passive-image-diagnostics>", "exec")', IMAGE_DIAGNOSTICS],
-      { env: ENV, timeout: 10000 });
+    for (const program of [IMAGE_DIAGNOSTICS, PROCESS_DIAGNOSTICS])
+      await exec('/usr/bin/python3', ['-c', 'import sys; compile(sys.argv[1], "<fixed-passive-image-diagnostics>", "exec")', program],
+        { env: ENV, timeout: 10000 });
   });
 });
 
@@ -223,7 +260,7 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
       expect(entry.Mounts).toHaveLength(1); expect(entry.Mounts[0]).toMatchObject({ Type: 'volume', Name: `${driver.name(owner)}-data`, Destination: '/opt/data', RW: false });
       expect(entry.Config.Labels['collective.namespace']).toBe(config.namespace); expect(entry.Config.Labels['collective.owner']).toBe(runtimeKey(owner));
       expect(entry.Config.Labels['collective.purpose']).toBe('team-image-diagnostics');
-      return driver.safe(await imageInput(['start', '--attach', '--interactive', id], JSON.stringify({ profile: binding.profile, identity: binding.identity, hashes: nativeContract.sourceHashes }))).slice(0, 8000);
+      return driver.safe(await imageInput(['start', '--attach', '--interactive', id], JSON.stringify({ profile: binding.profile, identity: binding.identity, hashes: nativeContract.sourceHashes }))).slice(0, 6000);
     } finally { await docker(['container', 'rm', '--force', id], 10000); diagnosticNames.delete(name); }
   }
   async function startCandidate(parent: { id: string; holder: string | null; segment: number }) {
@@ -234,7 +271,7 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
       let state: unknown;
       try { const { State } = await ownedRuntime(); state = { status: State.Status, exitCode: State.ExitCode, oomKilled: State.OOMKilled, error: String(State.Error).slice(0, 1024) }; }
       catch { state = 'Owned runtime state unavailable'; }
-      throw new Error(driver.safe(`${String(error)}; runtime state=${JSON.stringify(state)}; native stderr=${driver.stderr.slice(-4000)}; native RPC errors=${JSON.stringify(driver.nativeErrors.slice(-4)).slice(0, 3000)}; passive image inventory=${inventory}`));
+      throw new Error(driver.safe(`${String(error)}; runtime state=${JSON.stringify(state)}; native stderr=${driver.stderr.slice(-2000)}; native RPC errors=${JSON.stringify(driver.nativeErrors.slice(-4)).slice(0, 2000)}; passive image inventory=${inventory}; process classification=${driver.processSummary}`));
     }
   }
   async function provider(purpose: string, init?: RequestInit) {
