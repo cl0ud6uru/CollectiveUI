@@ -316,6 +316,13 @@
       "when": 1791330291161,
       "tag": "0044_hermes_team_official_plan_connections",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791332822034,
+      "tag": "0045_hermes_team_official_auth",
+      "breakpoints": true
     }
   ]
 }

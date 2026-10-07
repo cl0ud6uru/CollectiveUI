@@ -2,7 +2,7 @@ import { createHash,randomUUID } from 'node:crypto';
 import { and,eq,sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db,type DbOrTx } from '@/db';
-import { officialPlanConnections } from '@/db/schema';
+import { officialPlanConnections,officialPlanAuthOperations,officialPlanAuthAttempts } from '@/db/schema';
 import { encrypt,decrypt } from '@/lib/crypto';
 import { loadPrincipal,type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
@@ -15,19 +15,22 @@ export const OFFICIAL_PLAN_REQUIRED_SCOPES=['chatgpt.tokens.use.direct','resourc
 export type OfficialPlanConnection=typeof officialPlanConnections.$inferSelect;
 const bounded=z.string().min(1).max(256);
 const identitySchema=z.object({clientId:bounded,hostId:bounded,subject:bounded}).strict();
-const tokenSchema=z.object({version:z.literal(1),access:z.string().min(1).max(16000),refresh:z.string().min(1).max(16000).optional(),accessHash:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+const tokenSchema=z.object({version:z.literal(1),access:z.string().min(1).max(16000),refresh:z.string().min(1).max(16000).optional(),accessHash:z.string().regex(/^[a-f0-9]{64}$/),idToken:z.string().min(1).max(16000).optional(),earliestRefreshHint:z.union([z.string().max(256),z.number().finite(),z.null()]).optional()}).strict();
 const hash=(value:unknown)=>createHash('sha256').update(canonicalTeamToolInput(value)).digest('hex');
-const aad=(row:Pick<OfficialPlanConnection,'id'|'userId'|'clientId'|'hostId'|'subject'>)=>`official_plan_connections.token_bundle_enc|${JSON.stringify([row.id,row.userId,row.clientId,row.hostId,row.subject])}`;
+export const officialPlanTokenAad=(row:Pick<OfficialPlanConnection,'id'|'userId'|'clientId'|'hostId'|'subject'>)=>`official_plan_connections.token_bundle_enc|${JSON.stringify([row.id,row.userId,row.clientId,row.hostId,row.subject])}`;
 
 /** This boundary must be supplied by the verified server authorization-code exchange, never a browser claim decoder. */
 export type VerifiedOfficialAccessClaims={issuer:'https://auth.openai.com';audience:typeof OFFICIAL_PLAN_ORIGIN;subject:string;clientId:string;scopes:string[];issuedAt:number;notBefore:number;expiresAt:number};
 export type OfficialPlanIngestion={verifyAccessToken(token:string):Promise<VerifiedOfficialAccessClaims>;fetch:typeof fetch};
 
-/** Trusted ingestion only; there is intentionally no public login, grant or token-writing endpoint. */
-export async function storeVerifiedOfficialPlanGrant(p:Principal,input:{clientId:string;hostId:string;subject:string;access:string;refresh?:string},services:OfficialPlanIngestion){
-  const current=await loadPrincipal(p.user.id);if(!current || current.user.disabled || current.user.sessionVersion!==p.user.sessionVersion)throw new HttpError(403,'The account session changed.');
+export type OfficialPlanGrantInput={clientId:string;hostId:string;subject:string;access:string;refresh?:string;idToken?:string;earliestRefreshHint?:string|number|null};
+export type OfficialPlanSelection={id:string|null;revision?:number};
+
+/** Verification/catalog work is separate from atomic owner-bound persistence. */
+export async function prepareOfficialPlanGrant(input:OfficialPlanGrantInput,services:OfficialPlanIngestion){
   const identity=identitySchema.parse({clientId:input.clientId,hostId:input.hostId,subject:input.subject});
-  const bundle=tokenSchema.parse({version:1,access:input.access,refresh:input.refresh,accessHash:hash(input.access)});
+  const bundle=tokenSchema.parse({version:1,access:input.access,refresh:input.refresh,idToken:input.idToken,earliestRefreshHint:input.earliestRefreshHint,accessHash:hash(input.access)});
+  if(Buffer.byteLength(JSON.stringify(bundle))>32000)throw new HttpError(409,'The official token bundle is too large.');
   const claims=await services.verifyAccessToken(bundle.access),now=Date.now();
   if(claims.issuer!=='https://auth.openai.com' || claims.audience!==OFFICIAL_PLAN_ORIGIN || claims.clientId!==identity.clientId || claims.subject!==identity.subject
     || !Number.isSafeInteger(claims.issuedAt) || !Number.isSafeInteger(claims.notBefore) || !Number.isSafeInteger(claims.expiresAt)
@@ -46,19 +49,31 @@ export async function storeVerifiedOfficialPlanGrant(p:Principal,input:{clientId
   const catalogResponse=z.object({models:z.array(z.object({slug:z.string().min(1).max(200),display_name:z.string().max(256).optional(),visibility:z.string().max(50)}).passthrough()).max(100)}).passthrough().parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
   const catalog=catalogResponse.models.filter(model=>model.visibility==='list').map(model=>model.slug);
   if(!catalog.length || new Set(catalog).size!==catalog.length)throw new HttpError(409,'Official model discovery returned an invalid catalog.');
-  return db.transaction(async tx=>{
-    await tx.execute(sql`select id from users where id = ${p.user.id} for update`);
-    const fresh=await loadPrincipal(p.user.id,tx);if(!fresh || fresh.user.sessionVersion!==p.user.sessionVersion)throw new HttpError(403,'The account session changed.');
-    const [prior]=await tx.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true))).for('update');
-    const same=prior && prior.clientId===identity.clientId && prior.hostId===identity.hostId && prior.subject===identity.subject;
-    if(prior && !same)await tx.update(officialPlanConnections).set({selected:false,updatedAt:new Date()}).where(eq(officialPlanConnections.id,prior.id));
-    const id=same?prior.id:randomUUID(),revision=same?prior.revision+1:1;
-    const values={...identity,userId:p.user.id,selected:true,status:'active' as const,scopes:claims.scopes,expiresAt:new Date(claims.expiresAt),
-      tokenBundleEnc:encrypt(JSON.stringify(bundle),aad({id,userId:p.user.id,...identity})),revision,catalog,catalogRevision:revision,
-      catalogExpiresAt:new Date(Math.min(claims.expiresAt,now+300000)),verifiedAt:new Date(now),updatedAt:new Date()};
-    if(same)await tx.update(officialPlanConnections).set(values).where(eq(officialPlanConnections.id,id));else await tx.insert(officialPlanConnections).values({id,...values});
-    return {connected:true}; // No subject, host, client ID or token is browser metadata.
-  });
+  return {identity,bundle,claims,catalog,verifiedAt:now};
+}
+
+/** Caller owns the user lock; expected selection prevents overwriting an account changed during OAuth I/O. */
+export async function persistOfficialPlanGrant(p:Principal,prepared:Awaited<ReturnType<typeof prepareOfficialPlanGrant>>,tx:DbOrTx,expected?:OfficialPlanSelection){
+  const fresh=await loadPrincipal(p.user.id,tx);if(!fresh || fresh.user.disabled || fresh.user.sessionVersion!==p.user.sessionVersion)throw new HttpError(403,'The account session changed.');
+  const [prior]=await tx.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true))).for('update');
+  if(expected && ((prior?.id??null)!==expected.id || (prior && prior.revision!==expected.revision)))throw new HttpError(409,'The selected official account changed.');
+  const {identity,bundle,claims,catalog,verifiedAt}=prepared;
+  if(claims.expiresAt<=Date.now())throw new HttpError(409,'The verified official token expired before it could be stored.');
+  const [same]=await tx.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.clientId,identity.clientId),eq(officialPlanConnections.hostId,identity.hostId),eq(officialPlanConnections.subject,identity.subject))).for('update');
+  if(prior && prior.id!==same?.id)await tx.update(officialPlanConnections).set({selected:false,updatedAt:new Date()}).where(eq(officialPlanConnections.id,prior.id));
+  const id=same?.id??randomUUID(),revision=same? same.revision+1:1;
+  const values={...identity,userId:p.user.id,selected:true,status:'active' as const,scopes:claims.scopes,expiresAt:new Date(claims.expiresAt),
+    tokenBundleEnc:encrypt(JSON.stringify(bundle),officialPlanTokenAad({id,userId:p.user.id,...identity})),revision,catalog,catalogRevision:revision,
+    catalogExpiresAt:new Date(Math.min(claims.expiresAt,verifiedAt+300000)),verifiedAt:new Date(verifiedAt),updatedAt:new Date()};
+  if(same)await tx.update(officialPlanConnections).set(values).where(eq(officialPlanConnections.id,id));else await tx.insert(officialPlanConnections).values({id,...values});
+  return {connected:true};
+}
+
+/** Trusted ingestion only; browser token objects are never accepted. */
+export async function storeVerifiedOfficialPlanGrant(p:Principal,input:OfficialPlanGrantInput,services:OfficialPlanIngestion){
+  const current=await loadPrincipal(p.user.id);if(!current || current.user.disabled || current.user.sessionVersion!==p.user.sessionVersion)throw new HttpError(403,'The account session changed.');
+  const prepared=await prepareOfficialPlanGrant(input,services);
+  return db.transaction(async tx=>{await tx.execute(sql`select id from users where id = ${p.user.id} for update`);return persistOfficialPlanGrant(p,prepared,tx);});
 }
 
 /** Metadata is fresh and owner-specific; no decryption, refresh, discovery or inference. */
@@ -69,6 +84,10 @@ export async function officialPlanMetadata(userId:string,model:string|undefined,
     catalog:officialPlanConnections.catalog,catalogRevision:officialPlanConnections.catalogRevision,catalogExpiresAt:officialPlanConnections.catalogExpiresAt,verifiedAt:officialPlanConnections.verifiedAt})
     .from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,userId),eq(officialPlanConnections.selected,true))).for('share');
   if(!row)return null;
+  const [unresolved]=await q.select({id:officialPlanAuthOperations.id}).from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.connectionId,row.id),eq(officialPlanAuthOperations.credentialRevision,row.revision),sql`${officialPlanAuthOperations.state} in ('running','needs_attention')`));
+  if(unresolved)throw new HttpError(409,'The official account has an unresolved token operation. Reconnect before model work.');
+  const [exchanging]=await q.select({id:officialPlanAuthAttempts.id}).from(officialPlanAuthAttempts).where(and(eq(officialPlanAuthAttempts.expectedConnectionId,row.id),eq(officialPlanAuthAttempts.expectedRevision,row.revision),sql`${officialPlanAuthAttempts.state} in ('exchanging','needs_attention')`));
+  if(exchanging)throw new HttpError(409,'The official account has an unresolved sign-in. Reconnect before model work.');
   if(!row.credentialRevision.startsWith('v2.') || row.status!=='active' || row.expiresAt.getTime()<=now || row.catalogExpiresAt.getTime()<=now
     || row.catalogRevision!==row.revision || OFFICIAL_PLAN_REQUIRED_SCOPES.some(scope=>!row.scopes.includes(scope)) || (model && !row.catalog.includes(model)))throw new HttpError(409,'The official personal account needs verified model access.');
   return {id:row.id,userId:row.userId,expiresAt:row.expiresAt.getTime(),bindingHash:hash({...row,expiresAt:row.expiresAt.getTime(),catalogExpiresAt:row.catalogExpiresAt.getTime(),verifiedAt:row.verifiedAt.getTime()})};
@@ -76,7 +95,7 @@ export async function officialPlanMetadata(userId:string,model:string|undefined,
 
 export function openOfficialPlanSecret(row:OfficialPlanConnection){
   if(!row.tokenBundleEnc.startsWith('v2.'))throw new HttpError(409,'An owner-bound official credential is required.');
-  const bundle=tokenSchema.parse(JSON.parse(decrypt(row.tokenBundleEnc,aad(row))));
+  const bundle=tokenSchema.parse(JSON.parse(decrypt(row.tokenBundleEnc,officialPlanTokenAad(row))));
   if(hash(bundle.access)!==bundle.accessHash)throw new HttpError(409,'The official credential changed.');
   return bundle;
 }

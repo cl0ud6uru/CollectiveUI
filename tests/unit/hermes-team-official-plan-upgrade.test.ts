@@ -10,7 +10,7 @@ describe('official personal account migration44',()=>{
  it('preserves all0–43 artifacts and extends the canonical43 snapshot only with the declared personal fields/table',()=>{
   const baseline=JSON.parse(readFileSync('tests/fixtures/hermes-team-official-plan-baseline.json','utf8'));
   for(const [file,hash] of Object.entries(baseline.files))expect(createHash('sha256').update(readFileSync(file)).digest('hex'),file).toBe(hash);
-  const journal=JSON.parse(readFileSync(`${folder}/meta/_journal.json`,'utf8'));expect(journal.entries.slice(0,44)).toEqual(baseline.journalEntries);expect(journal.entries.at(-1)).toMatchObject({idx:44,tag:'0044_hermes_team_official_plan_connections'});
+  const journal=JSON.parse(readFileSync(`${folder}/meta/_journal.json`,'utf8'));expect(journal.entries.slice(0,44)).toEqual(baseline.journalEntries);expect(journal.entries[44]).toMatchObject({idx:44,tag:'0044_hermes_team_official_plan_connections'});
   const prior=snapshot(43),next=snapshot(44);expect(next.prevId).toBe(prior.id);
   for(const [name,table] of Object.entries(prior.tables)){
    const current=structuredClone(next.tables[name]);

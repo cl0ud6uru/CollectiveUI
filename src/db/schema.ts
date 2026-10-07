@@ -1611,3 +1611,28 @@ export const officialPlanConnections=pgTable('official_plan_connections',{
   check('official_plan_revision_check',sql`${t.revision} > 0 and ${t.catalogRevision} = ${t.revision}`),
   check('official_plan_payload_bound',sql`${t.tokenBundleEnc} like 'v2.%' and octet_length(${t.tokenBundleEnc}) <= 50000 and jsonb_typeof(${t.scopes}) = 'array' and octet_length(${t.scopes}::text) <= 4096 and jsonb_typeof(${t.catalog}) = 'array' and jsonb_array_length(${t.catalog}) <= 100 and octet_length(${t.catalog}::text) <= 24000`),
 ]);
+
+/** Owner/session-bound one-shot loopback authorization. Secrets never appear in status APIs. */
+export const officialPlanAuthAttempts=pgTable('official_plan_auth_attempts',{
+  id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),sessionVersion:integer('session_version').notNull(),
+  transportId:text('transport_id').notNull(),hostId:text('host_id').notNull(),redirectUri:text('redirect_uri').notNull(),
+  stateHash:text('state_hash').notNull(),returnTokenHash:text('return_token_hash').notNull(),payloadEnc:text('secret_enc').notNull(),
+  expectedConnectionId:text('expected_connection_id'),expectedRevision:integer('expected_revision'),
+  callbackHash:text('callback_hash'),state:text('state').$type<'pending'|'exchanging'|'complete'|'cancelled'|'needs_attention'|'expired'>().notNull().default('pending'),
+  expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('official_plan_auth_state_idx').on(t.stateHash),
+  uniqueIndex('official_plan_auth_open_owner_idx').on(t.userId).where(sql`${t.state} in ('pending','exchanging')`),
+  check('official_plan_auth_state_check',sql`${t.state} in ('pending','exchanging','complete','cancelled','needs_attention','expired')`),
+  check('official_plan_auth_identity_check',sql`${t.sessionVersion} >= 0 and length(${t.transportId}) between 1 and 128 and length(${t.hostId}) between 1 and 256 and length(${t.redirectUri}) <= 256 and (${t.expectedRevision} is null or ${t.expectedRevision} > 0) and ((${t.expectedConnectionId} is null) = (${t.expectedRevision} is null))`),
+  check('official_plan_auth_secret_check',sql`${t.stateHash} ~ '^[a-f0-9]{64}$' and ${t.returnTokenHash} ~ '^[a-f0-9]{64}$' and (${t.callbackHash} is null or ${t.callbackHash} ~ '^[a-f0-9]{64}$') and ${t.payloadEnc} like 'v2.%' and octet_length(${t.payloadEnc}) <= 64000 and ${t.expiresAt} > ${t.createdAt} and ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'`),
+]);
+
+/** A rotating token is never exchanged twice after unknown I/O, including a new request UUID. */
+export const officialPlanAuthOperations=pgTable('official_plan_auth_operations',{
+  id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),connectionId:text('connection_id').notNull().references(()=>officialPlanConnections.id,{onDelete:'cascade'}),
+  sessionVersion:integer('session_version').notNull(),credentialRevision:integer('credential_revision').notNull(),
+  kind:text('kind').$type<'refresh'|'revoke'>().notNull(),state:text('state').$type<'running'|'complete'|'cancelled'|'needs_attention'>().notNull().default('running'),
+  createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('official_plan_auth_operation_revision_idx').on(t.connectionId,t.kind,t.credentialRevision),
+  check('official_plan_auth_operation_state_check',sql`${t.kind} in ('refresh','revoke') and ${t.state} in ('running','complete','cancelled','needs_attention') and ${t.sessionVersion} >= 0 and ${t.credentialRevision} > 0`),
+]);

@@ -1,4 +1,3 @@
-import 'server-only';
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from 'jose';
 import { z } from 'zod';
 import { HttpError } from '@/lib/authz';

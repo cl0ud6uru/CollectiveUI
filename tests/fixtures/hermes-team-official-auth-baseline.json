@@ -1,0 +1,411 @@
+{
+  "files": {
+    "src/db/migrations/0000_init.sql": "eb130b61fb83dda5201f9427fe9f119f73ad3fd0453fd72c682b6d152cc48eaf",
+    "src/db/migrations/0001_bot_label.sql": "065857bc57e69d8730b0c05433c140d426354037ff833146b6f4a1ed908d5178",
+    "src/db/migrations/0002_groups_prefs_templates.sql": "59529f8c8f765dcbcf3ca253bdacb4349cbbf2fcd182fa6cfc36627594bda0f7",
+    "src/db/migrations/0003_providers.sql": "13a81e256de4c044d1d45aae7523718107e511d4ff1dba16be94f254206a3623",
+    "src/db/migrations/0004_chatgpt_connections.sql": "4be5b850bf4756f6c34228756e94456b3d9e13ffd51fedad8f474a341f4d1465",
+    "src/db/migrations/0005_mcp.sql": "b0edaf57025e407694ef69f6f177616545829157f82e67c0ed35afab36f2f36e",
+    "src/db/migrations/0006_sandbox.sql": "7f5bd0cbf92f255b65fc1c0c64c72d4de0252ecb0b1b1ed1f126a71e93c1ff15",
+    "src/db/migrations/0007_hermes.sql": "241faadac46d0f97729688f3a17f61e2cefc16ffaca03f0798478255e98b8dcf",
+    "src/db/migrations/0008_runs.sql": "c687de38c57596c7a710600237c36ef9db7073486d62b5cfafa4500aceaf80f8",
+    "src/db/migrations/0009_hermes_commands.sql": "b5aced2933ecc28be0ddd6d707a9250405139b6b8f03de82002dd02661d287ac",
+    "src/db/migrations/0010_bot_home.sql": "1df829cf6c4cae03e8d26ff144a80166ed7283cab5f43da384549e140aaad8bc",
+    "src/db/migrations/0011_local_accounts.sql": "423b3cfddaf76623ce8a29c9c6bdbf3cb299bab67bd9589a0d5e645f736cbc90",
+    "src/db/migrations/0012_bot_pets.sql": "3f9cd81d74b977354e7476d451193644fea185ae0819eab76c6bce9e5730a82d",
+    "src/db/migrations/0013_hermes_provisioning.sql": "b5fcc2aa14abd31a69f2cc8aec1237565424e10ff236ed77882dba8644f301d1",
+    "src/db/migrations/0014_routine_admission_outbox.sql": "f42818860dd8aedee4cfc5ee9ef87db3b4caf52af6dfe2aae8ed73a4d555c84b",
+    "src/db/migrations/0015_native_service_bots.sql": "2e3788757732ee421105620882f2dd3338115b658ae1fb9f4bc4b57330c18328",
+    "src/db/migrations/0016_shared_pet_catalog.sql": "942a1fbec07ac82ebdaa1426561a20d1803e58c65c05c8b7811be9e9e5819671",
+    "src/db/migrations/0017_pet_legacy_inheritance.sql": "aa477470acb86c0e541d0e5b32699cf6c09e80af2f71a6c3aa86c92e79b3791d",
+    "src/db/migrations/0018_default_coordinator.sql": "89352cf01d3b8a0dbdc10fc3d10998a149499e89eba02b67c6c54796e500f86d",
+    "src/db/migrations/0019_delegated_tasks.sql": "e7a253b7778c78bba5eee4211acc6b7a68fb6e1c149cfb1fc7480d7f6e4d9189",
+    "src/db/migrations/0020_native_async_tasks.sql": "f106fbe6c424b3e58dc9910d2f8b6e0f23d03df53c913496428f14686dd6ea00",
+    "src/db/migrations/0021_local_factors.sql": "30814483b744c53358f28d496dff80febf6d7d3062bb3e45f1607cc89abad240",
+    "src/db/migrations/0022_related_delegation_turns.sql": "912d687a777f418d8356332dea847ca90adee4675606653743ddc5697d31f6f3",
+    "src/db/migrations/0023_saved_provider_connections.sql": "b9a7bd7e07498c639bf161b05912eaa9278ee63ad926caedb25de0d4f360991a",
+    "src/db/migrations/0024_docker_hermes_enrollment.sql": "2f411f4f0f9df1884c679f3f073eab73d46421ed316afa2dfb81a3fc50a4890c",
+    "src/db/migrations/0025_coordinator_roles.sql": "d0fceb1a59a09f7ceafa55195a8f8479832819402578ea13a72197edf1456192",
+    "src/db/migrations/0026_openai_native_search.sql": "37dbe8a9d49ac2a8f372824b2a28b6b426257074cbc1cb9caa897b2dc066b19f",
+    "src/db/migrations/0027_mobile_sessions.sql": "e0e4411618fe3b5c070e5891f3b06d76f999b841daaca73d5e1f91ce696facad",
+    "src/db/migrations/0028_pet_catalog_sprite_hd.sql": "32f65f1659c788cdfe813df6dad755c3c0b4db4921c008562733f2a9c2d981c7",
+    "src/db/migrations/0029_live_activities.sql": "d5d366f486627bc606827e0e52258ef3c216108a1e3c44c624586a1c2eb8d063",
+    "src/db/migrations/0030_remote_hermes_connections.sql": "87d23a38ea1af783ba1c324d3243f0de5ba794701e7b84dd0b365002f2438aba",
+    "src/db/migrations/0031_remote_hermes_sessions.sql": "9a8de4eff7739e9d93b871a40bc8ba18d407c6ca42fba5abd64e3f49e8971b78",
+    "src/db/migrations/0032_remote_hermes_reservations.sql": "3afbdc383fd1d312ac163e532b8df2859efe125161b4896ea090f13614df6447",
+    "src/db/migrations/0033_delegated_workspace_approvals.sql": "867e239e641a4e284139f7ce7eebf51abe592fde283e1fc4a8cc5897ce13db8d",
+    "src/db/migrations/0034_ldap_passkeys.sql": "6539f754083c56f51a8b6c24b847bd48b69671f8d38728a9fb2a9ad74b7a6ee1",
+    "src/db/migrations/0035_direct_user_permissions.sql": "12f9c01360083e2df13da4c5c0916375eefc65b6bb7a5b6651f925fd31a4c803",
+    "src/db/migrations/0036_native_bot_learning.sql": "371693508b94c493800acb766858f75e4072edf63f50dd8f09226ece10752759",
+    "src/db/migrations/0037_learning_usage.sql": "d1908a864c1c591bdd315772e1f8bcc287620cab55445904e53bd4542e821fee",
+    "src/db/migrations/0038_hermes_team_bots.sql": "c507c684be7b4e1698812a75a5fb24cebfbbd5bdbd1de5615c566e9ca489cf6b",
+    "src/db/migrations/0039_hermes_team_revision_immutability.sql": "4f04d286c316db08ffa5236a22a68de94ed8486a06e18b55f2b66a9680300338",
+    "src/db/migrations/0040_hermes_team_admission.sql": "97be7fd4dd31902b61524b942cdbc364a585f1aae3109bdb4c0f0042c823b92d",
+    "src/db/migrations/0041_hermes_team_candidate_adapters.sql": "fff29dcdb5f7ecd6542ac30360e10a19b6ad23a8962b68300656d8ceebc67c7d",
+    "src/db/migrations/0042_hermes_team_member_connections.sql": "0121d49ee4eab965475b838a71ff6a139942b311618a71fed806670674814206",
+    "src/db/migrations/0043_hermes_team_learning_handoffs.sql": "3e0162e1e3f56f9569db4c0aeeb0f13ac99ccb515dbd2e9317ceaef737a34ef0",
+    "src/db/migrations/0044_hermes_team_official_plan_connections.sql": "569e6c506a1feae45ae21aad17cb10404a5be037dc1c0ee9f6a523698cf714b9",
+    "src/db/migrations/meta/0000_snapshot.json": "fa4d7d37a72c5e3752eb4b14a52198e6914429c9a6678ce1d057e091f80c541f",
+    "src/db/migrations/meta/0001_snapshot.json": "29c72e5f2b8ef385cf93638c5fad72278c5c972750fa54715f932e277a5c2757",
+    "src/db/migrations/meta/0002_snapshot.json": "af9966f8cd43feb96bb63b8074f015c846aa59caa445c8baaa172a31a7dcaaea",
+    "src/db/migrations/meta/0003_snapshot.json": "4973d20ffbcc809306fa9dfe920d7c829b433f1b647a13c67406097cd809161d",
+    "src/db/migrations/meta/0004_snapshot.json": "e3f9410a0f634b7d6e2cb50015772ac7730604f5cb160a706ec0bbd0251b339c",
+    "src/db/migrations/meta/0005_snapshot.json": "078f37a6adc405a2ec42ce5356bfeaea330aae63c177a6b2a5c85642c259a25c",
+    "src/db/migrations/meta/0006_snapshot.json": "2d5fe4a82db2fcc4d349eaf4cdf63b98a8705ebc2c41fa62263ccc226f556717",
+    "src/db/migrations/meta/0007_snapshot.json": "d0c23e9798e5e56b5c1fae90e2a3edf2d22f19a9841a18f6f1c84affe3f5ad83",
+    "src/db/migrations/meta/0008_snapshot.json": "0315c614618effe75edffd5912c3e1691288b72a874b43eeac8faf0591ad7089",
+    "src/db/migrations/meta/0009_snapshot.json": "6a5eacb703886781f263078c09d9af00685eae9007e4a0fb7b375f64c6094cfa",
+    "src/db/migrations/meta/0010_snapshot.json": "6914ab709de062ce41a58659998904a3a4cedd44ed8e064fffec3443c8cec003",
+    "src/db/migrations/meta/0011_snapshot.json": "67f3e23e77fb8b09852dea9188d05d77f3a46053b0f6ec0d78fe1483feaf115c",
+    "src/db/migrations/meta/0012_snapshot.json": "e9c51b087dffbe32e7d5e7a713992b1ab73075b1ac5471866e2dc348961e67cc",
+    "src/db/migrations/meta/0013_snapshot.json": "4515702d704fa524d3e2f3d89dc9553750af1299f6baf6b34608893d41665dc0",
+    "src/db/migrations/meta/0014_snapshot.json": "413eb076f2e4032110b298207bbe13607d3032914949b619e5edc5887c8bf5b7",
+    "src/db/migrations/meta/0015_snapshot.json": "4da00c0da160310ce3d9fdef97b3f3d19c63b2f2c1c5c4f0abe2a768e1a9fcfd",
+    "src/db/migrations/meta/0016_snapshot.json": "42781452999a997b15dcb625bde9a84e1a4567c56d8db3153f4dc025387eccaf",
+    "src/db/migrations/meta/0017_snapshot.json": "cf68b89ca54375222610e447d28b82c6bc808974a6d8640191c63b00c7b4f580",
+    "src/db/migrations/meta/0018_snapshot.json": "ad1633fc5b1faf329e505751b014bfc1a5bf150bc6818fa6398085b2fcb32fdc",
+    "src/db/migrations/meta/0019_snapshot.json": "460e9d5271c812d5d233bd6e19f52e39feaa199c31048460c3c5d908c6f9c04c",
+    "src/db/migrations/meta/0020_snapshot.json": "79d8ee3ace2843a6a8c0e5ce9d65790b944ee5edb96fdeccfa94143ad4b5fced",
+    "src/db/migrations/meta/0021_snapshot.json": "cac1e16d4171cc44ae1e57850c24c5f057134ed8e13a6739ec5c0d2d46607cbb",
+    "src/db/migrations/meta/0022_snapshot.json": "46c9e4c5005ee90a5a70bf676a5f4f51798e3dfdf749c5aec008ce71099f02d0",
+    "src/db/migrations/meta/0023_snapshot.json": "9ee8adbff6d0566c8568415d3b368dd753eeef8f2531a78b4dde5ce9b193e40b",
+    "src/db/migrations/meta/0024_snapshot.json": "cee93327e61ab6e98dc2b30c5bc439d6e2ef0a05239204000bf94efe3fd67f7f",
+    "src/db/migrations/meta/0025_snapshot.json": "6a9ed58028d05553440f108783afa44d4f05b33a4f1667a8983602a1a6a6c7f5",
+    "src/db/migrations/meta/0026_snapshot.json": "3067abf9229947b6d9d1cb008a9b573474937fb976c50716229f7e1b3c39fe98",
+    "src/db/migrations/meta/0027_snapshot.json": "06b4af984806766fc87a18b595583a2745fcffc9b94f574d887e8d8351cf4e39",
+    "src/db/migrations/meta/0028_snapshot.json": "42611473254482a74cda58455f087b2325377b686e9cfe834fac2b3f77b4116e",
+    "src/db/migrations/meta/0029_snapshot.json": "e00ccd26c8020afb0e80a36f568085061af0bd509a9adbdd8b292bca0907f988",
+    "src/db/migrations/meta/0030_snapshot.json": "bb09ae3e4b8573b562415e74d4e1c157d968296ae94324162377e25aef9927f5",
+    "src/db/migrations/meta/0031_snapshot.json": "bc4f6d771f3b37ddd3801c55a8dbb1472dd2d44962e52f17e1cd238df3470d94",
+    "src/db/migrations/meta/0032_snapshot.json": "5f78378db35e9de5744d05cecb7c5db5685a1a14263550e6b78e5f7fd88ae06f",
+    "src/db/migrations/meta/0033_snapshot.json": "ddb3c483411b691fe2531590ed749974d6e32b77dfa6df6250c977af49b8ede6",
+    "src/db/migrations/meta/0034_snapshot.json": "7ff8ac8a9c4d332068e3e9266c9a3e2e02b7f792197637793025b2e09dd11199",
+    "src/db/migrations/meta/0035_snapshot.json": "a98b8d64c0ad58f3dad55917b07eb17dd59987483f6cb0f7f6bae186a7040b42",
+    "src/db/migrations/meta/0036_snapshot.json": "0600b88c86cd913c4a526074a858ceeadba7da05d0b0434facca0722df79f661",
+    "src/db/migrations/meta/0037_snapshot.json": "6ebc7661baf30a6c281bec6ecfa18d92844ef763b535dea31a5d013aa9120536",
+    "src/db/migrations/meta/0038_snapshot.json": "c533a40e15401e277060846fabfbd3e3e397e102fe75b0c6438cb859f63ff15a",
+    "src/db/migrations/meta/0039_snapshot.json": "2836d9c6a8838fdf378d5f4b5612516a6eb54d6cc9979bdebc2b84f4582917ae",
+    "src/db/migrations/meta/0040_snapshot.json": "e3f4b3bf8b86602f523d49a074cdaebadc0c318f5c4ff6637398104ed46d3ee2",
+    "src/db/migrations/meta/0041_snapshot.json": "af7453d8bb0898d863db089fc49d00ad4c2bcd6dafab13edbbac54b90c04ec25",
+    "src/db/migrations/meta/0042_snapshot.json": "f81bfc1cc55d3f5144c58dee8803c4f487b5a60d4ddfd5b407d03e96fe138bda",
+    "src/db/migrations/meta/0043_snapshot.json": "542dd5a6d0d4a41d39fa5baa84d70793a34e58c8da9bcbc4adedf5395e75a04d",
+    "src/db/migrations/meta/0044_snapshot.json": "3f1e04da7aee177ab2c6114294ac96ca42513876a3e21df377a36bfc9f274506"
+  },
+  "journalEntries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790221370607,
+      "tag": "0000_init",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790224212945,
+      "tag": "0001_bot_label",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790225206365,
+      "tag": "0002_groups_prefs_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790346772089,
+      "tag": "0003_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790349008293,
+      "tag": "0004_chatgpt_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790622848566,
+      "tag": "0005_mcp",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790691212901,
+      "tag": "0006_sandbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790744407694,
+      "tag": "0007_hermes",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790782768128,
+      "tag": "0008_runs",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790879755556,
+      "tag": "0009_hermes_commands",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790887766371,
+      "tag": "0010_bot_home",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790890000000,
+      "tag": "0011_local_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790898988294,
+      "tag": "0012_bot_pets",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790910115347,
+      "tag": "0013_hermes_provisioning",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790942357131,
+      "tag": "0014_routine_admission_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790954580922,
+      "tag": "0015_native_service_bots",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790957610492,
+      "tag": "0016_shared_pet_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790964456371,
+      "tag": "0017_pet_legacy_inheritance",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790985940212,
+      "tag": "0018_default_coordinator",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790987052400,
+      "tag": "0019_delegated_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790987073715,
+      "tag": "0020_native_async_tasks",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790995000000,
+      "tag": "0021_local_factors",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791047888726,
+      "tag": "0022_related_delegation_turns",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1791105367231,
+      "tag": "0023_saved_provider_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1791129709231,
+      "tag": "0024_docker_hermes_enrollment",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791136080764,
+      "tag": "0025_coordinator_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791153486910,
+      "tag": "0026_openai_native_search",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791162881436,
+      "tag": "0027_mobile_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1791218747232,
+      "tag": "0028_pet_catalog_sprite_hd",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791227678207,
+      "tag": "0029_live_activities",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791227678208,
+      "tag": "0030_remote_hermes_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791227678209,
+      "tag": "0031_remote_hermes_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791227678210,
+      "tag": "0032_remote_hermes_reservations",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791258419235,
+      "tag": "0033_delegated_workspace_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1791298814375,
+      "tag": "0034_ldap_passkeys",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1791304594961,
+      "tag": "0035_direct_user_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791316925835,
+      "tag": "0036_native_bot_learning",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791322905381,
+      "tag": "0037_learning_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791323598537,
+      "tag": "0038_hermes_team_bots",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791323609308,
+      "tag": "0039_hermes_team_revision_immutability",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791323615967,
+      "tag": "0040_hermes_team_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791325067092,
+      "tag": "0041_hermes_team_candidate_adapters",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791328731994,
+      "tag": "0042_hermes_team_member_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791328942907,
+      "tag": "0043_hermes_team_learning_handoffs",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791330291161,
+      "tag": "0044_hermes_team_official_plan_connections",
+      "breakpoints": true
+    }
+  ]
+}
