@@ -8,6 +8,7 @@ import { startActivityDelivery } from "@/lib/live-activities/delivery";
 import { pool } from "@/db";
 import { getBoss, QUEUES, type AgentRunJob, type MemoryExtractJob, type RoutineRunJob } from "@/lib/jobs";
 import { extractMemoriesFromConversation } from "@/lib/agent/memory";
+import { curateLearnedSkills } from "@/lib/agent/learning/curator";
 import { recoverLearningReviews, reviewNativeRun } from "@/lib/agent/learning/review";
 import { executeRoutineRun, scheduleDueRoutines } from "@/lib/agent/routine-runner";
 import { warnAboutVendorEnv } from "@/lib/env-guard";
@@ -91,6 +92,11 @@ async function main() {
     const n = await reviewNativeRun(job.data.runId);
     if (n) console.log(`[learning] saved ${n} lessons`);
   });
+  await boss.work(QUEUES.learningCurate, { batchSize: 1 }, async () => {
+    const count = await curateLearnedSkills();
+    if (count) console.log(`[learning] archived ${count} unused procedures`);
+  });
+  await boss.schedule(QUEUES.learningCurate, "41 * * * *");
   const recoverLearning = () => recoverLearningReviews().catch(err => console.error("[learning] recovery failed", err));
   void recoverLearning();
   const learningTimer = setInterval(() => void recoverLearning(), 60_000);

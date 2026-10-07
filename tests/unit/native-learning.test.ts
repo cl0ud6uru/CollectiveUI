@@ -21,10 +21,13 @@ vi.mock("@/lib/llm", async original => ({ ...await original<typeof import("@/lib
 
 import { db, schema } from "@/db";
 import { loadPrincipal } from "@/lib/auth/groups";
-import { changeLearning, learnedSkillsForBot, learningHistory, learningViews } from "@/lib/agent/learning/store";
+import { changeLearning, learnedSkillsForBot, learnedPreferences, recordLearnedSkillUse, learningHistory, learningViews } from "@/lib/agent/learning/store";
 import { reviewNativeRun, scheduleLearningReview, recoverLearningReviews } from "@/lib/agent/learning/review";
 import { successfulToolEvidence, lessonDisposition } from "@/lib/agent/learning/policy";
-import { renderSkill } from "@/lib/agent/tools/skills";
+import { curateLearnedSkills } from "@/lib/agent/learning/curator";
+import { selectMemories } from "@/lib/agent/memory";
+import { renderSkill, skillTool } from "@/lib/agent/tools/skills";
+import { findSkill, slashInvokedSkill } from "@/lib/agent/skill-lookup";
 
 let owner: Principal; let member: Principal; let boss: Principal;
 const content = {
@@ -80,6 +83,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     const skills = await learnedSkillsForBot("bot", "boss");
     expect(renderSkill(skills[0])).toContain("A request to check does not authorize changes");
     expect(renderSkill(skills[0])).toContain("Never install");
+    expect(skills[0].slug).toBe("learned-shared-critical-update-check");
     expect(fixture.generate.mock.calls[0][0].tools).toBeUndefined();
   });
 
@@ -89,7 +93,10 @@ describe("native learning with real PostgreSQL migrations", () => {
       instructions: "Lead with a short summary, then group affected machines by account owner.", kind: "preference", scope: "bot", evidenceCallIds: [],
     })] } });
     expect(await reviewNativeRun("run")).toBe(2);
-    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(2);
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(1);
+    expect(await learnedPreferences("member", "bot")).toHaveLength(1);
+    expect(await learnedPreferences("boss", "bot")).toHaveLength(0);
+    expect((await selectMemories({ userId: "member", botId: "bot" })).map(m => m.content).join(" ")).toContain("Lead with a short summary");
     expect(await learnedSkillsForBot("bot", "boss")).toHaveLength(1);
     expect(await learningViews(owner, "bot")).toHaveLength(1);
     const [privateRow] = await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.userId, "member"));
@@ -180,7 +187,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 3, instructions: "A changed organizational procedure." })] } });
     expect(await reviewNativeRun("run")).toBe(1);
     expect((await learningViews(owner, "bot"))[0].status).toBe("pending");
-    expect(await learnedSkillsForBot("bot", "boss")).toHaveLength(0);
+    expect((await learnedSkillsForBot("bot", "boss"))[0].instructions).toBe(content.instructions);
   });
 
   it("does not retain a credential in either learning scope", async () => {
@@ -205,6 +212,230 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect(await db.select().from(schema.botLearnings)).toHaveLength(1);
     expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(2);
     expect((await learnedSkillsForBot("bot", "boss"))[0].version).toBe(2);
+  });
+
+  it("keeps readable slugs distinct across scopes and stable through edits", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson(), lesson({ scope: "user" })] } });
+    await reviewNativeRun("run");
+    const before = await learnedSkillsForBot("bot", "member");
+    expect(before.map(s => s.slug).sort()).toEqual(["learned-personal-critical-update-check", "learned-shared-critical-update-check"]);
+    const shared = before.find(s => s.ownerId === "")!;
+    await changeLearning(owner, shared.id, 1, { content: { ...content, name: "New display name" } });
+    const after = (await learnedSkillsForBot("bot", "member")).find(s => s.id === shared.id)!;
+    expect(after.slug).toBe(shared.slug);
+    expect(after.name).toBe("New display name");
+  });
+
+  it("resolves persisted learned-ID routine prompts and tool calls without changing readable catalog names", async () => {
+    await db.insert(schema.botLearnings).values({ id: "legacy_ID-", botId: "bot", topic: "legacy-check", kind: "procedure", content, verification: "Observed" });
+    const alias = "learned-legacy_ID-";
+    await db.insert(schema.routines).values({ ownerId: "owner", botId: "bot", name: "Legacy", prompt: `/${alias} Check group updates`, triggerType: "cron" });
+    const [routine] = await db.select().from(schema.routines);
+    const available = await learnedSkillsForBot("bot", "owner");
+    const invoked = slashInvokedSkill(available, routine.prompt)!;
+    expect(invoked.slug).toBe("learned-shared-legacy-check");
+    expect(invoked.aliases).toEqual([alias]);
+    expect(slashInvokedSkill(available, `/${invoked.slug}, Check`)).toBe(invoked);
+    const entry = skillTool({ bot: { id: "bot" }, principal: owner } as never, available)!;
+    expect((entry.tool.inputSchema as unknown as { safeParse: (input: unknown) => { success: boolean } }).safeParse({ slug: alias }).success).toBe(true);
+    const result = await entry.tool.execute!({ slug: alias }, { toolCallId: "legacy-load", messages: [], context: {} });
+    expect(result).toMatchObject({ skillId: invoked.id, version: 1 });
+    expect((await learningViews(owner, "bot"))[0].useCount).toBe(1);
+    expect((await db.select().from(schema.routines))[0].prompt).toBe(routine.prompt);
+    const authored = { ...invoked, id: "manual", aliases: undefined, slug: alias };
+    expect(findSkill([invoked, authored], alias)?.id).toBe("manual");
+    await changeLearning(owner, invoked.id, 1, { status: "archived" });
+    expect(slashInvokedSkill(await learnedSkillsForBot("bot", "owner"), routine.prompt)).toBeUndefined();
+  });
+
+  it("keeps legacy aliases inside the user's authorized learning scope", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ scope: "user" })] } });
+    await reviewNativeRun("run");
+    const [privateSkill] = await learnedSkillsForBot("bot", "member");
+    const alias = privateSkill.aliases![0];
+    expect(slashInvokedSkill(await learnedSkillsForBot("bot", "member"), `/${alias} Check`)).toBeDefined();
+    expect(findSkill(await learnedSkillsForBot("bot", "boss"), alias)).toBeUndefined();
+  });
+
+  it("keeps approved preference Memory during a pending policy and restores its kind on rejection", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "preference", scope: "user", topic: "report-format", evidenceCallIds: [], instructions: "Lead with a short report summary." })] } });
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "policy", scope: "user", topic: "report-format", baseVersion: 1, evidenceCallIds: [], instructions: "Proposed team mandate: use a different report format." })] } });
+    await reviewNativeRun("run");
+    const [proposal] = await learningViews(member, "bot");
+    expect(proposal).toMatchObject({ kind: "policy", status: "pending" });
+    expect((await learnedPreferences("member", "bot", 1))[0].content).toContain("Lead with a short report summary.");
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(0);
+    expect(await learnedPreferences("boss", "bot")).toHaveLength(0);
+    await changeLearning(member, proposal.id, proposal.version, { status: "archived" });
+    expect((await learningViews(member, "bot"))[0]).toMatchObject({ kind: "preference", status: "active", version: 3 });
+    expect((await learnedPreferences("member", "bot"))[0].content).toContain("Lead with a short report summary.");
+    expect((await db.select().from(schema.botLearningRevisions)).map(row => row.kind)).toEqual(["preference", "policy", "preference"]);
+  });
+
+  it("moves approved policies out of Memory and restores the preference kind with its historical revision", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "preference", scope: "user", topic: "report-format", evidenceCallIds: [], instructions: "Lead with a short report summary." })] } });
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "policy", scope: "user", topic: "report-format", baseVersion: 1, evidenceCallIds: [], instructions: "A reviewed reporting policy." })] } });
+    await reviewNativeRun("run");
+    const [proposal] = await learningViews(member, "bot");
+    await changeLearning(member, proposal.id, 2, { status: "active" });
+    expect(await learnedPreferences("member", "bot")).toHaveLength(0);
+    expect((await learnedSkillsForBot("bot", "member"))[0].instructions).toBe("A reviewed reporting policy.");
+    await changeLearning(member, proposal.id, 3, { restoreVersion: 1 });
+    expect((await learningViews(member, "bot"))[0]).toMatchObject({ kind: "preference", status: "active" });
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(0);
+    expect((await learnedPreferences("member", "bot"))[0].content).toContain("Lead with a short report summary.");
+  });
+
+  it("upgrades existing #59 revision histories with their retained classification", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const legacy = new PGlite();
+    try {
+      await legacy.waitReady;
+      for (const file of readdirSync("src/db/migrations").filter(f => f.endsWith(".sql") && f < "0037").sort()) {
+        await legacy.exec(readFileSync(`src/db/migrations/${file}`, "utf8").replace("CREATE EXTENSION IF NOT EXISTS vector;", "").replace(/\bvector\b/g, "real[]"));
+      }
+      await legacy.exec("INSERT INTO users (id, upn, name, auth_source) VALUES ('legacy', 'legacy@fixture.invalid', 'Legacy', 'ldap'); INSERT INTO bots (id, owner_id, name) VALUES ('legacy-bot', 'legacy', 'Legacy');");
+      for (const kind of ["preference", "procedure", "policy"]) {
+        await legacy.query("INSERT INTO bot_learnings (id, bot_id, user_id, topic, kind, content, verification) VALUES ($1, 'legacy-bot', 'legacy', $1, $1, $2::jsonb, 'Observed')", [kind, JSON.stringify(content)]);
+        await legacy.query("INSERT INTO bot_learning_revisions (id, learning_id, version, status, content, verification) VALUES ($1, $1, 1, 'active', $2::jsonb, 'Observed')", [kind, JSON.stringify(content)]);
+      }
+      await legacy.exec(readFileSync("src/db/migrations/0037_learning_usage.sql", "utf8"));
+      expect((await legacy.query<{ kind: string }>("SELECT kind FROM bot_learning_revisions ORDER BY kind")).rows.map(row => row.kind)).toEqual(["policy", "preference", "procedure"]);
+      await expect(legacy.exec("UPDATE bot_learning_revisions SET kind = 'unknown'")).rejects.toThrow();
+      await expect(legacy.exec("UPDATE bot_learning_revisions SET kind = NULL")).rejects.toThrow();
+    } finally { await legacy.close(); }
+  });
+
+  it("saves nothing when a routine repeat has no new learning", async () => {
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [] } });
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect(await db.select().from(schema.botLearnings)).toHaveLength(1);
+    expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
+  });
+
+  it("rejects the same content under a different title and topic", async () => {
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ topic: "another-update-check", name: "Another title" })] } });
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect(await db.select().from(schema.botLearnings)).toHaveLength(1);
+  });
+
+  it("does not create a revision for a title-only rewrite", async () => {
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 1, name: "A cosmetic replacement title" })] } });
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
+    expect((await learnedSkillsForBot("bot", "boss"))[0].name).toBe(content.name);
+  });
+
+  it("stages learned writes when the approval gate is enabled", async () => {
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningRequireApproval: true } });
+    await reviewNativeRun("run");
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(0);
+    const [proposal] = await learningViews(owner, "bot");
+    expect(proposal.status).toBe("pending");
+    await changeLearning(owner, proposal.id, 1, { status: "active" });
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(1);
+  });
+
+  it("keeps the approved skill usable during a pending change and after rejection", async () => {
+    await reviewNativeRun("run");
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningRequireApproval: true } });
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 1, instructions: "Proposed new verified steps." })] } });
+    await reviewNativeRun("run");
+    const [old] = await learnedSkillsForBot("bot", "boss");
+    expect(old.instructions).toBe(content.instructions);
+    expect(old.version).toBe(1);
+    expect((await learningViews(boss, "bot"))[0].content.instructions).toBe(content.instructions);
+    const [proposal] = await learningViews(owner, "bot");
+    expect(proposal.status).toBe("pending");
+    await changeLearning(owner, proposal.id, 2, { status: "archived" });
+    expect((await learnedSkillsForBot("bot", "boss"))[0].instructions).toBe(content.instructions);
+  });
+
+  it("tracks use without creating revisions and protects pinned content from automatic changes", async () => {
+    await reviewNativeRun("run");
+    const [saved] = await learnedSkillsForBot("bot", "boss");
+    await recordLearnedSkillUse("bot", "boss", saved.id);
+    expect((await learningViews(owner, "bot"))[0].useCount).toBe(1);
+    expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
+    await changeLearning(owner, saved.id, 1, { pinned: true });
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 2, instructions: "Changed automatically." })] } });
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect((await learnedSkillsForBot("bot", "boss"))[0].instructions).toBe(content.instructions);
+  });
+
+  it("archives unused procedures reversibly, preserving recently used and pinned skills", async () => {
+    await reviewNativeRun("run");
+    const [saved] = await db.select().from(schema.botLearnings);
+    const old = new Date(Date.now() - 40 * 86400000);
+    await db.update(schema.botLearnings).set({ createdAt: old, updatedAt: old });
+    expect((await learningViews(owner, "bot"))[0].stale).toBe(true);
+    await db.update(schema.botLearnings).set({ pinned: true });
+    expect(await curateLearnedSkills()).toBe(0);
+    await db.update(schema.botLearnings).set({ pinned: false, lastUsedAt: new Date() });
+    expect(await curateLearnedSkills()).toBe(0);
+    await db.update(schema.botLearnings).set({ lastUsedAt: old });
+    expect(await curateLearnedSkills()).toBe(1);
+    expect(await learnedSkillsForBot("bot", "boss")).toHaveLength(0);
+    await changeLearning(owner, saved.id, 2, { status: "active" });
+    expect(await learnedSkillsForBot("bot", "boss")).toHaveLength(1);
+  });
+
+  it("does not archive preferences, policies, routine references, or skills while a turn is running", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson(), lesson({ kind: "preference", scope: "user", topic: "format" }), lesson({ kind: "policy", topic: "policy" })] } });
+    await reviewNativeRun("run");
+    const old = new Date(Date.now() - 40 * 86400000);
+    await db.update(schema.botLearnings).set({ createdAt: old, updatedAt: old });
+    await db.update(schema.agentRuns).set({ status: "running" });
+    expect(await curateLearnedSkills()).toBe(0);
+    await db.update(schema.agentRuns).set({ status: "succeeded" });
+    await db.insert(schema.routines).values({ ownerId: "owner", botId: "bot", name: "Check", prompt: "/learned-shared-critical-update-check", triggerType: "cron" });
+    expect(await curateLearnedSkills()).toBe(0);
+    await db.delete(schema.routines);
+    expect(await curateLearnedSkills()).toBe(1);
+    expect(await learnedPreferences("member", "bot")).toHaveLength(1);
+    expect((await learningViews(owner, "bot")).find(row => row.kind === "policy")?.status).toBe("pending");
+  });
+
+  it("consolidates only identical procedures when explicitly enabled, without crossing user scopes", async () => {
+    await reviewNativeRun("run");
+    await db.insert(schema.botLearnings).values([
+      { id: "duplicate", botId: "bot", topic: "duplicate", kind: "procedure", content, verification: "Observed" },
+      { id: "private", botId: "bot", userId: "member", topic: "private", kind: "procedure", content, verification: "Observed" },
+    ]);
+    expect(await curateLearnedSkills()).toBe(0);
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningConsolidationEnabled: true } });
+    expect(await curateLearnedSkills()).toBe(1);
+    expect(await learnedSkillsForBot("bot", "boss")).toHaveLength(1);
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(2);
+    expect((await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.id, "duplicate")))[0].status).toBe("archived");
+  });
+
+  it("does not bypass the write approval gate during maintenance", async () => {
+    await reviewNativeRun("run");
+    const old = new Date(Date.now() - 40 * 86400000);
+    await db.update(schema.botLearnings).set({ createdAt: old, updatedAt: old });
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningRequireApproval: true } });
+    expect(await curateLearnedSkills()).toBe(0);
+  });
+
+  it("respects the maintenance opt-out", async () => {
+    await reviewNativeRun("run");
+    const old = new Date(Date.now() - 40 * 86400000);
+    await db.update(schema.botLearnings).set({ createdAt: old, updatedAt: old });
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningMaintenanceEnabled: false } });
+    expect(await curateLearnedSkills()).toBe(0);
   });
 
   it("rechecks access and user opt-out after model generation", async () => {

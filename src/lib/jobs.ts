@@ -14,6 +14,7 @@ export const QUEUES = {
   routineRun: "routine.run",
   memoryExtract: "memory.extract",
   learningReview: "learning.review",
+  learningCurate: "learning.curate",
   /** Hourly: re-list MCP servers' tools and flag changes for review (src/lib/mcp/servers.ts). */
   mcpRefresh: "mcp.refresh",
   /** Hourly: destroy workspaces of people disabled long enough, and orphaned sandboxes (src/lib/sandbox/lifecycle.ts). */

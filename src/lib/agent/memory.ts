@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { aiApps, conversations, memories, users, type AiApp } from "@/db/schema";
 import { embedTexts, resolveModel, utilityApp } from "@/lib/llm";
+import { learnedPreferences } from "./learning/store";
 import { loadMessageRows, partsToText, pathTo } from "@/lib/chat/store";
 
 export type MemoryRow = { id: string; content: string; pinned: boolean; botId: string | null };
@@ -23,8 +24,9 @@ export async function selectMemories(opts: {
   );
   const cols = { id: memories.id, content: memories.content, pinned: memories.pinned, botId: memories.botId };
   const pinned = await db.select(cols).from(memories).where(and(scope, eq(memories.pinned, true))).limit(limit);
-  const remaining = limit - pinned.length;
-  if (remaining <= 0) return pinned;
+  const preferences = opts.botId ? await learnedPreferences(opts.userId, opts.botId, Math.min(5, Math.max(0, limit - pinned.length))) : [];
+  const remaining = limit - pinned.length - preferences.length;
+  if (remaining <= 0) return [...pinned, ...preferences];
 
   let rest: MemoryRow[] = [];
   const vec = opts.query
@@ -48,7 +50,7 @@ export async function selectMemories(opts: {
       .limit(remaining);
     rest.push(...recent.filter((r) => !seen.has(r.id)).slice(0, remaining - rest.length));
   }
-  return [...pinned, ...rest];
+  return [...pinned, ...preferences, ...rest];
 }
 
 export async function addMemory(userId: string, botId: string | null, content: string, sourceConversationId?: string) {

@@ -827,6 +827,10 @@ export const botLearnings = pgTable("bot_learnings", {
   // null = shared with this bot's audience; otherwise private to this user and bot.
   userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
   topic: text("topic").notNull(),
+  pinned: boolean("pinned").notNull().default(false),
+  useCount: integer("use_count").notNull().default(0),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  lastCuratedAt: timestamp("last_curated_at", { withTimezone: true }),
   kind: text("kind").$type<"preference" | "procedure" | "policy">().notNull(),
   status: text("status").$type<import("@/lib/agent/learning/types").LessonStatus>().notNull().default("active"),
   content: jsonb("content").$type<import("@/lib/agent/learning/types").LessonContent>().notNull(),
@@ -847,13 +851,17 @@ export const botLearningRevisions = pgTable("bot_learning_revisions", {
   learningId: text("learning_id").notNull().references(() => botLearnings.id, { onDelete: "cascade" }),
   version: integer("version").notNull(),
   status: text("status").$type<import("@/lib/agent/learning/types").LessonStatus>().notNull(),
+  kind: text("kind").$type<"preference" | "procedure" | "policy">().notNull(),
   content: jsonb("content").$type<import("@/lib/agent/learning/types").LessonContent>().notNull(),
   verification: text("verification").notNull(),
   sourceConversationId: text("source_conversation_id").references(() => conversations.id, { onDelete: "set null" }),
   // Retained as audit provenance only, never exposed to another bot user.
   sourceRunId: text("source_run_id"),
   createdAt: createdAt(),
-}, t => [uniqueIndex("bot_learning_revisions_version_idx").on(t.learningId, t.version)]);
+}, t => [
+  uniqueIndex("bot_learning_revisions_version_idx").on(t.learningId, t.version),
+  check("bot_learning_revisions_kind_check", sql`${t.kind} in ('preference', 'procedure', 'policy')`),
+]);
 
 /** Durable outbox and idempotency receipt for a completed native run's learning review. */
 export const botLearningReviews = pgTable("bot_learning_reviews", {
@@ -1372,7 +1380,7 @@ export type AiApp = typeof aiApps.$inferSelect;
 export type Conversation = typeof conversations.$inferSelect;
 export type Message = typeof messages.$inferSelect;
 export type Bot = typeof bots.$inferSelect;
-export type Skill = typeof skills.$inferSelect;
+export type Skill = typeof skills.$inferSelect & { aliases?: string[] };
 export type Routine = typeof routines.$inferSelect;
 export type McpServer = typeof mcpServers.$inferSelect;
 export type SandboxRow = typeof sandboxes.$inferSelect;
