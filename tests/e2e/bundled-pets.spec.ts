@@ -13,6 +13,7 @@ const specimens = [
   { slug: "hermes", id: "builtin-hermes-v2", name: "Hermes", file: "spritesheet.webp" },
   { slug: "hermes-assimilated", id: "builtin-hermes-assimilated-v2", name: "Hermes Assimilated", file: "spritesheet.webp" },
   { slug: "the-queen", id: "builtin-the-queen-v2", name: "The Queen", file: "spritesheet.png" },
+  { slug: "nimbus", id: "builtin-nimbus-v2", name: "Nimbus", file: "spritesheet.webp" },
 ];
 async function login(page: Page) {
   await page.goto("/login");
@@ -40,7 +41,7 @@ test.afterAll(async () => {
   await pool.end();
 });
 
-test("all three catalog pets render, retain credits, preview every state/gaze, and become a saved default", async ({ page }) => {
+test("all bundled catalog pets render, retain credits, preview every state/gaze, and become a saved default", async ({ page }) => {
   await login(page); await page.goto("/admin/pets");
   for (const specimen of specimens) {
     const card = page.locator(`article[id="${specimen.id}"]`);
@@ -69,7 +70,7 @@ test("all three catalog pets render, retain credits, preview every state/gaze, a
     }
     await card.getByText("Inspect all states and export", { exact: true }).click();
   }
-  const catalog = page.locator("section").filter({ has: page.getByRole("heading", { name: "Catalog · 3", exact: true }) });
+  const catalog = page.locator("section").filter({ has: page.getByRole("heading", { name: `Catalog · ${specimens.length}`, exact: true }) });
   await catalog.screenshot({ path: `${screens}/bundled-pets-catalog.png` });
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   for (const specimen of specimens) await expect(page.locator(`article[id="${specimen.id}"] img.pet-atlas`)).toHaveCSS("animation-name", "none");
