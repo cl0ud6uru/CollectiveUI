@@ -45,7 +45,8 @@ export class LocalController {
   private error: string | null = null;
   private storageFailed = false;
   private stateFile: string;
-  constructor(readonly config: ControllerConfig, private container?: { validate: () => Promise<void>; transport: () => RpcTransport }) {
+  constructor(readonly config: ControllerConfig, private container?: { validate: () => Promise<void>; transport: () => RpcTransport; authorize?: () => void;
+    admission?:{sessionId:()=>string;receipt:()=>string;purpose?:()=> 'chat'|'learning'} }) {
     this.runtimeId = installationId(config);
     this.stateFile = path.join(config.stateDir, "bindings.json");
     try { this.stored = Stored.parse(JSON.parse(readFileSync(this.stateFile, "utf8"))); }
@@ -122,7 +123,7 @@ export class LocalController {
       await lock.writeFile(JSON.stringify({ controllerPid: process.pid, runtimeId: this.runtimeId })); await lock.close();
       await assertNoOtherHermes(this.config);
       }
-      this.rpc = new NativeRpc(this.config, f => this.onFrame(f), () => this.onExit(), () => this.cleanupFailed(), this.container?.transport());
+      this.rpc = new NativeRpc(this.config, f => this.onFrame(f), () => this.onExit(), () => this.cleanupFailed(), this.container?.transport(), this.container?.authorize);
       await this.rpc.start();
       // Only after exclusive startup proves there is no previous live owner can old receipts settle interrupted.
       for (const receipt of Object.values(this.stored.receipts)) if (receipt.status === "running") receipt.status = "interrupted";
@@ -174,10 +175,23 @@ export class LocalController {
     return () => { this.settingsHold = false; };
   }
   begin(bindingId: string, raw: unknown, receipt: string) {
+    this.container?.authorize?.();
     if (this.settingsHold) throw new LocalError(409, 'Profile settings are being updated or tested. Try again after they settle.');
     this.assertStorage();
     const binding = this.assertBinding(bindingId);
     const input = z.object({ input: z.string().max(64000), session_id: id, instructions: z.string().max(128000).optional(), model: z.never().optional(), attachments: nativeAttachments.optional() }).strict().refine(v => !!v.input.trim() || !!v.attachments?.length, "Enter a message or attachment").parse(raw);
+    if(this.container?.admission?.purpose?.()==='learning')throw new LocalError(403,'Native learning contexts cannot submit ordinary chat.');
+    return this.admit(binding,input,receipt,false);
+  }
+  beginLearning(bindingId:string) {
+    this.container?.authorize?.();this.assertStorage();
+    const admission=this.container?.admission;
+    if(admission?.purpose?.()!=='learning' || this.settingsHold)throw new LocalError(403,'This context cannot start native learning.');
+    return this.admit(this.assertBinding(bindingId),{input:'native-learning',session_id:admission.sessionId()},admission.receipt(),true);
+  }
+  private admit(binding:LocalBinding,input:{input:string;session_id:string;attachments?:NativeAttachment[]},receipt:string,learning:boolean) {
+    if(this.container?.admission && (input.session_id!==this.container.admission.sessionId() || receipt!==this.container.admission.receipt()))
+      throw new LocalError(403,'This native admission belongs to another run or conversation.');
     const digest = createHash("sha256").update(JSON.stringify([input.input, input.attachments ?? []])).digest("hex");
     id.parse(receipt);
     const previous = this.stored.receipts[receipt];
@@ -198,7 +212,7 @@ export class LocalController {
     this.save(); // Write-ahead admission: an uncertain prompt is never silently resubmitted.
     r.timer = setTimeout(() => { this.error = "Local turn exceeded the 30-minute pilot limit."; this.halt(); }, 30 * 60_000);
     const admittedRpc = this.rpc;
-    void this.submit(r, input.input, binding, input.attachments ?? []).catch(() => {
+    void this.submit(r, input.input, binding, input.attachments ?? [],learning).catch(() => {
       // An old request can reject after Stop completed and a new gateway started.
       if (this.rpc !== admittedRpc || !active(r)) return;
       this.error = "Hermes could not admit or resume this turn. Check its native profile logs. Stop and Start before continuing; no automatic retry was made.";
@@ -207,13 +221,13 @@ export class LocalController {
     });
     return runId;
   }
-  private async submit(r: LocalRun, text: string, binding: LocalBinding, attachments: NativeAttachment[]) {
+  private async submit(r: LocalRun, text: string, binding: LocalBinding, attachments: NativeAttachment[],learning=false) {
     const rpc = this.rpc!;
     let runtime = this.liveSessions.get(r.sessionKey);
     if (!runtime) {
       const storedId = this.stored.sessions[r.sessionKey];
       const response = storedId
-        ? await rpc.call("session.resume", { session_id: storedId, inline_images: false })
+        ? await rpc.call("session.resume", { session_id: storedId })
         : await rpc.call("session.create", { cwd: this.config.workDir, ...(binding.model ? { model: binding.model, provider: binding.provider } : {}) });
       const info = object(response.info);
       const durableId = string(response.stored_session_id) || string(info.stored_session_id) || string(response.session_key);
@@ -233,6 +247,13 @@ export class LocalController {
     r.usageBefore = object(await rpc.call("session.usage", { session_id: runtime }));
     if (!active(r)) return;
     if (r.cancel) { this.finish(r, "cancelled"); return; }
+    if(learning) {
+      const result=await rpc.call('collective.learning.run',{session_id:runtime},90000);
+      if(result.finished!==true)throw new Error('Native learning did not confirm completion');
+      if(!active(r) || r.cancel)return;
+      r.terminalCandidate={epoch:r.terminalEpoch??0,status:'completed',usage:{}};
+      await this.settleNative(r);return;
+    }
     let outgoing = text;
     let staged = false;
     const cancelStaging = () => {
@@ -388,7 +409,13 @@ export class LocalController {
       if (active(r) && r.terminalCandidate && rpc?.alive && rpc === this.rpc && !this.stopping) void this.settleNative(r);
     }
   }
+  private assertRunScope(runId:string) {
+    if(this.container?.admission && this.stored.receipts[this.container.admission.receipt()]?.runId!==runId)
+      throw new LocalError(403,'This native run belongs to another context.');
+  }
   getRun(runId: string) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const r = this.runs.get(runId);
     if (r) return { run_id: r.id, status: r.status, output: r.output, error: r.error };
@@ -400,6 +427,8 @@ export class LocalController {
       error: "Turn replay expired. The transcript remains in Hermes; do not resend this admission." };
   }
   events(runId: string, after: number) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const r = this.runs.get(runId);
     if (!r) throw new LocalError(404, "Local replay is unavailable; check the retained run receipt");
@@ -407,6 +436,8 @@ export class LocalController {
     return { events: r.events.filter(e => Number(e._seq) > after), ended: !active(r) };
   }
   approve(runId: string, raw: unknown) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const { request_id, choice } = z.object({ request_id: id, choice: z.enum(["once", "deny"]) }).strict().parse(raw);
     const r = this.runs.get(runId), pending = r?.approvals.get(request_id);
@@ -415,6 +446,8 @@ export class LocalController {
     this.rpc.answer(pending.nativeId, { choice });
   }
   async nativeView(runId: string): Promise<ManagedRunView> {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const r = this.runs.get(runId);
     if (!r?.nativeId || !this.rpc?.alive || this.liveSessions.get(r.sessionKey) !== r.nativeId)
@@ -429,6 +462,8 @@ export class LocalController {
       prompts: [...r.inputs.values()].map(p => p.prompt), queued: r.queued ?? '', features: this.status().capabilities };
   }
   async nativeControl(runId: string, raw: unknown) {
+    this.container?.authorize?.();
+    this.assertRunScope(runId);
     this.assertStorage();
     const input = managedControl.parse(raw), r = this.runs.get(runId);
     if (!r || !active(r) || r.cancel || !r.nativeId || !this.rpc?.alive || this.liveSessions.get(r.sessionKey) !== r.nativeId)
@@ -479,6 +514,7 @@ export class LocalController {
     } finally { r.controlAdmissions = (r.controlAdmissions ?? 1) - 1; }
   }
   async cancel(runId: string) {
+    this.assertRunScope(runId);
     const r = this.runs.get(runId);
     if (!r) { this.getRun(runId); return; }
     if (!active(r)) return;

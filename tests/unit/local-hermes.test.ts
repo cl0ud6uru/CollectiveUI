@@ -205,6 +205,7 @@ describe("Local Hermes native pilot", () => {
     const sent = (await readFile(path.join(config.profileHome, "fixture-prompts.jsonl"), "utf8")).trim().split("\n").map(v => JSON.parse(v));
     expect(sent.map(v => v.text)).toEqual(["first", "second"]);
     expect(sent[1].session).toBe("resumed-stored-1");
+    expect(JSON.parse((await readFile(path.join(config.profileHome, 'fixture-resumes.jsonl'), 'utf8')).trim())).toEqual({session_id:'stored-1'});
     expect(controller.getRun(one).status).toBe("failed"); // old output was not fabricated from its receipt
   });
   it("preserves one profile owner across independent controllers and re-pair attempts", async () => {

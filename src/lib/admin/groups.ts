@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { groupMappings, groupMembers, groups, users } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
+import { teamBotsEnabled } from "@/lib/hermes-team/policy";
 
 export const GroupInput = z.object({
   id: z.string().optional(), name: z.string().trim().min(1).max(100), description: z.string().max(500).nullable().optional(),
@@ -13,9 +14,12 @@ export const GroupInput = z.object({
 export type GroupInput = z.infer<typeof GroupInput>;
 
 /** Called after admin authorization; all membership edits commit together. */
-export async function savePortalGroup(raw: GroupInput) {
+export async function savePortalGroup(raw: GroupInput, actorId: string) {
   const input = GroupInput.parse(raw);
-  return db.transaction(async tx => {
+  let teamBotIds: string[] = [];
+  const groupId = await db.transaction(async tx => {
+    const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
+    const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
     const memberIds = input.memberIds === undefined ? undefined : [...new Set(input.memberIds)];
     if (memberIds?.length) {
       const found = await tx.select({ id: users.id }).from(users).where(inArray(users.id, memberIds));
@@ -34,6 +38,26 @@ export async function savePortalGroup(raw: GroupInput) {
       await tx.delete(groupMembers).where(eq(groupMembers.groupId, group.id));
       if (memberIds.length) await tx.insert(groupMembers).values(memberIds.map(userId => ({ groupId: group.id, userId })));
     }
+    if (team) teamBotIds = await team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actorId);
     return group.id;
   });
+  if (teamBotIds.length) {
+    const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
+    for (const botId of teamBotIds) await reconcileTeamAccess(botId);
+  }
+  return groupId;
+}
+
+/** A cascading group deletion must revoke grants based on its removed membership/mappings. */
+export async function deletePortalGroup(id: string, actorId: string) {
+  const teamBotIds = await db.transaction(async tx => {
+    const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
+    const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
+    await tx.delete(groups).where(eq(groups.id, id));
+    return team ? team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actorId) : [];
+  });
+  if (teamBotIds.length) {
+    const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
+    for (const botId of teamBotIds) await reconcileTeamAccess(botId);
+  }
 }

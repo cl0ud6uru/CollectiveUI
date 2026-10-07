@@ -11,6 +11,25 @@ import { getUsableBot, HttpError } from "@/lib/authz";
  * lock without a SELECT-after-conflict gap (archive/delete can race with opening).
  */
 export async function openBotHome(p: Principal, botId: string) {
+  const [team] = await db.select({ team: bots.hermesTeam }).from(bots).where(eq(bots.id, botId));
+  if (team?.team) {
+    const { authorizeTeam } = await import('@/lib/hermes-team/store');
+    let mode: 'member' | 'admin' = 'member';
+    try { await authorizeTeam(p, botId, 'member'); }
+    catch (e) {
+      if (!(e instanceof HttpError) || e.status !== 403) throw e;
+      // A selected maintainer outside the audience can enter only its working
+      // context. This does not grant a private member instance or reuse history.
+      await authorizeTeam(p, botId, 'admin'); mode = 'admin';
+    }
+    const { openTeamConversation } = await import('@/lib/hermes-team/conversations');
+    const opened = await openTeamConversation(p, botId, mode);
+    const { ensureTeamPrivateInstance } = await import('@/lib/hermes-team/provisioning');
+    await ensureTeamPrivateInstance(p, botId, mode);
+    const [conversation] = await db.select().from(conversations).where(and(eq(conversations.id, opened.conversationId), eq(conversations.userId, p.user.id)));
+    if (!conversation) throw new HttpError(409, 'The Team conversation changed. Reopen it.');
+    return conversation;
+  }
   return db.transaction(async (tx) => {
     const [user] = await tx.select().from(users).where(eq(users.id, p.user.id)).for("share");
     if (!user || user.disabled) throw new HttpError(401, "Unauthorized");

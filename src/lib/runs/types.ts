@@ -71,6 +71,8 @@ export type RunHandle = {
   resumeState: ResumeState | null;
   /** Immutable admission snapshot; reused by every approval continuation. */
   hermes?: HermesRunContext;
+  /** In-memory worker admission only; never serialized into resumable state or browser responses. */
+  teamCandidate?: import('@/lib/hermes-team/candidate-startup').ActiveTeamCandidateRun;
   /** A provider calls this when its segment pauses; the executor stores it with the pause. */
   saveResumeState(state: ResumeState): void;
   /** A provider calls this as soon as it starts a run of its own, so the run can be stopped if this one ends abnormally. */

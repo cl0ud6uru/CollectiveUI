@@ -7,7 +7,7 @@ import { HERMES_BOT_ONLY_MESSAGE } from "@/lib/llm/model-policy";
 import type { UIMessageChunk } from "ai";
 import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { agentRuns, conversations, delegatedTasks, hermesRunContexts, messages, routineRuns, type AiApp, type Bot, type Conversation } from "@/db/schema";
+import { agentRuns, bots, conversations, delegatedTasks, hermesRunContexts, messages, routineRuns, type AiApp, type Bot, type Conversation } from "@/db/schema";
 import { applyApprovalDecisions } from "@/lib/agent/approval-merge";
 import type { Principal } from "@/lib/auth/groups";
 import { getAccessibleModel, HttpError } from "@/lib/authz";
@@ -24,6 +24,10 @@ import { activeRunOf, finalizeRunTx, insertRunTx, requestCancelTx, requeueRunTx,
 import { HOLDING_STATUSES, FINAL_STATUSES, isActive, runConfig, type AgentRun, type ResumeState } from "./types";
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { assertManagedConversation, ensureProfile } from "@/lib/hermes-provisioning/store";
+import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
+import { teamNativeAvailability } from '@/lib/hermes-team/candidate-availability';
+import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
+import { isTeamRuntimeApp, teamRuntimeApp } from '@/lib/agent/team-target';
 
 export type Decisions = Map<string, { approved: boolean; reason?: string }>;
 
@@ -81,8 +85,10 @@ export async function startRun(i: {
   if (i.app.provider === "hermes" && (!i.bot || i.conversation.botId !== i.bot.id)) throw new HttpError(400, HERMES_BOT_ONLY_MESSAGE);
   const userId = i.principal.user.id;
   const conversationId = i.conversation.id;
+  const team = await teamUsesNativeLearning(conversationId);
+  if (team && !isTeamRuntimeApp(i.app)) throw new HttpError(409, 'Use this Team bot’s private chat to start verified native work.');
   let provisionId: string | undefined;
-  if (isManagedHermes(i.app)) {
+  if (!team && isManagedHermes(i.app)) {
     if (!i.bot) throw new HttpError(400, "Choose a bot to use an automatic Hermes profile.");
     await assertManagedConversation(userId, i.bot.id, conversationId);
     provisionId = (await ensureProfile(userId, i.bot.id, i.app.id)).id;
@@ -97,14 +103,26 @@ export async function startRun(i: {
   }
 
   const run = await db.transaction(async (tx) => {
+    // Conversion, audience/policy changes and member choice use the same bot-before-user lock order.
+    if (i.conversation.botId) await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, i.conversation.botId)).for('share');
     await lockUserRuns(tx, userId);
+    let app = i.app;
+    const currentTeam = await teamUsesNativeLearning(conversationId, tx);
+    if (currentTeam) {
+      if (!isTeamRuntimeApp(app)) throw new HttpError(409, 'The bot now requires its private Team chat.');
+      const context = await authorizeTeamConversation(i.principal, conversationId, tx);
+      if (context.bot.id !== i.bot?.id) throw new HttpError(404, 'Team conversation not found.');
+      const readiness = await teamNativeAvailability(i.principal, context.bot.id, context.chat.mode, { conversationId, q: tx });
+      if (!readiness.available) throw new HttpError(409, readiness.reason);
+      app = teamRuntimeApp(context.bot, readiness.model);
+    } else if (isTeamRuntimeApp(app)) throw new HttpError(409, 'This Team conversation changed. Reopen the bot.');
     if (i.conversation.isBotHome) {
       const [current] = await tx.select({ isBotHome: conversations.isBotHome }).from(conversations)
         .where(and(eq(conversations.id, conversationId), eq(conversations.userId, userId)));
       if (!current?.isBotHome) throw new HttpError(409, "This home chat changed. Select the bot to open its current home before sending.");
     }
     await assertUnderCap(tx, userId);
-    const hermes = i.app.provider === "hermes" ? await snapshotHermesSettings(tx, i.app, conversationId) : null;
+    const hermes = !currentTeam && app.provider === "hermes" ? await snapshotHermesSettings(tx, app, conversationId) : null;
     if (i.userMessage) {
       await insertMessage(conversationId, i.userMessage, i.parentId, {}, tx);
       await setCurrentLeaf(conversationId, i.userMessage.id, {}, tx);
@@ -118,7 +136,7 @@ export async function startRun(i: {
       conversationId,
       messageId: newId(),
       parentMessageId: i.userMessage?.id ?? i.parentId,
-      appId: i.app.id,
+      appId: app.id,
       botId: i.bot?.id ?? null,
       background: false,
     });
@@ -165,7 +183,9 @@ export async function continueRun(i: { principal: Principal; conversation: Conve
   if (conv.source === "delegation") throw new HttpError(409, "Delegated tasks cannot resume or answer approvals.");
   if (!conv.botId && conv.appId) await getAccessibleModel(i.principal, conv.appId);
   const run = await db.transaction(async (tx) => {
+    if (conv.botId) await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, conv.botId)).for('share');
     await lockUserRuns(tx, userId);
+    if (await teamUsesNativeLearning(conv.id, tx)) throw new HttpError(409, 'This Team turn cannot resume a paused native segment. Use its current tool approval or start a fresh turn after Stop.');
     let run = await lockRunOfMessage(tx, i.messageId);
     if (run && (run.conversationId !== conv.id || run.userId !== userId)) throw new HttpError(400, "Unknown message");
     if (!run) {

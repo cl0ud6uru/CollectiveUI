@@ -1,6 +1,7 @@
 """Allowlisted bridge for pinned official Hermes. No arbitrary paths or RPC from HTTP."""
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ sys.path.insert(0, str(SOURCE))
 os.environ.update(HERMES_HOME=str(ROOT), HERMES_DISABLE_LAZY_INSTALLS='1',
                   HERMES_LAZY_INSTALL_TARGET='', PYTHONDONTWRITEBYTECODE='1')
 NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,63}$')
+TEAM_NAME = re.compile(r'^cui-team-[a-f0-9]{32}$')
+TEAM_MARKER = '.collectiveui-team-profile.json'
 
 
 def check_source():
@@ -59,6 +62,13 @@ def profile(name):
         # Native creation seeds both; marker-only directories and backup names aren't imports.
         read_at(fd, 'SOUL.md')
         read_at(fd, 'config.yaml', 262144)
+        try:
+            read_at(fd, TEAM_MARKER, strict=True)
+        except FileNotFoundError:
+            pass
+        else:
+            # A Team profile that lost native quarantine cannot be published as ready.
+            read_at(fd, 'gateway.parked', strict=True)
         s = os.fstat(fd)
         identity = f'{s.st_dev}:{s.st_ino}'
     return parts, identity
@@ -85,6 +95,63 @@ def profiles():
         except (OSError, ValueError):
             pass
     return out
+
+
+def create_team(name):
+    """Pinned native layout, without create_profile's root model/credential seeding.
+
+    The profile remains inference-blocked in this release. Native defaults can restore
+    learning when a complete route is verified; no gateway or skill code runs here.
+    """
+    import uuid
+    if not TEAM_NAME.fullmatch(name):
+        raise ValueError('only reserved generated Team names can be created')
+    marker = {'format': 1, 'inference': 'unverified'}
+    with directory([]) as root_fd:
+        try:
+            os.mkdir('profiles', 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+    with directory(['profiles']) as profiles_fd:
+        try:
+            existing = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=profiles_fd)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            try:
+                if json.loads(read_at(existing, TEAM_MARKER, strict=True)) != marker:
+                    raise ValueError('reserved Team profile ownership changed')
+                read_at(existing, 'gateway.parked', strict=True)
+            finally:
+                os.close(existing)
+        else:
+            # Hidden staging is never discovered by native list_profile_names. One rename
+            # publishes a complete blank profile; a crash cannot expose a seeded config.
+            stage = '.collectiveui-team-' + uuid.uuid4().hex
+            os.mkdir(stage, 0o700, dir_fd=profiles_fd)
+            stage_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=profiles_fd)
+            try:
+                for subdir in ('memories', 'sessions', 'skills', 'skins', 'logs', 'plans', 'workspace', 'cron', 'home', 'documents'):
+                    os.mkdir(subdir, 0o700, dir_fd=stage_fd)
+                files = {
+                    'config.yaml': '{}\n', '.env': '', 'auth.json': '{}\n',
+                    'SOUL.md': 'You are a team assistant. Learn from conversation in this profile.\n',
+                    '.no-bundled-skills': 'Team resources are installed through reviewed publication.\n',
+                    # Native root gateways enumerate named profiles for both inbound
+                    # multiplexing and cron. Park until the complete route is verified.
+                    'gateway.parked': 'Team model routing is not yet verified.\n',
+                    TEAM_MARKER: json.dumps(marker) + '\n',
+                }
+                for filename, value in files.items():
+                    out = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=stage_fd)
+                    with os.fdopen(out, 'w') as stream:
+                        stream.write(value); stream.flush(); os.fsync(stream.fileno())
+                os.fsync(stage_fd)
+                os.rename(stage, name, src_dir_fd=profiles_fd, dst_dir_fd=profiles_fd)
+                os.fsync(profiles_fd)
+            finally:
+                os.close(stage_fd)
+    return {'name': name, 'identity': profile(name)[1]}
 
 
 def resources(name, expected):
@@ -765,7 +832,65 @@ def test_settings(files):
         return 'connection_failed'
 
 
-def assert_no_other_native(name, home):
+IDLE_IMAGE_SUPERVISOR = ('/bin/sh', '-e', '/run/s6/basedir/scripts/rc.init', 'top',
+                         '/opt/hermes/docker/main-wrapper.sh', 'sleep', 'infinity')
+IDLE_IMAGE_SCRIPTS = (
+    # Dockerfile pins s6-overlay 3.2.3.0/noarch archive b720f9d9... . The maker
+    # copies this exact script into its root-owned runtime tree; it waits for CMD.
+    ('/run/s6/basedir/scripts/rc.init', 'bf6a4575f0029b66913623356e3c56553514a86bcf693fae6432617c73977747'),
+    ('/opt/hermes/docker/main-wrapper.sh', 'f722b0a99d4d544415add8d6b8013c79ec1c2bf3bb145da551474e3c3193b2da'),
+)
+
+
+def protected_image_script(filename, expected):
+    """Fixed image paths only; root-owned components never follow a symlink."""
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = filename.lstrip('/').split('/')
+        for index, part in enumerate(parts):
+            parent = os.fstat(fd)
+            if parent.st_uid != 0 or parent.st_mode & 0o022:
+                return False
+            final = index == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_NONBLOCK if final else os.O_DIRECTORY)
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 8192:
+            return False
+        return hashlib.sha256(os.read(fd, 8193)).hexdigest() == expected
+    except PermissionError:
+        raise  # Unreadable relevant image metadata is never an exemption.
+    except OSError:
+        return False  # Missing/symlinked image files are not a vanished process.
+    finally:
+        os.close(fd)
+
+
+def idle_image_supervisor(proc, argv):
+    # Process names/argv alone are forgeable. The broker's exact sealed-image CMD
+    # is sleep infinity; only its root supervisor forked by PID 1 may retain it.
+    arguments = argv[:-1] if argv and argv[-1] == '' else argv
+    if tuple(arguments) != IDLE_IMAGE_SUPERVISOR:
+        return False
+    try:
+        with (proc / 'status').open('rb') as stream:
+            status = stream.read(8193).decode('utf-8', errors='strict')
+    except (FileNotFoundError, ProcessLookupError):
+        if proc.exists():
+            raise ValueError('native supervisor identity is unavailable')
+        raise  # Only a genuinely disappeared process is no longer a collision.
+    if len(status.encode('utf-8')) > 8192:
+        return False
+    uid = re.findall(r'^Uid:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$', status, re.MULTILINE)
+    parent = re.findall(r'^PPid:\s*(\d+)\s*$', status, re.MULTILINE)
+    if uid != [('0', '0', '0', '0')] or parent != ['1']:
+        return False
+    return all(protected_image_script(filename, expected) for filename, expected in IDLE_IMAGE_SCRIPTS)
+
+
+def assert_no_other_native(name, home, exclusive_runtime=False):
     # This preflight is a collision detector, not a lock honored by arbitrary native CLI.
     # Operators must stop UI ownership before starting independent native writers.
     for proc in Path('/proc').iterdir():
@@ -780,11 +905,17 @@ def assert_no_other_native(name, home):
                          '/hermes_cli/' in a or '/tui_gateway/' in a for a in argv)
             if '/opt/collective-bridge.py' in argv:
                 at = argv.index('/opt/collective-bridge.py')
-                if argv[at + 1:at + 3] == ['gateway', name]:
+                if argv[at + 1] in ('gateway', 'gateway-candidate') and (exclusive_runtime or argv[at + 2] == name):
                     raise ValueError('profile already has a native process')
                 continue  # separate broker-owned profiles hold their own inode locks
+            if exclusive_runtime and not native and any(a.startswith(str(SOURCE) + '/') for a in argv):
+                if idle_image_supervisor(proc, argv):
+                    continue
+                native = True
             if not native:
                 continue
+            if exclusive_runtime:
+                raise ValueError('another native process owns this runtime')
             env = dict(item.split('=', 1) for item in (proc / 'environ').read_bytes().decode(errors='replace').split('\0') if '=' in item)
             selected = None
             for i, arg in enumerate(argv):
@@ -852,6 +983,20 @@ def network_check(provider, mode):
         signal.signal(signal.SIGALRM, prior)
 
 
+def install_candidate_bootstrap(payload, *, allow_synthetic_loopback=False):
+    # Source and code arrive only from the application-owned protected broker bundle.
+    if set(payload) != {'config', 'code', 'codeHash', 'contract'} or payload['contract']['revision'] != COMMIT:
+        raise ValueError('Unsupported candidate bootstrap contract')
+    if hashlib.sha256(payload['code'].encode('utf-8')).hexdigest() != payload['codeHash']:
+        raise ValueError('Candidate bootstrap content changed')
+    if payload['config']['expiresAt'] <= int(time.time() * 1000):
+        raise ValueError('Candidate bootstrap grant expired')
+    namespace = {'__name__': '_collective_team_candidate'}
+    exec(compile(payload['code'], '<trusted-collective-team-candidate>', 'exec'), namespace)
+    return namespace['install_candidate_process'](payload['config'], SOURCE, payload['contract']['sourceHashes'],
+                                                  allow_synthetic_loopback=allow_synthetic_loopback)
+
+
 def main():
     check_source()
     op = sys.argv[1]
@@ -868,6 +1013,8 @@ def main():
             with contextlib.redirect_stdout(sys.stderr):
                 create_profile(name, no_alias=True)
         print(json.dumps({'name': name, 'identity': profile(name)[1]}))
+    elif op == 'create-team':
+        print(json.dumps(create_team(sys.argv[2])))
     elif op == 'resources':
         print(json.dumps(resources(sys.argv[2], sys.argv[3])))
     elif op in ('settings-read', 'settings-save', 'settings-test'):
@@ -882,17 +1029,41 @@ def main():
         with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
             result = profile_codex(sys.argv[2], sys.argv[3], data)
         print(json.dumps(result))
-    elif op == 'gateway':
+    elif op in ('gateway', 'gateway-candidate'):
         name, expected = sys.argv[2:4]
+        # Empty local auth alone is insufficient: pinned Hermes falls back to root auth.
+        # No Team route is admitted until replies, helpers, learning and subagents are verified.
         parts, identity = profile(name)
+        candidate = op == 'gateway-candidate'
+        is_team = False
+        with directory(parts) as team_fd:
+            try:
+                read_at(team_fd, TEAM_MARKER, strict=True)
+            except FileNotFoundError:
+                pass  # Existing personal profiles retain their native names and behavior.
+            else:
+                is_team = True
+                if not candidate:
+                    raise ValueError('Team inference route is unverified')
+        if candidate and not is_team:
+            raise ValueError('Candidate bootstrap requires a retained Team profile')
         if identity != expected:
             raise ValueError('profile identity changed')
         home = ROOT.joinpath(*parts)
+        # Current Stop ends the whole container. Team gateways require an exclusive
+        # lifetime runtime lock; ordinary broker gateways share it and retain their
+        # prior per-profile behavior when no Team gateway is present.
+        with directory([]) as fd:
+            runtime_lock = os.open('.collectiveui-team-runtime.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        runtime_stat = os.fstat(runtime_lock)
+        if not stat.S_ISREG(runtime_stat.st_mode) or runtime_stat.st_nlink != 1:
+            raise ValueError('unsafe native runtime lock')
+        fcntl.flock(runtime_lock, (fcntl.LOCK_EX if candidate else fcntl.LOCK_SH) | fcntl.LOCK_NB)
         # One lifetime lock per canonical profile, released by the kernel after container exit.
         with directory(parts) as fd:
             lock = os.open('.collectiveui-native.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        assert_no_other_native(name, home)
+        assert_no_other_native(name, home, exclusive_runtime=candidate)
         with directory(parts) as fd:
             recover_settings(fd)
             recover_codex_device(fd)
@@ -904,7 +1075,17 @@ def main():
         # No browser text is interpolated into this registration.
         import hermes_bootstrap
         hermes_bootstrap.harden_import_path()
+        if candidate:
+            # Only the protected broker emits this first stdin frame. Skill files never supply bootstrap code.
+            raw = sys.stdin.readline(131073)
+            if len(raw.encode('utf-8')) > 131072 or not raw.endswith('\n'):
+                raise ValueError('Invalid bounded candidate bootstrap')
+            payload = json.loads(raw)
+            _candidate_agent = install_candidate_bootstrap(payload)
         from tui_gateway import server as _collective_server
+        if candidate:
+            # Fixed app-owned hook; captures only the immutable trusted bootstrap snapshot.
+            _candidate_agent._collective_install_learning_rpc(_collective_server)
 
         # The worker proof covers in-process native threads only. Refuse unsupported
         # isolation at startup instead of admitting work that cannot later settle.

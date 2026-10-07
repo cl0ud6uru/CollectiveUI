@@ -42,6 +42,7 @@ export function SettingsView({
   workspace,
   security,
   hermes,
+  teamConnections,
 }: {
   prefs: UserPrefs;
   apps: { id: string; name: string }[];
@@ -56,11 +57,13 @@ export function SettingsView({
   workspace: WorkspaceView | null;
   security: ReactNode;
   hermes: ReactNode;
+  /** Retained own Team account cleanup; only present when the actor has saved accounts. */
+  teamConnections?: ReactNode;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { theme, setTheme } = useTheme();
-  const tabs = TABS.filter((t) => (t !== "Connected accounts" || chatgpt || hermes) && (t !== "Workspace" || workspace));
+  const tabs = TABS.filter((t) => (t !== "Connected accounts" || chatgpt || hermes || teamConnections) && (t !== "Workspace" || workspace));
   const selected = TABS.find(t => tabSlug(t) === searchParams.get("tab")) ?? "General";
   // A tab can disappear (e.g. Connected accounts after disconnecting): fall back instead of showing an empty pane.
   const tab: Tab = tabs.includes(selected) ? selected : "General";
@@ -213,7 +216,7 @@ export function SettingsView({
           </>
         )}
 
-        {tab === "Connected accounts" && <>{chatgpt && <ChatGPTConnection view={chatgpt} />}{hermes}</>}
+        {tab === "Connected accounts" && <>{chatgpt && <ChatGPTConnection view={chatgpt} />}{hermes}{teamConnections}</>}
         {tab === "Workspace" && workspace && <WorkspacePanel view={workspace} />}
         {tab === "Data controls" && (
           <>

@@ -20,6 +20,7 @@ export async function conversationSnapshot(p: Principal, id: string) {
   const { target, skills, unavailableReason } = await resolveTargetOption(p, {
     appId: conv.appId,
     botId: conv.botId,
+    conversationId: conv.id,
     allowDefault: false,
     group: conv.isGroup ? { id: conv.id, title: conv.title } : undefined,
   });

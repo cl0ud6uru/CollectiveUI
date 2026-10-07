@@ -5,7 +5,9 @@ import { redactSecrets } from "@/lib/redact";
 import { identityClaims, openIdentitySecret, signIdentity, type IdentitySubject, type ServiceIdentity } from "./identity";
 import { checkMcpUrl } from "./url";
 
-export type McpCaller = { subject: IdentitySubject; botId?: string | null; conversationId?: string | null; service?: ServiceIdentity };
+export type McpCaller = { subject: IdentitySubject; botId?: string | null; conversationId?: string | null; service?: ServiceIdentity;
+  /** Native Team adapters must reauthorize every transport request, including initialize and continuation. */
+  authorize?: () => Promise<McpCaller> };
 
 export const MCP_CLIENT_NAME = "ai-portal";
 
@@ -23,12 +25,13 @@ export function mcpFetch(server: Pick<McpServer, "id" | "url" | "identityHeader"
   const origin = new URL(server.url).origin;
   const secret = server.identityHeader ? openIdentitySecret(server) : null;
   return async (input, init) => {
+    const current = caller.authorize ? await caller.authorize() : caller;
     const target = new URL(input instanceof Request ? input.url : String(input));
     if (target.origin !== origin) throw new Error(`Refusing to send an MCP request to ${target.origin}: it isn't the server's origin`);
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
     new Headers(init?.headers).forEach((v, k) => headers.set(k, v));
     if (secret && server.identityHeader) {
-      const claims = identityClaims(caller.subject, { audience: server.url, botId: caller.botId, conversationId: caller.conversationId, service: caller.service });
+      const claims = identityClaims(current.subject, { audience: server.url, botId: current.botId, conversationId: current.conversationId, service: current.service });
       headers.set(server.identityHeader, signIdentity(claims, secret));
     }
     return fetch(input, { ...init, headers, redirect: "error" });
@@ -38,9 +41,18 @@ export function mcpFetch(server: Pick<McpServer, "id" | "url" | "identityHeader"
 /** Successful responses can echo secrets too. Sanitize before any result enters model/UI/persistence paths. */
 export function redactMcpValue<T>(value: T, server: Pick<McpServer, "id" | "headersEnc" | "identitySecretEnc">): T {
   const secrets = [...Object.values(staticHeaders(server)).flatMap((v) => [v, v.replace(/^(Bearer|Basic)\s+/i, "")]), ...(server.identitySecretEnc ? [openIdentitySecret(server)!] : [])].filter(Boolean);
+  return redactMcpSecrets(value, secrets);
+}
+
+/** Used by personal accounts without opening a shared server credential. */
+export function redactMcpSecrets<T>(value: T, secrets: readonly string[]): T {
+  const masks = [...new Set(secrets.flatMap(secret => {
+    const wire = secret.trim();
+    return [secret, wire, wire.replace(/^(Bearer|Basic)\s+/i, '')];
+  }).filter(Boolean))].sort((a, b) => b.length - a.length);
   const clean = (v: unknown): unknown => {
     if (typeof v === "string") {
-      for (const secret of secrets) v = (v as string).split(secret).join("[redacted]");
+      for (const secret of masks) v = (v as string).split(secret).join("[redacted]");
       return redactSecrets(v as string);
     }
     if (Array.isArray(v)) return v.map(clean);
@@ -52,10 +64,18 @@ export function redactMcpValue<T>(value: T, server: Pick<McpServer, "id" | "head
 
 /** Opens a connection (initialize handshake included) to an MCP server as the given caller. */
 export async function connectMcp(server: McpServer, caller: McpCaller): Promise<MCPClient> {
+  return connectMcpWithHeaders(server, caller, () => staticHeaders(server));
+}
+
+/** Server-only account adapter; callers must select and authorize the credential before entering this factory. */
+export async function connectMcpWithHeaders(server: McpServer, caller: McpCaller, headers: Record<string, string> | (() => Record<string, string>), signal?: AbortSignal): Promise<MCPClient> {
   const problem = await checkMcpUrl(server.url);
   if (problem) throw new Error(problem);
+  const send = mcpFetch(server, caller);
   return createMCPClient({
-    transport: { type: server.transport, url: server.url, headers: staticHeaders(server), redirect: "error", fetch: mcpFetch(server, caller) },
+    transport: { type: server.transport, url: server.url, headers: typeof headers === 'function' ? headers() : headers, redirect: "error", fetch: signal ? (input, init) => send(input, {
+      ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
+    }) : send },
     clientName: MCP_CLIENT_NAME,
     initializationOptions: { timeout: server.timeoutMs },
   });

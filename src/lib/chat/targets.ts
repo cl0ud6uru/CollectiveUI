@@ -3,7 +3,7 @@ import { userBotPrefs, type AiApp, type Bot } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import type { Principal } from "@/lib/auth/groups";
-import { getAccessibleModel, getUsableBot, listAccessibleBots, listAccessibleModels, HttpError } from "@/lib/authz";
+import { getAccessibleBot, getAccessibleModel, getUsableBot, listAccessibleBots, listAccessibleModels, HttpError } from "@/lib/authz";
 import { skillsForBot } from "@/lib/agent/tools/skills";
 import { learnedSkillsForBot, learningIsEnabled } from "@/lib/agent/learning/store";
 import { getSetting } from "@/lib/settings";
@@ -39,7 +39,8 @@ export const botOption = (b: Bot, hermes = false): TargetOption => ({
   label: b.label,
   description: b.description,
   starters: b.starters,
-  hermes,
+  hermes: hermes || b.hermesTeam,
+  hermesTeam: b.hermesTeam,
 });
 
 /** A bot new chats may start with. The organization default must be shared with everyone. */
@@ -63,7 +64,7 @@ export async function listStartBots(p: Principal) {
 
 export async function resolveTargetOption(
   p: Principal,
-  opts: { appId?: string | null; botId?: string | null; group?: { id: string; title: string }; allowDefault?: boolean; modelsOnly?: boolean },
+  opts: { appId?: string | null; botId?: string | null; conversationId?: string; group?: { id: string; title: string }; allowDefault?: boolean; modelsOnly?: boolean },
 ): Promise<{ unavailableReason?: string; target: TargetOption | null; skills: { slug: string; name: string; description: string }[] }> {
   if (opts.group) {
     const members = (await loadGroupMembers(p, opts.group.id)).map((m) => botOption(m.bot));
@@ -73,6 +74,22 @@ export async function resolveTargetOption(
     };
   }
   if (opts.botId) {
+    const candidate = await getAccessibleBot(p, opts.botId).catch(() => null);
+    if (candidate?.hermesTeam) {
+      const { authorizeTeam } = await import('@/lib/hermes-team/store');
+      const { authorizeTeamConversation } = await import('@/lib/hermes-team/conversations');
+      try {
+        if (opts.conversationId) {
+          const context = await authorizeTeamConversation(p, opts.conversationId);
+          if (context.bot.id !== candidate.id) throw new HttpError(404, 'Team conversation not found.');
+        }
+        else {
+          try { await authorizeTeam(p, candidate.id, 'member'); }
+          catch (e) { if (!(e instanceof HttpError) || e.status !== 403) throw e; await authorizeTeam(p, candidate.id, 'admin'); }
+        }
+        return { target: botOption(candidate, true), skills: [] };
+      } catch { return { target: null, skills: [], unavailableReason: 'Your Team Bot access changed.' }; }
+    }
     const bot = await getUsableBot(p, opts.botId).catch(() => null);
     if (bot) {
       const resolved = await resolveTurnTarget(p, { botId: bot.id, appId: null }).catch(() => null);

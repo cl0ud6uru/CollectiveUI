@@ -21,6 +21,8 @@ import { isActive, type AgentRun } from "@/lib/runs/types";
 import { errorResponse, requirePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
 import { parseHermesInput } from "@/lib/chat/hermes-commands";
+import { isTeamRuntimeApp } from '@/lib/agent/team-target';
+import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
 
 // No maxDuration: direct chats run in the worker and this response only tails the run's event log, which may stay
 // open for as long as the reply takes (self-hosted Node has no route time limit; a proxy must allow long reads).
@@ -184,7 +186,8 @@ export async function POST(req: Request) {
     }
     // A continuation's browser already has the message so far: tail from the segment boundary.
     return sseResponse(tailRun(run.id, { afterSeq: continuation ? run.boundarySeq : 0, targetSegment: run.segment, replay: false,
-      authorize: isDockerHermes(app) && bot ? () => authorizeDockerStream(p, bot.id) : undefined }));
+      authorize: isTeamRuntimeApp(app) ? async () => { await authorizeTeamConversation(p, conv.id); }
+        : isDockerHermes(app) && bot ? () => authorizeDockerStream(p, bot.id) : undefined }));
   } catch (err) {
     if (err instanceof HttpError || err instanceof z.ZodError) {
       const status = err instanceof HttpError ? err.status : 400;

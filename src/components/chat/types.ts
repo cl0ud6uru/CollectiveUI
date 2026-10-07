@@ -26,6 +26,8 @@ export type TargetOption = {
   supportsVision?: boolean;
   /** Display hint only; command APIs resolve and authorize the backend again. */
   hermes?: boolean;
+  /** Display hint only. Team APIs authorize the current audience and maintainer membership. */
+  hermesTeam?: boolean;
   starters?: string[];
   label?: string | null;
   pinned?: boolean;

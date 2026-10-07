@@ -274,6 +274,55 @@
       "when": 1791323598537,
       "tag": "0038_hermes_team_bots",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791323609308,
+      "tag": "0039_hermes_team_revision_immutability",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791323615967,
+      "tag": "0040_hermes_team_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791325067092,
+      "tag": "0041_hermes_team_candidate_adapters",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791328731994,
+      "tag": "0042_hermes_team_member_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791328942907,
+      "tag": "0043_hermes_team_learning_handoffs",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791330291161,
+      "tag": "0044_hermes_team_official_plan_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791332822034,
+      "tag": "0045_hermes_team_official_auth",
+      "breakpoints": true
     }
   ]
 }

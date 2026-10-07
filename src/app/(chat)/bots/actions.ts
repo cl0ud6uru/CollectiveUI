@@ -220,6 +220,7 @@ export async function updateBot(botId: string, raw: BotInput) {
   if (input.initialPet) throw new HttpError(400, "Use the separate Pet avatar controls to change an existing bot's pet.");
   if (input.delegatorIds !== undefined) throw new HttpError(400, "Edit each coordinator's Team to change existing delegation links.");
   const v = await validateBotInput(p, input, botId);
+  let teamChanged = false;
   await db.transaction(async (tx) => {
     const current = await lockEditableBot(p, botId, tx);
     if (input.executionMode === "service" && !(await loadPrincipal(p.user.id))?.isAdmin)
@@ -258,7 +259,16 @@ export async function updateBot(botId: string, raw: BotInput) {
     if (!changed.length) throw new HttpError(404, "Bot not found or no longer editable");
     await saveRelations(tx, botId, input, v);
     await tx.update(botMcpGrants).set({ revokedAt: new Date() }).where(and(eq(botMcpGrants.botId, botId), isNull(botMcpGrants.revokedAt)));
+    if (current.hermesTeam) {
+      teamChanged = true;
+      const { queueTeamAccessReconciliation } = await import('@/lib/hermes-team/revocation');
+      await queueTeamAccessReconciliation(tx, botId, p.user.id, { reason: 'audience_changed' });
+    }
   });
+  if (teamChanged) {
+    const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
+    await reconcileTeamAccess(botId);
+  }
 
   revalidatePath("/", "layout");
   return { id: botId };

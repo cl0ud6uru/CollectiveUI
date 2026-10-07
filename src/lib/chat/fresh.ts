@@ -1,12 +1,15 @@
 import { HERMES_BOT_ONLY_MESSAGE } from "@/lib/llm/model-policy";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { agentRuns, bots, conversations, hermesChatSettings, messages, users, type AiApp, type Bot } from "@/db/schema";
+import { agentRuns, bots, conversations, hermesChatSettings, hermesTeamChats, messages, users, type AiApp, type Bot } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { getUsableBot, HttpError } from "@/lib/authz";
 import { allowedHermesModels, hermesTargetKey } from "@/lib/llm/providers/hermes/scope";
 import { assertHermesIdle, hermesSettings } from "@/lib/runs/hermes-context";
 import { lockUserRuns } from "@/lib/runs/lock";
+import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
+import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
+import { isTeamRuntimeApp } from '@/lib/agent/team-target';
 
 /** Local /new: rotate homes, fork ordinary chats. Never clears provider/profile or portal memory. */
 export async function freshConversation(p: Principal, target: { conversationId: string; bot: Bot | null; app: AiApp; requireSource?: boolean }, nextId: string) {
@@ -14,11 +17,15 @@ export async function freshConversation(p: Principal, target: { conversationId: 
   if (!nextId || nextId === target.conversationId) throw new HttpError(400, "A fresh conversation id is required.");
   return db.transaction(async (tx) => {
     // Same lock as run admission and approval continuation: no hidden live work is displaced.
+    if (target.bot) await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, target.bot.id)).for('share');
     await lockUserRuns(tx, p.user.id);
     const [user] = await tx.select().from(users).where(eq(users.id, p.user.id)).for("share");
     if (!user || user.disabled) throw new HttpError(401, "Unauthorized");
-    if (target.bot) {
-      await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, target.bot.id)).for("share");
+    const team = await teamUsesNativeLearning(target.conversationId, tx);
+    const context = team ? await authorizeTeamConversation(p, target.conversationId, tx) : undefined;
+    if ((team && (!isTeamRuntimeApp(target.app) || context?.bot.id !== target.bot?.id)) || (!team && isTeamRuntimeApp(target.app)))
+      throw new HttpError(409, 'Reopen this Team bot before starting a fresh conversation.');
+    if (target.bot && !team) {
       await getUsableBot(p, target.bot.id, tx);
     }
     const [source] = await tx.select().from(conversations).where(eq(conversations.id, target.conversationId)).for("update");
@@ -31,6 +38,11 @@ export async function freshConversation(p: Principal, target: { conversationId: 
       const [successor] = await tx.select().from(conversations).where(eq(conversations.id, source.homeSuccessorId));
       if (!successor || successor.userId !== p.user.id || successor.botId !== source.botId || successor.appId !== source.appId)
         throw new HttpError(409, "That fresh chat was deleted. Select the bot to reopen its current home.");
+      if (context) {
+        const [binding] = await tx.select().from(hermesTeamChats).where(eq(hermesTeamChats.conversationId, successor.id));
+        if (binding?.profileId !== context.profile.id || binding.mode !== context.chat.mode)
+          throw new HttpError(409, 'That fresh Team conversation changed. Reopen the bot.');
+      }
       return successor;
     }
     // Also rejects pending provider cancellation. For non-Hermes this checks only local run/approval state.
@@ -47,7 +59,15 @@ export async function freshConversation(p: Principal, target: { conversationId: 
     const [created] = inserted ? [inserted] : await tx.select().from(conversations).where(eq(conversations.id, nextId));
     if (!created || (source?.isBotHome && !inserted) || created.userId !== next.userId || created.appId !== next.appId || created.botId !== next.botId || created.isGroup || created.source !== "chat" || created.isBotHome !== next.isBotHome)
       throw new HttpError(409, "That conversation id is already in use.");
-    if (target.app.provider === "hermes") {
+    if (context) {
+      if (inserted) await tx.insert(hermesTeamChats).values({ conversationId: created.id, profileId: context.profile.id, mode: context.chat.mode, modelChoice: context.chat.modelChoice });
+      else {
+        const [binding] = await tx.select().from(hermesTeamChats).where(eq(hermesTeamChats.conversationId, created.id));
+        if (binding?.profileId !== context.profile.id || binding.mode !== context.chat.mode || binding.modelChoice !== context.chat.modelChoice)
+          throw new HttpError(409, 'That fresh Team conversation id is already in use.');
+      }
+    }
+    if (!team && target.app.provider === "hermes") {
       const setting = await hermesSettings(target.conversationId, tx);
       if (setting?.model && setting.targetKey === hermesTargetKey(target.app) && allowedHermesModels(target.app).includes(setting.model))
         await tx.insert(hermesChatSettings).values({ conversationId: created.id, targetKey: setting.targetKey, model: setting.model }).onConflictDoNothing();

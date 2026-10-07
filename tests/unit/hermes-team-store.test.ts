@@ -1,10 +1,19 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn() }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn(), ensure: vi.fn(), revoke: vi.fn(), pagePrincipal: vi.fn() }));
+vi.mock('@/lib/session', () => ({ requirePagePrincipal: fixture.pagePrincipal }));
+vi.mock('@/components/chat/start-side-chat', () => ({ StartSideChat: () => null }));
+vi.mock('@/components/page-frame', async () => {
+  const { createElement } = await import('react');
+  return { PageFrame: ({ children }: { children: import('react').ReactNode }) => createElement('main', null, children) };
+});
 vi.mock('@/lib/jobs', () => ({ scheduleMemoryExtraction: fixture.schedule, enqueue: fixture.enqueue, QUEUES: { learningReview: 'learning.review' } }));
 vi.mock('@/lib/llm', async original => ({ ...await original<typeof import('@/lib/llm')>(), utilityApp: fixture.utility }));
+vi.mock('@/lib/hermes-team/transport', () => ({ ensureTeamRuntime: fixture.ensure }));
+vi.mock('@/lib/docker-hermes/client', () => ({ dockerControl: fixture.revoke }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'); const { drizzle } = await import('drizzle-orm/pglite'); const schema = await import('@/db/schema');
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
@@ -20,6 +29,11 @@ import { extractMemoriesFromConversation } from '@/lib/agent/memory';
 import { loadGroupMembers } from '@/lib/agent/group';
 import { scheduleLearningReview, recoverLearningReviews, reviewNativeRun } from '@/lib/agent/learning/review';
 import { learnedSkillsForBot, learningViews } from '@/lib/agent/learning/store';
+import { ensureTeamPrivateInstance } from '@/lib/hermes-team/provisioning';
+import BotChatsPage from '@/app/(chat)/bots/[id]/chats/page';
+import { teamChatStatus } from '@/lib/hermes-team/conversations';
+import { resolveTargetOption } from '@/lib/chat/targets';
+import { openBotHome } from '@/lib/chat/home';
 let admin: Principal, alice: Principal, bob: Principal;
 beforeAll(async () => {
   await fixture.client!.waitReady;
@@ -27,9 +41,13 @@ beforeAll(async () => {
     await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, 'utf8').replace('CREATE EXTENSION IF NOT EXISTS vector;', '').replace(/\bvector\b/g, 'real[]'));
 }, 45000);
 beforeEach(async () => {
+  fixture.pagePrincipal.mockReset();
   fixture.schedule.mockClear();
   fixture.enqueue.mockClear(); fixture.utility.mockReset();
   fixture.utility.mockImplementation(() => { throw new Error('Company utility access is forbidden in this Team fixture.'); });
+  fixture.ensure.mockReset();
+  fixture.revoke.mockReset(); fixture.revoke.mockResolvedValue({ stopped: true, interruption: 'runtime-wide' });
+  fixture.ensure.mockImplementation(async (p: Principal, botId: string, mode: 'member'|'admin') => ({ bindingId: 'a'.repeat(32), botId, appId: 'runtime-app', ownerId: mode === 'admin' ? `team-admin:${botId}` : p.user.id, runtimeId: 'native-runtime', profile: `cui-team-${'b'.repeat(32)}`, identity: 'native-identity', name: 'Team', purpose: `team-${mode}`, teamBotId: botId, modelPolicy: 'personal_required' }));
   vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1');
   await fixture.client!.exec('TRUNCATE users, ai_apps, settings CASCADE');
   await db.insert(schema.users).values([
@@ -106,6 +124,55 @@ describe('disabled Team Bot schema and fresh authorization', () => {
     await db.delete(schema.hermesTeamMaintainers).where(eq(schema.hermesTeamMaintainers.userId, 'admin'));
     await expect(getOwnedConversation(admin, working.conversationId)).rejects.toMatchObject({ status: 403 });
   });
+  it('hides revoked non-owner maintainer Admin titles while retaining own member and ordinary personal history', async () => {
+    await db.update(schema.users).set({ isAdmin: true }).where(eq(schema.users.id, 'alice'));
+    alice = (await loadPrincipal('alice'))!;
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'personal_required' }, maintainerIds: ['admin', 'alice'], enabled: true, expectedVersion: 1 });
+    const working = await openTeamConversation(alice, 'team', 'admin');
+    const member = await openTeamConversation(alice, 'team', 'member');
+    await db.update(schema.conversations).set({ title: 'Restricted admin teaching title' }).where(eq(schema.conversations.id, working.conversationId));
+    await db.update(schema.conversations).set({ title: 'Retained private member title' }).where(eq(schema.conversations.id, member.conversationId));
+    await db.insert(schema.bots).values({ id: 'ordinary-personal', ownerId: 'alice', name: 'Personal', visibility: 'private', enabled: false });
+    await db.insert(schema.conversations).values({ id: 'ordinary-history', userId: 'alice', botId: 'ordinary-personal', title: 'Retained ordinary personal title', source: 'routine', archived: true });
+    fixture.pagePrincipal.mockResolvedValue(alice);
+    const renderHistory = async (id: string) => renderToStaticMarkup(await BotChatsPage({ params: Promise.resolve({ id }), searchParams: Promise.resolve({}) }));
+    expect(await renderHistory('team')).toContain('Restricted admin teaching title');
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'personal_required' }, maintainerIds: ['admin'], enabled: true, expectedVersion: 2 });
+    expect((await loadPrincipal('alice'))!.isAdmin).toBe(true);
+    const history = await renderHistory('team');
+    expect(history).not.toContain('Restricted admin teaching title');
+    expect(history).not.toContain(`/c/${working.conversationId}`);
+    expect(history).toContain('Retained private member title');
+    expect(history).toContain(`/c/${member.conversationId}`);
+    const ordinaryHistory = await renderHistory('ordinary-personal');
+    expect(ordinaryHistory).toContain('Retained ordinary personal title');
+    expect(ordinaryHistory).toContain('Archived');
+    await expect(teamChatStatus(alice, 'team', working.conversationId)).rejects.toMatchObject({ status: 403 });
+    expect(await teamChatStatus(alice, 'team', member.conversationId)).toMatchObject({ mode: 'member', canMaintain: false });
+    expect(await teamChatStatus(alice, 'team')).toMatchObject({ mode: 'member', canMaintain: false });
+  });
+  it('uses the authorized Admin fallback profile outside the member audience without mixing saved contexts', async () => {
+    await db.update(schema.users).set({ isAdmin: true }).where(eq(schema.users.id, 'bob'));
+    bob = (await loadPrincipal('bob'))!;
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'personal_required' }, maintainerIds: ['admin', 'bob'], enabled: true, expectedVersion: 1 });
+    const member = await openTeamConversation(bob, 'team', 'member');
+    const [memberProfile] = await db.select().from(schema.hermesTeamProfiles).where(eq(schema.hermesTeamProfiles.userId, 'bob'));
+    await db.update(schema.hermesTeamProfiles).set({ state: 'needs_attention', installedRevision: 7 }).where(eq(schema.hermesTeamProfiles.id, memberProfile.id));
+    await db.delete(schema.botUserAccess).where(and(eq(schema.botUserAccess.botId, 'team'), eq(schema.botUserAccess.userId, 'bob')));
+    expect(await teamChatStatus(bob, 'team')).toMatchObject({ mode: 'admin', state: 'preparing', installedRevision: null });
+    const working = await openTeamConversation(bob, 'team', 'admin');
+    const [workingProfile] = await db.select().from(schema.hermesTeamProfiles).where(eq(schema.hermesTeamProfiles.mode, 'admin'));
+    await db.update(schema.hermesTeamProfiles).set({ state: 'connection_needed', installedRevision: 3 }).where(eq(schema.hermesTeamProfiles.id, workingProfile.id));
+    await db.update(schema.hermesTeamDefinitions).set({ publishedRevision: 9 }).where(eq(schema.hermesTeamDefinitions.botId, 'team'));
+    await db.insert(schema.hermesTeamResourceStates).values([
+      { profileId: workingProfile.id, packageId: 'skills/admin-a', conflictRevision: 9 },
+      { profileId: workingProfile.id, packageId: 'skills/admin-b', conflictRevision: 9 },
+      { profileId: memberProfile.id, packageId: 'skills/member-private', conflictRevision: 9 },
+    ]);
+    expect(await teamChatStatus(bob, 'team')).toMatchObject({ mode: 'admin', canMaintain: true, state: 'connection_needed', installedRevision: 3, publishedRevision: 9, conflictCount: 2 });
+    expect(await teamChatStatus(bob, 'team', working.conversationId)).toMatchObject({ mode: 'admin', installedRevision: 3, conflictCount: 2 });
+    await expect(teamChatStatus(bob, 'team', member.conversationId)).rejects.toMatchObject({ status: 403 });
+  });
   it('never resolves the previous company app as a fallback for an unverified Team runtime', async () => {
     await db.insert(schema.aiApps).values({ id: 'old-app', name: 'Company', provider: 'openai', model: 'synthetic', isPublic: true });
     await db.update(schema.bots).set({ appId: 'old-app' }).where(eq(schema.bots.id, 'team'));
@@ -153,5 +220,64 @@ describe('disabled Team Bot schema and fresh authorization', () => {
     await db.insert(schema.botLearnings).values({ id: 'legacy-learning', botId: 'team', topic: 'old-topic', kind: 'procedure', status: 'active', verification: 'Synthetic evidence.', content: { name: 'Old procedure', description: 'Never published.', instructions: 'Old company procedure.', expectedOutput: '', boundaries: '' } });
     expect(await learnedSkillsForBot('team', 'alice')).toEqual([]);
     expect(await learningViews(alice, 'team')).toEqual([]);
+  });
+  it('lazily binds one retained native instance and stays connection-needed without model verification', async () => {
+    const first = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    const again = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    expect(first.id).toBe(again.id); expect(first.state).toBe('connection_needed');
+    expect(fixture.ensure).toHaveBeenCalledTimes(2);
+    await ensureTeamPrivateInstance(admin, 'team', 'admin');
+    expect(fixture.ensure.mock.calls[2][2]).toBe('admin');
+  });
+  it('reopening retains an unfinished private update fence before native writes start', async () => {
+    const first = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    const [operation] = await db.insert(schema.hermesTeamOperations).values({ botId: 'team', profileId: first.id, actorId: 'alice',
+      kind: 'update', state: 'pending', requestId: '00000000-0000-4000-8000-000000000001', digest: 'a'.repeat(64) }).returning();
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('updating');
+    await db.update(schema.hermesTeamOperations).set({ state: 'needs_attention' }).where(eq(schema.hermesTeamOperations.id, operation.id));
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('needs_attention');
+    await db.update(schema.hermesTeamOperations).set({ state: 'complete' }).where(eq(schema.hermesTeamOperations.id, operation.id));
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('connection_needed');
+  });
+  it('preserves preparing reservations after broker failure and rejects cross-user native binding responses', async () => {
+    fixture.ensure.mockRejectedValueOnce(new Error('Synthetic unavailable broker'));
+    const attention = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    expect(attention.state).toBe('needs_attention'); expect(attention.binding).toBeNull();
+    fixture.ensure.mockResolvedValueOnce({ bindingId: 'a'.repeat(32), botId: 'team', appId: 'runtime-app', ownerId: 'bob', runtimeId: 'native-runtime', profile: `cui-team-${'b'.repeat(32)}`, identity: 'native-identity', name: 'Team', purpose: 'team-member', teamBotId: 'team', modelPolicy: 'personal_required' });
+    const denied = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    expect(denied.binding).toBeNull(); expect(denied.id).toBe(attention.id);
+  });
+  it('allows an assigned admin outside member audience to view its separate working controls', async () => {
+    const home = await openBotHome(admin, 'team');
+    const working = { conversationId: home.id };
+    const status = await teamChatStatus(admin, 'team', working.conversationId);
+    expect(status).toMatchObject({ mode: 'admin', canMaintain: true });
+    expect((await resolveTargetOption(admin, { botId: 'team', conversationId: working.conversationId })).target).toMatchObject({ hermesTeam: true, hermes: true });
+    expect(await teamChatStatus(admin, 'team')).toMatchObject({ canMaintain: true });
+    await expect(openTeamConversation(admin, 'team', 'member')).rejects.toMatchObject({ status: 403 });
+    expect((await db.select().from(schema.hermesTeamProfiles)).every(p => p.mode === 'admin')).toBe(true);
+    expect((await authorizeTeamConversation(alice, (await openBotHome(alice, 'team')).id)).chat.mode).toBe('member');
+  });
+  it('does not bind a profile when settings change during broker I/O', async () => {
+    const native = fixture.ensure.getMockImplementation()!;
+    fixture.ensure.mockImplementationOnce(async (...args) => {
+      const response = await native(...args);
+      await configureTeam(admin, 'team', { modelPolicy: { mode: 'admin_provided' }, maintainerIds: ['admin'], enabled: true, expectedVersion: 1 });
+      return response;
+    });
+    const result = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    expect(result.state).toBe('needs_attention'); expect(result.binding).toBeNull();
+  });
+  it('refreshes mutable native policy/name without replacing retained identity and renews after a broker restart', async () => {
+    const first = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    await configureTeam(admin, 'team', { modelPolicy: { mode: 'admin_provided' }, maintainerIds: ['admin'], enabled: true, expectedVersion: 1 });
+    fixture.ensure.mockResolvedValue({ ...first.binding, name: 'Renamed Team', modelPolicy: 'admin_provided' });
+    const refreshed = await ensureTeamPrivateInstance(alice, 'team', 'member');
+    expect(refreshed.id).toBe(first.id); expect(refreshed.state).toBe('connection_needed');
+    expect(refreshed.binding).toMatchObject({ name: 'Renamed Team', modelPolicy: 'admin_provided' });
+    fixture.ensure.mockRejectedValueOnce(new Error('Broker restarted; lease needs reopening'));
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('needs_attention');
+    expect((await ensureTeamPrivateInstance(alice, 'team', 'member')).state).toBe('connection_needed');
+    expect(fixture.ensure).toHaveBeenCalledTimes(4);
   });
 });
