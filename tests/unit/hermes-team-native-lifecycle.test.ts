@@ -1,7 +1,7 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, lstat, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,8 +10,10 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import type { Principal } from '@/lib/auth/groups';
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null }));
-vi.mock('@/lib/docker-hermes/client', () => ({ dockerControl: vi.fn().mockResolvedValue({ stopped: true }), dockerFetch: vi.fn() }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, queued: [] as string[] }));
+vi.mock('server-only', () => ({}));
+// The queue transport is synthetic; scheduling, receipts and worker claims remain production code.
+vi.mock('@/lib/jobs', () => ({ enqueueRun: async (run: { id: string }) => { fixture.queued.push(run.id); } }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite');
   const { drizzle } = await import('drizzle-orm/pglite');
@@ -23,17 +25,28 @@ import { db, schema } from '@/db';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { configureTeam, reserveTeamProfile } from '@/lib/hermes-team/store';
 import { openTeamConversation } from '@/lib/hermes-team/conversations';
-import { issueTeamCandidateContext } from '@/lib/hermes-team/candidate-context';
+import { startTeamCandidateRun, settleTeamCandidateRun } from '@/lib/hermes-team/candidate-startup';
+import { nativeLearningHandoffHttp } from '@/lib/hermes-team/candidate-learning';
+import { claimRun } from '@/lib/runs/state';
+import { executeTeamLearningSegment } from '@/lib/runs/team-candidate';
+import { startRun, runEvents, getRun, stopRun } from '@/lib/llm/providers/hermes/client';
 import { candidateModelHttp, candidateMcpHttp } from '@/lib/hermes-team/candidate-http';
 import { candidateWireMetadata } from '@/lib/hermes-team/candidate-wire-metadata';
+import { candidateResourceAdapter, candidateResourceAdapterId } from '@/lib/hermes-team/candidate-resource-adapter';
+import { candidateToolName, listCandidateApprovals, answerCandidateApproval } from '@/lib/hermes-team/candidate-tools';
+import { snapshotHash } from '@/lib/mcp/snapshot';
+import { queueTeamAccessReconciliation, reconcileTeamAccess } from '@/lib/hermes-team/revocation';
 import { TEAM_MODEL_PURPOSES, type VerifiedTeamModelRoute } from '@/lib/hermes-team/model-policy';
 import { sealAppSecret } from '@/lib/llm/secrets';
 import { LocalController } from '@/local-hermes/controller';
 import { HERMES_COMMIT } from '@/local-hermes/config';
 import { DockerBroker } from '@/docker-hermes/broker';
 import { BrokerConfig } from '@/docker-hermes/docker';
-import { PinnedSourceRuntimeDriver } from '../fixtures/hermes-team-active-driver';
+import { listenBroker } from '@/docker-hermes/main';
+import { candidateBootstrap } from '@/docker-hermes/candidate-bundle';
+import { NativeRpc } from '@/local-hermes/rpc';
 import type { TeamCandidateConfig } from '@/docker-hermes/types';
+import { PinnedSourceRuntimeDriver } from '../fixtures/hermes-team-active-driver';
 import { createTeamPublicationService } from '@/lib/hermes-team/publication';
 import { createMemberUpdateService } from '@/lib/hermes-team/member-updates';
 import type { TeamResourceSnapshot } from '@/lib/hermes-team/resources';
@@ -75,6 +88,21 @@ async function until<T>(read: () => Promise<T> | T, done: (value: T) => boolean,
     await new Promise(resolve => setTimeout(resolve, 50));
   }
 }
+async function assertNoNativeSecrets(root: string, secrets: readonly string[]) {
+  let files = 0;
+  const walk = async (folder: string) => {
+    for (const name of await readdir(folder)) {
+      const filename = path.join(folder, name), stat = await lstat(filename);
+      if (stat.isDirectory()) await walk(filename);
+      else if (stat.isFile()) {
+        expect(stat.size, filename).toBeLessThan(64 * 1024 * 1024);
+        const bytes = await readFile(filename); files++;
+        for (const secret of secrets) expect(bytes.includes(Buffer.from(secret)), filename).toBe(false);
+      } else throw new Error(`Unexpected native profile entry in the synthetic fixture: ${filename}`);
+    }
+  };
+  await walk(root); expect(files).toBeGreaterThan(4);
+}
 
 beforeAll(async () => {
   await fixture.client!.waitReady;
@@ -85,6 +113,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1');
   vi.stubEnv('AUTH_URL', 'https://app.test.invalid');
+  vi.stubEnv('HERMES_TEAM_CANDIDATE_RUNTIME_ENABLED', '1');
+  vi.stubEnv('HERMES_TEAM_GATEWAY_ORIGIN', 'https://app.test.invalid');
+  fixture.queued.length = 0;
   vi.stubEnv('ENCRYPTION_KEY', 'synthetic-lifecycle-encryption-only');
   await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
   await db.insert(schema.users).values([{ id: 'admin', upn: 'admin@test.invalid', name: 'Admin', isAdmin: true, authSource: 'local', identityRealm: 'local' },
@@ -104,10 +135,23 @@ afterAll(async () => { await fixture.client!.close(); vi.unstubAllEnvs(); });
 describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, synthetic providers only', () => {
   it('uses real gateway sessions, native tools and background review through production model handlers', async () => {
     const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes-team-active-source-'));
-    const calls: Array<{ purpose: string; body: Record<string, unknown> }> = [];
+    const calls: Array<{ contextId: string; purpose: string; body: Record<string, unknown> }> = [];
+    const handoffs: Array<{ reviewId: string; snapshot: Record<string, unknown> }> = [];
     const statuses: number[] = [];
     const counts = new Map<string, number>();
-    let contextId = '';
+    const tool = { name: 'documents.write', inputSchema: { type: 'object' as const, properties: { resourceId: { type: 'string' }, content: { type: 'string' } }, required: ['resourceId', 'content'], additionalProperties: false } };
+    const adapterId = candidateResourceAdapterId(tool);
+    const adapters = [candidateResourceAdapter('documents', tool, 'write', { id: 'offline-native-tool-only', hermesRevision: HERMES_COMMIT, adapterId, capabilityId: 'documents',
+      action: tool.name, effect: 'write', verifiedAt: 1, expiresAt: 4102444800000 })];
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'Approved synthetic document update completed.' }] });
+    const connect = vi.fn().mockImplementation(async (_server, caller) => {
+      expect(caller.subject.id).toBe('admin'); expect(caller.service.server).toBe('company-docs');
+      await caller.authorize(); return { callTool, close: async () => {} };
+    });
+    await db.insert(schema.mcpServers).values({ id: 'company-docs', name: 'Synthetic documents', url: 'https://connector.test.invalid/mcp', status: 'enabled', trust: 'trusted', toolsSnapshot: [tool], toolsHash: snapshotHash([tool]) });
+    await configureTeam(admin, 'team', { enabled: true, expectedVersion: 1, maintainerIds: ['admin'], modelPolicy: { mode: 'admin_provided', adminRouteId: route.id },
+      toolPolicy: { capabilities: [{ capabilityId: 'documents', connectionMode: 'approved_team_connection', connectionId: 'company-docs', adapterId, action: tool.name,
+        resourceIds: ['document-a'], effect: 'write', requireApproval: true }] } });
     const provider = async (purpose: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body.max_tokens).toBe(256); expect(body.reasoning).toBeUndefined();
@@ -118,6 +162,7 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
       if (purpose === 'reply' && count === 0) return completion([
         { name: 'skill_manage', arguments: { operations: [{ action: 'create', name: 'procedure', content: SKILL }] } },
         { name: 'memory', arguments: { action: 'add', target: 'memory', content: 'Private working note: validate synthetic input before reporting.' } },
+        { name: `mcp__collective_team__${candidateToolName('documents')}`, arguments: { resourceId: 'document-a', content: 'Reviewed synthetic update' } },
       ]);
       if (purpose === 'learning' && count === 0) return completion([{ name: 'skill_manage', arguments: {
         operations: [{ action: 'patch', name: 'procedure', old_string: 'record the decision', new_string: 'record the reviewed decision' }],
@@ -141,13 +186,15 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
       req.once('aborted', () => disconnected.abort());
       res.once('close', () => { if (!res.writableEnded) disconnected.abort(); });
       const incoming = new Request(`http://127.0.0.1${req.url}`, { method: 'POST', headers: new Headers(req.headers as Record<string, string>), body, signal: disconnected.signal });
-      const model = /^\/model\/(reply|learning|utility|subagent)\/chat\/completions$/.exec(req.url ?? '');
+      const model = /^\/api\/hermes-team\/native\/([^/]+)\/model\/(reply|learning|utility|subagent)\/chat\/completions$/.exec(req.url ?? '');
+      const native = /^\/api\/hermes-team\/native\/([^/]+)\/(mcp|learning)$/.exec(req.url ?? '');
       let response: Response;
       if (model) {
-        calls.push({ purpose: model[1], body: JSON.parse(body.toString()) });
-        response = await candidateModelHttp(incoming, { contextId, purpose: model[1], operation: ['chat', 'completions'] }, { routes: [route], fetch: (_url, init) => provider(model[1], init) });
+        calls.push({ contextId: model[1], purpose: model[2], body: JSON.parse(body.toString()) });
+        response = await candidateModelHttp(incoming, { contextId: model[1], purpose: model[2], operation: ['chat', 'completions'] }, { routes: [route], fetch: (_url, init) => provider(model[2], init) });
         statuses.push(response.status);
-      } else if (req.url === '/mcp') response = await candidateMcpHttp(incoming, contextId, { routes: [route], adapters: [] });
+      } else if (native?.[2] === 'mcp') response = await candidateMcpHttp(incoming, native[1], { routes: [route], adapters, connect });
+      else if (native?.[2] === 'learning') { handoffs.push(JSON.parse(body.toString())); response = await nativeLearningHandoffHttp(incoming, native[1], { routes: [route] }); }
       else response = new Response(null, { status: 404 });
       res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(await response.text());
     })().catch(error => { res.writeHead(500); res.end(String(error)); }); });
@@ -159,7 +206,9 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
     const broker = new DockerBroker(BrokerConfig.parse({ stateDir: path.join(temp, 'state'), socketPath: path.join(temp, 'ipc', 'fixture.sock'),
       bridgePath: path.resolve('src/docker-hermes/bridge.py'), namespace: 'cui-native-test',
       image: 'nousresearch/hermes-agent@sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283',
-      network: 'none', teamBotsEnabled: true, teamCandidateRuntimeEnabled: true }), driver);
+      network: 'internet', teamBotsEnabled: true, teamCandidateRuntimeEnabled: true }), driver);
+    const ipc = await listenBroker(broker);
+    vi.stubEnv('DOCKER_HERMES_SOCKET', broker.config.socketPath);
     try {
       const authorization = broker.authorizeTeam('admin', { teamBotId: 'team', mode: 'admin', modelPolicy: 'admin_provided' });
       const native = await broker.ensureTeam('admin', { teamBotId: 'team', mode: 'admin', name: 'Team' }, authorization.grantId);
@@ -168,47 +217,106 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
       const profileHome = driver.home(native.ownerId, name);
       await writeFile(path.join(profileHome, 'config.yaml'), JSON.stringify({ skills: { creation_nudge_interval: 1 }, memory: { nudge_interval: 1 } }));
       const chat = await openTeamConversation(admin, 'team', 'admin');
+      await db.insert(schema.messages).values({ id: 'source-user-message', conversationId: chat.conversationId, role: 'user',
+        parts: [{ type: 'text', text: 'Teach a useful procedure.' }] });
       const profile = await reserveTeamProfile(admin, 'team', 'admin');
       await db.update(schema.hermesTeamProfiles).set({ state: 'ready', binding: native }).where(eq(schema.hermesTeamProfiles.id, profile.id));
       await db.insert(schema.agentRuns).values({ id: 'admin-run', userId: 'admin', botId: 'team', conversationId: chat.conversationId, messageId: 'admin-message' });
-      const grant = await issueTeamCandidateContext(admin, 'admin-run', 'default', [route]); contextId = grant.contextId;
-      const config = { teamBotId: 'team', mode: 'admin', bindingId: native.bindingId, runId: 'admin-run', contextId, expiresAt: grant.expiresAt,
-        model: route.model, adapterId: route.adapterId, modelBaseUrls: Object.fromEntries(TEAM_MODEL_PURPOSES.map(purpose => [purpose, `https://app.test.invalid/model/${purpose}`])),
-        modelTokens: grant.modelTokens, toolUrl: 'https://app.test.invalid/mcp', toolToken: grant.toolToken } as TeamCandidateConfig;
-      broker.prepareTeamCandidate('admin', config, authorization.grantId);
-      const scope = { teamBotId: 'team', mode: 'admin' as const, bindingId: native.bindingId, runId: 'admin-run', contextId, conversationId: chat.conversationId };
-      const [started, repeated] = await Promise.all([broker.startTeamCandidate('admin', scope, authorization.grantId), broker.startTeamCandidate('admin', scope, authorization.grantId)]);
-      expect(started).toEqual(repeated); expect(driver.launches).toBe(1);
-      const access = await broker.forTeamRequest('admin', 'team', 'admin', native.bindingId, authorization.grantId, { runId: scope.runId, contextId });
+      const worker = (await claimRun('admin-run', 'synthetic-native-worker'))!;
+      expect(worker).toMatchObject({ status: 'running', holder: 'synthetic-native-worker' });
+      const active = await startTeamCandidateRun(admin, 'team', worker.id, { holder: worker.holder!, segment: worker.segment, routes: [route] }).catch(error => { throw new Error(`${String(error)}; synthetic native stderr: ${driver.stderr}`); });
+      const contextId = active.contextId;
+      const scope = { teamBotId: 'team', mode: 'admin' as const, bindingId: native.bindingId, runId: worker.id, contextId, conversationId: chat.conversationId };
+      const fresh = broker.authorizeTeam('admin', { teamBotId: 'team', mode: 'admin', modelPolicy: 'admin_provided' });
+      expect(await broker.startTeamCandidate('admin', scope, fresh.grantId)).toMatchObject({ started: true, interruption: 'runtime-wide' });
+      expect(driver.launches).toBe(1);
+      const access = await broker.forTeamRequest('admin', 'team', 'admin', native.bindingId, fresh.grantId, { runId: scope.runId, contextId });
       controller = access.controller;
       expect(() => controller!.begin(access.nativeBindingId, { input: 'Wrong context', session_id: 'saved-browser-url' }, `portal-${scope.runId}`)).toThrow('another run');
-      const runId = controller.begin(access.nativeBindingId, { input: 'Teach a useful procedure: validate input, record the decision, then report the result.',
-        session_id: `portal-${chat.conversationId}-team` }, `portal-${scope.runId}`);
+      // Exercise the application client, authenticated proxy and actual Unix-socket broker routes.
+      const runId = await startRun(active.target, { input: 'Teach a useful procedure: validate input, record the decision, then report the result.',
+        sessionId: `portal-${chat.conversationId}-team`, idempotencyKey: `portal-${scope.runId}` });
+      const streamed: string[] = [];
+      const stream = (async () => { for await (const event of runEvents(active.target, runId)) streamed.push(event.event); })();
+      const approvals = await until(() => listCandidateApprovals(admin, chat.conversationId, { routes: [route], adapters }), value => value.length === 1).catch(error => {
+        throw new Error(`${String(error)}; model tool names=${JSON.stringify(calls.flatMap(call => (call.body.tools as Array<{function?:{name?:string}}> | undefined)?.map(tool => tool.function?.name) ?? []))}; native stderr=${driver.stderr}`);
+      });
+      expect(connect).not.toHaveBeenCalled(); expect(callTool).not.toHaveBeenCalled();
+      const wrongHuman = (await loadPrincipal('member'))!;
+      await expect(answerCandidateApproval(wrongHuman, approvals[0].id, 'approved', { routes: [route], adapters })).rejects.toMatchObject({ status: 404 });
+      await answerCandidateApproval(admin, approvals[0].id, 'approved', { routes: [route], adapters });
+      await stream;
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(callTool.mock.calls[0][0]).toMatchObject({ name: 'documents.write', arguments: { resourceId: 'document-a', content: 'Reviewed synthetic update' } });
+      expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0]).toMatchObject({ state: 'consumed' });
+      expect(streamed).toContain('tool.completed');
       const result = await until(() => controller!.getRun(runId), value => !['running', 'waiting_for_approval', 'waiting_for_input'].includes(value.status));
       expect(result, driver.stderr).toMatchObject({ status: 'completed', output: 'Learned the useful procedure.' });
-      try {
-        await until(async () => readFile(path.join(profileHome, 'skills', 'learned-procedure', 'SKILL.md'), 'utf8').catch(() => ''), value => value === IMPROVED, 5000);
-      } catch (error) {
-        const toolResults = calls.filter(call => call.purpose === 'learning').flatMap(call =>
-          (call.body.messages as Array<{ role: string; content: unknown }>).filter(message => message.role === 'tool').map(message => message.content));
-        throw new Error(`${String(error)}; purpose counts=${JSON.stringify([...counts])}; statuses=${JSON.stringify(statuses)}; synthetic tool results=${JSON.stringify(toolResults)}; synthetic stderr=${driver.stderr}`);
-      }
+      expect(await getRun(active.target, runId)).toMatchObject({ status: 'completed' });
       expect(await readFile(path.join(profileHome, 'skills', 'procedure', 'SKILL.md'), 'utf8')).toBe(SKILL);
       expect(await readFile(path.join(profileHome, 'memories', 'MEMORY.md'), 'utf8')).toContain('Private working note');
+      expect(calls.filter(call => call.purpose === 'learning')).toEqual([]);
+      expect(handoffs).toHaveLength(1);
+      const captured = handoffs[0];
+      expect(Object.keys(captured.snapshot).sort()).toEqual(['version', 'messagesSnapshot', 'reviewMemory', 'reviewSkills', 'focus', 'explicit', 'memoryEnabled', 'userProfileEnabled'].sort());
+      expect(JSON.stringify(captured)).not.toMatch(/"(?:api_key|modelTokens|credential_pool|client|provider)"/);
+      const parentConfig = driver.candidates[0];
+      const handoffRequest = (body: unknown) => new Request('https://app.test.invalid/native-learning', { method: 'POST', headers: { 'Content-Type': 'application/json',
+        Authorization: `Bearer ${parentConfig.learningToken}` }, body: JSON.stringify(body) });
+      expect((await nativeLearningHandoffHttp(handoffRequest(captured), contextId, { routes: [route] })).status).toBe(200);
+      expect((await nativeLearningHandoffHttp(handoffRequest({ ...captured, reviewId: randomUUID() }), contextId, { routes: [route] })).status).toBe(409);
+      expect(fixture.queued).toEqual([]);
+      await db.insert(schema.messages).values({ id: 'admin-message', conversationId: chat.conversationId, role: 'assistant',
+        parts: [{ type: 'text', text: result.output }] });
+      const sourceMessages = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, chat.conversationId));
+      await db.update(schema.agentRuns).set({ status: 'succeeded' }).where(eq(schema.agentRuns.id, worker.id));
+      // Terminal reply grants are denied before a new native learning process is admitted.
+      const forbidden = new Request('https://app.test.invalid/model', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${parentConfig.modelTokens.reply}` },
+        body: JSON.stringify({ model: route.model, messages: [{ role: 'user', content: 'Late parent model request' }] }) });
+      expect((await candidateModelHttp(forbidden, { contextId, purpose: 'reply', operation: ['chat', 'completions'] }, { routes: [route], fetch: () => { throw new Error('Terminal parent dispatched'); } })).status).toBe(403);
+      expect(await active.retire()).toEqual({ confirmed: true, runtimeWide: true });
+      expect(await driver.running(native.ownerId)).toBe(false);
+      expect((await db.select().from(schema.hermesTeamCandidateContexts).where(eq(schema.hermesTeamCandidateContexts.id, contextId)))[0])
+        .toMatchObject({ retirementState: 'confirmed', nativeStoppedAt: expect.any(Date), revokedAt: expect.any(Date) });
+      expect(fixture.queued).toEqual([]);
+      // The worker's terminal hook, rather than native retirement itself, queues the child.
+      await settleTeamCandidateRun(worker.id, true, [route]);
+      expect(fixture.queued).toHaveLength(1);
+      const childRunId = fixture.queued[0];
+      const child = (await claimRun(childRunId, 'synthetic-native-learning-worker'))!;
+      const learning = await startTeamCandidateRun(admin, 'team', child.id, { holder: child.holder!, segment: child.segment, routes: [route] });
+      expect(learning.contextId).not.toBe(contextId); expect(driver.launches).toBe(2);
+      expect(driver.candidates[1].runPurpose).toBe('learning');
+      expect(driver.candidates[1].learningToken).toBeUndefined();
+      expect(driver.candidates[1].modelTokens.learning).not.toBe(parentConfig.modelTokens.learning);
+      expect(await active.retire()).toEqual({ confirmed: true, runtimeWide: true });
+      expect(await driver.running(native.ownerId)).toBe(true);
+      // Execute the production worker's native learning segment and its terminal hook.
+      // This performs the dedicated native RPC, polls settlement, confirms Stop,
+      // then finalizes the durable child without inserting a visible chat reply.
+      await executeTeamLearningSegment(child, child.holder!, learning, new AbortController());
+      const [finishedChild] = await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, childRunId));
+      expect(finishedChild, `${driver.stderr}; purposes=${JSON.stringify(calls.map(call => call.purpose))}; statuses=${JSON.stringify(statuses)}; native errors=${JSON.stringify(driver.nativeErrors)}`)
+        .toMatchObject({ status: 'succeeded', background: true });
+      await settleTeamCandidateRun(childRunId, true, [route]);
+      expect(await db.select().from(schema.messages).where(eq(schema.messages.conversationId, chat.conversationId))).toEqual(sourceMessages);
+      const [childContext] = await db.select().from(schema.hermesTeamCandidateContexts).where(eq(schema.hermesTeamCandidateContexts.id, learning.contextId));
+      expect(childContext).toMatchObject({ retirementState: 'confirmed', nativeStoppedAt: expect.any(Date), revokedAt: expect.any(Date) });
+      expect(childContext.nativeStoppedAt!.getTime()).toBeLessThanOrEqual(finishedChild.finishedAt!.getTime());
+      expect(await readFile(path.join(profileHome, 'skills', 'learned-procedure', 'SKILL.md'), 'utf8'), driver.stderr).toBe(IMPROVED);
+      expect(await readFile(path.join(profileHome, 'skills', 'procedure', 'SKILL.md'), 'utf8')).toBe(SKILL);
       expect(calls.filter(call => call.purpose !== 'utility').map(call => call.purpose)).toEqual(['reply', 'reply', 'learning', 'learning', 'learning', 'learning', 'learning']);
       expect(statuses).toHaveLength(8); expect(statuses.every(status => status === 200)).toBe(true);
-      // This is the pin's real title task. The server strips its disable-reasoning
-      // hint and supplies a bounded output limit before synthetic provider dispatch.
-      expect(calls.filter(call => call.purpose === 'utility').map(call => ({ fields: Object.keys(call.body), maxTokens: call.body.max_tokens, maxCompletionTokens: call.body.max_completion_tokens })))
-        .toEqual([{ fields: ['messages', 'model', 'response_format', 'reasoning'], maxTokens: undefined, maxCompletionTokens: undefined }]);
-      expect(controller.events(runId, 0).events.some(event => event.event === 'tool.completed')).toBe(true);
+      expect(calls.filter(call => call.purpose === 'learning').every(call => call.contextId === learning.contextId)).toBe(true);
+      expect(calls.filter(call => call.purpose === 'utility').map(call => Object.keys(call.body)))
+        .toEqual([['messages', 'model', 'response_format', 'reasoning']]);
       expect(await readFile(path.join(profileHome, 'state.db'))).not.toHaveLength(0);
-      // Publication starts only after confirmed process-group Stop. It captures
-      // selected native files through the actual helper, never a profile clone.
-      expect(await broker.retireTeamCandidate('admin', { teamBotId: scope.teamBotId, mode: scope.mode, bindingId: scope.bindingId, runId: scope.runId, contextId: scope.contextId }))
-        .toEqual({ confirmed: true, runtimeWide: true });
+      expect(await learning.retire()).toEqual({ confirmed: true, runtimeWide: true });
+      expect((await db.select().from(schema.hermesTeamLearningHandoffs))[0]).toMatchObject({ state: 'complete', childRunId });
+      expect(handoffs).toHaveLength(1); expect(fixture.queued).toHaveLength(1);
       expect(await driver.running(native.ownerId)).toBe(false);
-      await db.update(schema.agentRuns).set({ status: 'succeeded' }).where(eq(schema.agentRuns.id, 'admin-run'));
+      await assertNoNativeSecrets(profileHome, ['synthetic-never-live-provider-key', ...driver.candidates.flatMap(config =>
+        [...Object.values(config.modelTokens), config.toolToken, ...(config.learningToken ? [config.learningToken] : [])])]);
       const publication = createTeamPublicationService({ captureResources: async (p, _bot, selection) => {
         expect(p.user.id).toBe('admin');
         const fresh = broker.authorizeTeam('admin', { teamBotId: 'team', mode: 'admin', modelPolicy: 'admin_provided' });
@@ -281,9 +389,153 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
       expect(await readFile(path.join(memberHome, 'memories', 'MEMORY.md'), 'utf8')).toBe(memoryBefore);
       expect(await db.select().from(schema.hermesTeamRevisions)).toHaveLength(2);
     } finally {
-      await broker.close(); await driver.close();
+      await ipc.close(); await driver.close();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       await rm(temp, { recursive: true, force: true });
     }
   }, 60_000);
+  it('rejects a source-hash mismatch and sibling native gateways before model transport; Stop releases the runtime lock', async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes-team-native-lock-'));
+    let requests = 0;
+    const server = createServer((_req, res) => { requests++; res.writeHead(403); res.end(); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    const driver = new PinnedSourceRuntimeDriver(temp, SOURCE!, path.resolve(PYTHON), port);
+    let rpc: NativeRpc | undefined;
+    const rawChildren = new Set<ChildProcessWithoutNullStreams>();
+    const stopped = async (child: ChildProcessWithoutNullStreams) => {
+      child.stdin.on('error', () => {});
+      let stderr = ''; child.stderr.on('data', data => { stderr = (stderr + String(data)).slice(-16_000); });
+      const code = await until(() => child.exitCode ?? (child.signalCode ? -1 : null), code => code !== null, 15_000);
+      expect(code).not.toBe(0); return stderr;
+    };
+    try {
+      await driver.ensure('member', () => {});
+      const first = await driver.createTeam('member', `cui-team-${'a'.repeat(32)}`);
+      const second = await driver.createTeam('member', `cui-team-${'b'.repeat(32)}`);
+      const config: TeamCandidateConfig = { teamBotId: 'team', mode: 'member', bindingId: 'c'.repeat(32), runId: 'run', contextId: 'context', expiresAt: Date.now() + 120_000,
+        model: route.model, adapterId: 'collective-openai-chat-v1',
+        modelBaseUrls: { reply: 'https://app.test.invalid/model/reply', learning: 'https://app.test.invalid/model/learning', utility: 'https://app.test.invalid/model/utility', subagent: 'https://app.test.invalid/model/subagent' },
+        modelTokens: { reply: 'a'.repeat(64), learning: 'b'.repeat(64), utility: 'c'.repeat(64), subagent: 'd'.repeat(64) }, toolUrl: 'https://app.test.invalid/mcp', toolToken: 'e'.repeat(64) };
+      const start = (mode: string, profile: string, identity: string, bootstrap?: string) => {
+        const child = spawn(PYTHON, ['-u', LAUNCHER, mode, driver.volume('member'), profile, String(port), identity], { env: nativeEnv, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+        rawChildren.add(child); child.stdin.on('error', () => {}); if (bootstrap) child.stdin.write(bootstrap); return child;
+      };
+      const tampered = JSON.parse(candidateBootstrap(config));
+      tampered.contract.sourceHashes['run_agent.py'] = '0'.repeat(64);
+      expect(await stopped(start('gateway', first.name, first.identity, JSON.stringify(tampered) + '\n'))).toContain('do not match the pinned source');
+      expect(requests).toBe(0);
+      const stateDir = path.join(temp, 'rpc-state'); await mkdir(stateDir);
+      const home = driver.home('member', first.name);
+      rpc = new NativeRpc({ trust: 'single-user-exclusive-profile', source: SOURCE!, python: path.resolve(PYTHON), profileHome: home,
+        accountHome: path.join(home, 'home'), workDir: path.join(home, 'workspace'), stateDir, socketPath: path.join(temp, 'unused.sock'), label: 'Synthetic native lock' },
+        () => {}, () => {}, () => {}, driver.candidateTransport('member', first.name, first.identity, config));
+      await rpc.start().catch(error => { throw new Error(`${String(error)}; synthetic native stderr: ${driver.stderr}`); });
+      expect(await stopped(start('gateway', second.name, second.identity, candidateBootstrap(config)))).toContain('Resource temporarily unavailable');
+      const personal = (await driver.profiles('member')).find(profile => profile.name === 'default')!;
+      expect(await stopped(start('personal-gateway', personal.name, personal.identity))).toContain('Resource temporarily unavailable');
+      await rpc.call('ping'); expect(requests).toBe(0);
+      await rpc.stop(); expect(await driver.running('member')).toBe(false);
+      await driver.reopen('member');
+      const reopened = driver.candidateTransport('member', second.name, second.identity, config);
+      const next = new NativeRpc({ trust: 'single-user-exclusive-profile', source: SOURCE!, python: path.resolve(PYTHON), profileHome: driver.home('member', second.name),
+        accountHome: path.join(home, 'home'), workDir: path.join(home, 'workspace'), stateDir: path.join(temp, 'next-state'), socketPath: path.join(temp, 'unused.sock'), label: 'Synthetic second native lock' },
+        () => {}, () => {}, () => {}, reopened);
+      rpc = next; await rpc.start(); await rpc.call('ping'); expect(requests).toBe(0);
+    } finally {
+      await rpc?.stop(); await driver.close();
+      for (const child of rawChildren) if (child.exitCode === null && child.signalCode === null && child.pid) process.kill(-child.pid, 'SIGKILL');
+      await new Promise<void>(resolve => server.close(() => resolve())); await rm(temp, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it.each(['approval-revocation', 'held-model-stop'] as const)('settles actual native %s without connector continuation, retries or private-data deletion', async scenario => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes-team-native-stop-'));
+    const member = (await loadPrincipal('member'))!;
+    const tool = { name: 'documents.write', inputSchema: { type: 'object' as const, properties: { resourceId: { type: 'string' } }, required: ['resourceId'], additionalProperties: false } };
+    const adapterId = candidateResourceAdapterId(tool);
+    const adapters = [candidateResourceAdapter('documents', tool, 'write', { id: 'offline-native-stop-only', hermesRevision: HERMES_COMMIT, adapterId, capabilityId: 'documents',
+      action: tool.name, effect: 'write', verifiedAt: 1, expiresAt: 4102444800000 })];
+    await db.insert(schema.mcpServers).values({ id: 'company-docs', name: 'Synthetic documents', url: 'https://connector.test.invalid/mcp', status: 'enabled', trust: 'trusted', toolsSnapshot: [tool], toolsHash: snapshotHash([tool]) });
+    await configureTeam(admin, 'team', { enabled: true, expectedVersion: 1, maintainerIds: ['admin'], modelPolicy: { mode: 'admin_provided', adminRouteId: route.id },
+      toolPolicy: { capabilities: [{ capabilityId: 'documents', connectionMode: 'approved_team_connection', connectionId: 'company-docs', adapterId, action: tool.name,
+        resourceIds: ['document-a'], effect: 'write', requireApproval: true }] } });
+    const connect = vi.fn().mockRejectedValue(new Error('An interrupted native action must never connect'));
+    let modelRequests = 0, providerAborted = false;
+    const provider = async (_url: RequestInfo | URL, init?: RequestInit) => {
+      modelRequests++;
+      if (scenario === 'held-model-stop') return new Promise<Response>((_resolve, reject) => {
+        const aborted = () => { providerAborted = true; reject(new Error('Synthetic provider request cancelled')); };
+        if (init?.signal?.aborted) aborted(); else init?.signal?.addEventListener('abort', aborted, { once: true });
+      });
+      return completion([{ name: 'memory', arguments: { action: 'add', target: 'memory', content: 'Private member memory remains after audience removal.' } },
+        { name: `mcp__collective_team__${candidateToolName('documents')}`, arguments: { resourceId: 'document-a' } }]);
+    };
+    const server = createServer((req, res) => { void (async () => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const disconnected = new AbortController(); req.once('aborted', () => disconnected.abort()); res.once('close', () => { if (!res.writableEnded) disconnected.abort(); });
+      const incoming = new Request(`http://127.0.0.1${req.url}`, { method: 'POST', headers: new Headers(req.headers as Record<string, string>), body: Buffer.concat(chunks), signal: disconnected.signal });
+      const model = /^\/api\/hermes-team\/native\/([^/]+)\/model\/(reply|learning|utility|subagent)\/chat\/completions$/.exec(req.url ?? '');
+      const mcp = /^\/api\/hermes-team\/native\/([^/]+)\/mcp$/.exec(req.url ?? '');
+      const response = model ? await candidateModelHttp(incoming, { contextId: model[1], purpose: model[2], operation: ['chat', 'completions'] }, { routes: [route], fetch: provider })
+        : mcp ? await candidateMcpHttp(incoming, mcp[1], { routes: [route], adapters, connect }) : new Response(null, { status: 404 });
+      res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(await response.text());
+    })().catch(error => { if (!res.destroyed) { res.writeHead(500); res.end(String(error)); } }); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    await mkdir(path.join(temp, 'state')); await mkdir(path.join(temp, 'ipc'));
+    const driver = new PinnedSourceRuntimeDriver(temp, SOURCE!, path.resolve(PYTHON), port);
+    const broker = new DockerBroker(BrokerConfig.parse({ stateDir: path.join(temp, 'state'), socketPath: path.join(temp, 'ipc', 'fixture.sock'), bridgePath: path.resolve('src/docker-hermes/bridge.py'),
+      namespace: 'cui-stop-test', image: 'nousresearch/hermes-agent@sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283',
+      network: 'internet', teamBotsEnabled: true, teamCandidateRuntimeEnabled: true }), driver);
+    const ipc = await listenBroker(broker); vi.stubEnv('DOCKER_HERMES_SOCKET', broker.config.socketPath);
+    let drain: Promise<unknown> | undefined;
+    try {
+      const grant = broker.authorizeTeam('member', { teamBotId: 'team', mode: 'member', modelPolicy: 'admin_provided' });
+      const native = await broker.ensureTeam('member', { teamBotId: 'team', mode: 'member', name: 'Team' }, grant.grantId);
+      const profile = await reserveTeamProfile(member, 'team', 'member');
+      const chat = await openTeamConversation(member, 'team', 'member');
+      await db.update(schema.hermesTeamProfiles).set({ state: 'ready', binding: native }).where(eq(schema.hermesTeamProfiles.id, profile.id));
+      const home = driver.home(native.ownerId, native.profile);
+      await writeFile(path.join(home, 'config.yaml'), JSON.stringify({ memory: { nudge_interval: 1000 }, skills: { creation_nudge_interval: 1000 } }));
+      await db.insert(schema.agentRuns).values({ id: 'interrupt-run', userId: 'member', botId: 'team', conversationId: chat.conversationId, messageId: 'interrupt-message' });
+      const worker = (await claimRun('interrupt-run', 'synthetic-native-worker'))!;
+      const active = await startTeamCandidateRun(member, 'team', worker.id, { holder: worker.holder!, segment: worker.segment, routes: [route] });
+      const runId = await startRun(active.target, { input: 'Review a scoped document update.', sessionId: `portal-${chat.conversationId}-team`, idempotencyKey: `portal-${worker.id}` });
+      // Attach an error handler immediately; revoked streams may close with an authorization error.
+      drain = (async () => { for await (const event of runEvents(active.target, runId)) { expect(typeof event.event).toBe('string'); } })().catch(error => error);
+      await until(() => modelRequests, count => count === 1);
+      if (scenario === 'approval-revocation') {
+        const approvals = await until(() => listCandidateApprovals(member, chat.conversationId, { routes: [route], adapters }), rows => rows.length === 1);
+        expect(connect).not.toHaveBeenCalled();
+        await db.transaction(async tx => {
+          await tx.delete(schema.botUserAccess).where(eq(schema.botUserAccess.userId, 'member'));
+          await queueTeamAccessReconciliation(tx, 'team', 'admin', { reason: 'audience_changed', scopeUserId: 'member', mutationId: randomUUID() });
+        });
+        await reconcileTeamAccess('team');
+        await expect(answerCandidateApproval(member, approvals[0].id, 'approved', { routes: [route], adapters })).rejects.toBeDefined();
+        expect((await db.select().from(schema.hermesTeamCandidateApprovals))[0]).toMatchObject({ state: 'pending' });
+        expect((await db.select().from(schema.hermesTeamOperations)).filter(row => row.kind === 'revoke')).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'complete' })]));
+        expect(await readFile(path.join(home, 'memories', 'MEMORY.md'), 'utf8')).toContain('Private member memory remains');
+      } else {
+        await stopRun(active.target, runId);
+        await until(() => getRun(active.target, runId), state => ['cancelled', 'interrupted', 'failed'].includes(state.status), 12_000);
+        await db.update(schema.agentRuns).set({ status: 'cancelled', cancelRequestedAt: new Date() }).where(eq(schema.agentRuns.id, worker.id));
+      }
+      expect(await active.retire()).toEqual({ confirmed: true, runtimeWide: true });
+      expect(await driver.running(native.ownerId)).toBe(false);
+      if (scenario === 'held-model-stop') await until(() => providerAborted, aborted => aborted);
+      await drain;
+      expect(modelRequests).toBe(1); expect(connect).not.toHaveBeenCalled(); expect(driver.launches).toBe(1);
+      expect(await readFile(path.join(home, 'state.db'))).not.toHaveLength(0);
+      expect((await driver.profiles(native.ownerId)).find(row => row.name === native.profile)?.identity).toBe(native.identity);
+      expect(await db.select().from(schema.hermesTeamLearningHandoffs)).toEqual([]); expect(fixture.queued).toEqual([]);
+      await expect(startRun(active.target, { input: 'Late saved URL replay', sessionId: `portal-${chat.conversationId}-team`, idempotencyKey: `portal-${worker.id}` })).rejects.toBeDefined();
+      expect(modelRequests).toBe(1);
+    } finally {
+      await ipc.close(); await driver.close(); await drain;
+      server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(temp, { recursive: true, force: true });
+    }
+  }, 45_000);
+
 });

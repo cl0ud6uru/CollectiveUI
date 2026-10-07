@@ -94,6 +94,15 @@ jobs:
         run: |
           test -d "$HERMES_SOURCE"
           npx vitest run --project unit tests/unit/hermes-team-candidate-adapters.test.ts -t 'actual pinned'
+      - name: Require actual pinned Team gateway learning and publication lifecycle (synthetic upstreams only)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          test -d "$HERMES_SOURCE"
+          export HERMES_TEAM_CANDIDATE_PYTHON="$(command -v python)"
+          test -x "$HERMES_TEAM_CANDIDATE_PYTHON"
+          npx vitest run --project unit tests/unit/hermes-team-native-lifecycle.test.ts --maxWorkers=1
 
   hermes-team-image:
     name: Official pinned image · offline Team resource helper

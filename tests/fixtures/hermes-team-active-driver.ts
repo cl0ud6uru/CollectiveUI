@@ -20,6 +20,8 @@ export class PinnedSourceRuntimeDriver implements RuntimeDriver {
   private children = new Map<string, Set<ChildProcessWithoutNullStreams>>();
   launches = 0;
   stderr = '';
+  nativeErrors: Array<{ code?: unknown; message?: unknown }> = [];
+  candidates: TeamCandidateConfig[] = [];
   constructor(readonly root: string, readonly source: string, readonly python: string, readonly port: number) {}
   volume(owner: string) { return path.join(this.root, `native-volume-${runtimeKey(owner)}`); }
   home(owner: string, profile: string) { return path.join(this.volume(owner), 'profiles', profile); }
@@ -53,7 +55,9 @@ export class PinnedSourceRuntimeDriver implements RuntimeDriver {
     // Preserve exact server-derived scopes and opaque tokens. Only the fixed origin
     // becomes this fixture's sole permitted loopback port; production keeps HTTPS.
     const local = (url: string) => `http://127.0.0.1:${this.port}${new URL(url).pathname}`;
-    const config = { ...input, modelBaseUrls: Object.fromEntries(Object.entries(input.modelBaseUrls).map(([purpose, url]) => [purpose, local(url)])), toolUrl: local(input.toolUrl) } as TeamCandidateConfig;
+    this.candidates.push(input);
+    const config = { ...input, modelBaseUrls: Object.fromEntries(Object.entries(input.modelBaseUrls).map(([purpose, url]) => [purpose, local(url)])), toolUrl: local(input.toolUrl),
+      ...(input.learningUrl ? { learningUrl: local(input.learningUrl) } : {}) } as TeamCandidateConfig;
     const bootstrap = candidateBootstrap(config);
     return { spawn: () => {
       if (!this.active.has(owner)) throw new Error('The synthetic owned runtime is stopped');
@@ -62,6 +66,21 @@ export class PinnedSourceRuntimeDriver implements RuntimeDriver {
         { env: this.env(), stdio: ['pipe', 'pipe', 'pipe'], detached: true });
       const owned = this.children.get(owner) ?? new Set(); owned.add(child); this.children.set(owner, owned);
       child.once('exit', () => owned.delete(child));
+      let lines = '';
+      child.stdout.on('data', data => {
+        lines = (lines + String(data)).slice(-32_000);
+        for (;;) {
+          const end = lines.indexOf('\n'); if (end < 0) break;
+          const line = lines.slice(0, end); lines = lines.slice(end + 1);
+          try {
+            const frame = JSON.parse(line);
+            if (frame.error) {
+              this.nativeErrors.push({ code: frame.error.code, message: frame.error.message });
+              if (this.nativeErrors.length > 16) this.nativeErrors.shift();
+            }
+          } catch { /* NativeRpc validates the actual channel; this is bounded synthetic diagnostics only. */ }
+        }
+      });
       child.stderr.on('data', data => { this.stderr = (this.stderr + String(data)).slice(-32_000); });
       child.stdin.on('error', () => {}); child.stdin.write(bootstrap);
       return child;
