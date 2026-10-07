@@ -38,7 +38,7 @@ export function PersonalHermes({ canCreate }: { canCreate: boolean }) {
     start(async () => { try { await run(); setState(await personalHermesStatus()); setError(''); } catch (e) { setError(e instanceof Error ? e.message : 'Operation failed'); } });
   }
   return <details open={open} className="rounded-xl border border-border p-4" onToggle={e => setOpen(e.currentTarget.open)}>
-    <summary className="cursor-pointer text-sm font-medium">Personal Hermes <span className="font-normal text-muted">· shared runtime and private profiles</span></summary>
+    <summary id="personal-hermes-title" className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent">Personal Hermes <span className="font-normal text-muted">· shared runtime and private profiles</span></summary>
     <div className="mt-3 space-y-3 text-sm">
       <p className="text-muted">Enable once to create your private Hermes starter bot. Your bots share your own runtime, with separate native profiles.</p>
       <div className="flex items-center gap-3" role="status" aria-live="polite">

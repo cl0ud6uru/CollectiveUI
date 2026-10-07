@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTheme } from "next-themes";
-import { useState, useTransition, type ReactNode } from "react";
+import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Pin, Trash2 } from "lucide-react";
 import {
@@ -67,6 +67,28 @@ export function SettingsView({
   const selected = TABS.find(t => tabSlug(t) === searchParams.get("tab")) ?? "General";
   // A tab can disappear (e.g. Connected accounts after disconnecting): fall back instead of showing an empty pane.
   const tab: Tab = tabs.includes(selected) ? selected : "General";
+  const section = searchParams.get("section");
+  const sectionsNav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      // Keep the selected section visible in the horizontal mobile menu.
+      const nav = sectionsNav.current;
+      const active = nav?.querySelector('[aria-current="page"]');
+      if (nav && active) {
+        const menu = nav.getBoundingClientRect(), item = active.getBoundingClientRect();
+        if (item.left < menu.left) nav.scrollLeft -= menu.left - item.left;
+        else if (item.right > menu.right) nav.scrollLeft += item.right - menu.right;
+      }
+      if (tab !== "Connected accounts" || (section !== "personal-hermes" && section !== "remote-hermes")) return;
+      const title = document.getElementById(`${section}-title`);
+      title?.focus({ preventScroll: true });
+      const scroller = title?.closest<HTMLElement>('[data-page-scroll]');
+      if (title && scroller) {
+        scroller.scrollTop += title.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [tab, section]);
   const [instructions, setInstructions] = useState(prefs.customInstructions ?? "");
   const [pending, start] = useTransition();
   const [newMemory, setNewMemory] = useState("");
@@ -75,6 +97,7 @@ export function SettingsView({
     const params = new URLSearchParams(searchParams.toString());
     if (next === "General") params.delete("tab");
     else params.set("tab", tabSlug(next));
+    params.delete("section");
     const query = params.toString();
     // Keep settings state while making sections refreshable and navigable with Back/Forward.
     window.history.pushState(null, "", `/settings${query ? `?${query}` : ""}`);
@@ -82,7 +105,7 @@ export function SettingsView({
 
   return (
     <div className="flex flex-col gap-6 md:flex-row">
-      <nav aria-label="Settings sections" className="flex shrink-0 gap-1 overflow-x-auto md:w-44 md:flex-col">
+      <nav ref={sectionsNav} aria-label="Settings sections" className="flex shrink-0 gap-1 overflow-x-auto md:w-44 md:flex-col">
         {tabs.map((t) => (
           <button
             key={t}
