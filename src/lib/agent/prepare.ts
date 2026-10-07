@@ -59,17 +59,20 @@ export async function resolveAttachmentsForModel(
         parts.push({ type: 'file', mediaType: att.mediaType, filename: att.filename, url: `data:${att.mediaType};base64,${data.toString('base64')}` });
       } else if (native) {
         parts.push({ type: 'text', text: `[Earlier attachment: ${att.filename}]` });
-      } else if (isImage(att.mediaType)) {
-        if (app.supportsVision) {
-          const data = await storage().get(att.storageKey);
-          parts.push({ type: "file", mediaType: att.mediaType, filename: att.filename, url: `data:${att.mediaType};base64,${data.toString("base64")}` });
-        } else {
-          parts.push({ type: "text", text: `[The user attached an image "${att.filename}", but this model cannot view images.]` });
-        }
-      } else if (att.extractedText) {
-        parts.push({ type: "text", text: `<file name="${att.filename}">\n${att.extractedText}\n</file>` });
       } else {
-        parts.push({ type: "text", text: `[The user attached "${att.filename}" (${att.mediaType}), which could not be read as text.]` });
+        if (isImage(att.mediaType)) {
+          if (app.supportsVision) {
+            const data = await storage().get(att.storageKey);
+            parts.push({ type: "file", mediaType: att.mediaType, filename: att.filename, url: `data:${att.mediaType};base64,${data.toString("base64")}` });
+          } else {
+            parts.push({ type: "text", text: `[The user attached an image "${att.filename}", but this model cannot view images.]` });
+          }
+        } else if (att.extractedText) {
+          parts.push({ type: "text", text: `<file name="${att.filename}">\n${att.extractedText}\n</file>` });
+        } else {
+          parts.push({ type: "text", text: `[The user attached "${att.filename}" (${att.mediaType}), which could not be read as text.]` });
+        }
+        parts.push({ type: "text", text: `[Uploaded attachment: ${JSON.stringify(att.filename)}; attachment ID: ${att.id}. Use workspace_import_attachment if available to work with the original file.]` });
       }
     }
     out.push({ ...m, parts });

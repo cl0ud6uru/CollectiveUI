@@ -68,10 +68,10 @@ describe("buildToolset workspace wiring", () => {
     getOrCreateRef.mockClear();
   });
 
-  it("adds the six tools, a per-tool timeout, and a lazily resolved workspace", async () => {
+  it("adds the seven tools, a per-tool timeout, and a lazily resolved workspace", async () => {
     const ctx = newCtx();
     const ts = await buildToolset(ctx);
-    expect(Object.keys(ts.tools)).toEqual(["workspace_bash", "workspace_write", "workspace_edit", "workspace_read", "workspace_list", "workspace_grep"]);
+    expect(Object.keys(ts.tools)).toEqual(["workspace_bash", "workspace_write", "workspace_edit", "workspace_read", "workspace_list", "workspace_grep", "workspace_import_attachment"]);
     expect(ts.timeout).toEqual({ tools: { workspace_bashMs: 120_000 } });
     expect(ts.workspace).toBeInstanceOf(PortalWorkspace);
     expect(ctx.workspace).toBe(ts.workspace);
@@ -93,7 +93,7 @@ describe("buildToolset workspace wiring", () => {
 
     sandbox = { ...ENABLED, access: "selected", allowedUpns: ["ALICE@corp.local"] };
     ts = await buildToolset(newCtx());
-    expect(Object.keys(ts.tools)).toHaveLength(6);
+    expect(Object.keys(ts.tools)).toHaveLength(7);
 
     sandbox = { ...ENABLED };
     client = null;
