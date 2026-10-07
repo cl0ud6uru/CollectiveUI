@@ -125,12 +125,23 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       : [];
 
     const coordinator = await getSetting("coordinator");
-    const decisions = coordinator.enabled && coordinator.defaultBotId === bot?.id && app.provider !== "hermes"
+    const decisions = bot && app.provider !== "hermes"
       ? await getSetting("decisions") : null;
     const routedTools = decisions?.queenRouting
       ? await (await import("./queen-routing")).queenRouting(ctx, toolset, history, userText, {
           continuation: opts.continuation, signal: opts.abortSignal, stepsUsed: native?.stepsUsed,
         }) : undefined;
+    const picked = decisions?.skillPicking
+      ? await (await import("./skill-picking")).skillPicking(ctx, toolset, userText, {
+          continuation: opts.continuation, signal: opts.abortSignal, stepsUsed: native?.stepsUsed,
+        }) : undefined;
+    if (picked) { toolset.skills = picked.skills; toolset.tools = picked.tools; }
+    const shortlisted = decisions?.toolShortlisting
+      ? await (await import("./tool-shortlisting")).toolShortlisting(ctx, toolset, userText, {
+          continuation: opts.continuation, signal: opts.abortSignal, stepsUsed: native?.stepsUsed,
+        }) : undefined;
+    const firstTools = routedTools || shortlisted ? Object.keys(toolset.tools).filter(name =>
+      (!routedTools || routedTools.includes(name)) && (!shortlisted || shortlisted.includes(name))) : undefined;
     const sections = buildInstructionSections({
       coordinator: coordinator.enabled && coordinator.defaultBotId === bot?.id && app.provider !== "hermes",
       app,
@@ -186,9 +197,9 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       abortSignal: opts.abortSignal,
       ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
       ...(delegated ? { maxRetries: 0, prepareStep: async () => { await authorizeDispatch(); return {}; } } : {}),
-      // Route only the first planning step; later steps retain the complete allowed team for plan corrections.
-      ...(!delegated && routedTools ? { prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
-        activeTools: stepNumber === 0 ? routedTools : Object.keys(toolset.tools),
+      // Both independent visibility filters apply only to the first planning step; later steps restore all tools.
+      ...(!delegated && firstTools ? { prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
+        activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools),
       }) } : {}),
     });
     return { result, userText, billing, replayKey };
