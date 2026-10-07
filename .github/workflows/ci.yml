@@ -102,6 +102,7 @@ jobs:
           test -d "$HERMES_SOURCE"
           export HERMES_TEAM_CANDIDATE_PYTHON="$(command -v python)"
           test -x "$HERMES_TEAM_CANDIDATE_PYTHON"
+          npx vitest run --project unit tests/unit/docker-hermes-active-runtime.test.ts -t 'selects the pinned generic Responses codec' --maxWorkers=1
           npx vitest run --project unit tests/unit/hermes-team-native-lifecycle.test.ts --maxWorkers=1
 
   hermes-team-image:
