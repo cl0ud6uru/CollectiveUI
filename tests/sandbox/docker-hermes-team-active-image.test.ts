@@ -103,6 +103,15 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
   const counts = new Map<string, number>();
   let scenario: 'teach' | 'cancel' = 'teach', cancelEntered = false, cancelDisconnected = false, rejected = 0;
 
+  function nativeAdmission(contextId: string, conversationId: string, runId: string) {
+    const observed = driver.candidates.find(candidate => candidate.contextId === contextId);
+    expect(observed).toMatchObject({ contextId, runId, teamBotId: 'image-team', mode: 'admin', bindingId: binding.bindingId });
+    // Match the broker's server-derived portal session and run receipt, including the complete bot ID.
+    const sessionId = `portal-${conversationId}-${observed!.teamBotId}`, idempotencyKey = `portal-${observed!.runId}`;
+    expect(sessionId).toBe(`portal-${conversationId}-image-team`); expect(idempotencyKey).toBe(`portal-${runId}`);
+    return { sessionId, idempotencyKey };
+  }
+
   async function ownedRuntime() {
     const [info] = JSON.parse(await docker(['inspect', driver.name(owner)]));
     expect(info.Config.Image).toBe(PIN); expect(info.Config.Labels['collective.namespace']).toBe(config.namespace);
@@ -258,7 +267,8 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     await db.insert(schema.agentRuns).values({ id: 'image-parent', userId: admin.user.id, botId: 'image-team', conversationId: chat.conversationId, messageId: 'image-assistant-message' });
     const parent = (await claimRun('image-parent', 'hosted-image-parent-worker'))!;
     const active = await startTeamCandidateRun(admin, 'image-team', parent.id, { holder: parent.holder!, segment: parent.segment, routes: [route] });
-    const run = await startRun(active.target, { input: 'Teach a useful procedure: validate input, record the decision, then report the result.', sessionId: `portal-${chat.conversationId}-team`, idempotencyKey: `portal-${parent.id}` });
+    expect(active.target.profile).toBe(binding.bindingId);
+    const run = await startRun(active.target, { input: 'Teach a useful procedure: validate input, record the decision, then report the result.', ...nativeAdmission(active.contextId, chat.conversationId, parent.id) });
     const events: string[] = []; for await (const event of runEvents(active.target, run)) events.push(event.event);
     expect(await getRun(active.target, run)).toMatchObject({ status: 'completed', output: 'Learned the useful procedure.' }); expect(events).toContain('tool.completed');
     expect(handoffs).toHaveLength(1); expect(fixture.queued).toHaveLength(0); expect(counts.get('learning') ?? 0).toBe(0);
@@ -291,7 +301,8 @@ suite('HOSTED official pinned image: active Team gateway, native learning and ca
     await db.insert(schema.agentRuns).values({ id: 'image-cancel', userId: admin.user.id, botId: 'image-team', conversationId: chat.conversationId, messageId: 'image-cancel-message' });
     const parent = (await claimRun('image-cancel', 'hosted-image-cancel-worker'))!;
     const active = await startTeamCandidateRun(admin, 'image-team', parent.id, { holder: parent.holder!, segment: parent.segment, routes: [route] });
-    const run = await startRun(active.target, { input: 'Wait for the synthetic cancelled operation.', sessionId: `portal-${chat.conversationId}-team`, idempotencyKey: `portal-${parent.id}` });
+    expect(active.target.profile).toBe(binding.bindingId);
+    const run = await startRun(active.target, { input: 'Wait for the synthetic cancelled operation.', ...nativeAdmission(active.contextId, chat.conversationId, parent.id) });
     await until(() => cancelEntered, value => value); await stopRun(active.target, run);
     expect(await active.retire()).toEqual({ confirmed: true, runtimeWide: true }); expect(await driver.running(owner)).toBe(false);
     await until(() => cancelDisconnected, value => value);
