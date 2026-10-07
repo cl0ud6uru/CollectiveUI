@@ -81,7 +81,7 @@ describe('Team conversion fences company utility admission', () => {
       { id: 'retained-procedure', botId: 'bot', topic: 'retained-procedure', kind: 'procedure', content: learned, verification: 'Synthetic', useCount: 7, createdAt: old, updatedAt: old, lastUsedAt: old, lastCuratedAt: old },
       { id: 'retained-preference', botId: 'bot', userId: 'admin', topic: 'retained-preference', kind: 'preference', content: learned, verification: 'Synthetic', useCount: 3, createdAt: old, updatedAt: old },
     ]);
-    await db.insert(schema.botLearningRevisions).values({ learningId: 'retained-procedure', version: 1, status: 'active', content: learned, verification: 'Synthetic' });
+    await db.insert(schema.botLearningRevisions).values({ learningId: 'retained-procedure', version: 1, kind: 'procedure', status: 'active', content: learned, verification: 'Synthetic' });
     const before = await db.select().from(schema.botLearnings).orderBy(schema.botLearnings.id);
     await convert();
     if (state === 'legacy-flag') await db.update(schema.bots).set({ hermesTeam: false }).where(eq(schema.bots.id, 'bot'));
@@ -122,7 +122,7 @@ describe('Team conversion fences company utility admission', () => {
       { id: 'pending-preference', botId: 'bot', userId: 'admin', topic: 'format', kind: 'preference', status: 'pending', version: 2, content: proposal, verification: 'Synthetic' },
       { id: 'pending-procedure', botId: 'bot', topic: 'method', kind: 'procedure', status: 'pending', version: 2, content: proposal, verification: 'Synthetic' },
     ]);
-    await db.insert(schema.botLearningRevisions).values(['pending-preference', 'pending-procedure'].map(learningId => ({ learningId, version: 1, status: 'active' as const, content: learned, verification: 'Approved synthetic evidence' })));
+    await db.insert(schema.botLearningRevisions).values(['pending-preference', 'pending-procedure'].map(learningId => ({ learningId, version: 1, kind: learningId === 'pending-preference' ? 'preference' as const : 'procedure' as const, status: 'active' as const, content: learned, verification: 'Approved synthetic evidence' })));
     await db.transaction(async q => {
       await q.select({ id: schema.bots.id }).from(schema.bots).where(eq(schema.bots.id, 'bot')).for('share');
       const global = vi.spyOn(db, 'select').mockImplementation(() => { throw new Error('Global query escaped learning admission'); });
