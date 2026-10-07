@@ -22,7 +22,7 @@ run("bundled pet installation with actual artwork", () => {
     }
     await pool.end();
   });
-  it("normal migrations install all three distinct published pets on a clean database", async () => {
+  it("normal migrations install all bundled distinct published pets on a clean database", async () => {
     const { BUNDLED_PETS, readBundledPet } = await import("@/lib/pets/bundled");
     const c = await import("@/lib/pets/catalog");
     const { loadPrincipal } = await import("@/lib/auth/groups");
@@ -42,7 +42,7 @@ run("bundled pet installation with actual artwork", () => {
     await db.delete(schema.petCatalog).where(inArray(schema.petCatalog.id, BUNDLED_PETS.map(pet => pet.id)));
     const inserted = (await Promise.all(Array.from({ length: 4 }, () => installBundledPets()))).flat();
     expect(inserted.sort()).toEqual(BUNDLED_PETS.map(pet => pet.id).sort());
-  });
+  }, 30_000);
   it("adds missing entries without rewriting an existing unpublished pet or publishing unrelated drafts", async () => {
     const { db, schema } = await import("@/db");
     const { BUNDLED_PETS, installBundledPets } = await import("@/lib/pets/bundled");

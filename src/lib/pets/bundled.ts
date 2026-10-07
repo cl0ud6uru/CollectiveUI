@@ -25,6 +25,7 @@ export const BUNDLED_PETS: readonly BundledPet[] = [
     // The standing raster installed by the original public bundle (PR #20).
     releases: ["55870bfe41ee25b78a99fc75edffcce39a37abaf4d748a681b14e729d4fa0690"] },
   { id: "builtin-the-queen-v2", directory: "the-queen/v2", sprite: "fed57f8824f9e4a93064ab9e60996637867a583b2e3b83d3a175460560ac7487", hd: false, releases: [] },
+  { id: "builtin-nimbus-v2", directory: "nimbus/v2", sprite: "e69db846aeea8aaa74551e7bdf24a10e972f3830f0f97fe15e360f71d8682d11", hd: false, releases: [] },
 ];
 
 const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
