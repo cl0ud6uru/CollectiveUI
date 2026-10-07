@@ -11,6 +11,8 @@ import { resumableRun } from "@/lib/runs/store";
 import { getRun } from "@/lib/runs/state";
 import { tailRun } from "@/lib/runs/tail";
 import { errorResponse, requirePrincipal } from "@/lib/session";
+import { isTeamRuntimeApp } from '@/lib/agent/team-target';
+import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
 
 /**
  * Resume (useChat `resume`, after a reload): replays the conversation's current reply from its first event and keeps
@@ -37,7 +39,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/chat/[id]/stream
     }
     if (conv.source === "chat" && conv.botId) {
       const { app } = await resolveTurnTarget(p, conv);
-      if (isDockerHermes(app)) { authorize = () => authorizeDockerStream(p, conv.botId!); await authorize(); }
+      if (isTeamRuntimeApp(app)) { authorize = async () => { await authorizeTeamConversation(p, conv.id); }; await authorize(); }
+      else if (isDockerHermes(app)) { authorize = () => authorizeDockerStream(p, conv.botId!); await authorize(); }
     }
     // Transient chunks (title, notices) of the backlog are dropped; ones written after this point arrive live.
     return sseResponse(tailRun(run.id, { afterSeq: 0, targetSegment: run.segment, replay: true, liveAfterSeq: run.lastSeq, authorize }));

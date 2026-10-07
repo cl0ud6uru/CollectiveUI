@@ -1,4 +1,5 @@
 import { nativeSearchMiddleware, type NativeSearchOptions } from "./native-search";
+import { isTeamRuntimeApp } from '@/lib/agent/team-target';
 import { db, type DbOrTx } from '@/db';
 import { nativeSearchCapability } from "@/lib/native-search-policy";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
@@ -157,6 +158,7 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
       sessionKey:`portal-${opts.conversationId}-${opts.botId}`,interactive:opts.interactive===true,approvalTimeoutSec:90,run:opts.run}),
       billing:{source:'hermes',credentialId:null,appId:app.id,providerKind:'hermes',modelId:candidate.model},capabilities:capabilitiesFor(app),replayKey:null};
   }
+  if (isTeamRuntimeApp(app)) throw new ProviderUnavailableError('Team model work requires an active server-owned native run.');
   if (opts.run?.hermes && app.provider !== "hermes") throw new ProviderUnavailableError("This run's backend changed. Start a new chat with the updated bot.");
   if (app.provider === "chatgpt") return resolveChatGPT(app, opts);
   if (app.provider === "hermes") return resolveHermes(app, opts);
@@ -191,6 +193,7 @@ const HERMES_PURPOSES: readonly ModelPurpose[] = ["chat", "group", "delegate"];
 
 /** Where a Hermes app's requests go, with its sealed key opened; refused when the URL isn't safe for the key. */
 export async function hermesTargetFor(app: AiApp, scope?: { userId: string; botId: string; provisionId?: string | null; verify?: boolean }): Promise<{ target: HermesTarget; approvalTimeoutSec: number }> {
+  if (isTeamRuntimeApp(app)) throw new ProviderUnavailableError('Team native connections are available only inside their active server-owned run.');
   if (isDockerHermes(app)) {
     const b = bindingSchema.parse(app.providerConfig.docker);
     if (!scope || scope.userId !== b.ownerId || scope.botId !== b.botId) throw new ProviderUnavailableError("Personal Hermes requires its paired owner and bot.");

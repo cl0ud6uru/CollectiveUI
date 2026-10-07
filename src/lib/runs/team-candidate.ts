@@ -1,17 +1,17 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@/db';
-import { bots,type AiApp } from '@/db/schema';
+import { bots } from '@/db/schema';
 import { HttpError } from '@/lib/authz';
 import type { Principal } from '@/lib/auth/groups';
 import { candidateRun } from '@/lib/hermes-team/candidate-context';
 import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
 import { startTeamCandidateRun,type ActiveTeamCandidateRun } from '@/lib/hermes-team/candidate-startup';
-import { LOCAL_ORIGIN } from '@/lib/local-hermes/client';
+import { teamRuntimeApp } from '@/lib/agent/team-target';
 import { RunEventWriter } from './events';
 import { finalizeRunTx } from './state';
 import { abortKindOf,RunAbort,type AgentRun } from './types';
 
-/** Worker-only route selection. The ordinary browser target resolver stays closed. */
+/** Worker-only active route selection, rechecked independently of the earlier web admission. */
 export async function prepareTeamWorkerTarget(p:Principal,run:AgentRun,holder:string){
   const [bot]=run.botId?await db.select().from(bots).where(eq(bots.id,run.botId)):[];
   if(!bot?.hermesTeam && !await teamUsesNativeLearning(run.conversationId))return null;
@@ -20,10 +20,7 @@ export async function prepareTeamWorkerTarget(p:Principal,run:AgentRun,holder:st
   const current=await candidateRun(p,run.id);
   const candidate=await startTeamCandidateRun(p,bot.id,run.id,{holder,segment:run.segment});
   // Historical appId is attribution metadata. Never open its credentials or company runtime configuration.
-  const now=new Date();
-  const app:AiApp={id:run.appId??bot.id,name:bot.name,description:null,icon:bot.avatar,kind:'runtime',provider:'hermes',providerConfig:{},
-    credentialMode:'org',baseUrl:LOCAL_ORIGIN,apiKeyEnc:null,providerConnectionId:null,model:candidate.model,systemPrompt:null,
-    temperature:null,maxTokens:null,supportsVision:true,supportsTools:true,embeddingModel:null,isPublic:false,enabled:true,sortOrder:0,createdAt:now,updatedAt:now};
+  const app=teamRuntimeApp(current.bot,candidate.model,run.appId??bot.id);
   return {bot:current.bot,app,candidate};
 }
 

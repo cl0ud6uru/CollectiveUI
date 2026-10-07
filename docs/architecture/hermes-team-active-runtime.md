@@ -43,6 +43,15 @@ deny startup before native or provider work. A paused ordinary Hermes approval s
 cannot regrant this one-time native context; that continuation remains disabled until
 its complete lifecycle has verification evidence.
 
+The web target admits only a retained private Team conversation whose server policy,
+private model choice and broker network capability are currently verified. Admission
+repeats these checks inside the bot-before-user transaction before saving a prompt or
+queuing work. Its ephemeral app contains no provider credentials or native binding;
+ordinary model/control resolution rejects that app without the scoped active worker.
+Both chat streams recheck current Team authority while delivering events. `/new`
+retains the same derived runtime profile and mode, copies the conversation’s private
+model choice, and starts separate history. Empty route catalogs keep this path closed.
+
 The broker exposes grant-bound runtime capabilities from the derived owner’s retained
 network policy. With active runtime enabled, offline containers cannot prepare or start these HTTPS gateway clients;
 the application must show connection-needed guidance. Fresh Standard Internet and
