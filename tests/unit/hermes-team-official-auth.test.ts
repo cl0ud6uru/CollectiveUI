@@ -66,6 +66,21 @@ describe('Dormant exact official loopback OAuth controllers and durable rotating
  it('makes an identical completed callback harmless and rejects changed callback replay without another exchange',async()=>{
   const attempt=await connect();expect(await returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,attempt.callback,services)).toEqual({connected:true});await expect(returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,{...attempt.callback,code:'changed'},services)).rejects.toMatchObject({status:409});expect(fetcher).toHaveBeenCalledTimes(2);
  });
+ it('accepts documented callback scope as untrusted metadata while using verified token permission',async()=>{
+  const attempt=await begin(),callback={...attempt.callback,scope:'openid'};
+  expect(await returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,callback,services)).toEqual({connected:true});
+  expect(await officialPlanMetadata('alice','synthetic-model')).toBeTruthy();
+  expect(await returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,callback,services)).toEqual({connected:true});expect(fetcher).toHaveBeenCalledTimes(2);
+ });
+ it('does not let callback permission replace insufficient token scopes',async()=>{
+  const attempt=await begin();fetcher.mockResolvedValueOnce(Response.json({...tokenResponse(),scope:'openid'}));
+  await expect(returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,{...attempt.callback,scope:tokenResponse().scope},services)).rejects.toMatchObject({status:409});
+  expect(await db.select().from(schema.officialPlanConnections)).toHaveLength(0);expect(fetcher).toHaveBeenCalledOnce();expect((await db.select().from(schema.officialPlanAuthAttempts))[0].state).toBe('needs_attention');
+ });
+ it('rejects oversized callback scope before claiming or exchanging the attempt',async()=>{
+  const attempt=await begin();await expect(returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,{...attempt.callback,scope:'x'.repeat(4001)},services)).rejects.toThrow();
+  expect(fetcher).not.toHaveBeenCalled();expect((await db.select().from(schema.officialPlanAuthAttempts))[0].state).toBe('pending');
+ });
  it.each(['state','return-token','registration','session'] as const)('refuses %s tampering before token I/O',async(kind)=>{
   const attempt=await begin();if(kind==='session')await db.update(schema.users).set({sessionVersion:1}).where(eq(schema.users.id,'alice'));
   await expect(returnOfficialPlanAuth(attempt.attemptId,kind==='return-token'?`Bearer ${'a'.repeat(43)}`:attempt.authorization,{...attempt.callback,...(kind==='state'?{state:'wrong'}:{}),...(kind==='registration'?{client_id:'dynamic_agent_client'}:{})},services)).rejects.toMatchObject({status:kind==='registration'?409:403});expect(fetcher).not.toHaveBeenCalled();
@@ -147,6 +162,19 @@ describe('Dormant exact official loopback OAuth controllers and durable rotating
   expect(openOfficialPlanSecret((await db.select().from(schema.officialPlanConnections))[0]).refresh).toBeUndefined();fetcher.mockClear();
   for(let i=0;i<2;i++)expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});
   expect(fetcher).not.toHaveBeenCalled();expect(services.verifier.revocationEndpoint).not.toHaveBeenCalled();expect((await db.select().from(schema.officialPlanAuthOperations))[0]).toMatchObject({kind:'revoke',state:'needs_attention'});expect((await db.select().from(schema.officialPlanConnections))[0].status).toBe('revoked');
+ });
+ it.each([
+  {status:200,body:null,confirmed:true,label:'empty 200'},
+  {status:200,body:'{}',confirmed:false,label:'nonempty 200'},
+  {status:200,body:' ',confirmed:false,label:'whitespace 200'},
+  {status:202,body:null,confirmed:false,label:'empty 202'},
+  {status:204,body:null,confirmed:false,label:'empty 204'},
+ ])('confirms remote revoke only for the documented response: $label',async({status,body,confirmed})=>{
+  await connect();fetcher.mockClear();fetcher.mockResolvedValue(new Response(body,{status}));
+  const expected={disconnected:true,remoteRevocationConfirmed:confirmed};expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual(expected);
+  expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual(expected);expect(fetcher).toHaveBeenCalledOnce();
+  expect((await db.select().from(schema.officialPlanAuthOperations))[0]).toMatchObject({kind:'revoke',state:confirmed?'complete':'needs_attention'});
+  expect((await db.select().from(schema.officialPlanConnections))[0].status).toBe('revoked');
  });
  it('enforces immutable attempt/operation identity and keeps another owner from deleting or selecting it',async()=>{
   const attempt=await connect();await expect(db.update(schema.officialPlanAuthAttempts).set({userId:'bob'}).where(eq(schema.officialPlanAuthAttempts.id,attempt.attemptId))).rejects.toThrow();await expect(operateOfficialPlanAuth(bob,'refresh',services)).rejects.toMatchObject({status:404});

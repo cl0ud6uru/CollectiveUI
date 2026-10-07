@@ -18,7 +18,7 @@ type Attempt=typeof officialPlanAuthAttempts.$inferSelect;
 type Tx=Parameters<Parameters<typeof db.transaction>[0]>[0];
 const secretSchema=z.object({version:z.literal(1),verifier:z.string().regex(/^[A-Za-z0-9_-]{43}$/),nonce:z.string().regex(/^[A-Za-z0-9_-]{43}$/),clientId:z.string().min(1).max(256),subject:z.string().max(256).nullable()}).strict();
 const aad=(row:Pick<Attempt,'id'|'userId'|'sessionVersion'|'transportId'|'hostId'|'redirectUri'|'stateHash'|'returnTokenHash'|'expectedConnectionId'|'expectedRevision'|'expiresAt'>)=>`official_plan_auth_attempts.secret_enc|${JSON.stringify([row.id,row.userId,row.sessionVersion,row.transportId,row.hostId,row.redirectUri,row.stateHash,row.returnTokenHash,row.expectedConnectionId,row.expectedRevision,row.expiresAt.getTime()])}`;
-const callbackSchema=z.object({state:z.string().min(1).max(100),code:z.string().min(1).max(4000).optional(),client_id:z.string().min(1).max(256).optional(),error:z.enum(['access_denied','invalid_request','server_error','temporarily_unavailable']).optional()}).strict().refine(value=>Boolean(value.code)!==Boolean(value.error));
+const callbackSchema=z.object({state:z.string().min(1).max(100),code:z.string().min(1).max(4000).optional(),client_id:z.string().min(1).max(256).optional(),scope:z.string().max(4000).optional(),error:z.enum(['access_denied','invalid_request','server_error','temporarily_unavailable']).optional()}).strict().refine(value=>Boolean(value.code)!==Boolean(value.error));
 const tokenSchema=z.object({access_token:z.string().min(1).max(16000),refresh_token:z.string().min(1).max(16000).optional(),id_token:z.string().min(1).max(16000).optional(),token_type:z.string().refine(value=>value.toLowerCase()==='bearer'),expires_in:z.number().int().positive().max(3660),scope:z.string().max(4000),earliest_refresh_at:z.union([z.string().max(256),z.number().finite(),z.null()]).optional()}).passthrough();
 type TokenResponse=z.infer<typeof tokenSchema>;
 
@@ -48,7 +48,11 @@ async function oauthForm(services:OfficialAuthServices,url:string,body:URLSearch
   while(reader){const part=await Promise.race([reader.read(),timeout]);if(part.done)break;bytes+=part.value.length;if(bytes>64000)throw new HttpError(409,'The official token response is too large.');chunks.push(part.value);}
   const text=Buffer.concat(chunks).toString('utf8');
   if(!response.ok)throw new HttpError(409,'The official token operation failed. Reconnect instead of retrying it.');
-  if(empty)return null;
+  if(empty){
+   // The official renewable-session contract confirms only an empty HTTP 200.
+   if(response.status!==200 || bytes!==0)throw new HttpError(409,'Official remote logout was not confirmed.');
+   return null;
+  }
   if(!response.headers.get('content-type')?.startsWith('application/json'))throw new HttpError(409,'The official token response is invalid.');
   return tokenSchema.parse(JSON.parse(text));
  }catch{throw new HttpError(409,'The official token operation was not confirmed. Reconnect before continuing.');}
