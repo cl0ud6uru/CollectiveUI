@@ -110,7 +110,7 @@ def install_candidate_process(config, source, expected_sources, *, allow_synthet
     required = ("run_agent.py", "agent/agent_runtime_helpers.py", "agent/agent_init.py", "agent/auxiliary_client.py",
                 "agent/background_review.py", "tools/delegate_tool.py", "tools/delegate_tool_config.py", "hermes_cli/runtime_provider.py",
                 "tools/mcp_tool_config.py", "tools/mcp_tool.py", "tools/mcp_tool_transport.py", "hermes_cli/config.py", "hermes_cli/mcp_startup.py",
-                "tui_gateway/server.py", "tui_gateway/rpc_dispatch.py", "tui_gateway/method_ctx.py", "hermes_cli/backend_retirement.py", "agent/conversation_loop.py")
+                "tui_gateway/server.py", "tui_gateway/rpc_dispatch.py", "tui_gateway/method_ctx.py", "tui_gateway/contracts/sessions.py", "hermes_cli/backend_retirement.py", "agent/conversation_loop.py")
     source = Path(source)
     if not expected_sources or any(file not in expected_sources or hashlib.sha256((source / file).read_bytes()).hexdigest() != expected_sources[file] for file in required):
         raise RuntimeError("Native Team construction hooks do not match the pinned source")

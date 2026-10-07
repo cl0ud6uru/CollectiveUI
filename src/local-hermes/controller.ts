@@ -227,7 +227,7 @@ export class LocalController {
     if (!runtime) {
       const storedId = this.stored.sessions[r.sessionKey];
       const response = storedId
-        ? await rpc.call("session.resume", { session_id: storedId, inline_images: false })
+        ? await rpc.call("session.resume", { session_id: storedId })
         : await rpc.call("session.create", { cwd: this.config.workDir, ...(binding.model ? { model: binding.model, provider: binding.provider } : {}) });
       const info = object(response.info);
       const durableId = string(response.stored_session_id) || string(info.stored_session_id) || string(response.session_key);
