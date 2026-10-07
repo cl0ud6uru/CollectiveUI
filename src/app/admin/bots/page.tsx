@@ -7,9 +7,12 @@ import { db } from "@/db";
 import { aiApps, bots, users } from "@/db/schema";
 import { BotAvatar } from "@/components/bots/bot-avatar";
 import { BotDeleteButton } from "@/components/bots/bot-delete-button";
+import { DefaultCoordinatorBadge } from "@/components/bots/default-coordinator-badge";
+import { getSetting } from "@/lib/settings";
 
 export default async function AdminBotsPage() {
   const p = await requireAdminPage();
+  const coordinator = await getSetting("coordinator");
   const rows = await db
     .select({
       bot: bots,
@@ -33,6 +36,7 @@ export default async function AdminBotsPage() {
               <Link href={`/bots/${bot.id}`} className="flex items-center gap-2 font-medium hover:underline">
                 <BotAvatar value={bot.avatar} className="h-6 w-6" /> {bot.name}
               </Link>
+              {coordinator.enabled && coordinator.defaultBotId === bot.id && <DefaultCoordinatorBadge className="mt-1" />}
               {!bot.enabled && <Badge tone="red">disabled</Badge>}
             </Td>
             <Td>{owner}</Td>

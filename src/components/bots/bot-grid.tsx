@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { Globe, Lock, Pin, Search, Users, X } from "lucide-react";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import { DefaultCoordinatorBadge } from "@/components/bots/default-coordinator-badge";
 import { useShell } from "@/components/chat/shell-context";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,7 @@ function BotCard({ b, mine }: { b: Card; mine?: boolean }) {
           <BotAvatar botId={b.id} value={b.avatar} size={48} className="h-12 w-12" />
           <span className="min-w-0">
             <span className="block truncate font-semibold">{b.name}</span>
+            {bot?.coordinator && <DefaultCoordinatorBadge className="mt-1" />}
             {b.label && <span className="block truncate text-xs text-muted">{b.label}</span>}
           </span>
         </Link>
