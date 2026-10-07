@@ -1,6 +1,6 @@
 # Optional pet avatars
 
-Moss and Ember are built-in CollectiveUI companions. Additional artwork can be imported privately or uploaded to the admin catalog with the appropriate sharing rights. Normal migrations install three bundled catalog options: **Hermes** (green), **Hermes Assimilated**, and **The Queen** (the crowned seedling robot). See [artwork provenance and validation](../../assets/pets/README.md). Existing selections and administrator unpublication are preserved. Personal Hermes bots start with Moss; users can change their avatar normally.
+Moss and Ember are built-in CollectiveUI companions. Additional artwork can be imported privately or uploaded to the admin catalog with the appropriate sharing rights. Normal migrations install four bundled catalog options: **Hermes** (green), **Hermes Assimilated**, **The Queen** (the crowned seedling robot), and **Nimbus** (the crimson cloud and circuit companion). See [artwork provenance and validation](../../assets/pets/README.md). Existing selections and administrator unpublication are preserved. Personal Hermes bots start with Moss; users can change their avatar normally.
 
 Hermes Assimilated now uses close waist-up framing for readability in small avatars.
 Startup upgrades only the exact original bundled standing raster, keeping its catalog

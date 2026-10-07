@@ -1,6 +1,6 @@
 # Bundled catalog pets
 
-Normal `npm run db:migrate` (including worker startup) installs these three separate
+Normal `npm run db:migrate` (including worker startup) installs these four separate
 published catalog options through the same manifest/raster/cell validation as imports:
 
 | Display name | Stable catalog ID | Artwork and provenance |
@@ -8,6 +8,7 @@ published catalog options through the same manifest/raster/cell validation as im
 | Hermes | `builtin-hermes-v2` | [Green Hermes](hermes/README.md) |
 | Hermes Assimilated | `builtin-hermes-assimilated-v2` | [Hermes Assimilated](hermes-assimilated/README.md) |
 | The Queen | `builtin-the-queen-v2` | [The Queen](the-queen/README.md) |
+| Nimbus | `builtin-nimbus-v2` | [CollectiveUI cloud companion](nimbus/README.md) |
 
 Select them in Pet avatar settings, or assign a bot default through Admin → Pets.
 Installation adds missing entries and upgrades only artwork from a known earlier
@@ -60,4 +61,5 @@ The historical source notices describe their generating workspaces' checks.
 They do not substitute for these application tests or assert a deployment.
 
 [Catalog screenshot](../../docs/images/bundled-pets-catalog.png) captured from the
-local production build with all three bundles installed on a fresh test database.
+local production build with the original three bundles installed on a fresh test database.
+See [Nimbus's motion preview](nimbus/previews/all-states.gif) for the fourth option.
