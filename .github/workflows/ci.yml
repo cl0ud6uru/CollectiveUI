@@ -105,7 +105,7 @@ jobs:
           npx vitest run --project unit tests/unit/hermes-team-native-lifecycle.test.ts --maxWorkers=1
 
   hermes-team-image:
-    name: Official pinned image · offline Team resource helper
+    name: Official pinned image · Team resources and active lifecycle
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -127,3 +127,7 @@ jobs:
         env:
           DOCKER_HERMES_TEAM_IMAGE_TEST: '1'
         run: npx vitest run --project sandbox tests/sandbox/docker-hermes-team-image.test.ts
+      - name: Exercise the native Team gateway, durable learning and Stop with synthetic HTTPS
+        env:
+          DOCKER_HERMES_TEAM_ACTIVE_IMAGE_TEST: '1'
+        run: npx vitest run --project sandbox tests/sandbox/docker-hermes-team-active-image.test.ts --maxWorkers=1

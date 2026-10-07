@@ -1,0 +1,18 @@
+# Official-image active Team fixture
+
+The hosted `hermes-team-image` CI job first pulls the exact official Linux amd64 image pinned in the production broker configuration. After the offline resource-helper cases, it runs:
+
+```sh
+DOCKER_HERMES_TEAM_ACTIVE_IMAGE_TEST=1 \
+npx vitest run --project sandbox tests/sandbox/docker-hermes-team-active-image.test.ts --maxWorkers=1
+```
+
+The test refuses VFS, another architecture, a substituted root filesystem, or a missing pinned image. Do not run it by pulling the large image into the saved cloud workspace. Without its explicit environment gate, both cases are skipped and no Docker command is issued.
+
+The active fixture uses the production `DockerDriver`, broker Unix socket, candidate startup, protected stdin bootstrap and native gateway. The image entrypoint, native source and source hashes stay unchanged. An ownership-checked, fixed Python exec sets the fixture profile's native memory and skill nudge intervals to one turn so the learning handoff is deterministic; it writes no model configuration or credentials. A synthetic administrator teaches a procedure with the actual native skill and memory tools. After confirmed parent shutdown, the production durable queue claim and learning worker start a fresh child context, create and improve another skill, stop its writer before terminal completion, and leave visible chat messages unchanged. The production offline helper captures only the selected skills. A second case holds a synthetic model request, cancels the native turn, confirms runtime-wide Stop, observes its HTTP disconnection, and checks that the ambiguous model receipt remains fenced. Queue delivery and upstream model responses are synthetic; scheduling, claims, receipts, HTTP authorization and native execution are production code.
+
+TLS and networking have a deliberate fixture exception. The production per-owner `internet` bridge is retained, with container peer communication disabled. A host HTTPS server listens only at that disposable bridge's host gateway and accepts only fixed native paths and opaque grants issued for this fixture. It rejects unknown paths, tokens and methods, limits request bodies and deadlines, and never forwards to a real provider. A one-day synthetic CA is appended to certifi's trust bundle through a fixed, ownership-checked Docker exec in this uniquely labelled disposable container. A probe proves certificate rejection before that append and successful HTTPS verification afterward. The CA does not enter host trust, profile volumes, provider settings, production image sources or deployment configuration. The synthetic private TLS key stays in the mode-0700 fixture directory and is deleted during cleanup. Native HTTP clients still verify TLS with their unchanged production settings.
+
+Only this fixture's exact namespace, owner labels, expected container names and pinned image may be cleaned up. Data and journal volumes and the empty owner network receive the same label checks; the test never prunes Docker or changes daemon settings. Failed setup retains these exact cleanup targets. Production model and tool verification inventories remain empty, and ordinary Team chat stays unavailable without separate verified model routes and explicit runtime enablement. This test does not grant model access or enable a pilot.
+
+This image case covers a synthetic admin-provided route, native replies, native memory and skills, a durable learning child, safe capture and cancellation. Required-personal authentication, subagents, member-account MCP connections, publication rollout and deployment-host networking are covered by separate fixtures or remain bounded verification gates; this case does not claim their image or live-provider verification.
