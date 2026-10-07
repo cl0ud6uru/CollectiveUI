@@ -12,7 +12,7 @@ import { DashboardSocket, record, type NativeFrame, type RpcRecord } from './soc
 import { promptView, sessionView, answerFor, type NativeSessionView, type NativePrompt } from './view';
 
 type Session = typeof remoteHermesSessions.$inferSelect;
-type Cached = { row: Session; view: NativeSessionView; pending: Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>; refreshedAt: number; eventRevision: number };
+type Cached = { row: Session; view: NativeSessionView; pending: Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>; refreshedAt: number; eventRevision: number; socketEpoch: number };
 export class NativeHub {
   readonly changes = new EventEmitter();
   readonly socket: DashboardSocket;
@@ -67,7 +67,7 @@ export class NativeHub {
     if (!observed) throw new HttpError(404, 'Native Hermes chat not found.');
     row = observed;
     const eventRevision = this.sessions.get(row.id)?.eventRevision ?? 0;
-    const snapshot = await this.socket.call('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, inline_images: false, close_on_disconnect: false });
+    const { result: snapshot, epoch: socketEpoch } = await this.socket.callWithEpoch('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, inline_images: false, close_on_disconnect: false });
     const runtimeId = typeof snapshot.session_id === 'string' ? snapshot.session_id : '';
     const storedId = typeof snapshot.stored_session_id === 'string' ? snapshot.stored_session_id : row.storedId;
     if (!runtimeId) throw new HttpError(502, 'Hermes did not return a native session identity.');
@@ -113,7 +113,7 @@ export class NativeHub {
       cached.view.uncertain ||= view.uncertain;
       return cached.view;
     }
-    this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now(), eventRevision });
+    this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now(), eventRevision, socketEpoch });
     this.changes.emit(row.id);
     return view;
   }
@@ -167,6 +167,8 @@ export class NativeHub {
           .then(() => this.refresh(cached.row)).catch(() => { cached.view.uncertain = true; });
         break;
       case 'session.info':
+        if (typeof payload.yolo === 'boolean') cached.view.yolo = payload.yolo;
+        if (['manual', 'smart', 'off'].includes(String(payload.approval_mode))) cached.view.approvalMode = String(payload.approval_mode);
         if (typeof payload.model === 'string') cached.view.model = payload.model;
         if (typeof payload.provider === 'string') cached.view.provider = payload.provider;
         if (typeof payload.stored_session_id === 'string' && payload.stored_session_id && payload.stored_session_id !== cached.row.storedId) {
