@@ -44,10 +44,21 @@ export function unsupportedHermesCommand(name: string, namespace = "hermes"): st
 export type Discovery<T> = { available: true; items: T[] } | { available: false; reason: string };
 export type HermesSkill = { name: string; description: string };
 export type HermesToolset = HermesSkill & { enabled: boolean; configured: boolean };
+/** A route Hermes advertises; `allowed` is the admin's decision about whether users may request it. */
+export type HermesModelRoute = { id: string; allowed: boolean };
+
+/** "openai/gpt-5" and "openai:gpt-5" group under "openai"; ids without a prefix share one group. */
+export function routeProvider(id: string): string {
+  const m = /^([^/:\s]+)[/:]./.exec(id);
+  return m ? m[1] : "Routes";
+}
+
 export type HermesCommandCatalog = {
   backend: "hermes";
   commands: HermesCommand[];
   models: Discovery<string>;
+  /** Everything Hermes advertises (not just what is allowed), so the picker can explain what is unavailable. */
+  modelRoutes: HermesModelRoute[];
   skills: Discovery<HermesSkill>;
   tools: Discovery<HermesToolset>;
   canStopRemotely: boolean;
