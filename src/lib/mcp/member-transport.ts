@@ -1,4 +1,4 @@
-import 'server-only';
+// Shared by Next server handlers and the standalone worker's native tool transport.
 import type { McpServer } from '@/db/schema';
 import { HttpError } from '@/lib/authz';
 import { connectMcpWithHeaders, redactMcpSecrets, type McpCaller } from './client';

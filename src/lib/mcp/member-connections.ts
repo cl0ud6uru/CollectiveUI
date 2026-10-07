@@ -1,4 +1,4 @@
-import 'server-only';
+// Shared by Next server handlers and the standalone worker; authorization stays at each entry point.
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { z } from 'zod';
