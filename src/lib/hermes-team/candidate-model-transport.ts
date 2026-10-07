@@ -29,7 +29,7 @@ export async function loadCandidateModelWire(context: CandidateContext, protocol
     if(!metadata || metadata.id!==context.personalConnectionId || metadata.bindingHash!==context.personalBindingHash)throw new HttpError(409,'The official personal account changed.');
     const [row]=await tx.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.id,metadata.id),eq(officialPlanConnections.userId,context.actorId)));
     const secret=openOfficialPlanSecret(row);
-    return {secrets:[secret.access,secret.refresh??''],send:(body,signal)=>baseFetch(`${OFFICIAL_PLAN_ORIGIN}/responses`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${secret.access}`},body:JSON.stringify(body),signal,redirect:'error'})};
+    return {secrets:[secret.access,secret.refresh??'',secret.idToken??''],send:(body,signal)=>baseFetch(`${OFFICIAL_PLAN_ORIGIN}/responses`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${secret.access}`},body:JSON.stringify(body),signal,redirect:'error'})};
   }
   if (route.integration === 'hermes_native_codex') {
     if (route.billing !== 'personal' || route.adapterId !== 'collective-codex-responses-v1' || !context.personalConnectionId) throw new HttpError(409, 'Invalid personal Codex route.');

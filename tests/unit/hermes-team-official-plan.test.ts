@@ -29,7 +29,7 @@ async function ingest(p:Principal,suffix='initial',catalog=[route.model]){
  const access=`synthetic-${p.user.id}-official-${suffix}`;
  const services={verifyAccessToken:vi.fn().mockResolvedValue({issuer:'https://auth.openai.com',audience:OFFICIAL_PLAN_ORIGIN,subject:`official-${p.user.id}`,clientId:'issued-synthetic-client',scopes:['chatgpt.tokens.use.direct','resource.invoke'],issuedAt:Date.now()-1000,notBefore:Date.now()-1000,expiresAt:Date.now()+3500000}),
  fetch:vi.fn<typeof fetch>().mockImplementation(async(url,init)=>{expect(String(url)).toBe(`${OFFICIAL_PLAN_ORIGIN}/models`);expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${access}`);expect(init?.redirect).toBe('error');return Response.json({models:catalog.map(slug=>({slug,display_name:slug,visibility:'list'}))});})};
- expect(await storeVerifiedOfficialPlanGrant(p,{clientId:'issued-synthetic-client',hostId:`synthetic-host-${p.user.id}`,subject:`official-${p.user.id}`,access,refresh:`synthetic-refresh-${p.user.id}`},services)).toEqual({connected:true});return {services,access};
+ expect(await storeVerifiedOfficialPlanGrant(p,{clientId:'issued-synthetic-client',hostId:`synthetic-host-${p.user.id}`,subject:`official-${p.user.id}`,access,refresh:`synthetic-refresh-${p.user.id}`,idToken:`synthetic-id-token-${p.user.id}`},services)).toEqual({connected:true});return {services,access};
 }
 beforeAll(async()=>{await fixture.client!.waitReady;for(const file of readdirSync('src/db/migrations').filter(f=>f.endsWith('.sql')).sort())await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`,'utf8').replace('CREATE EXTENSION IF NOT EXISTS vector;','').replace(/\bvector\b/g,'real[]'));},45000);
 beforeEach(async()=>{
@@ -86,6 +86,11 @@ describe('Distinct official personal Responses candidate',()=>{
  });
  it('keeps a verified account unavailable when the retained broker is disabled or has network:none',async()=>{
   const {chat}=await run();fixture.runtime.mockImplementation(async()=>Response.json({available:false,network:'none'}));expect(await teamNativeAvailability(alice,'team','member',{conversationId:chat.conversationId,routes})).toMatchObject({available:false});
+ });
+ it('rejects retained official identity credentials in native output while preserving confirmed usage attribution',async()=>{
+  await run();const grant=await issueTeamCandidateContext(alice,'run','default',routes),fetch=vi.fn<typeof globalThis.fetch>().mockResolvedValue(stream([{type:'function_call',namespace:'collective_native',name:'memory',arguments:'{"content":"\\u0073ynthetic-id-token-alice"}',call_id:'synthetic-memory',id:'fc_synthetic'}]));
+  const response=await candidateModelHttp(request(grant.modelTokens.reply,payload(true)),{contextId:grant.contextId,purpose:'reply',operation:['responses']},{routes,fetch});expect(response.status).toBe(409);expect(await response.text()).not.toContain('synthetic-id-token-alice');expect((await db.select().from(schema.hermesTeamCandidateRequests))[0]).toMatchObject({state:'needs_attention',response:null});expect((await db.select().from(schema.usageEvents))[0]).toMatchObject({inputTokens:2,outputTokens:3});
+  for(const purpose of TEAM_MODEL_PURPOSES)expect((await candidateModelHttp(request(grant.modelTokens[purpose],payload()),{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch})).status).toBeGreaterThanOrEqual(400);expect(fetch).toHaveBeenCalledOnce();
  });
  it.each(['token','catalog','expired-catalog','status'] as const)('pins retained owner proof across %s changes and makes zero fallback company calls',async(change)=>{
   await run();const grant=await issueTeamCandidateContext(alice,'run','default',routes),fetch=vi.fn<typeof globalThis.fetch>();
