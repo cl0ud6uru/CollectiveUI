@@ -35,7 +35,7 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
       <div
         inert={!sidebarOpen}
         aria-hidden={!sidebarOpen}
-        className={`hidden shrink-0 overflow-hidden transition-[width] duration-200 motion-reduce:transition-none md:block ${sidebarOpen ? "w-[260px]" : "w-0"}`}
+        className={`hidden shrink-0 overflow-hidden transition-[width] duration-200 motion-reduce:transition-none md:block ${sidebarOpen ? "w-[300px]" : "w-0"}`}
       >
         <Sidebar />
       </div>
