@@ -15,7 +15,7 @@ export async function saveDecisionsSettings(raw: unknown) {
   const fresh = await loadPrincipal(principal.user.id);
   if (!fresh || fresh.user.sessionVersion !== principal.user.sessionVersion) throw new HttpError(403, "Your access changed. Sign in again.");
   assertAdmin(fresh);
-  const enabled = value.queenRouting || value.skillPicking;
+  const enabled = value.queenRouting || value.skillPicking || value.toolShortlisting;
   if (enabled && !value.providerAppId) throw new HttpError(400, "Choose a company OpenAI API connection first.");
   if (enabled && value.providerAppId) {
     const app = await getAccessibleModel(fresh, value.providerAppId);

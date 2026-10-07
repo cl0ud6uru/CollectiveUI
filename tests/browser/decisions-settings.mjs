@@ -13,7 +13,7 @@ const dir = await mkdtemp(path.join(tmpdir(), "decisions-browser-"));
 let browser, server;
 try {
   const entry = path.join(dir, "entry.tsx");
-  await writeFile(entry, `import React from 'react';import {createRoot} from '${root}/node_modules/react-dom/client';import {DecisionsForm} from '${root}/src/components/admin/decisions-form';const revoked=location.pathname==='/revoked';createRoot(document.getElementById('root')).render(<DecisionsForm initial={{queenRouting:revoked,skillPicking:revoked,providerAppId:revoked?'old':null}} providers={location.pathname==='/'?[{id:'api',name:'Company OpenAI API'}]:[]}/>);`);
+  await writeFile(entry, `import React from 'react';import {createRoot} from '${root}/node_modules/react-dom/client';import {DecisionsForm} from '${root}/src/components/admin/decisions-form';const revoked=location.pathname==='/revoked';createRoot(document.getElementById('root')).render(<DecisionsForm initial={{queenRouting:revoked,skillPicking:revoked,toolShortlisting:revoked,providerAppId:revoked?'old':null}} providers={location.pathname==='/'?[{id:'api',name:'Company OpenAI API'}]:[]}/>);`);
   const bundle = await build({ entryPoints: [entry], bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
     nodePaths: [path.join(root, "node_modules")], alias: { "@": path.join(root, "src") }, plugins: [{ name: "fixture-actions", setup(b) {
       b.onResolve({ filter: /decisions-actions$/ }, () => ({ path: "actions", namespace: "fixture" }));
@@ -41,37 +41,42 @@ try {
     await page.setViewportSize({ width, height: 960 }); await page.goto(base);
     const toggle = page.getByRole("checkbox", { name: "Queen bot routing" });
     const skillToggle = page.getByRole("checkbox", { name: "Skill picking" });
+    const toolsToggle = page.getByRole("checkbox", { name: "Tool shortlisting" });
     await expect(toggle).not.toBeVisible();
     await page.locator("summary").focus(); await page.keyboard.press("Enter");
     await expect(toggle).not.toBeChecked(); await expect(toggle).toBeDisabled();
     await expect(skillToggle).not.toBeChecked(); await expect(skillToggle).toBeDisabled();
+    await expect(toolsToggle).not.toBeChecked(); await expect(toolsToggle).toBeDisabled();
     await page.getByRole("combobox", { name: "Decisions API connection" }).click();
     await page.getByRole("option", { name: "Company OpenAI API", exact: true }).click(); await expect(toggle).toBeEnabled();
     await toggle.check(); await page.getByRole("button", { name: "Save Decisions settings" }).click();
     await expect(page.getByRole("status")).toHaveText("Decisions settings saved.");
-    expect(saves.at(-1)).toEqual({ queenRouting: true, skillPicking: false, providerAppId: "api" });
+    expect(saves.at(-1)).toEqual({ queenRouting: true, skillPicking: false, toolShortlisting: false, providerAppId: "api" });
     await toggle.uncheck(); await skillToggle.check(); await page.getByRole("button", { name: "Save Decisions settings" }).click();
     await expect(page.getByRole("status")).toHaveText("Decisions settings saved.");
-    expect(saves.at(-1)).toEqual({ queenRouting: false, skillPicking: true, providerAppId: "api" });
+    expect(saves.at(-1)).toEqual({ queenRouting: false, skillPicking: true, toolShortlisting: false, providerAppId: "api" });
+    await skillToggle.uncheck(); await toolsToggle.check(); await page.getByRole("button", { name: "Save Decisions settings" }).click();
+    await expect(page.getByRole("status")).toHaveText("Decisions settings saved.");
+    expect(saves.at(-1)).toEqual({ queenRouting: false, skillPicking: false, toolShortlisting: true, providerAppId: "api" });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (process.env.DECISIONS_SCREENSHOT_DIR) {
       await mkdir(process.env.DECISIONS_SCREENSHOT_DIR, { recursive: true });
       await page.screenshot({ path: path.join(process.env.DECISIONS_SCREENSHOT_DIR, `decisions-${width}.png`), fullPage: true });
     }
   }
-  failSave = true; await page.getByRole("checkbox", { name: "Skill picking" }).uncheck(); await page.getByRole("button", { name: "Save Decisions settings" }).click();
-  await expect(page.getByRole("alert")).toHaveText("Fixture provider unavailable"); await expect(page.getByRole("checkbox", { name: "Skill picking" })).not.toBeChecked();
+  failSave = true; await page.getByRole("checkbox", { name: "Tool shortlisting" }).uncheck(); await page.getByRole("button", { name: "Save Decisions settings" }).click();
+  await expect(page.getByRole("alert")).toHaveText("Fixture provider unavailable"); await expect(page.getByRole("checkbox", { name: "Tool shortlisting" })).not.toBeChecked();
   failSave = false; await page.goto(`${base}/revoked`); await page.locator("summary").click();
-  for (const name of ["Queen bot routing", "Skill picking"]) {
+  for (const name of ["Queen bot routing", "Skill picking", "Tool shortlisting"]) {
     await expect(page.getByRole("checkbox", { name })).toBeEnabled(); await page.getByRole("checkbox", { name }).uncheck();
   }
   await page.getByRole("button", { name: "Save Decisions settings" }).click(); await expect(page.getByRole("status")).toBeVisible();
-  expect(saves.at(-1)).toEqual({ queenRouting: false, skillPicking: false, providerAppId: "old" });
+  expect(saves.at(-1)).toEqual({ queenRouting: false, skillPicking: false, toolShortlisting: false, providerAppId: "old" });
   await page.goto(`${base}/empty`); await page.locator("summary").click();
-  for (const name of ["Queen bot routing", "Skill picking"]) await expect(page.getByRole("checkbox", { name })).toBeDisabled();
+  for (const name of ["Queen bot routing", "Skill picking", "Tool shortlisting"]) await expect(page.getByRole("checkbox", { name })).toBeDisabled();
   await expect(page.getByText("Add a company OpenAI API connection in Models first.", { exact: false })).toBeVisible();
   expect(errors).toEqual([]);
-  console.log("Decisions settings: independent default-off Queen/skills switches, keyboard expansion, provider selection, save/failure, revoked off switches, unsupported provider, and 320/390/768/1280 layouts passed.");
+  console.log("Decisions settings: independent default-off Queen/skills/tools switches, keyboard expansion, provider selection, save/failure, revoked off switches, unsupported provider, and 320/390/768/1280 layouts passed.");
 } finally {
   await browser?.close(); if (server) await new Promise(resolve => server.close(resolve));
   await rm(dir, { recursive: true, force: true });
