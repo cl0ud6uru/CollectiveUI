@@ -105,6 +105,15 @@ jobs:
           test -x "$HERMES_TEAM_CANDIDATE_PYTHON"
           npx vitest run --project unit tests/unit/docker-hermes-active-runtime.test.ts -t 'selects the pinned generic Responses codec' --maxWorkers=1
           npx vitest run --project unit tests/unit/hermes-team-native-lifecycle.test.ts --maxWorkers=1
+      - name: Require actual pinned official Responses tools, delegates and durable learning (synthetic accounts only)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          test -d "$HERMES_SOURCE"
+          export HERMES_TEAM_CANDIDATE_PYTHON="$(command -v python)"
+          test -x "$HERMES_TEAM_CANDIDATE_PYTHON"
+          npx vitest run --project unit tests/unit/hermes-team-official-native.test.ts --maxWorkers=1
 
   hermes-team-image:
     name: Official pinned image · Team resources and active lifecycle
