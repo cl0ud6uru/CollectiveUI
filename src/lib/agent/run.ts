@@ -18,6 +18,7 @@ import { hasPendingApproval, persistAssistantTurn, type PersistTurnInput } from 
 import { resolveAttachmentsForModel } from "./prepare";
 import { scrubForeignOpenAIMetadata } from "./replay";
 import { buildToolset } from "./toolset";
+import { slashInvokedSkill } from "./skill-lookup";
 import type { AgentCtx } from "./types";
 import type { DelegatedTask } from "@/lib/delegation/store";
 
@@ -138,8 +139,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       workspace: toolset.workspace?.description,
     });
     // "/skill-slug do X" in the composer explicitly invokes a skill.
-    const slash = /^\/([a-zA-Z0-9-]+)\b/.exec(userText.trim());
-    const invoked = slash ? toolset.skills.find((s) => s.slug === slash[1]) : undefined;
+    const invoked = slashInvokedSkill(toolset.skills, userText);
     if (invoked && !opts.continuation && !delegated) {
       sections.push({
         kind: "dynamic",

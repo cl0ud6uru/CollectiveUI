@@ -1204,6 +1204,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {
@@ -1260,7 +1266,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "bot_learning_revisions_kind_check": {
+          "name": "bot_learning_revisions_kind_check",
+          "value": "\"bot_learning_revisions\".\"kind\" in ('preference', 'procedure', 'policy')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.bot_learnings": {
