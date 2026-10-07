@@ -1,5 +1,6 @@
 import { APICallError, RetryError } from "ai";
 import { HttpError } from "@/lib/authz";
+import { McpToolError } from "@/lib/mcp/errors";
 
 /**
  * Failures a person can act on (connect, reconnect, wait for their limit). They are thrown from model resolution and
@@ -56,12 +57,13 @@ export class ChatGPTUnavailableError extends ChatGPTError {
 }
 
 /**
- * The message to show for an error people can act on, or undefined for anything else (which stays generic). Looks
+ * The message to show for an error people can act on or a sanitized MCP invocation failure,
+ * or undefined for anything else (which stays generic). Looks
  * through the SDK's RetryError: a typed error that happens on a retry attempt arrives wrapped.
  */
 export function userFacingMessage(err: unknown): string | undefined {
   const e = RetryError.isInstance(err) ? err.lastError : err;
-  return isUserFacingError(e) ? e.message : undefined;
+  return isUserFacingError(e) || e instanceof McpToolError ? e.message : undefined;
 }
 
 /** Error codes/types anywhere in a provider error (stream frames, API bodies, causes), plus a reset time if given. */
