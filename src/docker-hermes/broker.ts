@@ -59,7 +59,7 @@ export class DockerBroker {
   prepareTeamCandidate(actor:string,raw:unknown,grantId:string){
     const config=teamCandidateConfig.parse(raw);
     const binding=this.teamBinding(actor,config.teamBotId,config.mode,grantId);
-    this.requireTeamGatewayNetwork(binding.ownerId);
+    if (this.config.teamCandidateRuntimeEnabled) this.requireTeamGatewayNetwork(binding.ownerId);
     if(binding.bindingId!==config.bindingId || config.expiresAt<=Date.now() || config.expiresAt>Date.now()+120_000)throw new LocalError(409,'Invalid native Team candidate context.');
     const prior=this.candidateConfigs.get(binding.bindingId);
     if(prior && prior.config.expiresAt>Date.now()) {
