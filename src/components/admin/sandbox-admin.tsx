@@ -8,9 +8,10 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type { SandboxSettings } from "@/lib/settings";
-import type { Health } from "@/sandboxd/protocol/types";
+import type { WorkspaceSetupReport } from "@/lib/sandbox/setup";
 import { GroupPicker } from "./group-picker";
 import { Badge, Card, Table, Td } from "./ui";
+import { WorkspaceSetup } from "./workspace-setup";
 
 export type SandboxRowView = {
   userId: string;
@@ -27,56 +28,17 @@ export type SandboxRowView = {
 
 const toLines = (v: string) => v.split(/[\n,;]/).map((x) => x.trim()).filter(Boolean);
 
-function HealthBanner({ configured, health, error, allowRunc }: { configured: boolean; health: Health | null; error: string | null; allowRunc: boolean }) {
-  if (!configured)
-    return (
-      <Card className="border-amber-500/40 text-sm">
-        Workspaces aren&apos;t set up: run sandboxd on the Docker host and set <code className="font-mono">SANDBOXD_URL</code> and{" "}
-        <code className="font-mono">SANDBOXD_SECRET</code> for the portal (see README → Workspaces).
-      </Card>
-    );
-  if (error || !health) return <Card className="border-red-500/40 text-sm text-danger">{error ?? "The workspace service isn't reachable."}</Card>;
-  const blocked = !health.gvisor.available && !allowRunc;
-  return (
-    <Card className={`space-y-2 text-sm ${blocked ? "border-red-500/40" : ""}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium">Sandbox service</span>
-        <Badge tone={health.ok ? "green" : "red"}>{health.ok ? "healthy" : "not ready"}</Badge>
-        <Badge tone={health.gvisor.available ? "green" : "amber"}>{health.gvisor.available ? "gVisor isolation" : "no gVisor"}</Badge>
-        <span className="text-xs text-muted">
-          Docker {health.docker?.version} · {health.running}/{health.limits.maxRunning} running · {health.limits.memoryMb} MB, {health.limits.cpus} CPU,{" "}
-          {health.limits.pids} processes each · stop after {health.limits.idleMinutes} min idle
-        </span>
-      </div>
-      {!health.image.present && <p className="text-danger">The sandbox image {health.image.ref} isn&apos;t on the Docker host (npm run sandbox:image).</p>}
-      {blocked && (
-        <p className="text-danger">
-          Workspaces can&apos;t start: gVisor isn&apos;t available ({health.gvisor.reason}). Install gVisor on the Docker host (recommended), or allow standard
-          isolation below.
-        </p>
-      )}
-      {health.warnings.map((w) => (
-        <p key={w} className="text-xs text-amber-700 dark:text-amber-300">
-          {w}
-        </p>
-      ))}
-    </Card>
-  );
-}
-
 export function SandboxAdmin({
   settings,
   groups,
-  configured,
-  health,
+  setup,
   error,
   rows,
   orphans,
 }: {
   settings: SandboxSettings;
   groups: { id: string; name: string }[];
-  configured: boolean;
-  health: Health | null;
+  setup: WorkspaceSetupReport;
   error: string | null;
   rows: SandboxRowView[];
   orphans: { ref: string; state: string; createdAt: string | null }[];
@@ -85,31 +47,42 @@ export function SandboxAdmin({
   const [s, setS] = useState(settings);
   const [upns, setUpns] = useState(settings.allowedUpns.join("\n"));
   const [ack, setAck] = useState(false);
+  const [enableAck, setEnableAck] = useState(false);
+  const [checkedReport, setCheckedReport] = useState<{ initial: WorkspaceSetupReport; report: WorkspaceSetupReport } | null>(null);
+  // A refreshed server report supersedes a manual check, including after isolation settings change.
+  const report = checkedReport?.initial === setup ? checkedReport.report : setup;
+  const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const [pending, start] = useTransition();
-  const set = <K extends keyof SandboxSettings>(k: K, v: SandboxSettings[K]) => setS((x) => ({ ...x, [k]: v }));
+  const set = <K extends keyof SandboxSettings>(k: K, v: SandboxSettings[K]) => { setEnableAck(false); setS((x) => ({ ...x, [k]: v })); };
   const needsAck = s.allowRunc && !settings.allowRunc;
+  const needsEnableAck = s.enabled && !settings.enabled;
 
   const run = (fn: () => Promise<unknown>, ok: string) =>
     start(async () => {
       try {
         await fn();
+        setFeedback({ ok: true, message: ok });
+        setEnableAck(false); setAck(false);
         toast.success(ok);
         router.refresh();
       } catch (err) {
+        setFeedback({ ok: false, message: err instanceof Error ? err.message : "Failed" });
         toast.error(err instanceof Error ? err.message : "Failed");
       }
     });
 
   return (
     <div className="space-y-6">
-      <HealthBanner configured={configured} health={health} error={error} allowRunc={settings.allowRunc} />
+      <WorkspaceSetup report={report} enabled={settings.enabled} onChecked={(next) => { setCheckedReport({ initial: setup, report: next }); setEnableAck(false); }} />
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
 
       <Card className="space-y-4">
         <h2 className="font-medium">Settings</h2>
         <label className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
           Give people workspaces (bots with the Workspace tool can use them)
-          <Switch aria-label="Enable workspaces" checked={s.enabled} onCheckedChange={(v) => set("enabled", v)} />
+          <Switch aria-label="Enable workspaces" checked={s.enabled} disabled={!s.enabled && !report.ready} onCheckedChange={(v) => set("enabled", v)} />
         </label>
+        {!report.ready && !s.enabled && <p className="text-xs text-muted">Resolve the setup checks before enabling access. You can save access assignments and limits while access is off.</p>}
         <Field label="Who gets a workspace" hint="Admins always do while this is on.">
           <Select aria-label="Who gets a workspace" value={s.access} onChange={(e) => set("access", e.target.value as SandboxSettings["access"])}>
             <option value="selected">Selected groups and people</option>
@@ -120,7 +93,7 @@ export function SandboxAdmin({
           <>
             <GroupPicker groups={groups} value={s.allowedGroupIds} onChange={(v) => set("allowedGroupIds", v)} />
             <Field label="People (UPNs)" hint="One per line.">
-              <Textarea aria-label="Allowed people" rows={3} value={upns} onChange={(e) => setUpns(e.target.value)} className="font-mono" />
+              <Textarea aria-label="Allowed people" rows={3} value={upns} onChange={(e) => { setEnableAck(false); setUpns(e.target.value); }} className="font-mono" />
             </Field>
           </>
         )}
@@ -155,14 +128,20 @@ export function SandboxAdmin({
             <Input aria-label="Retention days" type="number" min={0} max={3650} value={s.deleteAfterDays} onChange={(e) => set("deleteAfterDays", Number(e.target.value))} />
           </Field>
         </div>
+        {needsEnableAck && <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" aria-label="Confirm workspace access" className="mt-1" checked={enableAck} onChange={(e) => setEnableAck(e.target.checked)} />
+          <span>I confirm workspace access for {s.access === "everyone" ? "everyone" : `${s.allowedGroupIds.length} selected groups and ${toLines(upns).length} selected people`}, plus all admins. Containers and persistent files are created on first use. I have reviewed host storage monitoring and will test a native bot before expanding access.</span>
+        </label>}
+        {feedback && <p role={feedback.ok ? "status" : "alert"} className={`text-sm ${feedback.ok ? "text-success" : "text-danger"}`}>{feedback.message}</p>}
         <div className="flex justify-end">
           <Button
-            disabled={pending || (needsAck && !ack)}
+            disabled={pending || (needsAck && !ack) || (needsEnableAck && (!enableAck || !report.ready))}
             onClick={() =>
               run(
                 () =>
                   saveSandboxSettings({
                     enabled: s.enabled,
+                    acknowledgeEnable: enableAck,
                     access: s.access,
                     allowedGroupIds: s.allowedGroupIds,
                     allowedUpns: toLines(upns),

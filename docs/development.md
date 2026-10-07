@@ -51,12 +51,15 @@ DATABASE_URL=postgres://… npm run test:integration   # DB-backed tests (e.g. s
 # E2E needs the dev stack + `npm run dev` + `npm run worker:dev` + mock-llm, then:
 npm run test:e2e              # sign-in, chat, branching, search, access control, sharing, approvals, memory, routines, providers, ChatGPT sign-in, workspaces, durable runs (reload, closed tab, Stop)
 SANDBOX_DOCKER=1 npm run test:sandbox   # sandboxd against a real Docker daemon: lifecycle, limits, and the isolation suite
+node tests/browser/workspace-setup.mjs # isolated native Workspace setup UI; no app, DB, Docker or paid calls
 HERMES_TEST_URL=http://127.0.0.1:8642 HERMES_TEST_PROFILE=coder HERMES_TEST_KEY=… npx vitest run --project integration hermes-live
 ```
 
 CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm run lint` and `npm test` on every pull request and push to `main`. That job has no database or Hermes, so integration, sandbox and e2e suites don't run there; run the ones your change touches locally. `.github/workflows/docker.yml` also checks the exact PR head using the Docker unit target and production worker audit/migration/reply smoke test. It uses only synthetic local fixtures and does not deploy anything.
 
 `test:sandbox` needs Docker and the workspace image (`npm run sandbox:image`). It runs under gVisor when Docker has `runsc`, and `SANDBOX_TEST_RUNTIME=runc` runs it under standard isolation. The workspace e2e test runs only when `SANDBOXD_URL` is set (start `npm run sandboxd:dev` first). The Hermes tests (`hermes-live`, and `tests/e2e/hermes.spec.ts` with `HERMES_E2E_URL`/`HERMES_E2E_PROFILE`/`HERMES_E2E_KEY`) need a Hermes gateway whose profile runs on the mock LLM (`model.provider: custom`, `base_url: http://127.0.0.1:4010/v1`), so scripted tool calls work; offline, `tests/unit/hermes-provider.test.ts` replays events recorded from a real gateway.
+
+The workspace setup fixture launches a new isolated Chromium and a loopback component server, blocking external browser requests. Set `CHROME_EXECUTABLE_PATH` to an installed Chromium and `WORKSPACE_SETUP_SCREENSHOT_DIR` to a private directory outside the repository for missing-prerequisite, authentication failure, pending/retry, readiness and confirmed-access screenshots. Its settings/health endpoints are synthetic. Unit tests separately exercise the real server actions and a signed loopback health client; no live installation or access grant is performed.
 
 Hermes slash controls have separate isolated tests: `npx vitest run --project integration hermes-commands` (migrated disposable database) and `npx playwright test tests/e2e/hermes-commands.spec.ts` (normal dev stack and worker). The browser test starts its own fake Hermes HTTP service and performs no real tool or CLI execution.
 

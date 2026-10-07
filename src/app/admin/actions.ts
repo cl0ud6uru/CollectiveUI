@@ -608,6 +608,8 @@ export async function saveChatGPTSettings(raw: ChatGPTSettingsInput) {
 
 const SandboxSettingsInput = z.object({
   enabled: z.boolean(),
+  /** Required for each transition from disabled to enabled; checked again on the server. */
+  acknowledgeEnable: z.boolean().optional(),
   access: z.enum(["everyone", "selected"]),
   allowedGroupIds: z.array(z.string()).max(1000),
   allowedUpns: lines,
@@ -626,6 +628,11 @@ export async function saveSandboxSettings(raw: SandboxSettingsInput) {
   const current = await getSetting("sandbox");
   const firstRunc = v.allowRunc && !current.allowRunc;
   if (firstRunc && !v.acknowledgeRunc) throw new HttpError(400, "Confirm that you understand the weaker isolation before allowing it.");
+  if (v.enabled && !current.enabled) {
+    if (!v.acknowledgeEnable) throw new HttpError(400, "Confirm who will get workspace access before enabling it.");
+    const { readWorkspaceSetup } = await import("@/lib/sandbox/setup-server");
+    if (!(await readWorkspaceSetup(v.allowRunc)).ready) throw new HttpError(400, "Workspace prerequisites are not ready. Run the setup check and resolve the failed steps before enabling access.");
+  }
   const next: SandboxSettings = {
     enabled: v.enabled,
     access: v.access,
@@ -639,8 +646,9 @@ export async function saveSandboxSettings(raw: SandboxSettingsInput) {
     deleteAfterDays: v.deleteAfterDays,
   };
   await setSetting("sandbox", next);
-  const { acknowledgeRunc: _a, ...details } = v;
+  const { acknowledgeRunc: _a, acknowledgeEnable: _enable, ...details } = v;
   void _a;
+  void _enable;
   await audit(p.user.id, "settings.sandbox", undefined, { ...details, allowedUpns: v.allowedUpns.length });
   done();
 }

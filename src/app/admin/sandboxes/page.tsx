@@ -3,28 +3,30 @@ import { SandboxAdmin, type SandboxRowView } from "@/components/admin/sandbox-ad
 import { AdminHeader } from "@/components/admin/ui";
 import { db } from "@/db";
 import { groups, users } from "@/db/schema";
-import { SandboxError, sandboxd } from "@/lib/sandbox/client";
+import { sandboxd } from "@/lib/sandbox/client";
+import { workspaceConfigState } from "@/lib/sandbox/setup";
+import { readWorkspaceSetup } from "@/lib/sandbox/setup-server";
 import { listSandboxRows } from "@/lib/sandbox/store";
 import { requireAdminPage } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
-import type { Health, SandboxState } from "@/sandboxd/protocol/types";
+import type { SandboxState } from "@/sandboxd/protocol/types";
 
 export default async function AdminSandboxesPage() {
   await requireAdminPage();
-  const client = sandboxd();
+  const client = workspaceConfigState(process.env) === "configured" ? sandboxd() : null;
   const [settings, groupRows, rows] = await Promise.all([
     getSetting("sandbox"),
     db.select({ id: groups.id, name: groups.name }).from(groups).orderBy(groups.name),
     listSandboxRows(),
   ]);
-  let health: Health | null = null;
+  const setup = await readWorkspaceSetup(settings.allowRunc);
   let states: SandboxState[] = [];
   let error: string | null = null;
   if (client) {
     try {
-      [health, states] = await Promise.all([client.health(), client.list()]);
-    } catch (err) {
-      error = err instanceof SandboxError ? err.message : "The workspace service isn't reachable.";
+      states = await client.list(15_000);
+    } catch {
+      error = "The workspace list could not be refreshed. Run the setup check, then reload this page to retry the list.";
     }
   }
   const people = rows.length
@@ -57,7 +59,7 @@ export default async function AdminSandboxesPage() {
         title="Workspaces"
         description="Each person's private sandbox where bots run commands and edit files. No network access, no secrets, one container per person."
       />
-      <SandboxAdmin settings={settings} groups={groupRows} configured={!!client} health={health} error={error} rows={list} orphans={orphans} />
+      <SandboxAdmin settings={settings} groups={groupRows} setup={setup} error={error} rows={list} orphans={orphans} />
     </div>
   );
 }
