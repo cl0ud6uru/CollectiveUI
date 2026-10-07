@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,10 +10,20 @@ const sourceRoot = process.env.HERMES_CONTROLS_SOURCE_ROOT ? path.resolve(proces
 const require = createRequire(path.join(root, 'package.json'));
 const { build } = require('esbuild');
 const { chromium, expect } = require('@playwright/test');
+const postcss = require('postcss'), tailwind = require('@tailwindcss/postcss');
 const dir = await mkdtemp(path.join(tmpdir(), 'managed-hermes-browser-'));
 const entry = path.join(dir, 'entry.tsx');
-await writeFile(entry, `import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client'; import { HermesNativeControls } from '${sourceRoot}/src/components/chat/hermes-native-controls'; createRoot(document.getElementById('root')!).render(<HermesNativeControls conversationId="fixture-conversation"/>);`);
-const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(sourceRoot, 'src') } });
+await writeFile(entry, `import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client'; import { HermesNativeControls } from '${sourceRoot}/src/components/chat/hermes-native-controls'; import { HermesProfileSettings } from '${sourceRoot}/src/components/settings/hermes-profile-settings'; createRoot(document.getElementById('root')!).render(location.pathname === '/profile' ? <HermesProfileSettings botId="fixture-bot"/> : <HermesNativeControls conversationId="fixture-conversation"/>);`);
+const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(sourceRoot, 'src') }, plugins: [{ name: 'existing-action-boundary', setup(b) {
+  b.onResolve({ filter: /^(next\/link|next\/navigation|@\/app\/\(chat\)\/actions)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+  b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'tsx', resolveDir: root, contents: args.path === 'next/link' ? `import React from '${root}/node_modules/react'; export default function Link({children,...props}){return React.createElement('a',props,children);}` : args.path === 'next/navigation' ? `export const useRouter=()=>({push:path=>{window.fixtureNavigation=path;}});` : `export async function createSideChat(botId,conversationId){const res=await fetch('/api/fixture-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({botId,conversationId})}); if(!res.ok)throw new Error('Fixture chat unavailable');return res.json();}` }));
+} }] });
+const css = await postcss([tailwind({ base: sourceRoot })]).process(await readFile(path.join(sourceRoot, 'src/app/globals.css'), 'utf8'), { from: path.join(sourceRoot, 'src/app/globals.css') });
+let profile = { revision: 'a'.repeat(64), provider: null, model: 'seed-model', reasoningEffort: '', maxTurns: null, advancedSupported: true,
+  editableProviders: { 'openai-api': true, anthropic: true, openrouter: true, 'openai-codex': true },
+  credentials: { 'openai-api': false, anthropic: false, openrouter: false, 'openai-codex': false }, lastTest: null };
+let profileNetwork = 'internet', profileUnavailable = false;
+const profileRequests = [], chats = [];
 const requestIds = ['a', 'b', 'c', 'd', 'e'].map(letter => letter.repeat(32));
 const prompt = (id, method, title, questions = [], single = false) => ({ id, method, title, command: '', questions, single });
 let prompts = [prompt(requestIds[0], 'clarify', 'Batch fixture questions', [{ id: 'first', question: 'First fixture answer', choices: [] }, { id: 'second', question: 'Second fixture answer', choices: [] }])];
@@ -25,8 +35,34 @@ const view = () => ({ running: true, status: 'running', model: 'Fixture model', 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
-  if (!url.pathname.startsWith('/api/')) { res.setHeader('Content-Type', 'text/html'); res.end('<div id="root"></div><script src="/bundle.js"></script>'); return; }
+  if (url.pathname === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.css); return; }
+  if (!url.pathname.startsWith('/api/')) { res.setHeader('Content-Type', 'text/html'); res.end('<html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><div id="root"></div><script src="/bundle.js"></script></html>'); return; }
   res.setHeader('Content-Type', 'application/json');
+  if (url.pathname === '/api/bots/fixture-bot/native/codex') { res.end(JSON.stringify({ state: 'disconnected' })); return; }
+  if (url.pathname === '/api/bots/fixture-bot/native/settings') {
+    if (req.method === 'GET') {
+      if (profileUnavailable) { res.statusCode = 503; res.end(JSON.stringify({ error: 'Synthetic profile temporarily unavailable.' })); }
+      else res.end(JSON.stringify({ settings: profile, runtime: { phase: 'ready', network: profileNetwork } }));
+      return;
+    }
+    const bytes = []; for await (const chunk of req) bytes.push(chunk);
+    const input = JSON.parse(Buffer.concat(bytes).toString()); profileRequests.push(input);
+    if (input.operation === 'save') {
+      expect(input.settings.revision).toBe(profile.revision);
+      const next = input.settings;
+      profile = { ...profile, provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort, maxTurns: next.maxTurns,
+        revision: (profile.revision[0] === 'a' ? 'b' : 'c').repeat(64), lastTest: null,
+        credentials: { ...profile.credentials, [next.provider]: next.credential.action === 'replace' } };
+      res.end(JSON.stringify(profile)); return;
+    }
+    expect(input.operation).toBe('test'); expect(input.test.revision).toBe(profile.revision); expect(input.test.consent).toBe(true);
+    profile.lastTest = { revision: profile.revision, code: profileRequests.filter(r => r.operation === 'test').length === 1 ? 'authentication_failed' : 'verified', checkedAt: '2026-10-07T00:00:00Z' };
+    res.end(JSON.stringify(profile.lastTest)); return;
+  }
+  if (url.pathname === '/api/fixture-chat') {
+    const bytes = []; for await (const chunk of req) bytes.push(chunk);
+    chats.push(JSON.parse(Buffer.concat(bytes).toString())); res.end(JSON.stringify({ id: 'fixture-new-conversation' })); return;
+  }
   if (req.method === 'GET') { if (!inspectAllowed) { res.statusCode = 403; res.end(JSON.stringify({ error: 'Synthetic owner rejection.' })); } else res.end(JSON.stringify({ view: includeView ? view() : null })); return; }
   const bytes = []; for await (const chunk of req) bytes.push(chunk);
   const input = JSON.parse(Buffer.concat(bytes).toString()); received.push(input);
@@ -42,7 +78,7 @@ const server = createServer(async (req, res) => {
   res.end(JSON.stringify({ accepted: true }));
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
 try {
   const page = await browser.newPage(); const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/chat/fixture`);
@@ -75,4 +111,41 @@ try {
   expect(received[5].requestId).toMatch(/^[a-f0-9-]{36}$/); expect(received[6].requestId).toMatch(/^[a-f0-9-]{36}$/);
   expect(errors).toEqual([]);
   console.log('PASS: managed native batch/single clarification and skips, password clearing before acknowledgement, steer/queue, rejected control, ownership rejection and hidden missing view; no browser errors.');
+
+  await page.goto(`http://127.0.0.1:${server.address().port}/profile`);
+  const startChat = page.getByRole('button', { name: 'Start chatting', exact: true });
+  const testConnection = page.getByRole('button', { name: 'Test saved connection', exact: true });
+  await expect(startChat).toBeDisabled(); await expect(testConnection).toBeDisabled();
+  await page.getByLabel('Model provider', { exact: true }).click(); await page.getByRole('option', { name: 'OpenAI API', exact: true }).click();
+  await expect(page.getByLabel('New API key', { exact: true })).toBeVisible();
+  await page.getByLabel('Model ID', { exact: true }).fill('fixture-model'); await page.getByLabel('New API key', { exact: true }).fill('synthetic-profile-key');
+  await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('API key saved', { exact: true })).toBeVisible();
+  expect(profileRequests.map(r => r.operation)).toEqual(['save']); await expect(startChat).toBeDisabled();
+  await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
+  await page.getByLabel('I understand this test may incur inference charges.').check(); await testConnection.click();
+  await expect(page.getByRole('alert').filter({ hasText: 'provider rejected the API key' })).toBeVisible(); await expect(startChat).toBeDisabled();
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Replace API key', exact: true }).click();
+  await page.getByLabel('New API key', { exact: true }).fill('synthetic-replacement-key'); await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
+  await expect(page.getByText('API key saved', { exact: true })).toBeVisible();
+  await page.getByLabel('I understand this test may incur inference charges.').check(); await testConnection.click(); await expect(startChat).toBeEnabled();
+  expect(profileRequests.map(r => r.operation)).toEqual(['save', 'test', 'save', 'test']);
+  expect(profileRequests[1].test.requestId).not.toBe(profileRequests[3].test.requestId);
+  expect(JSON.stringify(profile)).not.toContain('synthetic-replacement-key');
+  for (const width of [320, 390, 768, 1280]) { await page.setViewportSize({ width, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); }
+  await page.setViewportSize({ width: 390, height: 844 }); await page.screenshot({ path: path.join(process.env.HERMES_CONTROLS_SCREENSHOT_DIR || tmpdir(), 'hermes-provider-setup-mobile.png'), fullPage: true });
+  await startChat.click(); await expect.poll(() => page.evaluate(() => window.fixtureNavigation)).toBe('/c/fixture-new-conversation');
+  expect(chats).toHaveLength(1); expect(chats[0].botId).toBe('fixture-bot'); expect(chats[0].conversationId).toMatch(/^[A-Za-z0-9]{16}$/);
+  profile.revision = 'd'.repeat(64); await page.getByRole('button', { name: 'Reload saved settings', exact: true }).click();
+  await expect(startChat).toBeDisabled(); await expect(page.getByText('Connection verified for this saved model and API key.', { exact: false })).toHaveCount(0);
+  profileUnavailable = true; await page.getByRole('button', { name: 'Reload saved settings', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'temporarily unavailable' })).toBeVisible(); await expect(startChat).toBeDisabled();
+  profileUnavailable = false; await page.getByRole('button', { name: 'Reload saved settings', exact: true }).click(); await expect(page.getByRole('alert')).toHaveCount(0);
+  profileNetwork = 'none'; profile.lastTest = { code: 'verified', revision: profile.revision, checkedAt: '2026-10-07T00:00:00Z' };
+  await page.getByRole('button', { name: 'Reload saved settings', exact: true }).click(); await expect(startChat).toBeDisabled(); await expect(testConnection).toBeDisabled();
+  profileNetwork = 'internet'; profile.provider = 'openai-codex'; profile.credentials['openai-codex'] = true; profile.lastTest = null;
+  await page.getByRole('button', { name: 'Reload saved settings', exact: true }).click(); await expect(startChat).toBeDisabled();
+  await expect(page.getByText('The newer personal ChatGPT plan login needs a supported device return path and is not available in this setup.', { exact: false })).toBeVisible();
+  expect(profileRequests).toHaveLength(4); expect(chats).toHaveLength(1); expect(errors).toEqual([]);
+  console.log('PASS: native API-key connect, explicit failed test and key replacement/retry, exact-revision verified fresh chat, stale/offline/outage gates, unsupported personal plan explanation and mobile layouts; no automatic inference.');
 } finally { releaseSecret(); await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

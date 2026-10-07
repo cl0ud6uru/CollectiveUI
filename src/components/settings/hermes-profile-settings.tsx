@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, KeyRound, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select } from '@/components/ui/input';
-import { personalHermesRuntimeHref, providerBlocker, profileProviders, profileUpdate, reasoningLevels, testMessages, type ProfileSettings, type ProfileTestResult, type ProfileValues } from '@/docker-hermes/settings';
+import { StartSideChat } from '@/components/chat/start-side-chat';
+import { currentProfileTest, personalHermesRuntimeHref, profileConnectionVerified, providerBlocker, profileProviders, profileUpdate, reasoningLevels, testMessages, type ProfileSettings, type ProfileTestResult, type ProfileValues } from '@/docker-hermes/settings';
 import { connectivityMessages, type Connectivity } from '@/docker-hermes/network';
 import type { DockerStatus } from '@/docker-hermes/types';
 
@@ -28,7 +29,7 @@ export function HermesProfileSettings({ botId }: { botId: string }) {
   const api = `/api/bots/${encodeURIComponent(botId)}/native/settings`;
   const apply = useCallback((s: ProfileSettings) => {
     setProvider(s.provider ?? ''); setModel(s.model); setEffort(s.reasoningEffort); setTurns(s.maxTurns === null ? '' : String(s.maxTurns));
-    setSecret(''); setCredentialAction('keep'); setConsent(false);
+    setSecret(''); setCredentialAction(s.provider && s.provider !== 'openai-codex' && !s.credentials[s.provider] ? 'replace' : 'keep'); setConsent(false);
   }, []);
   const reload = useCallback(async () => {
     const serial = ++request.current; controller.current?.abort(); const abort = new AbortController(); controller.current = abort;
@@ -47,14 +48,16 @@ export function HermesProfileSettings({ botId }: { botId: string }) {
     return () => { mounted = false; ++sequence.current; abort.current?.abort(); };
   }, [reload]);
   const saved = state?.settings;
-  const dirty = !!saved && (provider !== (saved.provider ?? '') || model !== saved.model || effort !== saved.reasoningEffort || turns !== (saved.maxTurns === null ? '' : String(saved.maxTurns)) || credentialAction !== 'keep');
-  const lastTest = saved?.lastTest;
   const hasKey = !!provider && !!saved?.credentials[provider];
+  const dirty = !!saved && (provider !== (saved.provider ?? '') || model !== saved.model || effort !== saved.reasoningEffort || turns !== (saved.maxTurns === null ? '' : String(saved.maxTurns)) || credentialAction === 'clear' || (credentialAction === 'replace' && (hasKey || !!secret)));
+  const lastTest = saved ? currentProfileTest(saved) : null;
   const routeBlocker = saved && provider ? providerBlocker(saved, provider) : null;
   const saveBlocker = routeBlocker || (saved && !saved.advancedSupported ? 'This profile has advanced values outside the supported range. Ask an operator to reconcile them in native settings, then reload.' : null);
   const offline = state?.runtime.network === 'none';
   const signInBlocker = saveBlocker || (offline ? 'Sign-in is unavailable while this runtime is offline. Ask an administrator to turn on Internet access in Admin → Managed Hermes, then reload settings.' : dirty ? 'Save the selected provider and model before signing in.' : null);
-  const testBlocked = !!pending || dirty || mustReload || offline || state?.runtime.phase !== 'ready';
+  const testBlocker = !saved?.provider || !saved.model || !saved.credentials[saved.provider] ? 'Save your provider, model and API key before testing.' : routeBlocker;
+  const testBlocked = !!pending || dirty || mustReload || offline || state?.runtime.phase !== 'ready' || !!testBlocker || codexPending;
+  const readyToChat = !!saved && profileConnectionVerified(saved) && !testBlocked;
   async function submit(operation: 'save' | 'test' | 'network') {
     if (!saved || pending || mustReload) return;
     let payload: unknown;
@@ -94,33 +97,26 @@ export function HermesProfileSettings({ botId }: { botId: string }) {
     <div className="rounded-2xl border border-border bg-surface p-5 space-y-3">
       <div className="flex items-center gap-2"><Settings2 size={18} /><h2 className="font-semibold">Your native profile</h2></div>
       <p className="text-sm text-muted">Choose the provider and model for this bot. Settings and API keys stay in its native Hermes profile.</p>
-      <ol className="grid gap-2 text-sm sm:grid-cols-2" aria-label="Hermes setup steps">
-        <li className="rounded-lg bg-surface-2 p-3">1. Runtime <strong className="block">{state?.runtime.phase === 'ready' ? 'Running' : state?.runtime.phase ?? 'Checking…'}</strong></li>
-        <li className="rounded-lg bg-surface-2 p-3">2. Provider network <strong className="block">{offline ? 'Offline · access blocked' : saved?.connectivity?.code === 'reachable' ? 'Provider TLS reached' : state?.runtime.network === 'proxy' ? 'Restricted proxy · access unverified' : state?.runtime.network === 'internet' ? 'Standard Internet · access unverified' : 'Checking…'}</strong></li>
-        <li className="rounded-lg bg-surface-2 p-3">3. Account <strong className="block">{saved?.provider && saved.credentials[saved.provider] ? saved.provider === 'openai-codex' ? 'Sign-in stored' : 'API key saved' : 'Setup needed'}</strong></li>
-        <li className="rounded-lg bg-surface-2 p-3">4. Model access <strong className="block">{lastTest?.revision === saved?.revision && lastTest ? lastTest.code === 'verified' ? 'Verified' : 'Needs attention' : 'Not tested'}</strong></li>
+      <ol className="grid gap-2 text-sm sm:grid-cols-3" aria-label="Hermes setup steps">
+        <li className="rounded-lg bg-surface-2 p-3">1. Connect provider <strong className="block">{dirty ? 'Changes not saved' : saved?.provider && saved.credentials[saved.provider] ? saved.provider === 'openai-codex' ? 'Native sign-in stored' : 'API key saved' : 'Setup needed'}</strong></li>
+        <li className="rounded-lg bg-surface-2 p-3">2. Test connection <strong className="block">{dirty || mustReload ? 'Not tested for these changes' : lastTest ? lastTest.code === 'verified' ? 'Verified' : 'Needs attention' : 'Not tested'}</strong></li>
+        <li className="rounded-lg bg-surface-2 p-3">3. Start chatting <strong className="block">{readyToChat ? 'Ready to chat' : 'Finish setup below'}</strong></li>
       </ol>
+      <p role="status" className="text-sm text-muted">Runtime: {state?.runtime.phase === 'ready' ? 'Running' : state?.runtime.phase ?? 'Checking…'}. {offline ? 'Internet access is off.' : state?.runtime.network === 'proxy' ? 'Restricted provider access.' : state?.runtime.network === 'internet' ? 'Internet access is on.' : 'Network status is unconfirmed.'}</p>
       {offline && <p role="status" className="text-sm text-muted">This runtime has no external network access. You can save supported profile settings, but an administrator can turn on Internet access in Admin → Managed Hermes before sign-in and connection testing.</p>}
       <p className="text-xs text-muted">Provider, model and sign-in belong to this bot’s profile. Container resources and network access are shared by all your profiles. <Link className="underline" href={personalHermesRuntimeHref}>Manage your runtime</Link></p>
     </div>
-    {error && <p role="alert" className="rounded-xl border border-danger/30 p-4 text-sm text-danger">{error} Reload to reconcile the saved state before trying again.</p>}
+    {error && <p role="alert" className="rounded-xl border border-danger/30 p-4 text-sm text-danger">{error}{mustReload && ' Reload to reconcile the saved state before trying again.'}</p>}
     {notice && <p role="status" className="text-sm flex gap-2"><Check size={18} className="shrink-0" />{notice}</p>}
     {pending === 'load' && <p role="status" className="text-sm text-muted">Loading native settings…</p>}
     {state && state.runtime.phase !== 'ready' && <p className="text-sm">Start your runtime in <Link href={personalHermesRuntimeHref} className="underline">Personal Hermes</Link>, then reload this page. Saved profile data is retained.</p>}
     {saved && <>
-      <section aria-labelledby="hermes-network-title" className="rounded-2xl border border-border p-5 space-y-3">
-        <h2 id="hermes-network-title" className="font-semibold">Check provider connectivity</h2>
-        <p className="text-sm text-muted">Checks DNS and a verified TLS handshake to this saved provider’s fixed service domains. It sends no API key, account sign-in or inference request. Model access is verified separately.</p>
-        {saved.connectivity && <p role="status" className="text-sm">{connectivityMessages[saved.connectivity.code]}<span className="block text-xs text-muted">Last check: {new Date(saved.connectivity.checkedAt).toLocaleString()}</span></p>}
-        {dirty && <p className="text-xs text-muted">Save or discard your changes before checking.</p>}
-        <Button disabled={!!pending || dirty || mustReload || codexPending || !saved.provider || !!routeBlocker || state.runtime.phase !== 'ready'} onClick={() => void submit('network')}>{pending === 'network' ? 'Checking provider…' : 'Check provider connectivity'}</Button>
-      </section>
       <form className="rounded-2xl border border-border p-5 space-y-5" onSubmit={e => { e.preventDefault(); void submit('save'); }}>
         <fieldset disabled={!!pending || mustReload || codexPending} className="min-w-0 space-y-5">
-          <legend className="mb-4 flex items-center gap-2 font-semibold"><KeyRound size={18} />Provider and model</legend>
-          <div><Label htmlFor="hermes-provider">Model provider</Label><Select id="hermes-provider" value={provider} onChange={e => { const next = e.target.value as typeof provider; setProvider(next); setModel(next === (saved.provider ?? '') ? saved.model : ''); setSecret(''); setCredentialAction('keep'); setConsent(false); setNotice('Provider changed. Choose a model for this provider before saving.'); }}>
+          <legend className="mb-4 flex items-center gap-2 font-semibold"><KeyRound size={18} />Connect your provider</legend>
+          <div><Label htmlFor="hermes-provider">Model provider</Label><Select id="hermes-provider" value={provider} onChange={e => { const next = e.target.value as typeof provider; setProvider(next); setModel(next === (saved.provider ?? '') ? saved.model : ''); setSecret(''); setCredentialAction(next && next !== 'openai-codex' && !saved.credentials[next] ? 'replace' : 'keep'); setConsent(false); setNotice('Provider changed. Choose a model for this provider before saving.'); }}>
             <option value="">Choose a model provider</option>{profileProviders.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-          </Select><p className="mt-2 text-xs text-muted">Supports API keys and native ChatGPT / Codex subscription login. Custom endpoints and other authentication methods require native maintenance.</p></div>
+          </Select><p className="mt-2 text-xs text-muted">Use an OpenAI, Anthropic or OpenRouter API key to connect and test here. Native Codex subscription sign-in is a separate Hermes integration. The newer personal ChatGPT plan login needs a supported device return path and is not available in this setup.</p></div>
           {provider === 'openai-codex' && !!saved.codexModels?.length && <div><Label htmlFor="hermes-codex-model">Suggested Codex model</Label><Select id="hermes-codex-model" value={saved.codexModels.includes(model) ? model : ''} onChange={e => setModel(e.target.value)}><option value="">Choose a native Codex model</option>{saved.codexModels.map(id => <option key={id} value={id}>{id}</option>)}</Select></div>}
           <div><Label htmlFor="hermes-model">Model ID</Label><Input id="hermes-model" value={model} onChange={e => setModel(e.target.value)} autoComplete="off" list={provider === 'openai-codex' ? 'native-codex-models' : undefined} placeholder={profileProviders.find(p => p.id === provider)?.example ?? 'Exact model ID from your provider'} maxLength={200} />{provider === 'openai-codex' && <datalist id="native-codex-models">{saved.codexModels?.map(id => <option key={id} value={id} />)}</datalist>}<p className="mt-2 text-xs text-muted">Use a model available to your account. Codex suggestions come from the pinned native offline catalog; availability depends on your plan. No model list is fetched automatically.</p></div>
           {provider !== 'openai-codex' && <div><Label htmlFor="hermes-key-action">API key</Label><Select id="hermes-key-action" value={credentialAction} onChange={e => { setCredentialAction(e.target.value as typeof credentialAction); setSecret(''); }}>
@@ -139,18 +135,31 @@ export function HermesProfileSettings({ botId }: { botId: string }) {
           </details>
           <p className="text-xs text-muted">A changed save safely restarts your runtime to reload native credentials and settings. All your profiles must be idle first. Existing conversations may retain native session overrides; start a new chat for these defaults. Skills and memory remain read-only here.</p>
           {saveBlocker && <p id="hermes-save-blocker" role="alert" className="text-sm text-danger">{saveBlocker}</p>}
-          <div className="flex flex-wrap items-center gap-2"><Button type="submit" aria-describedby={saveBlocker ? 'hermes-save-blocker' : undefined} disabled={!dirty || !provider || !model.trim() || !!saveBlocker}>{pending === 'save' ? 'Saving safely…' : 'Save profile settings'}</Button><Button variant="ghost" disabled={!dirty} onClick={() => { apply(saved); setNotice('Unsaved changes discarded.'); }}>Discard changes</Button></div>
+          <div className="flex flex-wrap items-center gap-2"><Button type="submit" aria-describedby={saveBlocker ? 'hermes-save-blocker' : undefined} disabled={!dirty || !provider || !model.trim() || !!saveBlocker || (credentialAction === 'replace' && !secret)}>{pending === 'save' ? 'Saving safely…' : 'Save profile settings'}</Button><Button variant="ghost" disabled={!dirty} onClick={() => { apply(saved); setNotice('Unsaved changes discarded.'); }}>Discard changes</Button></div>
         </fieldset>
       </form>
       {provider === 'openai-codex' ? routeBlocker ? <section className="rounded-2xl border border-border p-5 space-y-3"><h2 className="font-semibold">ChatGPT / Codex subscription</h2><p className="text-sm text-muted">Resolve the provider notice above before starting subscription sign-in.</p></section> : <HermesCodexConnection botId={botId} revision={saved.revision} canStart={!dirty && !pending && !mustReload && saved.provider === 'openai-codex'} startBlockedReason={signInBlocker} onChanged={reload} onPendingChange={setCodexPending} /> : <section className="rounded-2xl border border-border p-5 space-y-3" aria-labelledby="hermes-test-title">
         <h2 id="hermes-test-title" className="font-semibold">Test the connection</h2>
         <p className="text-sm text-muted">Sends one short inference request using the saved API key and model, with no tools or chat history. Your provider may charge for it. Saving alone sends no inference request.</p>
-        {lastTest && <p role="status" className="text-sm">{testMessages[lastTest.code]} <span className="block text-xs text-muted">Last explicit test: {new Date(lastTest.checkedAt).toLocaleString()}</span></p>}
+        {lastTest && !dirty && !mustReload && <p role={lastTest.code === 'verified' ? 'status' : 'alert'} className="text-sm">{testMessages[lastTest.code]} <span className="block text-xs text-muted">Last explicit test: {new Date(lastTest.checkedAt).toLocaleString()}</span></p>}
+        {testBlocker && <p className="text-sm text-muted">{testBlocker}</p>}
         {dirty && <p className="text-xs text-muted">Save or discard your changes before testing.</p>}
         {offline && <p className="text-sm text-muted">Connection testing is unavailable while the runtime is offline. No inference request will be sent.</p>}
         <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={consent} disabled={testBlocked} onChange={e => setConsent(e.target.checked)} />I understand this test may incur inference charges.</label>
         <Button disabled={!consent || testBlocked} onClick={() => void submit('test')}>{pending === 'test' ? 'Testing once…' : 'Test saved connection'}</Button>
       </section>}
+      <section aria-labelledby="hermes-chat-title" className="rounded-2xl border border-border p-5 space-y-3">
+        <h2 id="hermes-chat-title" className="font-semibold">Start chatting</h2>
+        <p className="text-sm text-muted">{readyToChat ? 'Connection verified. Start a new conversation with these saved provider settings. Your native skills and memory stay with this bot.' : provider === 'openai-codex' ? 'Native subscription sign-in alone does not verify model access. API-key connections can be tested above; existing native subscription chats remain available from the bot page.' : 'Save and successfully test your API-key connection to start a new conversation here.'}</p>
+        <StartSideChat botId={botId} label="Start chatting" disabled={!readyToChat} className="inline-flex items-center gap-2 rounded-lg bg-fg px-4 py-2 text-sm font-medium text-bg disabled:cursor-not-allowed disabled:opacity-50" />
+      </section>
+      <section aria-labelledby="hermes-network-title" className="rounded-2xl border border-border p-5 space-y-3">
+        <h2 id="hermes-network-title" className="font-semibold">Check provider connectivity</h2>
+        <p className="text-sm text-muted">Checks DNS and a verified TLS handshake to this saved provider’s fixed service domains. It sends no API key, account sign-in or inference request. Model access is verified separately.</p>
+        {saved.connectivity && <p role="status" className="text-sm">{connectivityMessages[saved.connectivity.code]}<span className="block text-xs text-muted">Last check: {new Date(saved.connectivity.checkedAt).toLocaleString()}</span></p>}
+        {dirty && <p className="text-xs text-muted">Save or discard your changes before checking.</p>}
+        <Button disabled={!!pending || dirty || mustReload || codexPending || !saved.provider || !!routeBlocker || state.runtime.phase !== 'ready'} onClick={() => void submit('network')}>{pending === 'network' ? 'Checking provider…' : 'Check provider connectivity'}</Button>
+      </section>
       <p className="text-xs text-muted">You can leave setup and return from this bot’s Hermes settings. Unsaved keys are discarded. A save or test already submitted may finish after you leave; reload to see its outcome.</p>
       <Link className="inline-block text-sm underline" href={`/bots/${botId}`}>Done for now</Link>
     </>}

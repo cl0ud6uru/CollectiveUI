@@ -52,6 +52,16 @@ export type ProfileSettings = {
   lastTest?: ProfileTestResult | null;
   connectivity?: import('./network').Connectivity | null;
 };
+/** A stored test only describes the exact native settings revision it checked. */
+export function currentProfileTest(settings: ProfileSettings): ProfileTestResult | null {
+  return settings.lastTest?.revision === settings.revision ? settings.lastTest : null;
+}
+/** API-key setup is ready only after an explicit successful test of this profile. */
+export function profileConnectionVerified(settings: ProfileSettings): boolean {
+  return !!settings.provider && settings.provider !== 'openai-codex' && !!settings.model &&
+    settings.credentials[settings.provider] && !providerBlocker(settings, settings.provider) &&
+    currentProfileTest(settings)?.code === 'verified';
+}
 /** Older bridges omit Codex support; do not misdiagnose that as custom credentials. */
 export function providerBlocker(settings: ProfileSettings, provider: ProfileValues['provider']): string | null {
   const editable = settings.editableProviders?.[provider];
