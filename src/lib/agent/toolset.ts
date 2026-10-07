@@ -17,7 +17,7 @@ import { slugify } from "@/lib/utils";
 import { activeServiceGrants } from "@/lib/bots/service";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { assertDirectServiceContext, mcpAuthorityBinding } from "@/lib/mcp/authorization";
-import { sha256Hex } from "@/lib/crypto";
+import { mcpToolsetBinding } from "./toolset-binding";
 import { resolveApproval } from "./approvals";
 import { memoryEnabled } from "./memory";
 import { knowledgeTool } from "./tools/knowledge";
@@ -290,7 +290,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
     skills,
     delegates,
     approval,
-    ...(bindings.length ? { approvalBinding: sha256Hex(JSON.stringify({ authorities: bindings.sort(), mapping: entries.filter(e => e.mcp).map(e => ({ name: e.name, server: e.key, tool: e.mcp!.tool, definition: e.mcp!.definitionHash })) })) } : {}),
+    ...(bindings.length ? { approvalBinding: mcpToolsetBinding(bindings, entries) } : {}),
     warnings,
     workspace,
     ...(Object.keys(timeouts).length ? { timeout: { tools: timeouts } } : {}),
