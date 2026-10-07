@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowDown, ArrowUp, ChevronDown, Copy, Eye, EyeOff, GripVertical, Info, MessageSquare, MoreHorizontal, Pin, PinOff } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Copy, Eye, EyeOff, GripVertical, Info, MessageSquare, MoreHorizontal, Pin, PinOff, Plus, Star } from "lucide-react";
 import { duplicateBot } from "@/app/(chat)/bots/actions";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import { Tip } from "@/components/ui/tooltip";
 import type { TargetOption } from "@/components/chat/types";
 import { Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger } from "@/components/ui/menu";
 import { StartSideChat } from "@/components/chat/start-side-chat";
@@ -41,13 +42,13 @@ function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, on
     }
   };
   const status = b.status ?? null;
-  const line = status === "waiting" ? "Needs your approval" : status === "working" ? "Working…" : (b.preview || (b.coordinator ? "Default coordinator" : b.label) || b.description || "");
+  const line = status === "waiting" ? "Needs your approval" : status === "working" ? "Working…" : (b.preview || b.label || b.description || "");
   return (
     <div className={cn("group relative flex items-center rounded-lg hover:bg-hover", active && "bg-hover")}>
       <button type="button" draggable={!navigationPending && !b.hidden} disabled={navigationPending || b.hidden}
         onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={() => setMenuOpen(true)}
         aria-label={`Reorder ${b.name}`} title="Reorder pins or bots with equal recent use; pin to keep a chosen position"
-        className="flex min-h-11 w-6 shrink-0 cursor-grab items-center justify-center rounded text-subtle hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 active:cursor-grabbing">
+        className="absolute left-0 z-10 flex min-h-11 w-5 cursor-grab items-center justify-center rounded text-subtle opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-fg focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 active:cursor-grabbing">
         <GripVertical className="h-4 w-4" />
       </button>
       <Link
@@ -56,7 +57,7 @@ function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, on
         aria-current={active ? "page" : undefined}
         onClick={onNavigate}
         title={b.label ? `${b.name} · ${b.label}` : b.name}
-        className="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5"
+        className="flex min-w-0 flex-1 items-center gap-2.5 pl-5 pr-3 py-1.5"
       >
         <span className="relative shrink-0" style={{ ["--blink-delay" as string]: blinkDelay(b.id) }}>
           <BotAvatar botId={b.id} activity={status === "waiting" ? "approval" : status === "working" ? "working" : undefined} value={b.icon} size={32} state={status ?? "idle"} className="h-8 w-8 [&_.blob-eyes]:[animation-delay:var(--blink-delay)]" />
@@ -69,7 +70,8 @@ function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, on
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
-            <span className={cn("truncate text-sm", active && "font-medium")}>{b.name}</span>
+            <span className="truncate text-sm font-medium">{b.name}</span>
+            {b.coordinator && <Tip label="Default coordinator" side="right"><span tabIndex={0} aria-label="Default coordinator" className="shrink-0 rounded-sm text-[#d6af62] focus-visible:outline-2 focus-visible:outline-accent"><Star aria-hidden className="h-3 w-3 fill-current" /></span></Tip>}
             {b.pinned && <Pin aria-label="Pinned" className="h-3 w-3 shrink-0 text-subtle" />}
             <span suppressHydrationWarning className="ml-auto hidden shrink-0 pl-1 text-[11px] tabular-nums text-subtle md:inline md:group-hover:invisible">
               {shortTime(b.lastAt)}
@@ -82,7 +84,7 @@ function BotRow({ b, active, onNavigate, previous, next, onMove, onDragStart, on
       </Link>
       <Menu open={menuOpen} onOpenChange={setMenuOpen}>
         <MenuTrigger asChild>
-          <button ref={options} className="flex min-h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-accent md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100" aria-label={`${b.name} options`}>
+          <button ref={options} className="absolute right-0 top-1/2 -translate-y-1/2 flex min-h-11 w-11 items-center justify-center rounded-md text-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-accent md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100 data-[state=open]:opacity-100" aria-label={`${b.name} options`}>
             <MoreHorizontal className="h-4 w-4" />
           </button>
         </MenuTrigger>
@@ -137,10 +139,11 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
   const cancelDrag = () => { setDragging(null); setDrop(null); };
   if (!bots.length) return null;
   return (
-    <section className="mb-4" aria-label="Bot navigation">
+    <section className="mb-2" aria-label="Bot navigation">
       <p role="status" className={navigationPending ? "px-2.5 text-xs text-muted" : "sr-only"}>{navigationPending ? "Saving bot navigation…" : navigationMessage}</p>
       <div className="flex items-center gap-2 px-2.5 pb-1">
         <h3 className="flex-1 text-xs font-medium text-subtle">Bots</h3>
+        <Tip label="Browse and create bots"><Link href="/bots" onClick={onNavigate} aria-label="Browse and create bots" className="rounded-md p-1 text-subtle hover:bg-hover hover:text-fg"><Plus aria-hidden className="h-4 w-4" /></Link></Tip>
         {others.length > MAX_UNPINNED && (
           <Link href="/bots" onClick={onNavigate} className="text-xs text-subtle hover:text-fg">
             See all

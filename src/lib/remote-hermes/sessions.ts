@@ -7,9 +7,11 @@ import { HttpError } from '@/lib/authz';
 import { newId } from '@/lib/ids';
 import { getSetting } from '@/lib/settings';
 import { assertRemoteHermesAdmission } from './policy';
+import { yoloStatusText } from './yolo-contract';
 import { remoteAccess } from './store';
 import { nativeHub } from './hub';
 import { NativeRpcError, record, type RpcRecord } from './socket';
+import { nativeCommandCatalog, nativeCommandResult, parseNativeInput, resolveNativeCommand } from './commands';
 
 export const profileName = z.string().min(1).max(200).regex(/^[a-zA-Z0-9_.-]+$/);
 export type NativeUpload = { name: string; type: string; bytes: Buffer };
@@ -65,10 +67,10 @@ export async function nativeSnapshot(ownerId: string, connectionId: string, sess
   const hub = nativeHub(ownerId, connectionId);
   if (!policy.enabled && !active(row.status)) {
     const cached = hub.sessions.get(row.id);
-    if (cached) return { ...cached.view, admissionAllowed: false };
+    if (cached) return { ...cached.view, admissionAllowed: false, yoloAllowed: false };
     throw new HttpError(403, 'Personal remote Hermes is disabled. Saved conversations are retained.');
   }
-  return { ...await hub.view(row), admissionAllowed: policy.enabled };
+  return { ...await hub.view(row), admissionAllowed: policy.enabled, yoloAllowed: policy.enabled && policy.allowSessionYolo === true };
 }
 /** Read history only for a persisted, owned binding; native IDs are never accepted from the browser. */
 export async function nativeHistory(ownerId: string, connectionId: string, sessionId: string, offset: number) {
@@ -84,6 +86,11 @@ export async function submitNativePrompt(ownerId: string, connectionId: string, 
   if (!text.trim() && !uploads.length) throw new HttpError(400, 'Enter a message or attach a file.');
   if (text.length > 64000) throw new HttpError(400, 'This Hermes message is too large.');
   const row = await ownedNativeSession(ownerId, connectionId, sessionId);
+  const parsed = parseNativeInput(text);
+  if (parsed.kind !== 'text') throw new HttpError(400, parsed.kind === 'shell'
+    ? '! is CLI shell syntax, not a remote command. /yolo shows approval status.'
+    : 'Run slash commands through Commands & skills. Remove attachments first, or use // to send literal slash text.');
+  text = parsed.text;
   const policy = await getSetting('remoteHermes'); assertRemoteHermesAdmission(policy);
   const hub = nativeHub(ownerId, connectionId);
   const view = await hub.refresh(row);
@@ -158,7 +165,7 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
     if (!cached.view.running) throw new HttpError(409, 'This native turn has already finished.');
     return hub.socket.call('session.steer', { ...params, text: z.string().min(1).max(4000).parse(input.text) });
   }
-  if (operation === 'catalog') return hub.socket.call('commands.catalog', params);
+  if (operation === 'catalog') return readCatalog();
   if (operation === 'context') return hub.socket.call('session.context_breakdown', params);
   if (operation === 'queue') {
     const text = z.string().min(1).max(4000).parse(input.text);
@@ -191,7 +198,18 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
       return false;
     }
   }
-  const command = z.string().min(1).max(2000).parse(input.text).replace(/^\//, '');
+  const catalog = await readCatalog();
+  let selected: ReturnType<typeof resolveNativeCommand>;
+  try { selected = resolveNativeCommand(z.string().min(1).max(2000).parse(input.text), catalog); }
+  catch (e) { throw new HttpError(400, e instanceof Error ? e.message : 'Unsupported Hermes command.'); }
+  if (selected.kind === 'local') {
+    if (selected.value === '/yolo' && ['on', 'off'].includes(selected.args)) throw new HttpError(409, 'Use the confirmed session YOLO control. Review and confirm the exact on/off action; no mode was changed.');
+    if (selected.value === '/commands') return { output: catalog.commands.map(c => `${c.value} — ${c.description}${c.available ? '' : ' (unavailable here)'}`).join('\n') + (catalog.warning ? `\n${catalog.warning}` : '') };
+    if (selected.value === '/context') return { output: JSON.stringify(await hub.socket.call('session.context_breakdown', params), null, 2) };
+    if (selected.value === '/stop') return { ...await hub.socket.call('session.interrupt', params), output: 'Stop requested. Check the native turn for completion.' };
+    return { output: yoloStatusText(cached.view) + ' Use /yolo on or /yolo off for a policy-controlled confirmation. Profile-wide approval policy cannot be changed here.' };
+  }
+  const command = selected.command;
   const requestId = z.string().uuid().parse(input.requestId);
   const reservation = await reserveControl(row.id, requestId, createHash('sha256').update('command:').update(command).digest('hex'), true, !cached.view.running);
   if (!reservation) return { output: 'This command was already submitted. Refresh its native session to see the outcome.' };
@@ -199,9 +217,13 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   // Native dispatch results that request inference are returned as composer prefills, never auto-submitted.
   let result: RpcRecord;
   try {
-    try { result = await hub.socket.call('slash.exec', { ...params, command }, 60_000); }
+    // Known skills intentionally refuse slash.exec with 4018. Dispatch them directly after catalog validation;
+    // 4018 is ALSO used for failures after side effects, so it is never a general retry signal.
+    try { result = selected.kind === 'skill'
+      ? await hub.socket.call('command.dispatch', { ...params, name: selected.value.slice(1), arg: selected.args }, 60_000)
+      : await hub.socket.call('slash.exec', { ...params, command }, 60_000); }
     catch (error) {
-      if (!(error instanceof NativeRpcError) || error.code !== -32601) throw error;
+      if (selected.kind === 'skill' || !(error instanceof NativeRpcError) || error.code !== -32601) throw error;
       const [name, ...words] = command.split(/\s+/);
       result = await hub.socket.call('command.dispatch', { ...params, name, arg: words.join(' ') }, 60_000);
     }
@@ -211,7 +233,14 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   }
   await settleCommand('idle');
   await hub.refresh(hub.sessions.get(row.id)!.row);
-  return { type: result.type, output: result.output ?? result.display ?? result.notice, prefill: ['send', 'skill', 'prefill'].includes(String(result.type)) ? result.message : undefined };
+  return nativeCommandResult(result);
+  async function readCatalog() {
+    try { return nativeCommandCatalog(await hub.socket.call('commands.catalog', params)); }
+    catch (e) {
+      if (!(e instanceof NativeRpcError) || e.code !== -32601) throw e;
+      return nativeCommandCatalog(null);
+    }
+  }
   async function settleCommand(status: 'idle' | 'uncertain') {
     const [updated] = await db.update(remoteHermesSessions).set({ status, admissionRequestId: status === 'idle' ? null : requestId, revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
       .where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.status, 'admitting'), eq(remoteHermesSessions.admissionRequestId, requestId))).returning();

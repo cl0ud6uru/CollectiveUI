@@ -12,11 +12,17 @@ export function dashboardBase(raw: string): string {
 
 export const remoteHermesSettingsSchema = z.object({
   enabled: z.boolean(),
+  allowSessionYolo: z.boolean().default(false),
   privateGateways: z.array(z.string().max(2048).transform(dashboardBase)).max(100).transform(v => [...new Set(v)]),
 });
 
 export function assertRemoteHermesAdmission(settings: RemoteHermesSettings) {
   if (!settings.enabled) throw new HttpError(403, 'Personal remote Hermes connections are disabled by your administrator.');
+}
+
+export function assertSessionYoloAdmission(settings: RemoteHermesSettings) {
+  assertRemoteHermesAdmission(settings);
+  if (settings.allowSessionYolo !== true) throw new HttpError(403, 'Session YOLO changes are disabled by your administrator. Status inspection remains available.');
 }
 
 /** Called only with a binding loaded and authorized by the server, never a browser's active flag. */

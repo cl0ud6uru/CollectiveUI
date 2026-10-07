@@ -8,6 +8,8 @@ export type NativeSessionView = {
   messages: { id: string; role: string; text: string }[]; partial: string;
   tools: { id: string; name: string; detail: string; done: boolean }[];
   prompts: NativePrompt[]; model: string; provider: string; usage: RpcRecord; queued: string; queuePending: boolean;
+  yolo?: boolean | null; approvalMode?: string;
+  runtimeVersion?: string; desktopContract?: number | null; nativeProfile?: string;
 };
 export const PROMPT_METHODS = ['approval', 'clarify', 'sudo', 'secret', 'vault.unlock_prompt', 'vault.save_login', 'vault.code'] as const;
 export function promptView(id: string | number, method: string, raw: unknown): NativePrompt | null {
@@ -42,6 +44,10 @@ export function sessionView(id: string, profile: string, snapshot: RpcRecord, co
   return { id, title: displayText(info.title, 500) || 'Hermes chat', profile, running: snapshot.running === true || info.running === true || !!displayText(record(snapshot.queued).user, 4000),
     uncertain: false, connection, messages, partial, tools: [], prompts: [], model: displayText(info.model, 200), provider: displayText(info.provider, 200), usage: counts,
     queued: displayText(record(snapshot.queued).user, 4000), queuePending: false,
+    yolo: typeof info.yolo === 'boolean' ? info.yolo : null,
+    approvalMode: ['manual', 'smart', 'off'].includes(String(info.approval_mode)) ? String(info.approval_mode) : '',
+    runtimeVersion: displayText(info.version, 100), desktopContract: Number.isSafeInteger(info.desktop_contract) ? Number(info.desktop_contract) : null,
+    nativeProfile: displayText(info.profile_name, 200),
   };
 }
 export function answerFor(prompt: NativePrompt, input: unknown): RpcRecord {

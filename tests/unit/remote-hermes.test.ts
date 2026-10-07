@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { DashboardClient } from '@/lib/remote-hermes/client';
-import { assertRemoteHermesAdmission, assertRemoteHermesOperation, dashboardBase, remoteHermesSettingsSchema } from '@/lib/remote-hermes/policy';
+import { assertRemoteHermesAdmission, assertRemoteHermesOperation, assertSessionYoloAdmission, dashboardBase, remoteHermesSettingsSchema } from '@/lib/remote-hermes/policy';
 import { dashboardFetch } from '@/lib/remote-hermes/transport';
 
 const disabled = { enabled: false, privateGateways: [] };
@@ -22,6 +22,13 @@ describe('personal remote Hermes admission', () => {
     expect(() => dashboardBase('https://example.com?token=secret')).toThrow();
     expect(() => dashboardBase('file:///etc/passwd')).toThrow();
     expect(remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: ['http://hermes:9119/', 'http://hermes:9119'] }).privateGateways).toEqual(['http://hermes:9119']);
+  });
+  it('keeps confirmed session YOLO off for legacy settings and requires both policy gates', () => {
+    const legacy = remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: [] });
+    expect(legacy.allowSessionYolo).toBe(false);
+    expect(() => assertSessionYoloAdmission(legacy)).toThrow('disabled by your administrator');
+    expect(() => assertSessionYoloAdmission({ ...disabled, allowSessionYolo: true })).toThrow('disabled');
+    expect(() => assertSessionYoloAdmission({ ...legacy, allowSessionYolo: true })).not.toThrow();
   });
 });
 

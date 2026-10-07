@@ -11,6 +11,10 @@ export class NativeRpcError extends HttpError {
     super(code === -32601 ? 501 : 502, code === -32601 ? 'This Hermes version does not support that feature.' : 'Hermes refused this operation. Check its native settings.');
   }
 }
+/** Proves a guarded operation was rejected before sending, rather than losing an acknowledgement. */
+export class NativeConnectionChanged extends HttpError {
+  constructor() { super(409, 'The verified Hermes connection changed. Refresh the conversation and request a new confirmation. No mode change was sent.'); }
+}
 
 /** One server-owned native socket. RPCs are never resent after an uncertain transport failure. */
 export class DashboardSocket {
@@ -27,6 +31,8 @@ export class DashboardSocket {
   private pending = new Map<number, { resolve: (v: RpcRecord) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   state: SocketState = 'disconnected';
   serverRequests: string[] = [];
+  private epoch = 0;
+  get connectionEpoch() { return this.epoch; }
   constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame) => void,
     private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {}) {}
   private setState(state: SocketState) { this.state = state; this.changed(state); }
@@ -79,6 +85,7 @@ export class DashboardSocket {
       this.serverRequests = Array.isArray(capabilities.server_requests) ? capabilities.server_requests.filter((v): v is string => typeof v === 'string') : [];
       if (!this.serverRequests.includes('approval')) throw new HttpError(501, 'This Hermes version does not support native approval prompts. Update Hermes before chatting.');
       this.ready = true;
+      ++this.epoch;
       const wasReconnect = this.everConnected;
       this.everConnected = true; this.attempt = 0; this.setState('connected');
       this.heartbeat = setInterval(() => { void this.call('ping', {}, 10_000).catch(() => ws.terminate()); }, 20_000);
@@ -100,8 +107,17 @@ export class DashboardSocket {
     this.retry.unref();
   }
   async call(method: string, params: RpcRecord = {}, timeoutMs = 30_000): Promise<RpcRecord> {
+    return (await this.callWithEpoch(method, params, timeoutMs)).result;
+  }
+  async callWithEpoch(method: string, params: RpcRecord = {}, timeoutMs = 30_000): Promise<{ result: RpcRecord; epoch: number }> {
     await this.connect();
     if (!this.ws || !this.ready) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
+    const epoch = this.epoch;
+    return { result: await this.send(method, params, timeoutMs), epoch };
+  }
+  /** Sensitive setters must stay on the exact socket that supplied their verified snapshot. */
+  callConnected(method: string, params: RpcRecord, expectedEpoch: number, timeoutMs = 30_000): Promise<RpcRecord> {
+    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN || !expectedEpoch || this.epoch !== expectedEpoch) throw new NativeConnectionChanged();
     return this.send(method, params, timeoutMs);
   }
   private send(method: string, params: RpcRecord, timeoutMs: number): Promise<RpcRecord> {

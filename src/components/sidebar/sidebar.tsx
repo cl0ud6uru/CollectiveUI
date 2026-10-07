@@ -10,6 +10,9 @@ import {
   Bell,
   Bot,
   ChevronRight,
+  ChevronDown,
+  LayoutGrid,
+  MessageSquare,
   Folder,
   FolderOpen,
   LogOut,
@@ -107,10 +110,14 @@ function MemberStack({ ids }: { ids: string[] }) {
   );
 }
 
-function SectionHeader({ title, children }: { title: string; children?: React.ReactNode }) {
+function SectionHeader({ title, children, open, onToggle, controls }: { title: string; children?: React.ReactNode; open?: boolean; onToggle?: () => void; controls?: string }) {
   return (
-    <div className="flex items-center gap-2 pb-1 pl-2.5 pr-1">
-      <h3 className="flex-1 text-xs font-medium text-subtle">{title}</h3>
+    <div className="flex items-center gap-2 pl-2.5 pr-1">
+      <h3 className="min-w-0 flex-1 text-xs font-medium text-muted">
+        {onToggle ? <button type="button" onClick={onToggle} aria-expanded={open} aria-controls={controls} className="flex min-h-8 w-full items-center gap-2 rounded-md text-left hover:text-fg focus-visible:outline-2 focus-visible:outline-accent">
+          <ChevronDown aria-hidden className={cn("h-3.5 w-3.5 transition-transform", !open && "-rotate-90")} />{title}
+        </button> : title}
+      </h3>
       {children}
     </div>
   );
@@ -171,6 +178,7 @@ function ConversationItem({ c, active, recent = false }: { c: ConversationSummar
         title={c.title}
       >
         {c.source === "routine" && <Bot className="h-3.5 w-3.5 shrink-0 text-subtle" />}
+        {recent && c.source !== "routine" && <MessageSquare aria-hidden className="h-3.5 w-3.5 shrink-0 text-subtle" />}
         {c.isBotHome && <span className="shrink-0 text-[10px] text-subtle">Home</span>}
         {c.isGroup && !stacked && <Users className="h-3.5 w-3.5 shrink-0 text-subtle" />}
         <span className={cn("min-w-0", ((recent && c.taskActivity) || stacked) && "truncate")}>{c.title}</span>
@@ -310,6 +318,10 @@ export function Sidebar() {
   const shell = useShell();
   const { user, branding, conversations, currentConversation, folders, bots, inboxUnread, setSidebarOpen, setSearchOpen, setMobileOpen } = shell;
   const pathname = usePathname();
+  const [groupsOpen, setGroupsOpen] = useState(true);
+  const [projectsOpen, setProjectsOpen] = useState(folders.length > 0);
+  const [recentOpen, setRecentOpen] = useState(true);
+  const [allHistory, setAllHistory] = useState(false);
   const activeId = pathname.startsWith("/c/") ? pathname.slice(3) : undefined;
   const current = currentConversation?.id === activeId ? currentConversation : conversations.find((c) => c.id === activeId);
   const activeBotId = current?.isBotHome && bots.some((b) => b.id === current.botId) ? current.botId ?? undefined : undefined;
@@ -333,6 +345,8 @@ export function Sidebar() {
     }
     return { pinned, groups, grouped: groupByDate(loose), byFolder };
   }, [conversations, bots, activeBotId]);
+  const recent = grouped.flatMap(g => g.items);
+  const visibleRecent = allHistory ? recent : recent.filter((c, i) => i < 2 || c.id === historyActiveId);
 
   const initials = user.name
     .split(/\s+/)
@@ -342,8 +356,8 @@ export function Sidebar() {
     .toUpperCase();
 
   return (
-    <nav className="flex h-full w-[260px] flex-col bg-sidebar">
-      <div className="flex h-14 items-center justify-between px-3">
+    <nav aria-label="Main navigation" className="flex h-full w-[300px] max-w-[100vw] flex-col bg-sidebar">
+      <div className="flex h-12 shrink-0 items-center justify-between px-3">
         <Link href="/" className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1 text-lg font-semibold hover:bg-hover" onClick={() => setMobileOpen(false)}>
           <BrandMark logoUrl={branding.logoUrl} logoEmoji={branding.logoEmoji} className="h-7 w-7 text-xl" />
           <span className="truncate text-base">{branding.appName}</span>
@@ -362,43 +376,44 @@ export function Sidebar() {
         </Tip>
       </div>
 
-      <div className="space-y-0.5 px-2">
+      <div className="shrink-0 space-y-0.5 px-2">
         <NavItem href="/" icon={SquarePen} label="New chat" onClick={() => setMobileOpen(false)} />
         <NavItem onClick={() => setSearchOpen(true)} icon={Search} label="Search chats" />
-        <NavItem href="/hermes" icon={Bot} label="Hermes" active={pathname.startsWith("/hermes")} onClick={() => setMobileOpen(false)} />
-        <NavItem href="/bots" icon={Bot} label="Bots" active={pathname.startsWith("/bots")} onClick={() => setMobileOpen(false)} />
-        <NavItem href="/inbox" icon={Bell} label="Inbox" badge={inboxUnread} active={pathname === "/inbox"} onClick={() => setMobileOpen(false)} />
       </div>
 
-      <div className="mt-4 flex-1 overflow-y-auto px-2 pb-4">
+      <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         <BotSection bots={bots} activeBotId={activeBotId} onNavigate={() => setMobileOpen(false)} />
 
         {(bots.length > 1 || groups.length > 0) && (
-          <section className="mb-4" aria-label="Groups">
-            <SectionHeader title="Groups">
+          <section className="mb-2" aria-label="Groups">
+            <SectionHeader title="Groups" open={groupsOpen} onToggle={() => setGroupsOpen(v => !v)} controls="sidebar-groups">
               {bots.length > 1 && <NewGroupDialog bots={bots} onCreated={() => setMobileOpen(false)} trigger={<AddButton label="New group chat" />} />}
             </SectionHeader>
+            <div id="sidebar-groups" hidden={!groupsOpen}>
             {groups.map((c) => (
               <ConversationItem key={c.id} c={c} active={c.id === historyActiveId} />
             ))}
             {!groups.length && <p className="px-2.5 py-1.5 text-sm text-subtle">No groups yet</p>}
+            </div>
           </section>
         )}
 
-        <section className="mb-4" aria-label="Projects">
-          <SectionHeader title="Projects">
+        <section className="mb-2" aria-label="Projects">
+          <SectionHeader title="Projects" open={projectsOpen} onToggle={() => setProjectsOpen(v => !v)} controls="sidebar-projects">
             <AddButton
               label="New project"
               onClick={async () => {
                 const name = prompt("Project name");
-                if (name?.trim()) await createFolder(name.trim());
+                if (name?.trim()) { await createFolder(name.trim()); setProjectsOpen(true); }
               }}
             />
           </SectionHeader>
+          <div id="sidebar-projects" hidden={!projectsOpen}>
           {folders.map((f) => (
             <FolderItem key={f.id} folder={f} convs={byFolder.get(f.id) ?? []} activeId={historyActiveId} />
           ))}
           {!folders.length && <p className="px-2.5 py-1.5 text-sm text-subtle">No projects yet</p>}
+          </div>
         </section>
 
         {pinned.length > 0 && (
@@ -410,18 +425,27 @@ export function Sidebar() {
           </section>
         )}
 
-        {grouped.map((g) => (
-          <section key={g.label} className="mb-4">
-            <h3 className="px-2.5 pb-1 text-xs font-medium text-subtle">{g.label}</h3>
-            {g.items.map((c) => (
+        {recent.length > 0 && (
+          <section className="mb-2" aria-label="Recent chats">
+            <SectionHeader title={`Recent chats · ${recent.length}`} open={recentOpen} onToggle={() => setRecentOpen(v => !v)} controls="sidebar-recent" />
+            <div id="sidebar-recent" hidden={!recentOpen}>
+            {visibleRecent.map((c) => (
               <ConversationItem key={c.id} c={c} active={c.id === historyActiveId} recent />
             ))}
+            {recent.length > 2 && <button type="button" onClick={() => setAllHistory(v => !v)} aria-expanded={allHistory} className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-accent">
+              <ChevronRight aria-hidden className={cn("h-3.5 w-3.5", allHistory && "rotate-90")} />{allHistory ? "Show less history" : "See all history"}
+            </button>}
+            </div>
           </section>
-        ))}
+        )}
         {!pinned.length && !grouped.length && !byFolder.size && !groups.length && <p className="px-2.5 text-xs text-subtle">Side chats and previous homes will appear here.</p>}
       </div>
 
-      <div className="border-t border-border p-2">
+      <div className="shrink-0 px-2 pb-2">
+        <NavItem href="/bots" icon={LayoutGrid} label="Browse bots" active={pathname.startsWith("/bots")} onClick={() => setMobileOpen(false)} />
+        <NavItem href="/inbox" icon={Bell} label="Inbox" badge={inboxUnread} active={pathname === "/inbox"} onClick={() => setMobileOpen(false)} />
+      </div>
+      <div className="shrink-0 border-t border-border p-2">
         <Menu>
           <MenuTrigger asChild>
             <button className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-sm hover:bg-hover">
@@ -432,6 +456,7 @@ export function Sidebar() {
                 <span className="block truncate font-medium">{user.name}</span>
                 <span className="block truncate text-xs text-subtle">{user.email}</span>
               </span>
+              <Settings aria-hidden className="h-4 w-4 shrink-0 text-muted" />
             </button>
           </MenuTrigger>
           <MenuContent side="top" align="start" className="w-[240px]">

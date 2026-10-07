@@ -37,6 +37,8 @@ export type LimitsSettings = {
 /** Personal remote dashboard credentials are separate from shared and managed Hermes backends. */
 export type RemoteHermesSettings = {
   enabled: boolean;
+  /** Default off. Owners may confirm session-only YOLO changes on verified native runtimes. */
+  allowSessionYolo?: boolean;
   /** Exact dashboard bases approved for connections to private/LAN/tailnet addresses. */
   privateGateways: string[];
 };
@@ -107,7 +109,7 @@ export type SandboxSettings = {
 
 const defaults = {
   decisions: DECISIONS_DEFAULTS,
-  remoteHermes: { enabled: false, privateGateways: [] } as RemoteHermesSettings,
+  remoteHermes: { enabled: false, allowSessionYolo: false, privateGateways: [] } as RemoteHermesSettings,
   coordinator: { enabled: false, defaultBotId: null, starterBotId: null } as CoordinatorSettings,
   branding: { appName: "AI Portal", welcomeText: "What can I help with?", logoEmoji: "" } as BrandingSettings,
   // Separate from editable text so stale admin forms cannot resurrect a removed logo.

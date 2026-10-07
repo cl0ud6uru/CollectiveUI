@@ -31,7 +31,7 @@ export function PageFrame({
         <div className="flex-1" />
         {actions}
       </header>
-      <div className="flex-1 overflow-y-auto">
+      <div data-page-scroll className="flex-1 overflow-y-auto">
         <div className={cn("mx-auto w-full px-4 pb-16 pt-2 md:px-6", wide ? "max-w-6xl" : "max-w-3xl")}>
           {title && (
             <div className="mb-6">
