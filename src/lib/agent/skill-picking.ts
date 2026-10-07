@@ -9,6 +9,7 @@ import { providerContextFor } from "@/lib/llm/resolve";
 import { requestDecision } from "@/lib/llm/providers/decisions";
 import { currentSkillsForTurn, skillTool } from "./tools/skills";
 import { findSkill } from "./skill-lookup";
+import { agentPreferences } from "./preferences";
 import type { AgentCtx } from "./types";
 import type { Toolset } from "./toolset";
 
@@ -17,7 +18,7 @@ const revision = (s: Skill) => digest([s.id, s.version, s.slug, s.aliases, s.nam
   s.expectedOutput, s.boundaries, s.pinned, s.mandatory, s.updatedAt]);
 const botBinding = (ctx: AgentCtx) => digest([ctx.bot?.id, ctx.bot?.ownerId, ctx.bot?.appId, ctx.bot?.executionMode,
   ctx.bot?.hermesTeam, ctx.bot?.instructions, ctx.bot?.boundaries, ctx.bot?.updatedAt,
-  ctx.app.id, ctx.app.provider, ctx.app.supportsTools, ctx.app.systemPrompt, ctx.app.updatedAt, ctx.principal.user.prefs]);
+  ctx.app.id, ctx.app.provider, ctx.app.supportsTools, ctx.app.systemPrompt, ctx.app.updatedAt, agentPreferences(ctx.principal.user.prefs)]);
 const references = (s: Skill, text: string) => [s.slug, s.name, ...(s.aliases ?? [])].some(v => v && text.toLowerCase().includes(v.toLowerCase()));
 
 async function freshCatalog(ctx: AgentCtx) {
