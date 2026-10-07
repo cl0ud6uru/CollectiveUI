@@ -44,6 +44,11 @@ for line in sys.stdin:
         live[sid] = stored
         reply(rid, session_id=sid, stored_session_id=stored, info=dict(desktop_contract=8, model='fixture-model'))
     elif method == 'session.resume':
+        if set(p) != {'session_id'}:
+            send(dict(id=rid, error=dict(code=4000, message='Unsupported session.resume parameters')))
+            continue
+        with (home / 'fixture-resumes.jsonl').open('a') as output:
+            output.write(json.dumps(p) + '\n')
         if sid not in sessions:
             send(dict(id=rid, error=dict(code=4008, message='No such session')))
         else:

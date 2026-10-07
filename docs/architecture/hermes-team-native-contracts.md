@@ -38,6 +38,11 @@ Use a clean checkout at the pinned revision and install `tests/fixtures/hermes-n
 HERMES_SOURCE=/path/to/pinned/hermes HERMES_PYTHON=/path/to/venv/bin/python \
   npx vitest run --project unit tests/unit/hermes-team-contracts.test.ts tests/unit/docker-hermes.test.ts
 HERMES_SOURCE=/path/to/pinned/hermes /path/to/venv/bin/python tests/fixtures/docker-hermes-codex.py
+HERMES_SOURCE=/path/to/pinned/hermes /path/to/venv/bin/python tests/fixtures/hermes-team-pinned-bridge.py
 ```
 
 The new native fixture actively rejects socket connections. Its model-route tests replace provider construction and execute the unmodified native routing decisions. Without `HERMES_SOURCE`, Vitest explicitly skips the native-source test; the broker/profile regressions still run. The existing opt-in sandbox suite remains the separate evidence for an official-image Docker lifecycle on a disposable host.
+
+CI's `native-hermes` job runs both Team fixtures directly against a clean checkout of the pinned source, so their checks do not silently skip in that job. `hermes-team-pinned-bridge.py` exercises the production blank-profile bridge with the real native profile enumeration, parked-profile selection and filesystem skill/memory tools. It verifies no root-state seeding, stable identities on retry, crash-safe staging, inference denial and the separate root-auth inheritance limitation. Its synthetic build metadata exercises the bridge's revision check; the native source identity is established independently by Git revision, clean-tree validation and the source hashes. It performs no model generation and does not establish model entitlement or official-image Docker lifecycle support.
+
+Native multiplexed gateways exclude parked Team profiles. Native single-profile selection still names a parked profile; therefore the bridge independently rejects Team inference before launching a gateway. Both checks are required while model routes remain unverified. The source fixture includes that regression and blocks socket `connect`, `connect_ex` and `create_connection` during its checks.

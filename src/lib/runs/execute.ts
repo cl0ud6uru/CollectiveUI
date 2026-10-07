@@ -30,6 +30,8 @@ import { notifyRun } from "./log";
 import { closeOpenParts } from "./replay";
 import { claimRun, finalizeRunTx, getRun, noteRunResumeState, pauseRun, setRunBilling, withRunFence } from "./state";
 import { stopProviderRun } from "./provider-stop";
+import { prepareTeamWorkerTarget,executeTeamLearningSegment } from "./team-candidate";
+import { settleTeamCandidateRun,type ActiveTeamCandidateRun } from "@/lib/hermes-team/candidate-startup";
 import { abortQueuedRun } from "./store";
 import { afterFinishedFromLog, finishFromLogTx } from "./sweeper";
 import { abortKindOf, isBackgroundSegment, RunAbort, runConfig, type AgentRun, type AgentRunStatus, type FinalStatus, type ResumeState, type RunHandle } from "./types";
@@ -131,6 +133,17 @@ type Outcome = {
 };
 
 async function executeSegment(run: AgentRun, holder: string, ac: AbortController, cfg: { background: boolean; timeoutMs: number }) {
+  let candidate:ActiveTeamCandidateRun|undefined;
+  try{await executeSegmentBody(run,holder,ac,cfg,value=>{candidate=value;});}
+  finally{
+    if(candidate){
+      await candidate.retire();
+      const current=await getRun(run.id);
+      await settleTeamCandidateRun(run.id,current?.status==='succeeded').catch(()=>{});
+    }
+  }
+}
+async function executeSegmentBody(run: AgentRun, holder: string, ac: AbortController, cfg: { background: boolean; timeoutMs: number },admitted:(value:ActiveTeamCandidateRun)=>void) {
   let saved: ResumeState | null = null;
   const handle: RunHandle = {
     id: run.id,
@@ -176,9 +189,11 @@ async function executeSegment(run: AgentRun, holder: string, ac: AbortController
   };
 
   try {
-    const setup = await prepareSegment(run);
+    const setup = await prepareSegment(run,holder,admitted);
+    handle.teamCandidate=setup.candidate;
+    if(setup.candidate?.learningSnapshot){await executeTeamLearningSegment(run,holder,setup.candidate,ac);return;}
     handle.hermes = await loadHermesRunContext(run.id);
-    if (run.segment === 0 && setup.app.provider === "hermes") await supersedeWaiting(run, setup.app);
+    if (run.segment === 0 && setup.app.provider === "hermes" && !setup.candidate) await supersedeWaiting(run, setup.app);
     writer = new RunEventWriter({
       runId: run.id,
       segment: run.segment,
@@ -221,6 +236,12 @@ async function executeSegment(run: AgentRun, holder: string, ac: AbortController
     return;
   }
 
+  if(handle.teamCandidate){
+    const stopped=await handle.teamCandidate.retire();
+    if(!stopped.confirmed || o.status==='waiting' || o.status==='waiting_tasks'){
+      o.status='failed';o.error=stopped.confirmed?'Native Team pause continuation requires a verified lifecycle route.':'Native Team writer shutdown needs attention.';
+    }
+  }
   const closing: UIMessageChunk[] = closeOpenParts(o.produced, o.status, {
     openIds: writer.openStreamIds(),
     endNote: endNoteFor(o.status, o.error),
@@ -285,7 +306,7 @@ async function pump(stream: ReadableStream<UIMessageChunk>, writer: RunEventWrit
 }
 
 /** Re-authorizes the run's user, chat, bot and app, and loads the history the turn continues. */
-async function prepareSegment(run: AgentRun) {
+async function prepareSegment(run: AgentRun,holder:string,admitted:(value:ActiveTeamCandidateRun)=>void) {
   const principal = await loadPrincipal(run.userId);
   if (!principal) throw new HttpError(403, "This account is disabled.");
   const [conversation] = await db
@@ -293,7 +314,11 @@ async function prepareSegment(run: AgentRun) {
     .from(conversations)
     .where(and(eq(conversations.id, run.conversationId), eq(conversations.userId, run.userId)));
   if (!conversation || conversation.isGroup) throw new HttpError(404, "This chat is no longer available.");
-  const { bot, app } = await resolveTurnTarget(principal, conversation);
+  const team=await prepareTeamWorkerTarget(principal,run,holder);
+  if(team)admitted(team.candidate);
+  const { bot, app } = team??await resolveTurnTarget(principal, conversation);
+  const candidate=team?.candidate;
+  if(candidate?.learningSnapshot)return {principal,conversation,bot,app,candidate,history:[] as PortalUIMessage[],continuation:false,delegation:undefined};
   if ((bot?.id ?? null) !== run.botId) throw new HttpError(409, "This chat's bot changed.");
   let delegation: Parameters<typeof runTurn>[0]["delegation"];
   if (run.executionMode === "async_delegate") {
@@ -320,12 +345,12 @@ async function prepareSegment(run: AgentRun) {
     }
     const parent = rows.find((r) => r.id === parentId);
     if (!parent || parent.role !== "user") throw new HttpError(400, "The message this reply answers is gone.");
-    return { principal, conversation, bot, app, history: pathTo(rows, parentId).map(rowToUIMessage), continuation: false, delegation };
+    return { principal, conversation, bot, app, history: pathTo(rows, parentId).map(rowToUIMessage), continuation: false, delegation,candidate };
   }
   const stored = rows.find((r) => r.id === run.messageId);
   if (!stored || stored.role !== "assistant") throw new HttpError(400, "The reply to continue is gone.");
   const history = [...pathTo(rows, stored.parentId).map(rowToUIMessage), rowToUIMessage(stored)];
-  return { principal, conversation, bot, app, history, continuation: true, delegation };
+  return { principal, conversation, bot, app, history, continuation: true, delegation,candidate };
 }
 
 /**

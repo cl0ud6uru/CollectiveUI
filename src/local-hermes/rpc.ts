@@ -26,7 +26,8 @@ export class NativeRpc {
   private exitNotified = false;
   alive = false;
   serverRequests: string[] = [];
-  constructor(private config: ControllerConfig, private onFrame: (f: RpcFrame) => void, private onExit: () => void, private onCleanupError: () => void, private transport?: RpcTransport) {}
+  constructor(private config: ControllerConfig, private onFrame: (f: RpcFrame) => void, private onExit: () => void, private onCleanupError: () => void, private transport?: RpcTransport,
+    private authorize?: () => void) {}
 
   async start() {
     if (this.child) throw new Error("Gateway already started");
@@ -92,6 +93,10 @@ export class NativeRpc {
   }
 
   call(method: string, params: RpcObject = {}, timeoutMs = 30_000): Promise<RpcObject> {
+    // Cancellation and settlement observe/retire existing work; they never admit a successor.
+    if (!['session.interrupt', 'collective.session.settled'].includes(method)) {
+      try { this.authorize?.(); } catch (error) { return Promise.reject(error); }
+    }
     if (!this.alive) return Promise.reject(new Error("Start your native Hermes runtime first."));
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
@@ -101,6 +106,8 @@ export class NativeRpc {
     });
   }
   answer(id: string | number, result?: RpcObject) {
+    // Withdrawn interactions may still be denied after authority expires.
+    if (result && result.choice !== 'deny') this.authorize?.();
     this.write(result ? { jsonrpc: "2.0", id, result } : { jsonrpc: "2.0", id, error: { code: -32601, message: "This interaction is not supported by the CollectiveUI Native Hermes pilot" } });
   }
   private write(frame: RpcFrame) {

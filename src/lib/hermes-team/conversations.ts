@@ -4,6 +4,8 @@ import { bots, conversations, hermesTeamChats, hermesTeamProfiles, hermesTeamRes
 import type { Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { authorizeTeam, reserveTeamProfile } from './store';
+import { teamNativeAvailability } from './candidate-availability';
+import type { VerifiedTeamModelRoute } from './model-policy';
 import type { TeamChatStatus, TeamMode } from './types';
 /** A saved URL must not bypass Admin mode or private owner authorization. */
 export async function authorizeTeamConversation(p: Principal, conversationId: string, q: DbOrTx = db) {
@@ -32,18 +34,25 @@ export async function openTeamConversation(p: Principal, botId: string, mode: Te
     return { conversationId: created.id, state: profile.state };
   });
 }
-export async function teamChatStatus(p: Principal, botId: string, conversationId?: string): Promise<TeamChatStatus> {
+export async function teamChatStatus(p: Principal, botId: string, conversationId?: string,dependencies:{routes?:readonly VerifiedTeamModelRoute[]}={}): Promise<TeamChatStatus> {
   const context = conversationId ? await authorizeTeamConversation(p, conversationId) : undefined;
   if (context && context.profile.botId !== botId) throw new HttpError(404, 'Team conversation not found.');
-  const mode = context?.chat.mode ?? 'member';
-  const auth = context ?? await authorizeTeam(p, botId, mode);
+  let mode = context?.chat.mode ?? 'member';
+  const auth = context ?? await authorizeTeam(p, botId, mode).catch(async e => {
+    if (!(e instanceof HttpError) || e.status !== 403 || conversationId) throw e;
+    const fallback = await authorizeTeam(p, botId, 'admin');
+    mode = 'admin';
+    return fallback;
+  });
   let canMaintain = false;
   try { await authorizeTeam(p, botId, 'admin'); canMaintain = true; } catch (e) { if (!(e instanceof HttpError) || e.status !== 403) throw e; }
   const [profile] = context ? [context.profile] : await db.select().from(hermesTeamProfiles)
     .where(and(eq(hermesTeamProfiles.botId, botId), eq(hermesTeamProfiles.mode, mode), mode === 'member' ? eq(hermesTeamProfiles.userId, p.user.id) : isNull(hermesTeamProfiles.userId)));
   const conflicts = profile ? await db.select({ id: hermesTeamResourceStates.packageId }).from(hermesTeamResourceStates)
     .where(and(eq(hermesTeamResourceStates.profileId, profile.id), eq(hermesTeamResourceStates.conflictRevision, auth.definition.publishedRevision))) : [];
-  return { enabled: auth.definition.enabled, mode, canMaintain, state: profile?.state ?? 'preparing', installedRevision: profile?.installedRevision ?? null, publishedRevision: auth.definition.publishedRevision, conflictCount: conflicts.length };
+  const model=await teamNativeAvailability(p,botId,mode,{conversationId,routes:dependencies.routes});
+  return { enabled: auth.definition.enabled, mode, canMaintain, state: !model.available && model.needsAttention ? 'needs_attention' : profile?.state ?? 'preparing', installedRevision: profile?.installedRevision ?? null, publishedRevision: auth.definition.publishedRevision, conflictCount: conflicts.length,
+    modelAccessAvailable:model.available,modelAccessReason:model.reason,modelPolicyMode:auth.definition.modelPolicy.mode,personalAllowed:auth.definition.modelPolicy.mode!=='admin_provided',personalRequired:auth.definition.modelPolicy.mode==='personal_required' };
 }
 
 /** Listing/search results must not leak revoked working history through snippets or previews. */

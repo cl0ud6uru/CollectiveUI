@@ -66,6 +66,11 @@ export async function serveNative(controller: LocalController, bindingId: string
       if (req.method === "GET" && route === "/v1/capabilities") {
         json(res, 200, { features: { run_submission: true, run_events_sse: true, run_stop: true, run_approval_response: true, approval_events: true, native_attachments: true, native_run_view: true, native_run_controls: true } }); return;
       }
+      if(req.method==='POST' && route==='/v1/learning') {
+        const input=await body(req,1024);
+        if(!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).length)throw new LocalError(400,'Invalid native learning admission.');
+        return json(res,202,{run_id:controller.beginLearning(bindingId)});
+      }
       // The first pilot does not proxy arbitrary native management/commands, profile config or model discovery.
       if (req.method === "POST" && route === "/v1/runs") {
         const runId = controller.begin(bindingId, await body(req, 24 * 1024 * 1024), String(req.headers["idempotency-key"] ?? ""));
@@ -88,7 +93,9 @@ export async function serveNative(controller: LocalController, bindingId: string
       controller.events(runId, cursor); // validate before starting SSE
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store" });
       const drain = () => {
-        const batch = controller.events(runId, cursor);
+        let batch:ReturnType<LocalController['events']>;
+        try { batch = controller.events(runId, cursor); }
+        catch { res.destroy(); return; } // Expired/revoked candidate streams cannot deliver cached private events.
         for (const event of batch.events) {
           cursor = Number(event._seq);
           if (!res.write(`id: ${cursor}\ndata: ${JSON.stringify(event)}\n\n`)) {

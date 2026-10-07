@@ -19,6 +19,16 @@
     "plugins/model-providers/openai-codex/__init__.py": "a3d376285da5b39ae93d087fa1410e90e7a719170517ba314a068b81dfeef3e4",
     "agent/background_review.py": "47a8ed4c09f7032c2a731e3fc946ca16e0b9388fee71c85f19908215eeb12f03",
     "agent/skill_utils.py": "be192879ed2df6ef165c26e51293dddab131f24dc52bf85ce98714fea704c6ce",
-    "hermes_cli/fallback_config.py": "d593fee4db54c24233a3482de2b5178d3aba62dfea0f8bf4e4613f3a0e8880a3"
+    "hermes_cli/fallback_config.py": "d593fee4db54c24233a3482de2b5178d3aba62dfea0f8bf4e4613f3a0e8880a3",
+    "agent/agent_runtime_helpers.py": "b6454ff58e70702a45cd50e67f1ccc542d134c8cf4fa74d65dec9463c3c029f6",
+    "agent/process_bootstrap.py": "32c754f552ad6e043267c6284e91677e2fa69d71e404e9c620c09ca51bb2da40",
+    "agent/agent_init.py": "ce93f1d5acd4727d0005b46d7054d8892a55c820be40ebc7f594695f576b4d81",
+    "tools/mcp_tool.py": "c8c99d7fdfb57a21ab112b005c51103db40d41a8d6fae3628fd5933936ca90ad",
+    "tools/mcp_tool_transport.py": "915023c572f5cb56d0a99e7709a9d358be3a3c00cbd9f02fe7327815ffa7a8a0",
+    "run_agent.py": "244da863d3c21591a3b5326dc14c2962d4e31131dda52df628502cd9fcbfea33",
+    "tools/delegate_tool.py": "0cafc5163762c76da285050e4c8259996c8c3dac1b1a81cd5e262f8cb5156f22",
+    "tools/mcp_tool_config.py": "d7bfd5c91ab15d1d14ef79e4b06412ecc38f9f96530e2ee82bba3d37ee8ec08f",
+    "hermes_cli/runtime_provider.py": "8013320d5b8b393f1a21d7b7858b638772b9aaf1fe15718e9c85bc4a1c785d64",
+    "hermes_cli/config.py": "398bee1c8ab2f8647b7967f0ae3ca57477ed4dc29e67023f858db4c5656aaace"
   }
 }
