@@ -365,7 +365,6 @@ export function Sidebar() {
       <div className="space-y-0.5 px-2">
         <NavItem href="/" icon={SquarePen} label="New chat" onClick={() => setMobileOpen(false)} />
         <NavItem onClick={() => setSearchOpen(true)} icon={Search} label="Search chats" />
-        <NavItem href="/hermes" icon={Bot} label="Hermes" active={pathname.startsWith("/hermes")} onClick={() => setMobileOpen(false)} />
         <NavItem href="/bots" icon={Bot} label="Bots" active={pathname.startsWith("/bots")} onClick={() => setMobileOpen(false)} />
         <NavItem href="/inbox" icon={Bell} label="Inbox" badge={inboxUnread} active={pathname === "/inbox"} onClick={() => setMobileOpen(false)} />
       </div>

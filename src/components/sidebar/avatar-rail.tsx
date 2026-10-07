@@ -70,7 +70,6 @@ export function AvatarRail() {
       <RailControl label="Open sidebar" icon={PanelLeft} onClick={expand} />
       <RailControl label="New chat" icon={SquarePen} href="/" />
       <RailControl label="Search chats" icon={Search} onClick={() => setSearchOpen(true)} />
-      <RailControl label="Hermes" icon={Bot} href="/hermes" active={pathname.startsWith("/hermes")} />
       <RailControl label="Bots" icon={Bot} href="/bots" active={pathname.startsWith("/bots")} />
       <RailControl label="Inbox" icon={Bell} href="/inbox" active={pathname === "/inbox"} unread={inboxUnread} />
     </div>

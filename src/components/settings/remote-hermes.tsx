@@ -14,8 +14,8 @@ export function RemoteHermes({ allowed, initial }: { allowed: boolean; initial: 
   const [mode, setMode] = useState<'password' | 'sessionToken'>('password');
   const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [token, setToken] = useState('');
   const [error, setError] = useState(''); const [pending, start] = useTransition();
-  return <section className="rounded-xl border border-border p-4 space-y-4">
-    <h2 className="font-medium">Remote Hermes</h2>
+  return <section aria-labelledby="remote-hermes-title" className="rounded-xl border border-border p-4 space-y-4">
+    <h2 id="remote-hermes-title" tabIndex={-1} className="font-medium focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent">Remote Hermes</h2>
     <p className="text-sm text-muted">Connect your own Hermes dashboard. Your connection and credentials belong to your account.</p>
     {!allowed && <p role="status" className="text-sm">Personal remote connections are disabled by your administrator. Saved connections are retained.</p>}
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
