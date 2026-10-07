@@ -832,6 +832,64 @@ def test_settings(files):
         return 'connection_failed'
 
 
+IDLE_IMAGE_SUPERVISOR = ('/bin/sh', '-e', '/run/s6/basedir/scripts/rc.init', 'top',
+                         '/opt/hermes/docker/main-wrapper.sh', 'sleep', 'infinity')
+IDLE_IMAGE_SCRIPTS = (
+    # Dockerfile pins s6-overlay 3.2.3.0/noarch archive b720f9d9... . The maker
+    # copies this exact script into its root-owned runtime tree; it waits for CMD.
+    ('/run/s6/basedir/scripts/rc.init', 'bf6a4575f0029b66913623356e3c56553514a86bcf693fae6432617c73977747'),
+    ('/opt/hermes/docker/main-wrapper.sh', 'f722b0a99d4d544415add8d6b8013c79ec1c2bf3bb145da551474e3c3193b2da'),
+)
+
+
+def protected_image_script(filename, expected):
+    """Fixed image paths only; root-owned components never follow a symlink."""
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = filename.lstrip('/').split('/')
+        for index, part in enumerate(parts):
+            parent = os.fstat(fd)
+            if parent.st_uid != 0 or parent.st_mode & 0o022:
+                return False
+            final = index == len(parts) - 1
+            flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_NONBLOCK if final else os.O_DIRECTORY)
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_nlink != 1 or info.st_size > 8192:
+            return False
+        return hashlib.sha256(os.read(fd, 8193)).hexdigest() == expected
+    except PermissionError:
+        raise  # Unreadable relevant image metadata is never an exemption.
+    except OSError:
+        return False  # Missing/symlinked image files are not a vanished process.
+    finally:
+        os.close(fd)
+
+
+def idle_image_supervisor(proc, argv):
+    # Process names/argv alone are forgeable. The broker's exact sealed-image CMD
+    # is sleep infinity; only its root supervisor forked by PID 1 may retain it.
+    arguments = argv[:-1] if argv and argv[-1] == '' else argv
+    if tuple(arguments) != IDLE_IMAGE_SUPERVISOR:
+        return False
+    try:
+        with (proc / 'status').open('rb') as stream:
+            status = stream.read(8193).decode('utf-8', errors='strict')
+    except (FileNotFoundError, ProcessLookupError):
+        if proc.exists():
+            raise ValueError('native supervisor identity is unavailable')
+        raise  # Only a genuinely disappeared process is no longer a collision.
+    if len(status.encode('utf-8')) > 8192:
+        return False
+    uid = re.findall(r'^Uid:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$', status, re.MULTILINE)
+    parent = re.findall(r'^PPid:\s*(\d+)\s*$', status, re.MULTILINE)
+    if uid != [('0', '0', '0', '0')] or parent != ['1']:
+        return False
+    return all(protected_image_script(filename, expected) for filename, expected in IDLE_IMAGE_SCRIPTS)
+
+
 def assert_no_other_native(name, home, exclusive_runtime=False):
     # This preflight is a collision detector, not a lock honored by arbitrary native CLI.
     # Operators must stop UI ownership before starting independent native writers.
@@ -850,7 +908,9 @@ def assert_no_other_native(name, home, exclusive_runtime=False):
                 if argv[at + 1] in ('gateway', 'gateway-candidate') and (exclusive_runtime or argv[at + 2] == name):
                     raise ValueError('profile already has a native process')
                 continue  # separate broker-owned profiles hold their own inode locks
-            if exclusive_runtime and any(a.startswith(str(SOURCE) + '/') for a in argv):
+            if exclusive_runtime and not native and any(a.startswith(str(SOURCE) + '/') for a in argv):
+                if idle_image_supervisor(proc, argv):
+                    continue
                 native = True
             if not native:
                 continue

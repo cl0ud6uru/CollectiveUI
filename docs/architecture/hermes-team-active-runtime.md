@@ -12,6 +12,14 @@ sibling controllers idle before restarting the retained owner container. Native
 gateway processes also hold a runtime lock. Private session identity and the admission
 receipt are derived on the server; requests cannot choose another profile or history.
 
+The pinned image's s6 supervisor retains the `main-wrapper.sh sleep infinity`
+arguments while waiting for its idle command. Native collision detection exempts
+only that exact argument sequence, with all kernel UIDs zero, parent PID 1, and
+the expected root-owned script hashes. Descriptor traversal rejects symlinks and
+writable image paths. Process names do not grant an exemption; native/bridge
+markers, unknown commands and unreadable or changed relevant metadata still refuse
+startup. This check does not execute the supervisor scripts.
+
 Every native dispatch and approval continuation checks the active actor grant and
 runtime generation. `renew-candidate` accepts a freshly authorized exact context but
 does not extend its original 120-second lifetime. Application streams must renew
