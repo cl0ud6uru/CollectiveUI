@@ -1,13 +1,40 @@
-import { db } from "@/db";
+import { db, type DbOrTx } from "@/db";
 import { usageEvents, type UsageEvent } from "@/db/schema";
+import { newId } from "@/lib/ids";
 import type { BillingSource, ModelPurpose, ProviderKind } from "./kinds";
 
 /**
  * Collects the ledger writes of one turn so the turn can await them before reporting that it's done,
  * and links every call made during the turn (including delegates) to the assistant message.
  */
-export type UsageScope = { pending: Promise<unknown>[]; messageId?: string; runId?: string };
-export const newUsageScope = (init: Omit<UsageScope, "pending"> = {}): UsageScope => ({ pending: [], ...init });
+export type UsageScope = { pending: Promise<unknown>[]; messageId?: string; runId?: string; writer?: UsageWriter; replayAfterRollback?: () => Promise<void> };
+export function newUsageScope(init: Omit<UsageScope, "pending" | "replayAfterRollback"> = {}, q?: DbOrTx): UsageScope {
+  const scope: UsageScope = { pending: [], ...init };
+  if (!q) return scope;
+  const rows = new Map<string, UsageEvent>();
+  scope.writer = async row => {
+    const id = row.id ?? newId();
+    // Utility jobs are bounded to a handful of calls. Bound failure accounting too.
+    if (rows.size >= 1024 && !rows.has(id)) throw new Error("Utility usage scope exceeded its call bound");
+    const stable = { ...row, id };
+    rows.set(id, stable);
+    // A failed ledger insert must not abort the admission transaction.
+    return q.transaction(tx => tx.insert(usageEvents).values(stable).onConflictDoNothing());
+  };
+  scope.replayAfterRollback = async () => {
+    await Promise.allSettled(scope.pending);
+    // Called only after the outer transaction ends; never check out a second pool connection while locked.
+    // Stable IDs make retries harmless even if the transaction outcome was uncertain.
+    for (const row of rows.values()) {
+      try { await writer(row); } catch (err) { console.error("[usage] failed to restore rolled-back usage", err); }
+    }
+  };
+  return scope;
+}
+
+export async function restoreUsageAfterRollback(scope?: UsageScope) {
+  await scope?.replayAfterRollback?.();
+}
 
 /** Who and what a model call is attributed to. */
 export type UsageContext = {
@@ -70,7 +97,7 @@ export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsag
     ...search,
   };
   const p = Promise.resolve()
-    .then(() => writer(row))
+    .then(() => (ctx.scope?.writer ?? writer)(row))
     .then(
       () => undefined,
       (err) => console.error("[usage] failed to record usage", err),

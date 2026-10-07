@@ -573,6 +573,8 @@ export const bots = pgTable("bots", {
   enabled: boolean("enabled").notNull().default(true),
   /** Service bots are admin-managed, MCP-only and usable only in direct chats after publication. */
   executionMode: text("execution_mode").$type<"caller" | "service">().notNull().default("caller"),
+  /** Admin-managed native Team Bot definition, never a personal broker binding. */
+  hermesTeam: boolean("hermes_team").notNull().default(false),
   /** Explicit opt-in to discovery by the installation coordinator; never an audience or tool grant. */
   coordinatorEligible: boolean("coordinator_eligible").notNull().default(false),
   /** Suggested delegator for new bots; never an audience or tool grant. */
@@ -1066,6 +1068,27 @@ export const mcpServers = pgTable(
   ],
 );
 
+/** A person's account for a fixed admin-reviewed MCP endpoint. Never a shared server credential. */
+export const mcpMemberConnections = pgTable("mcp_member_connections", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  serverId: text("server_id").notNull().references(() => mcpServers.id, { onDelete: "cascade" }),
+  /** A changed endpoint or reviewed server policy requires a new personal connection. */
+  targetHash: text("target_hash").notNull(),
+  /** Row, owner and endpoint-bound encrypted personal headers; no OAuth refresh is implied. */
+  headersEnc: text("headers_enc").notNull(),
+  status: text("status").$type<"active" | "revoked">().notNull().default("active"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revision: integer("revision").notNull().default(1),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, t => [
+  uniqueIndex("mcp_member_connections_owner_server_idx").on(t.userId, t.serverId),
+  check("mcp_member_connections_status_check", sql`${t.status} in ('active', 'revoked')`),
+  check("mcp_member_connections_revision_check", sql`${t.revision} > 0`),
+  check("mcp_member_connections_target_check", sql`${t.targetHash} ~ '^[a-f0-9]{64}$'`),
+]);
+
 /**
  * Each person's workspace sandbox (P5). The container itself lives in Docker (sandboxd is the source of truth for
  * its state); this row maps the person to an unguessable ref and tracks retention. No credential columns.
@@ -1410,4 +1433,210 @@ export const liveActivities = pgTable("live_activities", {
   uniqueIndex("live_activities_token_idx").on(t.tokenHash),
   uniqueIndex("live_activities_run_idx").on(t.sessionId, t.runId),
   index("live_activities_due_idx").on(t.nextAttemptAt),
+]);
+
+// ---------------------------------------------------------------------------
+// Hermes Team Bots: definitions reuse the existing bot/audience catalog.
+// Retained runtime records intentionally restrict deletion; offboarding is a tombstone.
+// ---------------------------------------------------------------------------
+export const hermesTeamDefinitions = pgTable('hermes_team_definitions', {
+  botId: text('bot_id').primaryKey().references(() => bots.id, { onDelete: 'restrict' }),
+  enabled: boolean('enabled').notNull().default(false),
+  version: integer('version').notNull().default(1),
+  publishedRevision: integer('published_revision').notNull().default(0),
+  modelPolicy: jsonb('model_policy').$type<import('../lib/hermes-team/types').TeamModelPolicy>().notNull(),
+  toolPolicy: jsonb('tool_policy').$type<import('../lib/hermes-team/types').TeamToolPolicy>().notNull().default({ capabilities: [] }),
+  updatedBy: text('updated_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [check('hermes_team_definition_version_check', sql`${t.version} > 0 and ${t.publishedRevision} >= 0`)]);
+export const hermesTeamMaintainers = pgTable('hermes_team_maintainers', {
+  botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+}, t => [primaryKey({ columns: [t.botId, t.userId] })]);
+export const hermesTeamProfiles = pgTable('hermes_team_profiles', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  /** NULL for shared admin working state; members retain their server-derived owner. */
+  userId: text('user_id').references(() => users.id, { onDelete: 'restrict' }),
+  mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
+  ownerKey: text('owner_key').notNull(),
+  requestId: text('request_id').notNull(),
+  binding: jsonb('binding').$type<Record<string, unknown>>(),
+  state: text('state').$type<import('../lib/hermes-team/types').TeamProfileState>().notNull().default('preparing'),
+  installedRevision: integer('installed_revision'),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_profile_member_idx').on(t.botId, t.userId).where(sql`${t.mode} = 'member'`),
+  uniqueIndex('hermes_team_profile_admin_idx').on(t.botId).where(sql`${t.mode} = 'admin'`),
+  check('hermes_team_profile_mode_check', sql`(${t.mode} = 'member' and ${t.userId} is not null and ${t.ownerKey} = ${t.userId}) or (${t.mode} = 'admin' and ${t.userId} is null and ${t.ownerKey} = 'team-admin:' || ${t.botId})`),
+  check('hermes_team_profile_state_check', sql`${t.state} in ('preparing','connection_needed','ready','updating','needs_attention','revoked')`)]);
+export const hermesTeamChats = pgTable('hermes_team_chats', {
+  conversationId: text('conversation_id').primaryKey().references(() => conversations.id, { onDelete: 'cascade' }),
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  modelChoice:text('model_choice').$type<'default'|'personal'>().notNull().default('default'),
+  mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
+}, t => [check('hermes_team_chat_model_choice_check',sql`${t.modelChoice} in ('default','personal')`),check('hermes_team_chat_mode_check', sql`${t.mode} in ('member','admin')`)]);
+export const hermesTeamRevisions = pgTable('hermes_team_revisions', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  revision: integer('revision').notNull(), manifestHash: text('manifest_hash').notNull(),
+  /** Immutable bounded resources only; no native profile/auth/history/memory clone. */
+  manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull(),
+  releaseNote: text('release_note').notNull(), publishedBy: text('published_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  createdAt: createdAt(),
+}, t => [uniqueIndex('hermes_team_revision_idx').on(t.botId, t.revision), check('hermes_team_revision_positive_check', sql`${t.revision} > 0`)]);
+export const hermesTeamCaptures = pgTable('hermes_team_captures', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  capturedBy: text('captured_by').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  expectedRevision: integer('expected_revision').notNull(), definitionVersion: integer('definition_version').notNull(),
+  manifestHash: text('manifest_hash').notNull(), manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(),
+});
+export const hermesTeamResourceStates = pgTable('hermes_team_resource_states', {
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  packageId: text('package_id').notNull(), installedHash: text('installed_hash'),
+  override: text('override').$type<'modified' | 'deleted' | 'keep' | null>(),
+  conflictRevision: integer('conflict_revision'), updatedAt: updatedAt(),
+}, t => [primaryKey({ columns: [t.profileId, t.packageId] }), check('hermes_team_override_check', sql`${t.override} is null or ${t.override} in ('modified','deleted','keep')`)]);
+export const hermesTeamOperations = pgTable('hermes_team_operations', {
+  id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  profileId: text('profile_id').references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  actorId: text('actor_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  requestId: text('request_id').notNull(), kind: text('kind').$type<'provision' | 'publish' | 'update' | 'revoke' | 'resolve' | 'rollback'>().notNull(),
+  digest: text('digest').notNull(), state: text('state').$type<'pending' | 'complete' | 'needs_attention'>().notNull().default('pending'),
+  result: jsonb('result').$type<Record<string, unknown>>(), createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_operation_receipt_idx').on(t.botId, t.actorId, t.requestId),
+  check('hermes_team_operation_kind_check', sql`${t.kind} in ('provision','publish','update','revoke','resolve','rollback')`),
+  check('hermes_team_operation_state_check', sql`${t.state} in ('pending','complete','needs_attention')`)]);
+export const hermesTeamRunAttribution = pgTable('hermes_team_run_attribution', {
+  runId: text('run_id').primaryKey().references(() => agentRuns.id, { onDelete: 'cascade' }),
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  botId: text('bot_id').notNull(), actorId: text('actor_id').notNull(),
+  definitionVersion: integer('definition_version').notNull(), teamRevision: integer('team_revision'),
+  mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
+  modelSource: text('model_source').$type<'admin' | 'personal'>().notNull(),
+  /** NULL retains pre-capability historical attribution without fabricating verification evidence. */
+  admission: jsonb('admission').$type<import('../lib/hermes-team/run-attribution').TeamRunAdmissionDetails>(),
+}, t => [check('hermes_team_run_admission_check', sql`${t.admission} is null or (
+  jsonb_typeof(${t.admission}) = 'object' and octet_length(${t.admission}::text) <= 8192
+  and ${t.admission} ?& array['version','routeId','adapterId','integration','model','billing','connectionId','gatewayGrantId','evidence','purposes']
+  and ${t.admission}->>'version' = '1' and ${t.admission}->>'billing' = ${t.modelSource}
+  and jsonb_typeof(${t.admission}->'purposes') = 'object' and ${t.admission}->'purposes' <> '{}'::jsonb
+  and ((${t.admission}->'purposes') - array['reply','learning','utility','subagent']) = '{}'::jsonb
+  and (${t.admission} - array['version','routeId','adapterId','integration','model','billing','connectionId','gatewayGrantId','evidence','purposes']) = '{}'::jsonb
+) is true`)]);
+
+/** Unregistered native gateway candidates. Opaque grant hashes only; provider credentials never enter these rows. */
+export const hermesTeamCandidateContexts = pgTable('hermes_team_candidate_contexts', {
+  id: id(), runId: text('run_id').notNull().references(() => agentRuns.id, { onDelete: 'restrict' }),
+  botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
+  profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  actorId: text('actor_id').notNull().references(() => users.id, { onDelete: 'restrict' }),
+  sessionVersion: integer('session_version').notNull(), definitionVersion: integer('definition_version').notNull(),
+  teamRevision: integer('team_revision'), mode: text('mode').$type<'member' | 'admin'>().notNull(),
+  modelRoute: jsonb('model_route').$type<import('../lib/hermes-team/model-policy').VerifiedTeamModelRoute>().notNull(),
+  personalConnectionId: text('personal_connection_id'), personalBindingHash:text('personal_binding_hash'), bindingHash: text('binding_hash').notNull(),
+  modelTokens: jsonb('model_tokens').$type<Record<import('../lib/hermes-team/model-policy').TeamModelPurpose, string>>().notNull(),
+  toolTokenHash: text('tool_token_hash').notNull(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  /** A distinct one-use native snapshot handoff capability; never a model or tool token. */
+  learningTokenHash:text('learning_token_hash'),
+  workerHolder:text('worker_holder'),workerSegment:integer('worker_segment'),
+  retirementState:text('retirement_state').$type<'pending'|'confirmed'|'needs_attention'>(),
+  nativeStoppedAt:timestamp('native_stopped_at',{withTimezone:true}),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }), createdAt: createdAt(),
+}, t => [uniqueIndex('hermes_team_candidate_run_idx').on(t.runId), uniqueIndex('hermes_team_candidate_profile_active_idx').on(t.profileId).where(sql`${t.revokedAt} is null`),
+  check('hermes_team_candidate_mode_check', sql`${t.mode} in ('member','admin')`),
+  check('hermes_team_candidate_route_bound', sql`jsonb_typeof(${t.modelRoute}) = 'object' and octet_length(${t.modelRoute}::text) <= 8192`),
+  check('hermes_team_candidate_context_versions_check', sql`${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
+  check('hermes_team_candidate_context_hash_check', sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.toolTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_personal_binding_check',sql`${t.personalBindingHash} is null or ${t.personalBindingHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_learning_hash_check',sql`${t.learningTokenHash} is null or ${t.learningTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_retirement_check',sql`(${t.retirementState} is null or ${t.retirementState} in ('pending','confirmed','needs_attention')) and (${t.nativeStoppedAt} is null or ${t.retirementState} = 'confirmed') and (${t.workerSegment} is null or ${t.workerSegment} >= 0)`),
+  check('hermes_team_candidate_context_tokens_bound', sql`jsonb_typeof(${t.modelTokens}) = 'object' and octet_length(${t.modelTokens}::text) <= 512`)]);
+
+export const hermesTeamCandidateRequests = pgTable('hermes_team_candidate_requests', {
+  id: id(), contextId: text('context_id').notNull().references(() => hermesTeamCandidateContexts.id, { onDelete: 'restrict' }),
+  requestId: text('request_id').notNull(), kind: text('kind').$type<'model' | 'tool'>().notNull(),
+  purpose: text('purpose').$type<import('../lib/hermes-team/model-policy').TeamModelPurpose | null>(),
+  inputHash: text('input_hash').notNull(), outputReserved: integer('output_reserved').notNull().default(0),
+  inputReservedBytes:integer('input_reserved_bytes').notNull().default(0),
+  state: text('state').$type<'reserved' | 'running' | 'complete' | 'needs_attention'>().notNull().default('reserved'),
+  /** Private bounded response replay; never exposed in rollout or maintainer views. */
+  response: jsonb('response').$type<{ status: number; contentType: string; body: string }>(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_candidate_request_idx').on(t.contextId, t.kind, t.requestId),
+  check('hermes_team_candidate_request_kind_check', sql`${t.kind} in ('model','tool')`),
+  check('hermes_team_candidate_request_state_check', sql`${t.state} in ('reserved','running','complete','needs_attention')`),
+  check('hermes_team_candidate_request_reserve_check', sql`${t.outputReserved} between 0 and 256 and ${t.inputReservedBytes} between 0 and 64000`),
+  check('hermes_team_candidate_request_hash_check', sql`${t.inputHash} ~ '^[a-f0-9]{64}$' and length(${t.requestId}) between 1 and 100`),
+  check('hermes_team_candidate_request_response_bound', sql`${t.response} is null or (jsonb_typeof(${t.response}) = 'object' and octet_length(${t.response}::text) <= 12582912)`),
+  check('hermes_team_candidate_request_purpose_check', sql`${t.purpose} is null or ${t.purpose} in ('reply','learning','utility','subagent')`)]);
+
+export const hermesTeamCandidateApprovals = pgTable('hermes_team_candidate_approvals', {
+  id: id(), contextId: text('context_id').notNull().references(() => hermesTeamCandidateContexts.id, { onDelete: 'restrict' }),
+  inputHash: text('input_hash').notNull(), attribution: jsonb('attribution').$type<import('../lib/hermes-team/tool-policy').TeamToolAttribution>().notNull(),
+  input: jsonb('input').$type<unknown>().notNull(),
+  state: text('state').$type<'pending' | 'approved' | 'rejected' | 'consumed'>().notNull().default('pending'),
+  requestId: text('request_id'), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('hermes_team_candidate_approval_request_idx').on(t.contextId,t.requestId),check('hermes_team_candidate_approval_state_check', sql`${t.state} in ('pending','approved','rejected','consumed')`),
+  check('hermes_team_candidate_approval_attribution_bound', sql`jsonb_typeof(${t.attribution}) = 'object' and octet_length(${t.attribution}::text) <= 8192`),
+  check('hermes_team_candidate_approval_input_bound', sql`octet_length(${t.input}::text) <= 128000 and ${t.inputHash} ~ '^[a-f0-9]{64}$'`)]);
+
+/** One native final review per foreground context; private snapshot stays encrypted and actor-bound. */
+export const hermesTeamLearningHandoffs=pgTable('hermes_team_learning_handoffs',{
+  id:id(),sourceContextId:text('source_context_id').notNull().references(()=>hermesTeamCandidateContexts.id,{onDelete:'restrict'}),
+  reviewId:text('review_id').notNull(),childRunId:text('child_run_id').references(()=>agentRuns.id,{onDelete:'restrict'}),
+  actorId:text('actor_id').notNull().references(()=>users.id,{onDelete:'restrict'}),
+  botId:text('bot_id').notNull().references(()=>hermesTeamDefinitions.botId,{onDelete:'restrict'}),
+  profileId:text('profile_id').notNull().references(()=>hermesTeamProfiles.id,{onDelete:'restrict'}),
+  sessionVersion:integer('session_version').notNull(),definitionVersion:integer('definition_version').notNull(),teamRevision:integer('team_revision'),
+  mode:text('mode').$type<'member'|'admin'>().notNull(),bindingHash:text('binding_hash').notNull(),routeHash:text('route_hash').notNull(),
+  snapshotHash:text('snapshot_hash').notNull(),snapshotBytes:integer('snapshot_bytes').notNull(),payloadEnc:text('payload_enc').notNull(),
+  state:text('state').$type<'pending'|'queued'|'running'|'complete'|'cancelled'|'needs_attention'>().notNull().default('pending'),
+  expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('hermes_team_learning_source_idx').on(t.sourceContextId),uniqueIndex('hermes_team_learning_review_idx').on(t.sourceContextId,t.reviewId),
+  uniqueIndex('hermes_team_learning_child_idx').on(t.childRunId),
+  check('hermes_team_learning_state_check',sql`${t.state} in ('pending','queued','running','complete','cancelled','needs_attention')`),
+  check('hermes_team_learning_identity_check',sql`${t.mode} in ('member','admin') and ${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
+  check('hermes_team_learning_hash_check',sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.routeHash} ~ '^[a-f0-9]{64}$' and ${t.snapshotHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_learning_snapshot_check',sql`${t.snapshotBytes} between 1 and 64000 and octet_length(${t.payloadEnc}) <= 100000 and length(${t.reviewId}) = 36`),
+]);
+
+/** Distinct official plan OAuth account; never reuses native Codex user_credentials. */
+export const officialPlanConnections=pgTable('official_plan_connections',{
+  id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),
+  clientId:text('client_id').notNull(),hostId:text('host_id').notNull(),subject:text('subject').notNull(),
+  selected:boolean('selected').notNull().default(true),status:text('status').$type<'active'|'needs_reauth'|'revoked'>().notNull().default('active'),
+  scopes:jsonb('scopes').$type<string[]>().notNull(),expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),
+  tokenBundleEnc:text('token_bundle_enc').notNull(),revision:integer('revision').notNull().default(1),
+  catalog:jsonb('catalog').$type<string[]>().notNull(),catalogRevision:integer('catalog_revision').notNull(),
+  catalogExpiresAt:timestamp('catalog_expires_at',{withTimezone:true}).notNull(),verifiedAt:timestamp('verified_at',{withTimezone:true}).notNull(),
+  createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('official_plan_selected_owner_idx').on(t.userId).where(sql`${t.selected}`),
+  check('official_plan_status_check',sql`${t.status} in ('active','needs_reauth','revoked')`),
+  check('official_plan_identity_bound',sql`length(${t.clientId}) between 1 and 256 and length(${t.hostId}) between 1 and 256 and length(${t.subject}) between 1 and 256`),
+  check('official_plan_revision_check',sql`${t.revision} > 0 and ${t.catalogRevision} = ${t.revision}`),
+  check('official_plan_payload_bound',sql`${t.tokenBundleEnc} like 'v2.%' and octet_length(${t.tokenBundleEnc}) <= 50000 and jsonb_typeof(${t.scopes}) = 'array' and octet_length(${t.scopes}::text) <= 4096 and jsonb_typeof(${t.catalog}) = 'array' and jsonb_array_length(${t.catalog}) <= 100 and octet_length(${t.catalog}::text) <= 24000`),
+]);
+
+/** Owner/session-bound one-shot loopback authorization. Secrets never appear in status APIs. */
+export const officialPlanAuthAttempts=pgTable('official_plan_auth_attempts',{
+  id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),sessionVersion:integer('session_version').notNull(),
+  transportId:text('transport_id').notNull(),hostId:text('host_id').notNull(),redirectUri:text('redirect_uri').notNull(),
+  stateHash:text('state_hash').notNull(),returnTokenHash:text('return_token_hash').notNull(),payloadEnc:text('secret_enc').notNull(),
+  expectedConnectionId:text('expected_connection_id'),expectedRevision:integer('expected_revision'),
+  callbackHash:text('callback_hash'),state:text('state').$type<'pending'|'exchanging'|'complete'|'cancelled'|'needs_attention'|'expired'>().notNull().default('pending'),
+  expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('official_plan_auth_state_idx').on(t.stateHash),
+  uniqueIndex('official_plan_auth_open_owner_idx').on(t.userId).where(sql`${t.state} in ('pending','exchanging')`),
+  check('official_plan_auth_state_check',sql`${t.state} in ('pending','exchanging','complete','cancelled','needs_attention','expired')`),
+  check('official_plan_auth_identity_check',sql`${t.sessionVersion} >= 0 and length(${t.transportId}) between 1 and 128 and length(${t.hostId}) between 1 and 256 and length(${t.redirectUri}) <= 256 and (${t.expectedRevision} is null or ${t.expectedRevision} > 0) and ((${t.expectedConnectionId} is null) = (${t.expectedRevision} is null))`),
+  check('official_plan_auth_secret_check',sql`${t.stateHash} ~ '^[a-f0-9]{64}$' and ${t.returnTokenHash} ~ '^[a-f0-9]{64}$' and (${t.callbackHash} is null or ${t.callbackHash} ~ '^[a-f0-9]{64}$') and ${t.payloadEnc} like 'v2.%' and octet_length(${t.payloadEnc}) <= 64000 and ${t.expiresAt} > ${t.createdAt} and ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'`),
+]);
+
+/** A rotating token is never exchanged twice after unknown I/O, including a new request UUID. */
+export const officialPlanAuthOperations=pgTable('official_plan_auth_operations',{
+  id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),connectionId:text('connection_id').notNull().references(()=>officialPlanConnections.id,{onDelete:'cascade'}),
+  sessionVersion:integer('session_version').notNull(),credentialRevision:integer('credential_revision').notNull(),
+  kind:text('kind').$type<'refresh'|'revoke'>().notNull(),state:text('state').$type<'running'|'complete'|'cancelled'|'needs_attention'>().notNull().default('running'),
+  createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('official_plan_auth_operation_revision_idx').on(t.connectionId,t.kind,t.credentialRevision),
+  check('official_plan_auth_operation_state_check',sql`${t.kind} in ('refresh','revoke') and ${t.state} in ('running','complete','cancelled','needs_attention') and ${t.sessionVersion} >= 0 and ${t.credentialRevision} > 0`),
 ]);

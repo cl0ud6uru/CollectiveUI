@@ -1,3 +1,4 @@
+import { recoverTeamNativeLearning } from "@/lib/hermes-team/candidate-learning";
 import { reconcileDockerRuntimes } from "@/lib/docker-hermes/lifecycle";
 /**
  * Background worker: every chat and routine reply (durable runs, src/lib/runs/execute.ts), routines (cron + webhook),
@@ -97,7 +98,7 @@ async function main() {
     if (count) console.log(`[learning] archived ${count} unused procedures`);
   });
   await boss.schedule(QUEUES.learningCurate, "41 * * * *");
-  const recoverLearning = () => recoverLearningReviews().catch(err => console.error("[learning] recovery failed", err));
+  const recoverLearning = () => Promise.all([recoverLearningReviews(),recoverTeamNativeLearning()]).catch(err => console.error("[learning] recovery failed", err));
   void recoverLearning();
   const learningTimer = setInterval(() => void recoverLearning(), 60_000);
 

@@ -7,6 +7,7 @@ import { rewrapChatGPTSecrets } from "@/lib/llm/chatgpt/store";
 import { appSecretNeedsRowBinding, openAppSecret, sealAppSecret } from "@/lib/llm/secrets";
 import { providerConnectionAad } from "@/lib/llm/provider-connections";
 import { getSetting, setSetting } from "@/lib/settings";
+import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
 
 /**
  * Re-encrypts every stored secret under the primary key (with AAD). Idempotent: values that are already
@@ -88,6 +89,7 @@ export async function rewrapAllSecrets(): Promise<number> {
 
   // ChatGPT connections are rewrapped under their row lock (refresh tokens must never be written back stale).
   changed += await rewrapChatGPTSecrets();
+  changed += await rewrapMemberMcpSecrets();
   for (const row of await db.select({ userId: chatgptDeviceLogins.userId, v: chatgptDeviceLogins.deviceAuthEnc }).from(chatgptDeviceLogins)) {
     const next = rewrap(row.v, `${AAD.chatgptDeviceAuth}|${row.userId}`);
     if (next) {

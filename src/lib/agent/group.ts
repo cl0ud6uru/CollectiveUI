@@ -49,6 +49,7 @@ export async function loadGroupMembers(principal: Principal, conversationId: str
   let plansAllowed: boolean | undefined;
   for (const r of rows) {
     const bot = await getAccessibleBot(principal, r.botId).catch(() => null);
+    if (bot?.hermesTeam) throw new HttpError(403, "Team Bots support direct native chats only.");
     if (bot?.executionMode === "service") throw new HttpError(403, "Service bots can only run in direct chats, not group chats.");
     if (!bot?.enabled || !bot.appId) continue;
     const [app] = await db.select().from(aiApps).where(eq(aiApps.id, bot.appId));

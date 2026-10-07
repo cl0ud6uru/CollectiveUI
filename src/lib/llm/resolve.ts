@@ -1,4 +1,6 @@
 import { nativeSearchMiddleware, type NativeSearchOptions } from "./native-search";
+import { isTeamRuntimeApp } from '@/lib/agent/team-target';
+import { db, type DbOrTx } from '@/db';
 import { nativeSearchCapability } from "@/lib/native-search-policy";
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 import { freshDocker } from "@/lib/docker-hermes/store";
@@ -33,6 +35,8 @@ import { isLocalHermes, localBinding } from "@/lib/local-hermes/config";
 import { LOCAL_ORIGIN, localControl, localSocketPath, socketFetch } from "@/lib/local-hermes/client";
 
 export type ResolveModelOptions = {
+  /** Company utility admission can hold a transaction; reuse it for saved-provider reads. */
+  q?: DbOrTx;
   nativeSearch?: NativeSearchOptions;
   purpose: ModelPurpose;
   /** The acting user (chatting user or routine owner). */
@@ -83,9 +87,9 @@ function enabledKindOf(app: AppRow): EnabledKind {
 }
 
 /** Builds the provider context from an app row: parsed config and decoded credentials, never the environment. */
-export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}): Promise<ProviderContext> {
+export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}, q: DbOrTx = db): Promise<ProviderContext> {
   const kind = enabledKindOf(app);
-  const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId) : undefined;
+  const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId, q) : undefined;
   if (connection && kind !== connection.provider) throw new ProviderConfigError(app.name, "saved provider connection kind mismatch");
   const config = connection ? connectionConfig(connection, app.providerConfig) : readProviderConfig(kind, app.providerConfig);
   if (!config) throw new ProviderConfigError(app.name, `${kind}: invalid provider_config`);
@@ -145,10 +149,20 @@ function usageContext(
  * ledger. OpenAI-compatible apps send exactly the same requests as before the registry existed.
  */
 export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promise<ResolvedModel> {
+  const candidate=opts.run?.teamCandidate;
+  if(candidate){
+    if(opts.purpose!=='chat' || app.provider!=='hermes' || !opts.botId || !opts.conversationId || candidate.learningSnapshot)
+      throw new ProviderUnavailableError('This native Team context cannot dispatch this model purpose.');
+    await candidate.authorize();
+    return {model:new HermesLanguageModel(candidate.model,{target:candidate.target,sessionId:`portal-${opts.conversationId}-${opts.botId}`,
+      sessionKey:`portal-${opts.conversationId}-${opts.botId}`,interactive:opts.interactive===true,approvalTimeoutSec:90,run:opts.run}),
+      billing:{source:'hermes',credentialId:null,appId:app.id,providerKind:'hermes',modelId:candidate.model},capabilities:capabilitiesFor(app),replayKey:null};
+  }
+  if (isTeamRuntimeApp(app)) throw new ProviderUnavailableError('Team model work requires an active server-owned native run.');
   if (opts.run?.hermes && app.provider !== "hermes") throw new ProviderUnavailableError("This run's backend changed. Start a new chat with the updated bot.");
   if (app.provider === "chatgpt") return resolveChatGPT(app, opts);
   if (app.provider === "hermes") return resolveHermes(app, opts);
-  const ctx = await providerContextFor(app);
+  const ctx = await providerContextFor(app, {}, opts.q);
   if (opts.nativeSearch) {
     const reason = nativeSearchCapability(app, ctx.baseUrl);
     if (reason) throw new ProviderUnavailableError(reason);
@@ -166,8 +180,8 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
 }
 
 /** Embedding model for an app that has one configured. Usage is recorded by the caller (src/lib/llm/embeddings.ts). */
-export async function resolveEmbeddingModel(app: AiApp): Promise<EmbedModel> {
-  const ctx = await providerContextFor(app);
+export async function resolveEmbeddingModel(app: AiApp, q: DbOrTx = db): Promise<EmbedModel> {
+  const ctx = await providerContextFor(app, {}, q);
   if (!app.embeddingModel || !supportsEmbeddings(ctx.kind)) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   if (!instance.embedding) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
@@ -179,6 +193,7 @@ const HERMES_PURPOSES: readonly ModelPurpose[] = ["chat", "group", "delegate"];
 
 /** Where a Hermes app's requests go, with its sealed key opened; refused when the URL isn't safe for the key. */
 export async function hermesTargetFor(app: AiApp, scope?: { userId: string; botId: string; provisionId?: string | null; verify?: boolean }): Promise<{ target: HermesTarget; approvalTimeoutSec: number }> {
+  if (isTeamRuntimeApp(app)) throw new ProviderUnavailableError('Team native connections are available only inside their active server-owned run.');
   if (isDockerHermes(app)) {
     const b = bindingSchema.parse(app.providerConfig.docker);
     if (!scope || scope.userId !== b.ownerId || scope.botId !== b.botId) throw new ProviderUnavailableError("Personal Hermes requires its paired owner and bot.");

@@ -57,6 +57,34 @@ class NativeCodex(base.NativeSettings):
         self.clock += 6; self.poll_status = 200
         return self.call('poll', name, sessionId=pending['sessionId'])
 
+    def test_process_collision_blocks_oauth_poll_before_http_or_grant_write(self):
+        pending = self.start()
+        self.clock += 6
+        before = self.files()
+        self.process(self.other_pid, ['hermes'], {'HERMES_HOME': str(self.root)})
+        with self.assertRaisesRegex(ValueError, 'already has a native process'):
+            self.call('poll', sessionId=pending['sessionId'])
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.mocks[2].call_count, 0)
+
+    def test_unreadable_process_blocks_oauth_poll_before_http_or_grant_write(self):
+        pending = self.start()
+        self.clock += 6
+        before = self.files()
+        record = self.process(self.other_pid, ['hermes'], {'HERMES_HOME': str(self.root)})
+        read_bytes = Path.read_bytes
+        def denied(path):
+            if path == record / 'environ':
+                raise PermissionError('Synthetic unreadable process metadata')
+            return read_bytes(path)
+        with patch.object(Path, 'read_bytes', denied):
+            with self.assertRaisesRegex(PermissionError, 'Synthetic unreadable process metadata'):
+                self.call('poll', sessionId=pending['sessionId'])
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.mocks[2].call_count, 0)
+
     def test_device_poll_is_bounded_and_never_exports_tokens(self):
         pending = self.start()
         self.assertEqual(pending['state'], 'pending')

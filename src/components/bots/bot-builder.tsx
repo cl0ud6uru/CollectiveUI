@@ -2,7 +2,7 @@
 
 import { UserPicker, type UserOption } from "@/components/user-picker";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { FileText, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
 import {
@@ -30,6 +30,7 @@ import { BotAvatar, randomBlob } from "./bot-avatar";
 import { createPersonalHermesBot } from "@/app/(chat)/settings/hermes-actions";
 import { ServiceGrantEditor } from "./service-grant-editor";
 import type { ServiceGrantInput } from "@/lib/bots/service-policy";
+import { HermesTeamPolicy, type HermesTeamPolicyValue, type HermesTeamModelOption } from "./hermes-team-policy";
 
 type Option = { id: string; name: string };
 type ToolChoice = BotInput["tools"][number];
@@ -128,6 +129,9 @@ export function BotBuilder({
   serviceGrants = [],
   petCatalog = [],
   personalHermesAvailable = false,
+  teamConfig,
+  teamMaintainers = [],
+  teamModelOptions = [],
 }: {
   botId?: string;
   initial: BotInput;
@@ -146,9 +150,17 @@ export function BotBuilder({
   serviceGrants?: ServiceGrantInput[];
   petCatalog?: CatalogPet[];
   personalHermesAvailable?: boolean;
+  /** Offered only by the server when this bot supports Team Bot configuration. */
+  teamConfig?: HermesTeamPolicyValue;
+  teamMaintainers?: { id: string; name: string; disabled?: boolean }[];
+  teamModelOptions?: HermesTeamModelOption[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<BotInput>(initial);
+  const [team, setTeam] = useState(teamConfig);
+  const savedTeam = useRef(teamConfig);
+  // A failed follow-up Team settings request must retry the already-created bot.
+  const createdBotId = useRef<string | null>(null);
   const [tab, setTab] = useState<"create" | "configure">(botId ? "configure" : "create");
   const [pending, start] = useTransition();
   const [idea, setIdea] = useState("");
@@ -174,10 +186,13 @@ export function BotBuilder({
   function save() {
     start(async () => {
       try {
-        if (botId) {
-          await updateBot(botId, form);
+        const existingId = botId ?? createdBotId.current;
+        if (existingId) {
+          await updateBot(existingId, form);
+          await saveTeamSettings(existingId);
           toast.success("Bot updated");
-          router.refresh();
+          if (botId) router.refresh();
+          else router.push(`/bots/${existingId}/edit`);
         } else {
           let id: string;
           if (personalNew) {
@@ -189,6 +204,8 @@ export function BotBuilder({
             ({ id } = await createPersonalHermesBot(request));
             sessionStorage.removeItem(storageKey);
           } else ({ id } = await createBot(form));
+          createdBotId.current = id;
+          await saveTeamSettings(id);
           toast.success("Bot created");
           router.push(`/bots/${id}/edit`);
         }
@@ -196,6 +213,19 @@ export function BotBuilder({
         toast.error(err instanceof Error ? err.message : "Save failed");
       }
     });
+  }
+
+  async function saveTeamSettings(id: string) {
+    if (!team || !isAdmin || (engine !== "hermes" && !((teamConfig?.expectedVersion ?? 0) > 0)) || JSON.stringify(team) === JSON.stringify(savedTeam.current)) return;
+    const response = await fetch(`/api/bots/${encodeURIComponent(id)}/team`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: team.enabled, maintainerIds: team.maintainerIds, modelPolicy: { ...team.modelRoutes, mode: team.modelPolicy }, ...(team.toolPolicy ? { toolPolicy: team.toolPolicy } : {}), expectedVersion: team.expectedVersion ?? 0 }) });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(`Bot configuration saved, but Team Bot settings need attention: ${data.error ?? "save was not confirmed"}`);
+    }
+    if (!Number.isInteger(data.version) || data.version < 0) throw new Error("The server did not confirm the new Team settings version. Reload this editor before changing Team settings again.");
+    const confirmed = { ...team, expectedVersion: data.version as number };
+    savedTeam.current = confirmed;
+    setTeam(confirmed);
   }
 
   async function draft() {
@@ -414,6 +444,8 @@ export function BotBuilder({
                   </Field>
                 </div>
               )}
+
+              {isAdmin && (engine === "hermes" || (teamConfig?.expectedVersion ?? 0) > 0) && !personalNew && team && <HermesTeamPolicy value={team} onChange={setTeam} maintainers={teamMaintainers} modelOptions={teamModelOptions} disabled={pending} />}
 
               {isAdmin && engine === "native" && (
                 <Field label="Connector permissions" hint="Service bots are managed by admins and grant only reviewed MCP capabilities through direct chats.">

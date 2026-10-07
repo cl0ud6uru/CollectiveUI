@@ -5,7 +5,7 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
-import { agentRuns, aiApps } from "@/db/schema";
+import { agentRuns, aiApps,hermesTeamCandidateContexts } from "@/db/schema";
 import { dropParkedForAgentRun } from "@/lib/llm/providers/hermes/runs";
 import { stopHermesRun } from "@/lib/llm/resolve";
 import { notifyRun } from "./log";
@@ -15,6 +15,8 @@ import { reconcileHermesStop } from "./hermes-stop";
 
 export async function stopProviderRun(run: Pick<AgentRun, "id" | "appId" | "resumeState">): Promise<void> {
   try {
+    const [team]=await db.select({id:hermesTeamCandidateContexts.id}).from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.runId,run.id));
+    if(team){const {retireStoredTeamCandidateRun,settleTeamCandidateRun}=await import('@/lib/hermes-team/candidate-startup');await retireStoredTeamCandidateRun(run.id);await settleTeamCandidateRun(run.id,false);dropParkedForAgentRun(run.id);return;}
     if (await loadHermesRunContext(run.id)) {
       // Use the immutable connection binding and retain an unconfirmed outcome for /status and retries.
       const [stored] = await db.select().from(agentRuns).where(eq(agentRuns.id, run.id));

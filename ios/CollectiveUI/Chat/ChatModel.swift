@@ -128,6 +128,10 @@ final class ChatModel {
         self.newChatTarget = newChatTarget
         self.isNew = newChatTarget != nil
         self.target = newChatTarget
+        self.isUnavailable = newChatTarget?.hermesTeam == true
+        if newChatTarget?.hermesTeam == true {
+            self.unavailableReason = "Hermes Team Bots are available in the web app. Use it for private chat, Admin mode and reviewing team updates."
+        }
     }
 
     // MARK: - Derived state
@@ -292,8 +296,10 @@ final class ChatModel {
             target = snapshotTarget
         }
         skills = snapshot.skills
-        isUnavailable = snapshot.unavailable
-        unavailableReason = snapshot.unavailableReason
+        isUnavailable = snapshot.unavailable || target?.hermesTeam == true
+        unavailableReason = target?.hermesTeam == true
+            ? "Hermes Team Bots are available in the web app. Use it for private chat, Admin mode and reviewing team updates."
+            : snapshot.unavailableReason
         guard !isStreaming else { return }
         let isFirstTranscript = messages.isEmpty
         messages = conversationState.reconcileStoppedReplies(in: snapshot.displayedThread())

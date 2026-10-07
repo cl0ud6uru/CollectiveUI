@@ -29,8 +29,33 @@ jobs:
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.
       - run: npm test
 
+  hermes-team-web:
+    name: Synthetic Team Bot controls and mobile web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise real browser requests with synthetic accounts and no inference
+        run: |
+          node tests/browser/hermes-team-builder.mjs
+          node tests/browser/hermes-team-controls.mjs
+          node tests/browser/hermes-team-chat-controls.mjs
+          node tests/browser/hermes-team-candidate-approvals.mjs
+          node tests/browser/hermes-team-member-connections.mjs
+          node tests/browser/hermes-team-saved-connections.mjs
+          node tests/browser/hermes-team-model-access.mjs
+          node tests/browser/hermes-team-publication.mjs
+          node tests/browser/hermes-team-updates.mjs
+          node tests/browser/hermes-team-restore.mjs
+
   native-hermes:
-    name: Pinned native Hermes settings and synthetic OAuth
+    name: Pinned native Hermes settings, Team profiles and synthetic OAuth
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -55,3 +80,65 @@ jobs:
           python tests/fixtures/docker-hermes-codex.py
           python tests/fixtures/hermes-native-queue-contract.py
           python tests/fixtures/docker-hermes-network.py
+          python tests/fixtures/hermes-team-native-contract.py
+          python tests/fixtures/hermes-team-pinned-bridge.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: python -m pip install -r tests/fixtures/hermes-team-candidate-requirements.txt
+      - name: Require pinned native SDK clients against production candidate handlers (synthetic upstreams only)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          test -d "$HERMES_SOURCE"
+          npx vitest run --project unit tests/unit/hermes-team-candidate-adapters.test.ts -t 'actual pinned'
+      - name: Require actual pinned Team gateway learning and publication lifecycle (synthetic upstreams only)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          test -d "$HERMES_SOURCE"
+          export HERMES_TEAM_CANDIDATE_PYTHON="$(command -v python)"
+          test -x "$HERMES_TEAM_CANDIDATE_PYTHON"
+          npx vitest run --project unit tests/unit/docker-hermes-active-runtime.test.ts -t 'selects the pinned generic Responses codec' --maxWorkers=1
+          npx vitest run --project unit tests/unit/hermes-team-native-lifecycle.test.ts --maxWorkers=1
+      - name: Require actual pinned official Responses tools, delegates and durable learning (synthetic accounts only)
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          test -d "$HERMES_SOURCE"
+          export HERMES_TEAM_CANDIDATE_PYTHON="$(command -v python)"
+          test -x "$HERMES_TEAM_CANDIDATE_PYTHON"
+          npx vitest run --project unit tests/unit/hermes-team-official-native.test.ts --maxWorkers=1
+
+  hermes-team-image:
+    name: Official pinned image · Team resources and active lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Require efficient Linux amd64 Docker storage
+        run: |
+          test "$(docker info --format '{{.OSType}}')" = linux
+          case "$(docker info --format '{{.Driver}}')" in overlay2|overlayfs) ;; *) echo 'Efficient Docker storage required; VFS is refused.' >&2; exit 1 ;; esac
+          test "$(uname -m)" = x86_64
+          if test ! -x /usr/local/bin/docker; then sudo ln -s "$(command -v docker)" /usr/local/bin/docker; fi
+      - name: Pull the exact official amd64 image (no build or rootfs substitution)
+        run: docker pull --platform linux/amd64 nousresearch/hermes-agent@sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283
+      - name: Exercise production helpers with synthetic retained data and no inference
+        env:
+          DOCKER_HERMES_TEAM_IMAGE_TEST: '1'
+        run: npx vitest run --project sandbox tests/sandbox/docker-hermes-team-image.test.ts
+      - name: Exercise the native Team gateway, durable learning and Stop with synthetic HTTPS
+        env:
+          DOCKER_HERMES_TEAM_ACTIVE_IMAGE_TEST: '1'
+        run: npx vitest run --project sandbox tests/sandbox/docker-hermes-team-active-image.test.ts --maxWorkers=1

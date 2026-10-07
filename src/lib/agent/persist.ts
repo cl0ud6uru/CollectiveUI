@@ -108,7 +108,10 @@ export async function saveAssistantMessage(i: PersistTurnInput, q: DbOrTx = db, 
 /** What follows a saved turn (outside any transaction): the tool-call audit log and memory extraction. */
 export async function afterAssistantSaved(i: PersistTurnInput): Promise<void> {
   await logToolCalls(i, i.responseMessage);
-  if (!i.background && !hasPendingAsyncTasks(i.responseMessage)) void scheduleMemoryExtraction(i.conversationId);
+  if (!i.background && !hasPendingAsyncTasks(i.responseMessage)) {
+    const { teamUsesNativeLearning } = await import('@/lib/hermes-team/learning');
+    if (!await teamUsesNativeLearning(i.conversationId)) void scheduleMemoryExtraction(i.conversationId);
+  }
 }
 
 /**

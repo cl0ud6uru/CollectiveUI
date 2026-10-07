@@ -22,6 +22,7 @@ vi.mock("@/db", () => {
 });
 vi.mock("@/lib/settings", () => ({ getSetting: async () => ({ maxStepsCap: 10 }) }));
 vi.mock("@/lib/agent/memory", () => ({ memoryEnabled: async () => false, selectMemories: async () => [] }));
+vi.mock("@/lib/hermes-team/learning", () => ({ teamUsesNativeLearning: async () => false }));
 vi.mock("@/lib/agent/toolset", () => ({ buildToolset: h.buildToolset }));
 vi.mock("@/lib/agent/prepare", () => ({ resolveAttachmentsForModel: h.attachments }));
 vi.mock("@/lib/llm", async (importOriginal) => ({

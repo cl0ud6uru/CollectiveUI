@@ -15,7 +15,7 @@ import { personalPlanStatus } from "@/lib/chat/targets";
 
 /** Everything the chat shell (web sidebar, native app home) shows for one person. */
 export async function loadShell(p: Principal) {
-  const [convs, folderRows, apps, bots, branding, [unread], prefs, tasks] = await Promise.all([
+  const [unfilteredConvs, folderRows, apps, bots, branding, [unread], prefs, tasks] = await Promise.all([
     db
       .select({
         id: conversations.id,
@@ -44,6 +44,8 @@ export async function loadShell(p: Principal) {
     db.select().from(userBotPrefs).where(eq(userBotPrefs.userId, p.user.id)),
     loadRecentTasks(p),
   ]);
+  const { filterTeamConversationViews } = await import('@/lib/hermes-team/conversations');
+  const convs = await filterTeamConversationViews(p, unfilteredConvs, c => c.id);
   const coordinator = await defaultCoordinator(p);
   const prefByBot = new Map(prefs.map((x) => [x.botId, x]));
   const homes = new Map<string, { botId: string; conversationId: string; updatedAt: Date }>();
@@ -82,7 +84,8 @@ export async function loadShell(p: Principal) {
     label: b.label,
     description: b.description,
     starters: b.starters,
-    hermes: !!b.appId && hermesApps.has(b.appId),
+    hermes: b.hermesTeam || (!!b.appId && hermesApps.has(b.appId)),
+    hermesTeam: b.hermesTeam,
     pinned: prefByBot.get(b.id)?.pinned ?? false,
     hidden: prefByBot.get(b.id)?.hidden ?? false,
     preview: roster.get(b.id)?.preview ?? null,

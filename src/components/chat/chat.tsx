@@ -1,5 +1,6 @@
 "use client";
 import { HermesNativeControls } from "./hermes-native-controls";
+import { HermesTeamChatControls } from "./hermes-team-chat-controls";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -633,6 +634,7 @@ export function Chat({
           failed={!!error || (messages.at(-1)?.role === "assistant" && messages.at(-1)!.parts.some((p) => p.type === "data-run-error" || p.type === "data-bot-error")) || false}
         />}
 
+        {target?.kind === "bot" && target.hermesTeam && !embedded && <HermesTeamChatControls key={`${target.id}:${conversationId}`} botId={target.id} conversationId={conversationId} started={started} busy={busy} />}
         {started && hermes && target?.kind === "bot" && !embedded && <HermesNativeControls key={conversationId} conversationId={conversationId} />}
 
         {empty ? (
