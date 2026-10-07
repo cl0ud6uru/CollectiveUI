@@ -102,11 +102,11 @@ export class SandboxdClient {
     return JSON.parse(r.body.toString("utf8")) as T;
   }
 
-  health() {
-    return this.json<Health>("GET", "/v1/health", undefined, 60_000);
+  health(timeoutMs = 60_000) {
+    return this.json<Health>("GET", "/v1/health", undefined, timeoutMs);
   }
-  list() {
-    return this.json<{ sandboxes: SandboxState[] }>("GET", "/v1/sandboxes").then((r) => r.sandboxes);
+  list(timeoutMs = 60_000) {
+    return this.json<{ sandboxes: SandboxState[] }>("GET", "/v1/sandboxes", undefined, timeoutMs).then((r) => r.sandboxes);
   }
   state(ref: string) {
     return this.json<SandboxState>("GET", `/v1/sandboxes/${ref}`);
