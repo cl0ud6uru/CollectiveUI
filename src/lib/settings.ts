@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
 import { settings } from "@/db/schema";
 import { AAD, decryptOptional } from "@/lib/crypto";
+import { DECISIONS_DEFAULTS } from "@/lib/decisions-policy";
 
 export type BrandingSettings = {
   appName: string;
@@ -105,6 +106,7 @@ export type SandboxSettings = {
 };
 
 const defaults = {
+  decisions: DECISIONS_DEFAULTS,
   remoteHermes: { enabled: false, privateGateways: [] } as RemoteHermesSettings,
   coordinator: { enabled: false, defaultBotId: null, starterBotId: null } as CoordinatorSettings,
   branding: { appName: "AI Portal", welcomeText: "What can I help with?", logoEmoji: "" } as BrandingSettings,
