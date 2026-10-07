@@ -32,7 +32,7 @@ cannot regrant this one-time native context; that continuation remains disabled 
 its complete lifecycle has verification evidence.
 
 The broker exposes grant-bound runtime capabilities from the derived owner’s retained
-network policy. Offline containers cannot prepare or start these HTTPS gateway clients;
+network policy. With active runtime enabled, offline containers cannot prepare or start these HTTPS gateway clients;
 the application must show connection-needed guidance. Fresh Standard Internet and
 operator-approved proxy policies use the existing per-owner network controls. This
 capability check does not claim endpoint reachability or alter network policy.
