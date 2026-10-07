@@ -55,6 +55,18 @@ async function capture(grant:Awaited<ReturnType<typeof issueTeamCandidateContext
 async function settle(contextId:string){await db.update(schema.agentRuns).set({status:'succeeded',holder:null}).where(eq(schema.agentRuns.id,'parent'));await db.update(schema.hermesTeamCandidateContexts).set({revokedAt:new Date(),retirementState:'confirmed',nativeStoppedAt:new Date()}).where(eq(schema.hermesTeamCandidateContexts.id,contextId));}
 
 describe('Actual durable native learning handoff and trusted active startup',()=>{
+ it('retires a failed pre-start preparation through exact broker proof before allowing a fresh grant',async()=>{
+  const {grant,chat}=await foreground();await settle(grant.contextId);
+  await db.insert(schema.agentRuns).values({id:'setup-failed',userId:'alice',botId:'team',conversationId:chat.conversationId,messageId:'setup-failed-message',appId:'provider',status:'running',holder:'foreground-worker',segment:0});
+  const base=fixture.fetch.getMockImplementation()!;fixture.fetch.mockImplementation(async(...args)=>String(args[0]).endsWith('/team/ensure')?Response.json({error:'synthetic refused restart'},{status:409}):base(...args));
+  await expect(startTeamCandidateRun(alice,'team','setup-failed',{holder:'foreground-worker',segment:0,routes})).rejects.toMatchObject({status:409});
+  const contexts=await db.select().from(schema.hermesTeamCandidateContexts);const failed=contexts.find(row=>row.id!==grant.contextId)!;
+  expect(failed).toMatchObject({retirementState:'confirmed'});expect(failed.nativeStoppedAt).toBeTruthy();
+  expect(fixture.control).toHaveBeenCalledWith('alice','/team/retire-candidate',expect.objectContaining({contextId:failed.id,runId:'setup-failed',bindingId:'a'.repeat(32)}),45000);
+  await db.update(schema.agentRuns).set({status:'failed',holder:null}).where(eq(schema.agentRuns.id,'setup-failed'));
+  await db.insert(schema.agentRuns).values({id:'successor',userId:'alice',botId:'team',conversationId:chat.conversationId,messageId:'successor-message',appId:'provider',status:'running',holder:'foreground-worker',segment:0});
+  fixture.fetch.mockImplementation(base);const active=await startTeamCandidateRun(alice,'team','successor',{holder:'foreground-worker',segment:0,routes});expect(active.contextId).not.toBe(failed.id);await active.retire();
+ });
  it('keeps verified catalogs empty, default flag closed and makes no native or provider call',async()=>{const {chat}=await foreground();expect(VERIFIED_TEAM_MODEL_ROUTES).toEqual([]);await expect(startTeamCandidateRun(alice,'team','parent',{holder:'foreground-worker',segment:0})).rejects.toMatchObject({status:409});expect(fixture.fetch).not.toHaveBeenCalled();expect(fixture.control).not.toHaveBeenCalled();expect(chat.conversationId).toBeTruthy();});
  it('captures encrypted private history once, rejects model token/cross-owner replay and UUID budget spam',async()=>{
   const {grant}=await foreground();const {input,result}=await capture(grant);

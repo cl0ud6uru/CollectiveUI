@@ -42,7 +42,13 @@ async function prepareCandidate(p:Principal,botId:string,runId:string,choice:'de
     // Repeat permission checks after IPC. The native chat gate remains closed even for a prepared candidate.
     await validatePrepared();
     return {issued,current,grant,bindingId:binding.bindingId!};
-  }catch(error){await db.update(hermesTeamCandidateContexts).set({revokedAt:new Date()}).where(eq(hermesTeamCandidateContexts.id,issued.contextId));throw error;}
+  }catch(error){
+    await db.update(hermesTeamCandidateContexts).set({revokedAt:new Date()}).where(eq(hermesTeamCandidateContexts.id,issued.contextId));
+    // The broker can prove no-start through a durable tombstone, or confirm an actual writer stop.
+    // An unavailable/older broker keeps attention; a failed setup never invents shutdown evidence.
+    await retireStoredTeamCandidateRun(runId).catch(()=>{});
+    throw error;
+  }
 }
 
 /** Browser-facing preparation never returns native tokens, profile IDs or a usable model connection. */
