@@ -108,6 +108,7 @@ export type SandboxSettings = {
 };
 
 const defaults = {
+  officeBot: { botId: null } as { botId: string | null },
   decisions: DECISIONS_DEFAULTS,
   remoteHermes: { enabled: false, allowSessionYolo: false, privateGateways: [] } as RemoteHermesSettings,
   coordinator: { enabled: false, defaultBotId: null, starterBotId: null } as CoordinatorSettings,

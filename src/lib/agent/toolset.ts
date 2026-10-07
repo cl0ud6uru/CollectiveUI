@@ -28,6 +28,7 @@ import { skillsForBot, skillTool, learnedSkillsForTurn } from "./tools/skills";
 import { nativeSearchFor } from "./native-search";
 import { webTools } from "./tools/web";
 import { workspaceTools } from "./tools/workspace";
+import { workspaceAttachmentTool } from "./tools/workspace-attachment";
 import type { AgentCtx, ToolEntry } from "./types";
 
 import { MAX_DELEGATION_DEPTH } from "@/lib/delegation/policy";
@@ -148,6 +149,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
           workspace = await workspaceFor(ctx, settings, warnings, closers);
           if (workspace) {
             entries.push(...workspaceTools(workspace, settings));
+            entries.push(workspaceAttachmentTool(ctx, workspace));
             // The command's own limit ends it first; this only catches a lost stream.
             timeouts.workspace_bashMs = (settings.commandTimeoutSec + 30) * 1000;
           }

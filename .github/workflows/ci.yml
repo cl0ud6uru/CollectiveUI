@@ -55,6 +55,7 @@ jobs:
           node tests/browser/hermes-team-restore.mjs
           DELEGATION_CARD_SCREENSHOTS="$RUNNER_TEMP/delegation-card-screenshots" node tests/browser/delegation-card.mjs
           BOT_RECENT_USE_SCREENSHOT_DIR="$RUNNER_TEMP/bot-recent-use-screenshots" node tests/browser/bot-recent-use.mjs
+          SIDEBAR_ROSTER_SCREENSHOT_DIR="$RUNNER_TEMP/sidebar-roster-screenshots" node tests/browser/sidebar-roster-design.mjs
       - name: Exercise native Remote Hermes commands and confirmed session controls on desktop and mobile
         run: |
           node tests/browser/remote-hermes-commands.mjs
@@ -63,6 +64,10 @@ jobs:
         with:
           name: bot-recent-use-screenshots
           path: ${{ runner.temp }}/bot-recent-use-screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-roster-screenshots
+          path: ${{ runner.temp }}/sidebar-roster-screenshots
 
       - uses: actions/upload-artifact@v4
         with:

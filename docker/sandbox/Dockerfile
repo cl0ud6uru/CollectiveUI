@@ -3,10 +3,18 @@
 # Build with `npm run sandbox:image` (see scripts/build-sandbox-image.sh). sandboxd uses the image by ID.
 #
 # No network at run time, no secrets, no AI CLIs yet (Codex and Claude Code arrive with their runtimes, P8/P9).
-# The full Debian-based Node image already has git, python3, a C toolchain and procps, so the build needs no package
-# downloads (reproducible, and it builds behind restrictive proxies).
+# Office packages are installed at build time; workspaces still have no runtime network access.
 ARG BASE_IMAGE=node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7
 FROM ${BASE_IMAGE}
+
+COPY office-requirements.txt /opt/portal/office-requirements.txt
+RUN sed -i -e 's|http://deb.debian.org/debian-security|https://security.debian.org/debian-security|g' \
+      -e 's|http://deb.debian.org/debian|https://ftp.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      python3-venv libreoffice-writer libreoffice-calc libreoffice-impress fonts-dejavu-core fonts-liberation2 \
+    && python3 -m venv /opt/office \
+    && /opt/office/bin/pip install --no-cache-dir -r /opt/portal/office-requirements.txt \
+    && rm -rf /var/lib/apt/lists/*
 
 # The node image's "node" user owns uid 1000; the workspace user takes it. uid 1001 is reserved for the Claude Code
 # runtime (P9): its home is private (0700), so workspace commands can't read it.
@@ -21,6 +29,7 @@ RUN set -eu; \
     git config --system advice.detachedHead false
 
 COPY --chown=root:root --chmod=0755 run-agent kill-run fsops /opt/portal/
+COPY --chown=root:root --chmod=0755 office-check office-convert /opt/portal/
 
 USER 1000:1000
 WORKDIR /home/agent

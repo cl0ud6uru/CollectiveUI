@@ -1,0 +1,15 @@
+#!/opt/office/bin/python
+"""Fixed readiness probe used by installation and document workflows."""
+import importlib
+import json
+import subprocess
+import sys
+
+try:
+    for module in ("docx", "openpyxl", "pptx", "pypdf", "pdfplumber", "reportlab"):
+        importlib.import_module(module)
+    version = subprocess.run(["libreoffice", "--version"], capture_output=True, text=True, timeout=10, check=True)
+    print(json.dumps({"ok": True, "libreoffice": version.stdout.strip()}))
+except Exception:
+    print(json.dumps({"ok": False, "message": "Office tooling is unavailable. Ask an admin to rebuild the Office sandbox image and configure sandboxd to use it."}))
+    sys.exit(1)

@@ -78,6 +78,7 @@ const bundles = [
   { slug: "hermes", name: "Hermes", file: "spritesheet.webp", hash: "80e08093c5cdaa390c6176fca447acf3cacb122e08927573f0f7256622c2c646", normalizedBytes: 3904456 },
   { slug: "hermes-assimilated", name: "Hermes Assimilated", file: "spritesheet.webp", hash: "071c27d8292fd0da02fbc7d7e923fbc98cbfc2de16b29f14f32624bee981dc7b", normalizedBytes: 3585739 },
   { slug: "the-queen", name: "The Queen", file: "spritesheet.png", hash: "fed57f8824f9e4a93064ab9e60996637867a583b2e3b83d3a175460560ac7487" },
+  { slug: "nimbus", name: "Nimbus", file: "spritesheet.webp", hash: "de72a1ea5ab66a2f5815c647f376c2c54b2d530cfe750341dc626a632f63ce31", normalizedBytes: 2522145 },
 ];
 
 describe("shipped artwork", () => {
