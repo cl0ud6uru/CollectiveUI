@@ -26,7 +26,8 @@ import { reviewNativeRun, scheduleLearningReview, recoverLearningReviews } from 
 import { successfulToolEvidence, lessonDisposition } from "@/lib/agent/learning/policy";
 import { curateLearnedSkills } from "@/lib/agent/learning/curator";
 import { selectMemories } from "@/lib/agent/memory";
-import { renderSkill } from "@/lib/agent/tools/skills";
+import { renderSkill, skillTool } from "@/lib/agent/tools/skills";
+import { findSkill, slashInvokedSkill } from "@/lib/agent/skill-lookup";
 
 let owner: Principal; let member: Principal; let boss: Principal;
 const content = {
@@ -223,6 +224,90 @@ describe("native learning with real PostgreSQL migrations", () => {
     const after = (await learnedSkillsForBot("bot", "member")).find(s => s.id === shared.id)!;
     expect(after.slug).toBe(shared.slug);
     expect(after.name).toBe("New display name");
+  });
+
+  it("resolves persisted learned-ID routine prompts and tool calls without changing readable catalog names", async () => {
+    await db.insert(schema.botLearnings).values({ id: "legacy_ID-", botId: "bot", topic: "legacy-check", kind: "procedure", content, verification: "Observed" });
+    const alias = "learned-legacy_ID-";
+    await db.insert(schema.routines).values({ ownerId: "owner", botId: "bot", name: "Legacy", prompt: `/${alias} Check group updates`, triggerType: "cron" });
+    const [routine] = await db.select().from(schema.routines);
+    const available = await learnedSkillsForBot("bot", "owner");
+    const invoked = slashInvokedSkill(available, routine.prompt)!;
+    expect(invoked.slug).toBe("learned-shared-legacy-check");
+    expect(invoked.aliases).toEqual([alias]);
+    expect(slashInvokedSkill(available, `/${invoked.slug}, Check`)).toBe(invoked);
+    const entry = skillTool({ bot: { id: "bot" }, principal: owner } as never, available)!;
+    expect((entry.tool.inputSchema as unknown as { safeParse: (input: unknown) => { success: boolean } }).safeParse({ slug: alias }).success).toBe(true);
+    const result = await entry.tool.execute!({ slug: alias }, { toolCallId: "legacy-load", messages: [], context: {} });
+    expect(result).toMatchObject({ skillId: invoked.id, version: 1 });
+    expect((await learningViews(owner, "bot"))[0].useCount).toBe(1);
+    expect((await db.select().from(schema.routines))[0].prompt).toBe(routine.prompt);
+    const authored = { ...invoked, id: "manual", aliases: undefined, slug: alias };
+    expect(findSkill([invoked, authored], alias)?.id).toBe("manual");
+    await changeLearning(owner, invoked.id, 1, { status: "archived" });
+    expect(slashInvokedSkill(await learnedSkillsForBot("bot", "owner"), routine.prompt)).toBeUndefined();
+  });
+
+  it("keeps legacy aliases inside the user's authorized learning scope", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ scope: "user" })] } });
+    await reviewNativeRun("run");
+    const [privateSkill] = await learnedSkillsForBot("bot", "member");
+    const alias = privateSkill.aliases![0];
+    expect(slashInvokedSkill(await learnedSkillsForBot("bot", "member"), `/${alias} Check`)).toBeDefined();
+    expect(findSkill(await learnedSkillsForBot("bot", "boss"), alias)).toBeUndefined();
+  });
+
+  it("keeps approved preference Memory during a pending policy and restores its kind on rejection", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "preference", scope: "user", topic: "report-format", evidenceCallIds: [], instructions: "Lead with a short report summary." })] } });
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "policy", scope: "user", topic: "report-format", baseVersion: 1, evidenceCallIds: [], instructions: "Proposed team mandate: use a different report format." })] } });
+    await reviewNativeRun("run");
+    const [proposal] = await learningViews(member, "bot");
+    expect(proposal).toMatchObject({ kind: "policy", status: "pending" });
+    expect((await learnedPreferences("member", "bot", 1))[0].content).toContain("Lead with a short report summary.");
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(0);
+    expect(await learnedPreferences("boss", "bot")).toHaveLength(0);
+    await changeLearning(member, proposal.id, proposal.version, { status: "archived" });
+    expect((await learningViews(member, "bot"))[0]).toMatchObject({ kind: "preference", status: "active", version: 3 });
+    expect((await learnedPreferences("member", "bot"))[0].content).toContain("Lead with a short report summary.");
+    expect((await db.select().from(schema.botLearningRevisions)).map(row => row.kind)).toEqual(["preference", "policy", "preference"]);
+  });
+
+  it("moves approved policies out of Memory and restores the preference kind with its historical revision", async () => {
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "preference", scope: "user", topic: "report-format", evidenceCallIds: [], instructions: "Lead with a short report summary." })] } });
+    await reviewNativeRun("run");
+    await db.update(schema.botLearningReviews).set({ completedAt: null });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ kind: "policy", scope: "user", topic: "report-format", baseVersion: 1, evidenceCallIds: [], instructions: "A reviewed reporting policy." })] } });
+    await reviewNativeRun("run");
+    const [proposal] = await learningViews(member, "bot");
+    await changeLearning(member, proposal.id, 2, { status: "active" });
+    expect(await learnedPreferences("member", "bot")).toHaveLength(0);
+    expect((await learnedSkillsForBot("bot", "member"))[0].instructions).toBe("A reviewed reporting policy.");
+    await changeLearning(member, proposal.id, 3, { restoreVersion: 1 });
+    expect((await learningViews(member, "bot"))[0]).toMatchObject({ kind: "preference", status: "active" });
+    expect(await learnedSkillsForBot("bot", "member")).toHaveLength(0);
+    expect((await learnedPreferences("member", "bot"))[0].content).toContain("Lead with a short report summary.");
+  });
+
+  it("upgrades existing #59 revision histories with their retained classification", async () => {
+    const { PGlite } = await import("@electric-sql/pglite");
+    const legacy = new PGlite();
+    try {
+      await legacy.waitReady;
+      for (const file of readdirSync("src/db/migrations").filter(f => f.endsWith(".sql") && f < "0037").sort()) {
+        await legacy.exec(readFileSync(`src/db/migrations/${file}`, "utf8").replace("CREATE EXTENSION IF NOT EXISTS vector;", "").replace(/\bvector\b/g, "real[]"));
+      }
+      await legacy.exec("INSERT INTO users (id, upn, name, auth_source) VALUES ('legacy', 'legacy@fixture.invalid', 'Legacy', 'ldap'); INSERT INTO bots (id, owner_id, name) VALUES ('legacy-bot', 'legacy', 'Legacy');");
+      for (const kind of ["preference", "procedure", "policy"]) {
+        await legacy.query("INSERT INTO bot_learnings (id, bot_id, user_id, topic, kind, content, verification) VALUES ($1, 'legacy-bot', 'legacy', $1, $1, $2::jsonb, 'Observed')", [kind, JSON.stringify(content)]);
+        await legacy.query("INSERT INTO bot_learning_revisions (id, learning_id, version, status, content, verification) VALUES ($1, $1, 1, 'active', $2::jsonb, 'Observed')", [kind, JSON.stringify(content)]);
+      }
+      await legacy.exec(readFileSync("src/db/migrations/0037_learning_usage.sql", "utf8"));
+      expect((await legacy.query<{ kind: string }>("SELECT kind FROM bot_learning_revisions ORDER BY kind")).rows.map(row => row.kind)).toEqual(["policy", "preference", "procedure"]);
+      await expect(legacy.exec("UPDATE bot_learning_revisions SET kind = 'unknown'")).rejects.toThrow();
+      await expect(legacy.exec("UPDATE bot_learning_revisions SET kind = NULL")).rejects.toThrow();
+    } finally { await legacy.close(); }
   });
 
   it("saves nothing when a routine repeat has no new learning", async () => {

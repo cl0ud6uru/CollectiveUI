@@ -124,6 +124,8 @@ suite("Hermes commands (real database, isolated HTTP mock, no worker)", () => {
     skillsFail = true;
     const catalog = await m.service.commandCatalog(await m.service.resolveCommandTarget(p, { conversationId: conv.id }));
     expect(catalog).toMatchObject({ models: { available: true, items: ["fast", "reasoning"] }, skills: { available: false } });
+    expect((catalog as { modelRoutes: unknown }).modelRoutes).toEqual([{ id: "fast", allowed: true }, { id: "reasoning", allowed: true }, { id: "not-allowed", allowed: false }]);
+    expect((await command("/model")).lines.join(" ")).toContain("not enabled by an admin: not-allowed");
     await expect(command("/model not-allowed")).rejects.toMatchObject({ status: 400 });
     expect((await command("/skills")).lines.join(" ")).toContain("skills-discovery bug");
     expect((await command("/help")).title).toBe("Hermes commands");

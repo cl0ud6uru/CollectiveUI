@@ -329,7 +329,7 @@ function delegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: Delegati
           const { runDelegation } = await import("@/lib/delegation/execute");
           yield* runDelegation(ctx, delegate.id, task, `${ctx.toolCallPrefix ?? ""}${toolCallId}`, abortSignal, authorizationMode);
         } catch (e) {
-          yield { bot: delegate.name, status: "error", steps: [], error: e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The delegated task could not finish." };
+          yield { bot: delegate.name, botId: delegate.id, avatar: delegate.avatar, label: delegate.label, status: "error", steps: [], error: e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The delegated task could not finish." };
         }
       },
     }),
@@ -350,7 +350,7 @@ function continueDelegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: 
           const { startAsyncDelegation } = await import("@/lib/delegation/async");
           return await startAsyncDelegation(ctx, delegate.id, task, `${ctx.toolCallPrefix ?? ""}${toolCallId}`, authorizationMode, taskId);
         } catch (e) {
-          return { bot: delegate.name, status: "error", steps: [], error: e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The related task could not continue." };
+          return { bot: delegate.name, botId: delegate.id, avatar: delegate.avatar, label: delegate.label, status: "error", steps: [], error: e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The related task could not continue." };
         }
       },
     }),

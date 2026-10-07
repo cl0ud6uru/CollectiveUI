@@ -15,14 +15,15 @@ async function publishedLearning(row: typeof botLearnings.$inferSelect) {
   if (row.status === "active") return row;
   if (row.status !== "pending") return null;
   const [approved] = await db.select().from(botLearningRevisions).where(and(eq(botLearningRevisions.learningId, row.id), eq(botLearningRevisions.status, "active"))).orderBy(desc(botLearningRevisions.version)).limit(1);
-  return approved ? { ...row, content: approved.content, verification: approved.verification, version: approved.version, status: "active" as const } : null;
+  return approved ? { ...row, kind: approved.kind, content: approved.content, verification: approved.verification, version: approved.version, status: "active" as const } : null;
 }
 
 export async function learnedSkillsForBot(botId: string, userId: string): Promise<Skill[]> {
-  const visible = await db.select().from(botLearnings).where(and(visibleLearningScope(botId, userId), ne(botLearnings.kind, "preference"))).orderBy(botLearnings.topic);
-  const rows = (await Promise.all(visible.map(publishedLearning))).filter(row => row !== null);
+  const visible = await db.select().from(botLearnings).where(visibleLearningScope(botId, userId)).orderBy(botLearnings.topic);
+  const rows = (await Promise.all(visible.map(publishedLearning))).filter(row => row !== null).filter(row => row.kind !== "preference");
   return rows.map(row => ({
     id: row.id, botId, ownerId: row.userId ?? "", slug: `learned-${row.userId ? "personal" : "shared"}-${row.topic}`,
+    aliases: [`learned-${row.id}`],
     ...row.content, version: row.version, createdAt: row.createdAt, updatedAt: row.updatedAt,
     description: `${row.userId ? "Personal" : "Shared bot"} learning: ${row.content.description}`,
   }));
@@ -43,7 +44,7 @@ export async function learningViews(p: Principal, botId: string): Promise<Learni
 
 export async function recordLearningRevision(tx: Tx, row: typeof botLearnings.$inferSelect, source?: { conversationId: string; runId: string }) {
   await tx.insert(botLearningRevisions).values({
-    learningId: row.id, version: row.version, status: row.status, content: row.content, verification: row.verification,
+    learningId: row.id, version: row.version, status: row.status, kind: row.kind, content: row.content, verification: row.verification,
     sourceConversationId: source?.conversationId, sourceRunId: source?.runId,
   });
 }
@@ -65,19 +66,21 @@ export async function changeLearning(p: Principal, id: string, expectedVersion: 
     const row = await manageableLearning(p, id, tx);
     if (row.version !== expectedVersion) throw new HttpError(409, "This learning changed. Refresh before trying again.");
     let content = change.content ?? row.content;
+    let kind = row.kind;
     let verification = row.verification;
     if (change.restoreVersion !== undefined) {
       const [previous] = await tx.select().from(botLearningRevisions).where(and(eq(botLearningRevisions.learningId, id), eq(botLearningRevisions.version, change.restoreVersion)));
       if (!previous) throw new HttpError(404, "Revision not found.");
       content = previous.content;
+      kind = previous.kind;
       verification = previous.verification;
     }
     let status = change.status ?? row.status;
     if (row.status === "pending" && change.status === "archived") {
       const [approved] = await tx.select().from(botLearningRevisions).where(and(eq(botLearningRevisions.learningId, row.id), eq(botLearningRevisions.status, "active"))).orderBy(desc(botLearningRevisions.version)).limit(1);
-      if (approved) { content = approved.content; verification = approved.verification; status = "active"; }
+      if (approved) { kind = approved.kind; content = approved.content; verification = approved.verification; status = "active"; }
     }
-    const [next] = await tx.update(botLearnings).set({ content, verification, pinned: change.pinned ?? row.pinned, status, version: row.version + 1, updatedAt: new Date() }).where(eq(botLearnings.id, id)).returning();
+    const [next] = await tx.update(botLearnings).set({ kind, content, verification, pinned: change.pinned ?? row.pinned, status, version: row.version + 1, updatedAt: new Date() }).where(eq(botLearnings.id, id)).returning();
     await recordLearningRevision(tx, next);
     return next.botId;
   });
@@ -107,7 +110,7 @@ export async function learnedPreferences(userId: string, botId: string, limit = 
   const { loadPrincipal } = await import("@/lib/auth/groups");
   const p = await loadPrincipal(userId);
   if (!p || !(await learningIsEnabled(p))) return [];
-  const rows = await db.select().from(botLearnings).where(and(eq(botLearnings.botId, botId), eq(botLearnings.userId, userId), eq(botLearnings.kind, "preference"), sql`${botLearnings.status} in ('active', 'pending')`)).orderBy(desc(botLearnings.updatedAt)).limit(limit);
-  const published = (await Promise.all(rows.map(publishedLearning))).filter(row => row !== null);
+  const rows = await db.select().from(botLearnings).where(and(eq(botLearnings.botId, botId), eq(botLearnings.userId, userId), sql`${botLearnings.status} in ('active', 'pending')`)).orderBy(desc(botLearnings.updatedAt));
+  const published = (await Promise.all(rows.map(publishedLearning))).filter(row => row !== null).filter(row => row.kind === "preference").slice(0, limit);
   return published.map(row => ({ id: row.id, content: `${row.content.description}\n${row.content.instructions}\n${row.content.boundaries}`.slice(0, 1500), pinned: row.pinned, botId }));
 }

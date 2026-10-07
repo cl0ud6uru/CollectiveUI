@@ -13,7 +13,7 @@ import { appendEventsTx, notifyRun } from "@/lib/runs/log";
 import { runHost } from "@/lib/runs/host";
 import { getRun } from "@/lib/runs/state";
 import { isFinal, type AgentRun, type ResumeState } from "@/lib/runs/types";
-import { taskResult } from "./execute";
+import { resultHead, taskResult } from "./execute";
 import { admitDelegation, assertTaskExecution } from "./store";
 import { MAX_ROOT_ACTIVE_TASKS, type DelegationResult } from "./policy";
 import { bindTaskHistory } from "./history";
@@ -23,7 +23,7 @@ export async function startAsyncDelegation(ctx: AgentCtx, receiverId: string, pr
   const { task } = await admitDelegation(ctx, receiverId, prompt, callId, runHost().instanceId, "async", authorizationMode, continuedFromTaskId);
   if (task.returnedAt) return taskResult(task);
   ctx.awaitTask!(task.id);
-  return { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, status: "queued", steps: [] };
+  return { ...await resultHead(task), status: "queued", steps: [] };
 }
 
 /** Called by the ordinary run claim path. The user lock serializes admissions and root concurrency across workers. */
@@ -144,7 +144,7 @@ export async function reconcileAsyncParent(parentId: string): Promise<void> {
         return fail("A task result no longer matches its assigning tool call.");
       let result: DelegationResult;
       try { await assertTaskExecution(task, tx); result = await taskResult(task, tx); }
-      catch { result = { taskId: task.id, conversationId: task.childConversationId, bot: task.receiverName, status: "error", steps: [], error: "The assignment is no longer authorized to return a result." }; }
+      catch { result = { ...await resultHead(task, tx), status: "error", steps: [], error: "The assignment is no longer authorized to return a result." }; }
       chunks.push({ type: "tool-output-available", toolCallId: task.originToolCallId, output: result });
     }
     // Result events belong to the next segment: replay crosses the previous suspension's end marker.
