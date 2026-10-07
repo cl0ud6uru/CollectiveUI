@@ -338,10 +338,12 @@ test('changing providers clears unsaved credentials and restores the saved model
   await page.getByLabel('New API key', { exact: true }).fill('sk-unsaved-provider-fixture');
   await select('ChatGPT / Codex subscription'); await expect(model).toHaveValue('fixture-codex-model');
   await select('Anthropic'); await expect(model).toHaveValue('');
-  await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('New API key', { exact: true })).toHaveValue('');
   await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
   await expect(model).toHaveValue('fixture-codex-model');
   await select('Anthropic'); await model.fill('fixture-anthropic-model');
+  // An operator may still save offline defaults without a key by explicitly keeping the empty state.
+  await page.getByLabel('API key', { exact: true }).click(); await page.getByRole('option', { name: 'Keep current state (no profile key saved)', exact: true }).click();
   await page.screenshot({ path: '/tmp/hermes-pr22-provider-switch.png', fullPage: true });
   await page.getByRole('button', { name: 'Save profile settings', exact: true }).click();
   await expect(page.getByText('Saved in this native profile.', { exact: false })).toBeVisible();

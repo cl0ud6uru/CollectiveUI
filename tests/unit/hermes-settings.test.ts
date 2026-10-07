@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { providerBlocker, type ProfileSettings } from '@/docker-hermes/settings';
+import { currentProfileTest, profileConnectionVerified, providerBlocker, type ProfileSettings } from '@/docker-hermes/settings';
 
 const saved = (): ProfileSettings => ({
   revision: 'a'.repeat(64), provider: null, model: 'anthropic/claude-opus-4.6',
@@ -9,6 +9,33 @@ const saved = (): ProfileSettings => ({
 });
 
 describe('Hermes setup compatibility diagnostics', () => {
+  it('requires an explicit successful test of the current API-key profile before starting chat', () => {
+    const profile = saved();
+    profile.provider = 'openai-api'; profile.model = 'fixture-model';
+    profile.credentials['openai-api'] = true;
+    expect(profileConnectionVerified(profile)).toBe(false);
+    profile.lastTest = { code: 'verified', revision: 'b'.repeat(64), checkedAt: '2026-10-07T00:00:00Z' };
+    expect(currentProfileTest(profile)).toBeNull();
+    expect(profileConnectionVerified(profile)).toBe(false);
+    profile.lastTest.revision = profile.revision;
+    expect(profileConnectionVerified(profile)).toBe(true);
+    profile.credentials['openai-api'] = false;
+    expect(profileConnectionVerified(profile)).toBe(false);
+    profile.credentials['openai-api'] = true; profile.editableProviders['openai-api'] = false;
+    expect(profileConnectionVerified(profile)).toBe(false);
+  });
+
+  it('does not turn failed tests or stored native subscription sign-in into verified API-key setup', () => {
+    const profile = saved(); profile.provider = 'openai-api'; profile.model = 'fixture-model'; profile.credentials['openai-api'] = true;
+    for (const code of ['authentication_failed', 'model_rejected', 'connection_failed', 'not_configured', 'unsupported', 'uncertain', 'network_blocked'] as const) {
+      profile.lastTest = { code, revision: profile.revision, checkedAt: '2026-10-07T00:00:00Z' };
+      expect(profileConnectionVerified(profile), code).toBe(false);
+    }
+    profile.provider = 'openai-codex'; profile.credentials['openai-codex'] = true;
+    profile.lastTest = { code: 'verified', revision: profile.revision, checkedAt: '2026-10-07T00:00:00Z' };
+    expect(profileConnectionVerified(profile)).toBe(false);
+  });
+
   it('distinguishes a missing bridge capability from a protected native route', () => {
     const oldBridge = saved();
     delete (oldBridge.editableProviders as Partial<ProfileSettings['editableProviders']>)['openai-codex'];
