@@ -14,13 +14,17 @@ const h = vi.hoisted(() => ({
   setCurrentLeaf: vi.fn(async () => {}),
   scheduleMemoryExtraction: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
+  route: vi.fn(async () => undefined as string[] | undefined),
+  decisionsEnabled: false,
 }));
 
 vi.mock("@/db", () => {
   const chain = { set: () => chain, where: async () => {}, values: () => chain, onConflictDoUpdate: () => Promise.resolve() };
   return { db: { update: () => chain, insert: () => chain } };
 });
-vi.mock("@/lib/settings", () => ({ getSetting: async () => ({ maxStepsCap: 10 }) }));
+vi.mock("@/lib/settings", () => ({ getSetting: async (key: string) => key === "decisions"
+  ? { queenRouting: h.decisionsEnabled } : { maxStepsCap: 10, enabled: h.decisionsEnabled, defaultBotId: "b1" } }));
+vi.mock("@/lib/agent/queen-routing", () => ({ queenRouting: h.route }));
 vi.mock("@/lib/agent/memory", () => ({ memoryEnabled: async () => false, selectMemories: async () => [] }));
 vi.mock("@/lib/hermes-team/learning", () => ({ teamUsesNativeLearning: async () => false }));
 vi.mock("@/lib/agent/toolset", () => ({ buildToolset: h.buildToolset }));
@@ -108,9 +112,34 @@ const systemText = () =>
 describe("runTurn", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.decisionsEnabled = false;
+    h.route.mockResolvedValue(undefined);
     h.buildToolset.mockImplementation(async () => ({ tools: {}, skills: [], delegates: [], approval: () => undefined, warnings: [], close: h.close }));
     h.attachments.mockImplementation(async (history: unknown) => history);
     useModel(streamOf(reply("Hello!")));
+  });
+
+  it("routes only the first SDK planning step; normal tool approval still denies execution", async () => {
+    h.decisionsEnabled = true;
+    h.route.mockResolvedValue(["ask_a", "continue_a", "use_skill"]);
+    const execute = vi.fn(async () => "should not execute");
+    const tools = Object.fromEntries(["ask_a", "ask_b", "continue_a", "use_skill"].map(name => [name, tool({ inputSchema: z.object({ task: z.string() }), execute })]));
+    h.buildToolset.mockResolvedValue({ tools, skills: [], delegates: [], approval: () => ({ type: "denied", reason: "Human denied" }), warnings: [], close: h.close });
+    useModel([
+      streamOf([{ type: "stream-start", warnings: [] }, { type: "tool-call", toolCallId: "ask-call", toolName: "ask_a", input: '{"task":"main agent arguments"}' }, finish("tool-calls")]),
+      streamOf(reply("The action needs approval.")),
+    ]);
+    const r = await turn({ bot: { id: "b1", maxSteps: 3 } as never });
+    expect(model.doStreamCalls[0].tools?.map(t => t.name)).toEqual(["ask_a", "continue_a", "use_skill"]);
+    expect(model.doStreamCalls[1].tools?.map(t => t.name)).toEqual(Object.keys(tools));
+    expect(execute).not.toHaveBeenCalled();
+    expect(r.chunks.some(c => c.type === "tool-output-denied")).toBe(true);
+    expect(h.route).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not invoke the picker when the toggle is off", async () => {
+    await turn({ bot: { id: "b1", maxSteps: 3 } as never });
+    expect(h.route).not.toHaveBeenCalled();
   });
 
   it("closes the toolset (MCP clients) when turn setup throws", async () => {
