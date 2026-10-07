@@ -142,6 +142,12 @@ describe('Dormant exact official loopback OAuth controllers and durable rotating
   expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});await expect(operateOfficialPlanAuth(bob,'revoke',services)).rejects.toMatchObject({status:404});expect(fetcher).toHaveBeenCalledOnce();
   finish(new Response(null));expect(await first).toEqual({disconnected:true,remoteRevocationConfirmed:true});expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:true});expect(fetcher).toHaveBeenCalledOnce();expect(await db.select().from(schema.officialPlanAuthOperations)).toHaveLength(1);
  });
+ it('clears an accepted access-only account without falsely claiming remote logout on disconnect or replay',async()=>{
+  const attempt=await begin();const {refresh_token:_refresh,...accessOnly}=tokenResponse();void _refresh;fetcher.mockResolvedValueOnce(Response.json(accessOnly));expect(await returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,attempt.callback,services)).toEqual({connected:true});
+  expect(openOfficialPlanSecret((await db.select().from(schema.officialPlanConnections))[0]).refresh).toBeUndefined();fetcher.mockClear();
+  for(let i=0;i<2;i++)expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});
+  expect(fetcher).not.toHaveBeenCalled();expect(services.verifier.revocationEndpoint).not.toHaveBeenCalled();expect((await db.select().from(schema.officialPlanAuthOperations))[0]).toMatchObject({kind:'revoke',state:'needs_attention'});expect((await db.select().from(schema.officialPlanConnections))[0].status).toBe('revoked');
+ });
  it('enforces immutable attempt/operation identity and keeps another owner from deleting or selecting it',async()=>{
   const attempt=await connect();await expect(db.update(schema.officialPlanAuthAttempts).set({userId:'bob'}).where(eq(schema.officialPlanAuthAttempts.id,attempt.attemptId))).rejects.toThrow();await expect(operateOfficialPlanAuth(bob,'refresh',services)).rejects.toMatchObject({status:404});
   const row=(await db.select().from(schema.officialPlanConnections))[0];await expect(db.insert(schema.officialPlanAuthOperations).values({userId:'bob',connectionId:row.id,credentialRevision:row.revision,sessionVersion:0,kind:'refresh'})).rejects.toThrow();

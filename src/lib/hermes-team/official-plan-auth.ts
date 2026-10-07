@@ -145,7 +145,8 @@ export async function operateOfficialPlanAuth(p:Principal,kind:'refresh'|'revoke
  if('already' in claimed)return claimed.already;
  try{
   if(kind==='revoke'){
-   if(claimed.bundle.refresh)await oauthForm(services,await services.verifier.revocationEndpoint(),new URLSearchParams({token:claimed.bundle.refresh,token_type_hint:'refresh_token',client_id:claimed.row.clientId}),true);
+   if(!claimed.bundle.refresh)throw new HttpError(409,'No refresh grant is available to confirm remote logout.');
+   await oauthForm(services,await services.verifier.revocationEndpoint(),new URLSearchParams({token:claimed.bundle.refresh,token_type_hint:'refresh_token',client_id:claimed.row.clientId}),true);
    await db.update(officialPlanAuthOperations).set({state:'complete',updatedAt:new Date()}).where(eq(officialPlanAuthOperations.id,claimed.operation.id));return {disconnected:true,remoteRevocationConfirmed:true};
   }
   const tokens=(await oauthForm(services,OFFICIAL_TOKEN_URL,new URLSearchParams({grant_type:'refresh_token',client_id:claimed.row.clientId,refresh_token:claimed.bundle.refresh!,resource:OFFICIAL_PLAN_ORIGIN})))!;
