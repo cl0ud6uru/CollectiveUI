@@ -67,7 +67,7 @@ export async function startTeamCandidateRun(p:Principal,botId:string,runId:strin
   if(current.run.status!=='running' || current.run.holder!==worker.holder || current.run.segment!==worker.segment)throw new HttpError(409,'The native worker lease changed.');
   const learning=await claimTeamNativeLearning(runId,worker.holder,worker.segment,routes);
   let prepared:Awaited<ReturnType<typeof prepareCandidate>>;
-  try{prepared=await prepareCandidate(p,botId,runId,learning?.choice??worker.choice??'default',routes,worker,learning?.snapshot);}
+  try{prepared=await prepareCandidate(p,botId,runId,learning?.choice??current.chat.modelChoice,routes,worker,learning?.snapshot);}
   catch(error){if(learning)await finishTeamNativeLearning(runId,false);throw error;}
   const identity={teamBotId:botId,mode:prepared.current.chat.mode,bindingId:prepared.bindingId,runId,contextId:prepared.issued.contextId};
   const checked=async()=>{

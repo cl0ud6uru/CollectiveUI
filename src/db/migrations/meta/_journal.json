@@ -309,6 +309,13 @@
       "when": 1791328942907,
       "tag": "0043_hermes_team_learning_handoffs",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791330291161,
+      "tag": "0044_hermes_team_official_plan_connections",
+      "breakpoints": true
     }
   ]
 }

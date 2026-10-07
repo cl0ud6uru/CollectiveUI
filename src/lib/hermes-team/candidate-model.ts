@@ -7,6 +7,7 @@ import { createTeamModelGateway, VERIFIED_TEAM_MODEL_ROUTES, type TeamModelPurpo
 import { recordTeamRunAdmission } from './run-policy';
 import { candidateObjectHash, loadCandidateContext, lockCandidateContext } from './candidate-context';
 import { CANDIDATE_MODEL_LIMITS, validateNativeModelRequest, type TeamNativeModelProtocol } from './native-request';
+import { validateOfficialPlanRequest,officialPlanCompleted,officialPlanNativeResponse,officialPlanFromNativeChat,officialPlanToNativeChat } from './official-plan';
 import { loadCandidateModelWire } from './candidate-model-transport';
 
 export type CandidateResponse = { status:number; contentType:string; body:string };
@@ -71,15 +72,19 @@ export function nativeRequestId(request: Request,payload?:unknown) {
   if (!id || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(id)) throw new HttpError(400,'A stable native request UUID is required.');
   return id.toLowerCase();
 }
-export async function readCandidateResponse(response: Response, secrets: readonly string[]): Promise<CandidateResponse> {
+export async function readCandidateResponse(response: Response, secrets: readonly string[],signal?:AbortSignal): Promise<CandidateResponse> {
   if (!response.ok) { await response.body?.cancel(); throw new HttpError(response.status === 401 || response.status === 403 ? 409 : 503,'The fixed model connection needs attention.'); }
   const contentType = response.headers.get('content-type') ?? 'application/json';
   if (!/^(application\/json|text\/event-stream)(;|$)/i.test(contentType)) { await response.body?.cancel(); throw new HttpError(503,'Unsupported model response.'); }
   const reader = response.body?.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
-  if (reader) try {
-    for (;;) { const {done,value}=await reader.read(); if(done)break; bytes+=value.length;
+  if (reader) {
+    let cancelled:()=>void=()=>{};
+    const aborted=new Promise<never>((_,reject)=>{cancelled=()=>{reject(new HttpError(409,'The native response was cancelled or timed out.'));void reader.cancel().catch(()=>{});};signal?.addEventListener('abort',cancelled,{once:true});if(signal?.aborted)cancelled();});
+    try {
+    for (;;) { const {done,value}=await Promise.race([reader.read(),aborted]); if(done)break; bytes+=value.length;
       if(bytes>CANDIDATE_MODEL_LIMITS.responseBytes){ await reader.cancel();throw new HttpError(503,'The model response exceeds the supported bound.'); } chunks.push(value); }
-  } finally { reader.releaseLock(); }
+    } finally { signal?.removeEventListener('abort',cancelled);reader.releaseLock(); }
+  }
   const raw = {status:200,contentType,body:Buffer.concat(chunks).toString('utf8')};
   try{return {...raw,body:safeNativeResponse(raw.body,contentType,secrets)};}
   catch{throw new CandidateResponseError(nativeProviderUsage(raw));}
@@ -93,9 +98,12 @@ export async function executeCandidateModel(request: Request, contextId: string,
   const initial=await loadCandidateContext(contextId,authorization,purpose,routes);
   // Pinned Codex rewrites strip max_output_tokens. Until a bounded native contract is
   // proven, reject before reservations, credential decryption or any provider request.
-  if (initial.context.modelRoute.integration === 'hermes_native_codex' || initial.context.modelRoute.integration === 'openai_chatgpt_plan_usage')
+  if (initial.context.modelRoute.integration === 'hermes_native_codex')
     throw new HttpError(409, 'Personal native model transport cannot enforce the candidate output bound.');
-  const body=validateNativeModelRequest(raw,protocol,initial.context.modelRoute.model);
+  const official=initial.context.modelRoute.integration==='openai_chatgpt_plan_usage';
+  if(official && initial.authority.policy.requireHardLimits)throw new HttpError(409,'The selected official route cannot enforce hard provider limits.');
+  const wireProtocol=official?'responses':protocol;
+  const body:Record<string,unknown>=official?(protocol==='chat_completions'?officialPlanFromNativeChat(raw,initial.context.modelRoute.model):validateOfficialPlanRequest(raw,initial.context.modelRoute.model)):validateNativeModelRequest(raw,protocol,initial.context.modelRoute.model);
   const requestId=nativeRequestId(request,{purpose,protocol,body});
   const inputHash=candidateObjectHash({purpose,protocol,body});
   const inputBytes=Buffer.byteLength(JSON.stringify(body),'utf8');
@@ -119,7 +127,7 @@ export async function executeCandidateModel(request: Request, contextId: string,
       if(prior){receiptId=prior.id;return{id:prior.id,attribution};}
       const all=await tx.select().from(hermesTeamCandidateRequests).where(and(eq(hermesTeamCandidateRequests.contextId,contextId),eq(hermesTeamCandidateRequests.kind,'model')));
       if(all.some(row=>row.state!=='complete'))throw new HttpError(409,'Reconcile the previous native request before dispatching another model call.');
-      const output=Number(body.max_output_tokens ?? body.max_completion_tokens ?? body.max_tokens);
+      const output=official?CANDIDATE_MODEL_LIMITS.perRequestOutput:Number(body.max_output_tokens ?? body.max_completion_tokens ?? body.max_tokens);
       if(all.length>=CANDIDATE_MODEL_LIMITS.requests || all.reduce((n,r)=>n+r.outputReserved,0)+output>CANDIDATE_MODEL_LIMITS.outputTokens
         || all.reduce((n,r)=>n+r.inputReservedBytes,0)+inputBytes>CANDIDATE_MODEL_LIMITS.inputBytes)throw new HttpError(409,'This native run exhausted its bounded model allowance.');
       const id=randomUUID();
@@ -152,16 +160,18 @@ export async function executeCandidateModel(request: Request, contextId: string,
           await lockCandidateContext(tx,initial.context);
           const fresh=await loadCandidateContext(contextId,authorization,purpose,routes,tx);
           if(abort.signal.aborted)throw new HttpError(409,'The native requester cancelled.');
-          const wire=await loadCandidateModelWire(fresh.context,protocol,tx,dependencies.fetch);
+          const wire=await loadCandidateModelWire(fresh.context,wireProtocol,tx,dependencies.fetch);
           return { response:wire.send(body,abort.signal),secrets:wire.secrets };
         });
         watch=setTimeout(()=>void check(),250);
-        const result=await readCandidateResponse(await started.response,started.secrets);
+        const result=await readCandidateResponse(await started.response,started.secrets,abort.signal);
         const usage=nativeProviderUsage(result);
         await db.transaction(async tx=>{
           await tx.update(usageEvents).set({inputTokens:usage.input,outputTokens:usage.output}).where(eq(usageEvents.id,id));
         });
+        if(official){officialPlanCompleted(result.body);result.body=officialPlanNativeResponse(result.body,((body.tools as {tools?:{name:string}[]}[]|undefined)?.[0]?.tools??[]).map(tool=>tool.name));if(usage.output!==null && usage.output>CANDIDATE_MODEL_LIMITS.perRequestOutput)throw new HttpError(409,'The official response exceeded its local allowance.');}
         if(usage.input===null || usage.output===null)throw new HttpError(409,'The provider did not confirm this request’s usage.');
+        if(official && protocol==='chat_completions')Object.assign(result,officialPlanToNativeChat(result.body,initial.context.modelRoute.model,(raw as {stream?:boolean}).stream===true,usage));
         // Historical accounting survives revocation; delivery and cached replay still require fresh access.
         await current();
         await db.update(hermesTeamCandidateRequests).set({state:'complete',response:result,updatedAt:new Date()}).where(eq(hermesTeamCandidateRequests.id,id));

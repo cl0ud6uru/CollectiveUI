@@ -76,7 +76,7 @@ async function learningAuthority(row:NativeLearningHandoff,routes:readonly Verif
   if(!route)throw new NativeLearningAttentionError('The source learning route is no longer verified.');
   let transport:Awaited<ReturnType<typeof candidateWireMetadata>>;
   try{transport=await candidateWireMetadata(auth.principal,route,q);}catch{throw new NativeLearningAttentionError('The source learning transport is unavailable.');}
-  if(!route.transportHash || route.transportHash!==transport.hash)throw new NativeLearningAttentionError('The learning transport changed.');
+  if(!route.transportHash || route.transportHash!==transport.hash || (route.billing==='personal' && (!source.personalBindingHash || source.personalBindingHash!==transport.personalBindingHash)))throw new NativeLearningAttentionError('The learning transport changed.');
   const {loadTeamPersonalAccess}=await import('./personal-access');
   const decision=evaluateTeamModelAccess({userId:row.actorId,botId:row.botId,runId:row.childRunId??`learning:${row.id}`,purpose:'learning',choice:route.billing==='personal'?'personal':'default'},
     {userId:row.actorId,botId:row.botId,userEnabled:!auth.principal.user.disabled,botEnabled:auth.bot.enabled&&auth.definition.enabled,audienceAllowed:true,

@@ -58,6 +58,7 @@ export async function issueTeamCandidateContext(p: Principal, runId: string, cho
     if (!run?.botId || run.userId !== p.user.id) throw new HttpError(404, 'Team run not found.');
     await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, run.botId)).for('update');
     const current = await candidateRun(p, runId, tx);
+    if(worker && !current.learning && choice!==current.chat.modelChoice)throw new HttpError(403,'The native model choice must come from this private conversation.');
     if(worker && (current.run.status!=='running' || current.run.holder!==worker.holder || current.run.segment!==worker.segment))throw new HttpError(409,'The native worker lease changed.');
     const [retained] = await tx.select({id:hermesTeamCandidateContexts.id}).from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.runId,runId));
     if(retained)throw new HttpError(409,'This run already has a native grant. Start a new run after reconciliation.');
@@ -67,6 +68,7 @@ export async function issueTeamCandidateContext(p: Principal, runId: string, cho
     if (selected.status !== 'ready') throw new HttpError(selected.status === 'blocked' ? 403 : 409, selected.message);
     const route = routes.find(r => r.id === selected.attribution.routeId)!;
     if(current.learning && current.learning.routeHash!==candidateObjectHash(route))throw new HttpError(409,'The learning route must match its original attribution.');
+    if(authority.policy.requireHardLimits && route.limitContract==='local_only')throw new HttpError(409,'This personal route cannot enforce the required hard usage limit.');
     const transport=await candidateWireMetadata(current.principal,route,tx);
     if(!route.transportHash || route.transportHash!==transport.hash)throw new HttpError(409,'The actual native transport has not been verified.');
     const existing = await tx.select().from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.profileId, current.profile.id));
@@ -89,7 +91,7 @@ export async function issueTeamCandidateContext(p: Principal, runId: string, cho
     const expiresAt = new Date(Math.min(Date.now() + 120_000, route.evidence.expiresAt, selected.attribution.billing === 'personal' ? authority.personalConnection?.expiresAt ?? 0 : Infinity));
     const [context] = await tx.insert(hermesTeamCandidateContexts).values({ runId, botId: run.botId, profileId: current.profile.id, actorId: p.user.id,
       sessionVersion: current.principal.user.sessionVersion, definitionVersion: current.definition.version, teamRevision: current.profile.installedRevision,
-      mode: current.chat.mode, modelRoute: route, personalConnectionId: selected.attribution.connectionId, bindingHash: candidateObjectHash(current.profile.binding),
+      mode: current.chat.mode, modelRoute: route, personalConnectionId: selected.attribution.connectionId, personalBindingHash:transport.personalBindingHash??null,bindingHash: candidateObjectHash(current.profile.binding),
       modelTokens: Object.fromEntries(TEAM_MODEL_PURPOSES.map(purpose => [purpose,candidateHash(tokens[purpose])])) as Record<TeamModelPurpose,string>,
       toolTokenHash: candidateHash(toolToken), expiresAt }).returning();
     await tx.update(hermesTeamCandidateContexts).set({learningTokenHash:learningToken?candidateHash(learningToken):null,
@@ -120,7 +122,7 @@ export async function validateCandidateContext(context: CandidateContext, routes
   const route = routes.find(r => r.id === context.modelRoute.id);
   if (!route || candidateObjectHash(route) !== candidateObjectHash(context.modelRoute)) throw new HttpError(409, 'The native route is no longer verified.');
   const transport=await candidateWireMetadata(principal,route,q);
-  if(!route.transportHash || route.transportHash!==transport.hash)throw new HttpError(409,'The actual native transport changed after verification.');
+  if(!route.transportHash || route.transportHash!==transport.hash || (route.billing==='personal' && (!context.personalBindingHash || context.personalBindingHash!==transport.personalBindingHash)))throw new HttpError(409,'The actual native transport or personal account changed after verification.');
   const authority = await candidateAuthority(principal, context.runId, routes, q);
   const decision = evaluateTeamModelAccess({ userId: context.actorId, botId: context.botId, runId: context.runId, purpose: purpose === 'tool' ? 'reply' : purpose,
     choice: context.modelRoute.billing === 'personal' ? 'personal' : 'default' }, authority, routes);

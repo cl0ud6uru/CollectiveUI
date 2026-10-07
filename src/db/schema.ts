@@ -1467,8 +1467,9 @@ export const hermesTeamProfiles = pgTable('hermes_team_profiles', {
 export const hermesTeamChats = pgTable('hermes_team_chats', {
   conversationId: text('conversation_id').primaryKey().references(() => conversations.id, { onDelete: 'cascade' }),
   profileId: text('profile_id').notNull().references(() => hermesTeamProfiles.id, { onDelete: 'restrict' }),
+  modelChoice:text('model_choice').$type<'default'|'personal'>().notNull().default('default'),
   mode: text('mode').$type<import('../lib/hermes-team/types').TeamMode>().notNull(),
-}, t => [check('hermes_team_chat_mode_check', sql`${t.mode} in ('member','admin')`)]);
+}, t => [check('hermes_team_chat_model_choice_check',sql`${t.modelChoice} in ('default','personal')`),check('hermes_team_chat_mode_check', sql`${t.mode} in ('member','admin')`)]);
 export const hermesTeamRevisions = pgTable('hermes_team_revisions', {
   id: id(), botId: text('bot_id').notNull().references(() => hermesTeamDefinitions.botId, { onDelete: 'restrict' }),
   revision: integer('revision').notNull(), manifestHash: text('manifest_hash').notNull(),
@@ -1527,7 +1528,7 @@ export const hermesTeamCandidateContexts = pgTable('hermes_team_candidate_contex
   sessionVersion: integer('session_version').notNull(), definitionVersion: integer('definition_version').notNull(),
   teamRevision: integer('team_revision'), mode: text('mode').$type<'member' | 'admin'>().notNull(),
   modelRoute: jsonb('model_route').$type<import('../lib/hermes-team/model-policy').VerifiedTeamModelRoute>().notNull(),
-  personalConnectionId: text('personal_connection_id'), bindingHash: text('binding_hash').notNull(),
+  personalConnectionId: text('personal_connection_id'), personalBindingHash:text('personal_binding_hash'), bindingHash: text('binding_hash').notNull(),
   modelTokens: jsonb('model_tokens').$type<Record<import('../lib/hermes-team/model-policy').TeamModelPurpose, string>>().notNull(),
   toolTokenHash: text('tool_token_hash').notNull(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   /** A distinct one-use native snapshot handoff capability; never a model or tool token. */
@@ -1541,6 +1542,7 @@ export const hermesTeamCandidateContexts = pgTable('hermes_team_candidate_contex
   check('hermes_team_candidate_route_bound', sql`jsonb_typeof(${t.modelRoute}) = 'object' and octet_length(${t.modelRoute}::text) <= 8192`),
   check('hermes_team_candidate_context_versions_check', sql`${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
   check('hermes_team_candidate_context_hash_check', sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.toolTokenHash} ~ '^[a-f0-9]{64}$'`),
+  check('hermes_team_candidate_personal_binding_check',sql`${t.personalBindingHash} is null or ${t.personalBindingHash} ~ '^[a-f0-9]{64}$'`),
   check('hermes_team_candidate_learning_hash_check',sql`${t.learningTokenHash} is null or ${t.learningTokenHash} ~ '^[a-f0-9]{64}$'`),
   check('hermes_team_candidate_retirement_check',sql`(${t.retirementState} is null or ${t.retirementState} in ('pending','confirmed','needs_attention')) and (${t.nativeStoppedAt} is null or ${t.retirementState} = 'confirmed') and (${t.workerSegment} is null or ${t.workerSegment} >= 0)`),
   check('hermes_team_candidate_context_tokens_bound', sql`jsonb_typeof(${t.modelTokens}) = 'object' and octet_length(${t.modelTokens}::text) <= 512`)]);
@@ -1591,4 +1593,21 @@ export const hermesTeamLearningHandoffs=pgTable('hermes_team_learning_handoffs',
   check('hermes_team_learning_identity_check',sql`${t.mode} in ('member','admin') and ${t.sessionVersion} >= 0 and ${t.definitionVersion} > 0 and (${t.teamRevision} is null or ${t.teamRevision} > 0)`),
   check('hermes_team_learning_hash_check',sql`${t.bindingHash} ~ '^[a-f0-9]{64}$' and ${t.routeHash} ~ '^[a-f0-9]{64}$' and ${t.snapshotHash} ~ '^[a-f0-9]{64}$'`),
   check('hermes_team_learning_snapshot_check',sql`${t.snapshotBytes} between 1 and 64000 and octet_length(${t.payloadEnc}) <= 100000 and length(${t.reviewId}) = 36`),
+]);
+
+/** Distinct official plan OAuth account; never reuses native Codex user_credentials. */
+export const officialPlanConnections=pgTable('official_plan_connections',{
+  id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),
+  clientId:text('client_id').notNull(),hostId:text('host_id').notNull(),subject:text('subject').notNull(),
+  selected:boolean('selected').notNull().default(true),status:text('status').$type<'active'|'needs_reauth'|'revoked'>().notNull().default('active'),
+  scopes:jsonb('scopes').$type<string[]>().notNull(),expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),
+  tokenBundleEnc:text('token_bundle_enc').notNull(),revision:integer('revision').notNull().default(1),
+  catalog:jsonb('catalog').$type<string[]>().notNull(),catalogRevision:integer('catalog_revision').notNull(),
+  catalogExpiresAt:timestamp('catalog_expires_at',{withTimezone:true}).notNull(),verifiedAt:timestamp('verified_at',{withTimezone:true}).notNull(),
+  createdAt:createdAt(),updatedAt:updatedAt(),
+},t=>[uniqueIndex('official_plan_selected_owner_idx').on(t.userId).where(sql`${t.selected}`),
+  check('official_plan_status_check',sql`${t.status} in ('active','needs_reauth','revoked')`),
+  check('official_plan_identity_bound',sql`length(${t.clientId}) between 1 and 256 and length(${t.hostId}) between 1 and 256 and length(${t.subject}) between 1 and 256`),
+  check('official_plan_revision_check',sql`${t.revision} > 0 and ${t.catalogRevision} = ${t.revision}`),
+  check('official_plan_payload_bound',sql`${t.tokenBundleEnc} like 'v2.%' and octet_length(${t.tokenBundleEnc}) <= 50000 and jsonb_typeof(${t.scopes}) = 'array' and octet_length(${t.scopes}::text) <= 4096 and jsonb_typeof(${t.catalog}) = 'array' and jsonb_array_length(${t.catalog}) <= 100 and octet_length(${t.catalog}::text) <= 24000`),
 ]);

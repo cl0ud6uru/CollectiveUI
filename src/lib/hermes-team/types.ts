@@ -16,6 +16,6 @@ export const teamConfiguration = z.object({
   enabled: z.boolean(),
   expectedVersion: z.number().int().min(0),
 }).strict();
-export type TeamChatStatus = { enabled: boolean; mode: TeamMode; canMaintain: boolean; state: TeamProfileState; installedRevision: number | null; publishedRevision: number; conflictCount: number; modelAccessAvailable?: boolean; modelAccessReason?: string };
+export type TeamChatStatus = { enabled: boolean; mode: TeamMode; canMaintain: boolean; state: TeamProfileState; installedRevision: number | null; publishedRevision: number; conflictCount: number; modelAccessAvailable?: boolean; modelAccessReason?: string; modelPolicyMode?: TeamModelMode; personalAllowed?: boolean; personalRequired?: boolean };
 /** Rollout views contain counts and hashes, never members' private resource contents. */
 export type TeamRollout = { profileId: string; state: TeamProfileState; installedRevision: number | null; conflictCount: number };

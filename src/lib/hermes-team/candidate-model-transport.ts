@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { aiApps, userCredentials } from '@/db/schema';
+import { aiApps, userCredentials,officialPlanConnections } from '@/db/schema';
 import type { Tx } from '@/db';
 import { HttpError } from '@/lib/authz';
 import { providerContextFor } from '@/lib/llm/resolve';
@@ -7,6 +7,7 @@ import { apiKeyOf } from '@/lib/llm/providers/shared';
 import { openCredentialSecret } from '@/lib/llm/chatgpt/store';
 import { chatgptFetch } from '@/lib/llm/chatgpt/fetch';
 import { chatgptBackendUrl } from '@/lib/llm/chatgpt/constants';
+import { OFFICIAL_PLAN_ORIGIN,OFFICIAL_PLAN_ADAPTER,openOfficialPlanSecret,officialPlanMetadata } from './official-plan';
 import type { CandidateContext } from './candidate-context';
 import type { TeamNativeModelProtocol } from './native-request';
 
@@ -14,6 +15,7 @@ export const CANDIDATE_MODEL_ADAPTERS = Object.freeze({
   'collective-openai-chat-v1': 'chat_completions',
   'collective-openai-responses-v1': 'responses',
   'collective-codex-responses-v1': 'responses',
+  [OFFICIAL_PLAN_ADAPTER]:'responses',
 } satisfies Record<string,TeamNativeModelProtocol>);
 export type CandidateModelWire = { send(body: Record<string,unknown>, signal: AbortSignal): Promise<Response>; secrets: string[] };
 
@@ -21,7 +23,14 @@ export type CandidateModelWire = { send(body: Record<string,unknown>, signal: Ab
 export async function loadCandidateModelWire(context: CandidateContext, protocol: TeamNativeModelProtocol, tx: Tx, baseFetch: typeof fetch = fetch): Promise<CandidateModelWire> {
   const route = context.modelRoute;
   if (CANDIDATE_MODEL_ADAPTERS[route.adapterId as keyof typeof CANDIDATE_MODEL_ADAPTERS] !== protocol) throw new HttpError(409, 'Unsupported native model transport.');
-  if (route.integration === 'openai_chatgpt_plan_usage') throw new HttpError(409, 'Official ChatGPT plan usage has no tested native Team adapter.');
+  if(route.integration==='openai_chatgpt_plan_usage'){
+    if(route.billing!=='personal' || route.adapterId!==OFFICIAL_PLAN_ADAPTER || route.limitContract!=='local_only' || !context.personalConnectionId)throw new HttpError(409,'Unsupported official personal route.');
+    const metadata=await officialPlanMetadata(context.actorId,route.model,tx);
+    if(!metadata || metadata.id!==context.personalConnectionId || metadata.bindingHash!==context.personalBindingHash)throw new HttpError(409,'The official personal account changed.');
+    const [row]=await tx.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.id,metadata.id),eq(officialPlanConnections.userId,context.actorId)));
+    const secret=openOfficialPlanSecret(row);
+    return {secrets:[secret.access,secret.refresh??''],send:(body,signal)=>baseFetch(`${OFFICIAL_PLAN_ORIGIN}/responses`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${secret.access}`},body:JSON.stringify(body),signal,redirect:'error'})};
+  }
   if (route.integration === 'hermes_native_codex') {
     if (route.billing !== 'personal' || route.adapterId !== 'collective-codex-responses-v1' || !context.personalConnectionId) throw new HttpError(409, 'Invalid personal Codex route.');
     const [row] = await tx.select().from(userCredentials).where(and(eq(userCredentials.id,context.personalConnectionId),eq(userCredentials.userId,context.actorId),eq(userCredentials.provider,'chatgpt')));
