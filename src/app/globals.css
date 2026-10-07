@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "katex/dist/katex.min.css";
 
-@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant dark (&:where(.dark, .dark *, .collective, .collective *));
 
 /*
  * ChatGPT desktop x Grok Bot palette: neutral ink and greys everywhere; colour comes from bot avatars and status only.
@@ -51,6 +51,44 @@
   --dialog: #1f1f1f;
   --code-bg: #111111;
   --shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+/*
+ * "The Collective": near-black hull plating with phosphor-green circuitry. A dark theme (it opts into every `dark:` variant)
+ * plus a green accent, hairline green borders and a faint circuit-grid backdrop.
+ */
+.collective {
+  color-scheme: dark;
+  --bg: #0b0e0c;
+  --sidebar: #070908;
+  --surface: #101512;
+  --surface-2: #151b17;
+  --hover: rgba(74, 222, 128, 0.09);
+  --fg: #e4eee8;
+  --muted: #9bb0a3;
+  --subtle: #68796f;
+  --border: rgba(74, 222, 128, 0.18);
+  --accent: #3ddc84;
+  --accent-fg: #04110a;
+  --success: #4ade80;
+  --working: #a78bfa;
+  --warn: #fb923c;
+  --danger: #f06a66;
+  --bubble-bot: #121a15;
+  --popover: #0f1511;
+  --dialog: #0d120f;
+  --code-bg: #070908;
+  --shadow: 0 0 0 1px rgba(74, 222, 128, 0.35), 0 0 18px rgba(74, 222, 128, 0.12), 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.collective body {
+  background:
+    radial-gradient(ellipse 60% 50% at 78% 12%, rgba(74, 222, 128, 0.07), transparent 70%),
+    linear-gradient(rgba(74, 222, 128, 0.035) 1px, transparent 1px) 0 0 / 48px 48px,
+    linear-gradient(90deg, rgba(74, 222, 128, 0.035) 1px, transparent 1px) 0 0 / 48px 48px,
+    var(--bg);
+}
+.collective ::selection {
+  background: rgba(74, 222, 128, 0.3);
 }
 
 @theme inline {
@@ -156,6 +194,9 @@ body {
 .dark .markdown a {
   color: #7ab7ff;
 }
+.collective .markdown a {
+  color: #5eead4;
+}
 .markdown strong {
   font-weight: 600;
 }
@@ -201,7 +242,9 @@ body {
   background-color: transparent !important;
 }
 .dark .shiki,
-.dark .shiki span {
+.dark .shiki span,
+.collective .shiki,
+.collective .shiki span {
   color: var(--shiki-dark) !important;
 }
 

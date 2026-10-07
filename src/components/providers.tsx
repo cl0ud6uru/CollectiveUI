@@ -6,7 +6,7 @@ import { Toaster } from "sonner";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+    <ThemeProvider attribute="class" themes={["light", "dark", "collective"]} defaultTheme="system" enableSystem disableTransitionOnChange>
       <Tooltip.Provider delayDuration={300}>
         {children}
         <Toaster position="top-center" richColors />
