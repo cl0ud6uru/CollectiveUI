@@ -7,7 +7,7 @@ import type { PortalUIMessage } from "@/lib/chat/store";
 import type { ReviewedLesson } from "@/lib/agent/learning/types";
 import type { Tx } from "@/db";
 
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, query: null as Tx | null, generate: vi.fn(), enqueue: vi.fn(async () => "job") }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, query: null as Tx | null, generate: vi.fn(), decide: vi.fn(), enqueue: vi.fn(async () => "job") }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", async () => {
   const { PGlite } = await import("@electric-sql/pglite");
@@ -19,6 +19,7 @@ vi.mock("@/db", async () => {
 vi.mock("ai", async original => ({ ...await original<typeof import("ai")>(), generateText: fixture.generate }));
 vi.mock("@/lib/jobs", () => ({ QUEUES: { learningReview: "learning.review" }, enqueue: fixture.enqueue }));
 vi.mock("@/lib/llm", async original => ({ ...await original<typeof import("@/lib/llm")>(), resolveModel: async () => ({ model: {} }) }));
+vi.mock("@/lib/llm/providers/decisions", () => ({ requestDecision: fixture.decide }));
 vi.mock("@/lib/hermes-team/learning", async original => {
   const learning = await original<typeof import("@/lib/hermes-team/learning")>();
   return { ...learning, withNonTeamLearning: <T>(id: string, skip: T, work: (q: Tx) => Promise<T>, onSkip?: (q: Tx) => Promise<void>) =>
@@ -32,8 +33,13 @@ import { reviewNativeRun, scheduleLearningReview, recoverLearningReviews } from 
 import { successfulToolEvidence, lessonDisposition } from "@/lib/agent/learning/policy";
 import { curateLearnedSkills } from "@/lib/agent/learning/curator";
 import { selectMemories } from "@/lib/agent/memory";
-import { renderSkill, skillTool } from "@/lib/agent/tools/skills";
+import { currentSkillsForTurn, renderSkill, skillTool } from "@/lib/agent/tools/skills";
+import type { AgentCtx } from "@/lib/agent/types";
 import { findSkill, slashInvokedSkill } from "@/lib/agent/skill-lookup";
+import { buildToolset } from "@/lib/agent/toolset";
+import { toolShortlisting } from "@/lib/agent/tool-shortlisting";
+import { getSetting } from "@/lib/settings";
+import { AAD, encrypt } from "@/lib/crypto";
 
 let owner: Principal; let member: Principal; let boss: Principal;
 const content = {
@@ -80,6 +86,48 @@ beforeEach(async () => {
 afterAll(async () => { await fixture.client?.close(); });
 
 describe("native learning with real PostgreSQL migrations", () => {
+  it("shortlists through real MCP authorization and still rejects a revoked grant at dispatch", async () => {
+    await db.insert(schema.aiApps).values({ id: "api", name: "Company API", provider: "openai", model: "gpt-6-luna", credentialMode: "org", apiKeyEnc: encrypt("fixture-key", AAD.appApiKey) });
+    await db.insert(schema.settings).values({ key: "decisions", value: { toolShortlisting: true, providerAppId: "api" } });
+    const defs = ["read_report", "send_invoice"].map(name => ({ name, description: name, inputSchema: { type: "object" as const, properties: {} } }));
+    await db.insert(schema.mcpServers).values({ id: "finance", name: "Finance", url: "https://fixture.invalid/mcp", status: "enabled", toolsSnapshot: defs });
+    await db.insert(schema.botTools).values({ botId: "bot", toolKey: "mcp:finance", approval: "ask" });
+    await db.insert(schema.toolGrants).values({ userId: "member", botId: "bot", toolName: "finance__read_report" });
+    const [bot] = await db.select().from(schema.bots); const [app] = await db.select().from(schema.aiApps).where(eq(schema.aiApps.id, "model"));
+    const ctx = { principal: member, bot, app, conversationId: "chat", depth: 0, background: false, execution: { holder: "fixture", deadlineAt: Date.now() + 30000 }, toolSettings: await getSetting("tools") } as AgentCtx;
+    const set = await buildToolset(ctx);
+    fixture.decide.mockImplementation(async (_p, _input, q) => ({ status: "ok", inputTokens: 12,
+      answers: q.map((question: { name: string }, i: number) => ({ type: "predicate", name: question.name, probability: i === 0 ? 0.95 : 0.05 })) }));
+    try {
+      expect(await toolShortlisting(ctx, set, "Read a report")).toEqual(["finance__read_report"]);
+      expect(set.approval({ toolCall: { toolName: "finance__send_invoice", input: {} } })).toBe("user-approval");
+      await db.delete(schema.toolGrants);
+      await expect(set.tools.finance__read_report.execute!({}, { toolCallId: "revoked", messages: [], context: undefined })).rejects.toThrow("Tool permissions or configuration changed");
+      expect(await toolShortlisting(ctx, set, "Read a report")).toBeUndefined();
+      expect(fixture.decide).toHaveBeenCalledTimes(1);
+    } finally { await set.close(); }
+  });
+  it("rebuilds the picker catalog from current bot, company and personal skill grants", async () => {
+    await db.insert(schema.skills).values([
+      { id: "saved", ownerId: "owner", botId: "bot", slug: "saved", name: "Saved", description: "Allowed", instructions: "Steps" },
+      { id: "private", ownerId: "member", botId: "bot", slug: "private", name: "Private", description: "Other user", instructions: "Private steps" },
+    ]);
+    await db.insert(schema.botTools).values({ botId: "bot", toolKey: "skills", approval: "auto" });
+    fixture.generate.mockResolvedValue({ output: { lessons: [lesson(), lesson({ kind: "policy", topic: "safety-policy" })] } });
+    await reviewNativeRun("run");
+    const policy = (await learningViews(owner, "bot")).find(row => row.kind === "policy")!;
+    if (policy.status === "pending") await changeLearning(owner, policy.id, policy.version, { status: "active" });
+    const [bot] = await db.select().from(schema.bots);
+    const ctx = { principal: boss, bot } as AgentCtx;
+    const catalog = await currentSkillsForTurn(ctx);
+    expect(catalog.map(s => s.id)).toContain("saved"); expect(catalog.map(s => s.id)).not.toContain("private");
+    expect(catalog.find(s => s.id === policy.id)?.mandatory).toBe(true);
+    await db.delete(schema.botTools);
+    expect((await currentSkillsForTurn(ctx)).map(s => s.id)).not.toContain("saved");
+    expect(await currentSkillsForTurn({ ...ctx, principal: { ...boss, user: { ...boss.user, prefs: { learningEnabled: false } } } })).toEqual([]);
+    await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: ["skills"] } });
+    expect(await currentSkillsForTurn(ctx)).toEqual([]);
+  });
   it("learns a verified Action1 procedure for everyone, without installing updates or exposing the source chat", async () => {
     expect(await reviewNativeRun("run")).toBe(1);
     const shared = await learningViews(boss, "bot");
@@ -376,6 +424,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect((await learningViews(owner, "bot"))[0].useCount).toBe(1);
     expect(await db.select().from(schema.botLearningRevisions)).toHaveLength(1);
     await changeLearning(owner, saved.id, 1, { pinned: true });
+    expect((await learnedSkillsForBot("bot", "boss"))[0].pinned).toBe(true);
     await db.update(schema.botLearningReviews).set({ completedAt: null });
     fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 2, instructions: "Changed automatically." })] } });
     expect(await reviewNativeRun("run")).toBe(0);

@@ -18,6 +18,8 @@ afterEach(() => vi.restoreAllMocks());
 describe("Decisions supported configuration and wire contract", () => {
   it("defaults off and only accepts configured company OpenAI API endpoints", () => {
     expect(DECISIONS_DEFAULTS.queenRouting).toBe(false);
+    expect(DECISIONS_DEFAULTS.skillPicking).toBe(false);
+    expect(DECISIONS_DEFAULTS.toolShortlisting).toBe(false);
     expect(decisionsSettingsSchema.parse({})).toEqual(DECISIONS_DEFAULTS);
     const app = { enabled: true, provider: "openai", credentialMode: "org", baseUrl: null };
     expect(decisionsCapability(app)).toBe(true);

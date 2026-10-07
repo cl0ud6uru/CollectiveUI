@@ -41,7 +41,21 @@ export function DecisionsForm({ initial, providers }: { initial: DecisionsSettin
           Queen bot routing
         </label>
         <p className="text-xs text-muted">Helps Queen choose an allowed specialist for a clear request. Queen still plans the assignment and follows normal approval rules. Explicit specialist choices and related tasks keep their existing behavior.</p>
-        <Button type="submit" disabled={pending || (value.queenRouting && !available)}>{pending ? "Saving…" : "Save Decisions settings"}</Button>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={value.skillPicking} disabled={pending || (!available && !value.skillPicking)} onChange={e => {
+            setSaved(false); setValue({ ...value, skillPicking: e.target.checked });
+          }} />
+          Skill picking
+        </label>
+        <p className="text-xs text-muted">Shows relevant optional skills in new native bot turns. Pinned procedures, mandatory policies and explicit skill commands stay available. The bot still loads skills through normal permissions and approvals.</p>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={value.toolShortlisting} disabled={pending || (!available && !value.toolShortlisting)} onChange={e => {
+            setSaved(false); setValue({ ...value, toolShortlisting: e.target.checked });
+          }} />
+          Tool shortlisting
+        </label>
+        <p className="text-xs text-muted">Shows relevant optional MCP tools for the first planning step. Built-in tools, harness controls and named prerequisites stay available; later steps restore the full allowed catalog. Permissions and approvals still apply.</p>
+        <Button type="submit" disabled={pending || ((value.queenRouting || value.skillPicking || value.toolShortlisting) && !available)}>{pending ? "Saving…" : "Save Decisions settings"}</Button>
         {error && <p role="alert" className="text-sm text-danger">{error}</p>}
         {saved && <p role="status" className="text-sm text-muted">Decisions settings saved.</p>}
       </form>
