@@ -48,6 +48,10 @@ export type UsageContext = {
   botId?: string | null;
   toolCallId?: string | null;
   credentialId?: string | null;
+  providerConnectionId?: string | null;
+  providerOrganization?: string | null;
+  providerProject?: string | null;
+  billingRoute?: string | null;
   scope?: UsageScope;
 };
 
@@ -93,8 +97,16 @@ export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsag
     purpose: ctx.purpose,
     billingSource: ctx.billingSource,
     credentialId: ctx.credentialId ?? null,
+    providerConnectionId: ctx.providerConnectionId ?? null,
+    providerOrganization: ctx.providerOrganization ?? null,
+    providerProject: ctx.providerProject ?? null,
+    billingRoute: ctx.billingRoute ?? (ctx.billingSource === "chatgpt_plan" ? "subscription:chatgpt" : ctx.providerKind === "hermes" ? "unknown:hermes" : null),
     ...tokens,
     ...search,
+    // Only verified organization API routes may carry dollar estimates. Subscription and unknown Hermes
+    // activity retain tokens/call counts, including delegated and background work.
+    ...(ctx.billingSource !== "org" || ctx.providerKind === "chatgpt" || ctx.providerKind === "hermes" || (ctx.billingRoute != null && !ctx.billingRoute.startsWith("api:"))
+      ? { costMicros: null, searchToolCostEstimateMicros: null } : {}),
   };
   const p = Promise.resolve()
     .then(() => (ctx.scope?.writer ?? writer)(row))
