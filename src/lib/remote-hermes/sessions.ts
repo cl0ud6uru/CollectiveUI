@@ -115,6 +115,7 @@ export async function submitNativePrompt(ownerId: string, connectionId: string, 
   const params = { profile: row.profile, session_id: cached.row.runtimeId };
   let outgoing = text;
   const imagePaths: string[] = [];
+  let promptDispatched = false;
   try {
     for (const file of uploads) {
       let attached: RpcRecord;
@@ -130,17 +131,21 @@ export async function submitNativePrompt(ownerId: string, connectionId: string, 
       }
       if (attached.attached !== true) throw new HttpError(502, 'Hermes could not attach this file. No prompt was sent.');
     }
+    promptDispatched = true;
     const result = await hub.socket.call('prompt.submit', { ...params, text: outgoing });
     if (!['streaming', 'queued'].includes(String(result.status))) throw new HttpError(409, 'Hermes did not confirm turn admission. Refresh this session before continuing.');
     await settlePrompt('running');
     return { accepted: true, duplicate: false };
   } catch (error) {
     for (const imagePath of imagePaths) { try { await hub.socket.call('image.detach', { ...params, path: imagePath }); } catch {} }
-    await settlePrompt('uncertain');
+    // Attachments may have side effects, but cannot dispatch this prompt. Keep the
+    // receipt (including on upload disconnects) and release only its admission.
+    const rejectedBeforeDispatch = !promptDispatched || error instanceof NativeRpcError && error.code === -32601;
+    await settlePrompt(rejectedBeforeDispatch ? 'idle' : 'uncertain');
     throw error;
   }
-  async function settlePrompt(status: 'running' | 'uncertain') {
-    const [updated] = await db.update(remoteHermesSessions).set({ status, revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
+  async function settlePrompt(status: 'idle' | 'running' | 'uncertain') {
+    const [updated] = await db.update(remoteHermesSessions).set({ status, admissionRequestId: status === 'idle' ? null : requestId, ...(status === 'idle' ? { admissionAt: null } : {}), revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() })
       .where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.status, 'admitting'), eq(remoteHermesSessions.admissionRequestId, requestId))).returning();
     const current = hub.sessions.get(row.id);
     if (updated && current && current.row.admissionRequestId === requestId && updated.revision >= current.row.revision) {
@@ -160,7 +165,7 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   const cached = hub.sessions.get(row.id)!;
   const params = { session_id: cached.row.runtimeId, profile: row.profile };
   if (operation === 'answer') return hub.answer(row, z.string().max(200).parse(input.requestId), input.answer);
-  if (operation === 'stop') return hub.socket.call('session.interrupt', params);
+  if (operation === 'stop') return stopAndReconcile();
   if (operation === 'steer') {
     if (!cached.view.running) throw new HttpError(409, 'This native turn has already finished.');
     return hub.socket.call('session.steer', { ...params, text: z.string().min(1).max(4000).parse(input.text) });
@@ -206,7 +211,7 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
     if (selected.value === '/yolo' && ['on', 'off'].includes(selected.args)) throw new HttpError(409, 'Use the confirmed session YOLO control. Review and confirm the exact on/off action; no mode was changed.');
     if (selected.value === '/commands') return { output: catalog.commands.map(c => `${c.value} — ${c.description}${c.available ? '' : ' (unavailable here)'}`).join('\n') + (catalog.warning ? `\n${catalog.warning}` : '') };
     if (selected.value === '/context') return { output: JSON.stringify(await hub.socket.call('session.context_breakdown', params), null, 2) };
-    if (selected.value === '/stop') return { ...await hub.socket.call('session.interrupt', params), output: 'Stop requested. Check the native turn for completion.' };
+    if (selected.value === '/stop') return { ...await stopAndReconcile(), output: 'Stop requested. Check the native turn for completion; unknown reservations are not released by an interrupt alone.' };
     return { output: yoloStatusText(cached.view) + ' Use /yolo on or /yolo off for a policy-controlled confirmation. Profile-wide approval policy cannot be changed here.' };
   }
   const command = selected.command;
@@ -234,6 +239,16 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   await settleCommand('idle');
   await hub.refresh(hub.sessions.get(row.id)!.row);
   return nativeCommandResult(result);
+  async function stopAndReconcile() {
+    try {
+      return await hub.socket.call('session.interrupt', params);
+    } finally {
+      // Interrupt acknowledgement is not a dispatch barrier. Read native state
+      // even if its reply was lost; refresh preserves unobserved reservations.
+      try { await hub.refresh(hub.sessions.get(row.id)?.row ?? row); }
+      catch { const current = hub.sessions.get(row.id); if (current) current.view.uncertain = true; }
+    }
+  }
   async function readCatalog() {
     try { return nativeCommandCatalog(await hub.socket.call('commands.catalog', params)); }
     catch (e) {
