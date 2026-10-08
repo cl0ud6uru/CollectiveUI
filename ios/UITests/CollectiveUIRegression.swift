@@ -133,6 +133,9 @@ final class CollectiveUIRegression: XCTestCase {
         let header = app.otherElements["chat.header"]
         let transcript = app.scrollViews["chat.transcript"]
         XCTAssertTrue(header.waitForExistence(timeout: 5))
+        XCTAssertTrue(transcript.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(header.frame.height, 0)
+        XCTAssertGreaterThan(transcript.frame.height, 0)
         XCTAssertGreaterThanOrEqual(transcript.frame.minY, header.frame.maxY)
         capture("parity-readable-chat-header")
     }

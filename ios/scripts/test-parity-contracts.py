@@ -63,5 +63,42 @@ class ParityContracts(unittest.TestCase):
         change = app.split('func changeServer()')[1].split('func loadServerInfoIfNeeded')[0]
         self.assertIn('sessionInfo = nil', change)
 
+    def test_pending_validation_preserves_existing_admin_navigation_only(self):
+        access = source('CollectiveKit/Sources/CollectiveKit/SettingsDestination.swift')
+        self.assertIn('var isValidating = false', access)
+        self.assertIn('var shouldDismissAdminDestinations: Bool { !isValidating && !isAdmin }', access)
+        begin = access.split('func beginValidation()')[1].split('@discardableResult')[0]
+        self.assertIn('isAdmin = false', begin)
+        self.assertIn('isValidating = true', begin)
+        settings = source('CollectiveUI/Views/SettingsView.swift')
+        self.assertIn('.onChange(of: model.settingsAccess.shouldDismissAdminDestinations)', settings)
+        self.assertNotIn('if !isAdmin && !isOpening', settings)
+        opening = settings.split('private func openWebsite(')[1].split('private func reconcileAdminDestinations')[0]
+        self.assertIn('defer {', opening)
+        self.assertIn('if model.settingsAccess.generation == generation', opening)
+        self.assertIn('isOpening = false; reconcileAdminDestinations()', opening)
+        self.assertIn('guard model.settingsAccess.shouldDismissAdminDestinations else { return }', settings)
+        cleanup = settings.split('private func reconcileAdminDestinations()')[1].split('private func refreshAfterBrowser')[0]
+        self.assertIn('if path.contains(where: \\.isAdminOnly) { path = [] }', cleanup)
+        self.assertIn('if browser?.destination.isAdminOnly == true { browser = nil }', cleanup)
+        self.assertNotIn('isOpening', cleanup)
+
+    def test_failed_validation_settles_through_the_scoped_request(self):
+        access = source('CollectiveKit/Sources/CollectiveKit/SettingsDestination.swift')
+        self.assertIn('func failValidation(generation: UUID, request: UUID) -> Bool', access)
+        failure = access.split('func failValidation(')[1].split('\n    }')[0]
+        self.assertIn('self.generation == generation, self.request == request', failure)
+        self.assertIn('isValidating = false', failure)
+        app = source('CollectiveUI/App/AppModel.swift')
+        session = app.split('func loadSessionInfo() async')[1].split('func startNewChat')[0]
+        self.assertIn('settingsAccess.failValidation(generation: generation, request: request)', session)
+
+    def test_header_geometry_requires_real_elements(self):
+        ui = source('UITests/CollectiveUIRegression.swift')
+        test = ui.split('func testChatHeaderNeverOverlapsTheTranscriptViewport()')[1].split('func testDrafts')[0]
+        self.assertIn('transcript.waitForExistence(timeout: 5)', test)
+        self.assertIn('XCTAssertGreaterThan(header.frame.height, 0)', test)
+        self.assertIn('XCTAssertGreaterThan(transcript.frame.height, 0)', test)
+
 if __name__ == '__main__':
     unittest.main()

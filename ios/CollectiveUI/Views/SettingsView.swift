@@ -118,14 +118,10 @@ struct SettingsView: View {
             #endif
         }
         .onChange(of: model.settingsAccess.generation) { _, _ in
-            browser = nil; path = []; section = "General"; openingError = nil
+            browser = nil; path = []; section = "General"; openingError = nil; isOpening = false
         }
-        .onChange(of: model.settingsAccess.isAdmin) { _, isAdmin in
-            if !isAdmin && !isOpening {
-                if section == "Admin" { section = "General" }
-                if path.contains(where: \.isAdminOnly) { path = [] }
-                if browser?.destination.isAdminOnly == true { browser = nil }
-            }
+        .onChange(of: model.settingsAccess.shouldDismissAdminDestinations) { _, _ in
+            reconcileAdminDestinations()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { refreshAfterBrowser() }
@@ -209,11 +205,16 @@ struct SettingsView: View {
     private func openWebsite(_ destination: SettingsDestination) async {
         guard !isOpening, !model.isDemoSession else { return }
         isOpening = true; openingError = nil
-        defer { isOpening = false }
         let generation = model.settingsAccess.generation
+        defer {
+            if model.settingsAccess.generation == generation {
+                isOpening = false; reconcileAdminDestinations()
+            }
+        }
         // Admin controls require a fresh role, even if their row was visible earlier.
         if destination.isAdminOnly { await model.loadSessionInfo() }
-        guard model.settingsAccess.generation == generation, model.token != nil,
+        guard model.settingsAccess.generation == generation else { return }
+        guard model.token != nil,
               let server = model.serverURL,
               let url = destination.url(server: server, isAdmin: model.settingsAccess.isAdmin) else {
             openingError = "Access could not be verified. Refresh your session and try again."
@@ -222,8 +223,19 @@ struct SettingsView: View {
         browser = BrowserDestination(destination: destination, url: url)
     }
 
+    private func reconcileAdminDestinations() {
+        guard model.settingsAccess.shouldDismissAdminDestinations else { return }
+        if section == "Admin" { section = "General" }
+        if path.contains(where: \.isAdminOnly) { path = [] }
+        if browser?.destination.isAdminOnly == true { browser = nil }
+    }
+
     private func refreshAfterBrowser() {
-        Task { await model.loadSessionInfo(); await model.refreshShell() }
+        Task {
+            await model.loadSessionInfo()
+            reconcileAdminDestinations()
+            await model.refreshShell()
+        }
     }
 
     private var versionText: String {

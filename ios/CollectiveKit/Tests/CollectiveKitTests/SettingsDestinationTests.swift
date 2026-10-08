@@ -48,6 +48,65 @@ final class SettingsDestinationTests: XCTestCase {
         XCTAssertFalse(access.isAdmin, "A late response cannot repopulate a signed-out session")
     }
 
+    func testPendingValidationPreservesExistingBrowserButBlocksNewAdminURLs() {
+        var access = SettingsSessionAccess()
+        let generation = access.generation
+        let initial = access.beginValidation()
+        XCTAssertTrue(access.completeValidation(isAdmin: true, generation: generation, request: initial))
+        XCTAssertFalse(access.shouldDismissAdminDestinations)
+        let refresh = access.beginValidation()
+        XCTAssertTrue(access.isValidating)
+        XCTAssertFalse(access.isAdmin)
+        XCTAssertFalse(access.shouldDismissAdminDestinations, "Foreground refresh must preserve existing browser and path")
+        XCTAssertNil(SettingsDestination.users.url(server: URL(string: "https://example.test")!, isAdmin: access.isAdmin))
+        XCTAssertTrue(access.completeValidation(isAdmin: true, generation: generation, request: refresh))
+        XCTAssertFalse(access.isValidating)
+        XCTAssertFalse(access.shouldDismissAdminDestinations, "Same-admin refresh must not dismiss the browser")
+    }
+
+    func testLatestDenialAndFailureRequireExistingAdminCleanup() {
+        for fails in [false, true] {
+            var access = SettingsSessionAccess()
+            let generation = access.generation
+            let initial = access.beginValidation()
+            XCTAssertTrue(access.completeValidation(isAdmin: true, generation: generation, request: initial))
+            let refresh = access.beginValidation()
+            if fails {
+                XCTAssertTrue(access.failValidation(generation: generation, request: refresh))
+                XCTAssertFalse(access.isValidated)
+            } else {
+                XCTAssertTrue(access.completeValidation(isAdmin: false, generation: generation, request: refresh))
+                XCTAssertTrue(access.isValidated)
+            }
+            XCTAssertFalse(access.isValidating)
+            XCTAssertFalse(access.isAdmin)
+            XCTAssertTrue(access.shouldDismissAdminDestinations, "Settled denial/failure clears admin browser and path, even while opening")
+        }
+    }
+
+    func testStaleSuccessDenialAndFailureCannotSettleNewestValidation() {
+        var access = SettingsSessionAccess()
+        let generation = access.generation
+        let old = access.beginValidation()
+        let newest = access.beginValidation()
+        XCTAssertFalse(access.completeValidation(isAdmin: true, generation: generation, request: old))
+        XCTAssertFalse(access.completeValidation(isAdmin: false, generation: generation, request: old))
+        XCTAssertFalse(access.failValidation(generation: generation, request: old))
+        XCTAssertTrue(access.isValidating)
+        XCTAssertFalse(access.shouldDismissAdminDestinations)
+        XCTAssertTrue(access.completeValidation(isAdmin: true, generation: generation, request: newest))
+        XCTAssertFalse(access.failValidation(generation: generation, request: newest), "A completed request cannot settle twice")
+        XCTAssertTrue(access.isAdmin)
+        let pending = access.beginValidation()
+        access.invalidate()
+        XCTAssertNotEqual(access.generation, generation)
+        XCTAssertTrue(access.shouldDismissAdminDestinations)
+        XCTAssertFalse(access.isValidating)
+        XCTAssertFalse(access.completeValidation(isAdmin: true, generation: generation, request: pending))
+        XCTAssertFalse(access.failValidation(generation: generation, request: pending))
+        XCTAssertFalse(access.isAdmin)
+    }
+
     func testAdministratorsHaveTheFullWebsiteControlSurface() {
         let admin = SettingsDestination.available(isAdmin: true)
         XCTAssertEqual(admin.filter(\.isAdminOnly).map(\.path), ["/admin", "/admin/apps", "/admin/hermes", "/admin/groups", "/admin/users", "/admin/bots", "/admin/pets", "/admin/tools", "/admin/mcp", "/admin/sandboxes", "/admin/activity", "/admin/settings"])

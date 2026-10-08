@@ -6,6 +6,9 @@ public struct SettingsSessionAccess: Sendable {
     public private(set) var generation = UUID()
     public private(set) var isAdmin = false
     public private(set) var isValidated = false
+    public private(set) var isValidating = false
+    /// Pending checks block new opens, but do not revoke an existing browser/path.
+    public var shouldDismissAdminDestinations: Bool { !isValidating && !isAdmin }
     private var request: UUID?
     public init() {}
 
@@ -13,6 +16,7 @@ public struct SettingsSessionAccess: Sendable {
     public mutating func beginValidation() -> UUID {
         isAdmin = false
         isValidated = false
+        isValidating = true
         let next = UUID()
         request = next
         return next
@@ -22,6 +26,17 @@ public struct SettingsSessionAccess: Sendable {
         guard self.generation == generation, self.request == request else { return false }
         self.isAdmin = isAdmin
         isValidated = true
+        isValidating = false
+        self.request = nil
+        return true
+    }
+    @discardableResult
+    public mutating func failValidation(generation: UUID, request: UUID) -> Bool {
+        guard self.generation == generation, self.request == request else { return false }
+        isAdmin = false
+        isValidated = false
+        isValidating = false
+        self.request = nil
         return true
     }
 }

@@ -352,6 +352,7 @@ final class AppModel {
         } catch {
             // Unknown or failed role validation remains fail-closed. Never fall
             // back to shell.user for administrator controls.
+            settingsAccess.failValidation(generation: generation, request: request)
         }
     }
 

@@ -60,7 +60,32 @@ final class SessionAndDraftTests: XCTestCase {
         await model.loadSessionInfo()
         XCTAssertFalse(model.settingsAccess.isValidated)
         XCTAssertFalse(model.settingsAccess.isAdmin)
+        XCTAssertFalse(model.settingsAccess.isValidating)
+        XCTAssertTrue(model.settingsAccess.shouldDismissAdminDestinations)
         XCTAssertNil(model.sessionInfo)
+    }
+
+    func testForegroundAdministratorRevalidationPreservesExistingBrowserPolicy() async {
+        let admin = Data(#"{"user":{"id":"admin","name":"Admin","isAdmin":true},"deviceName":"QA"}"#.utf8)
+        FixtureProtocol.handler = { _ in .init(data: admin) }
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        await model.loadSessionInfo()
+        XCTAssertTrue(model.settingsAccess.isAdmin)
+        let requested = expectation(description: "Foreground session check started")
+        FixtureProtocol.handler = { _ in
+            requested.fulfill()
+            return .init(data: admin, delay: 0.3)
+        }
+        let refresh = Task { await model.loadSessionInfo() }
+        await fulfillment(of: [requested], timeout: 3)
+        XCTAssertTrue(model.settingsAccess.isValidating)
+        XCTAssertFalse(model.settingsAccess.isAdmin, "New admin opens remain fail-closed")
+        XCTAssertFalse(model.settingsAccess.shouldDismissAdminDestinations, "Existing browser/path survives foreground validation")
+        await refresh.value
+        XCTAssertTrue(model.settingsAccess.isAdmin)
+        XCTAssertFalse(model.settingsAccess.isValidating)
+        XCTAssertFalse(model.settingsAccess.shouldDismissAdminDestinations)
     }
 
     func testLateResponsesCannotRepopulateAfterServerChange() async {
