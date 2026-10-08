@@ -66,6 +66,33 @@ describe('owner-bound disabled bridge',()=>{
   r.request.mockImplementation(async method=>{if(method==='account/read')return{account:{type:'chatgpt'}};r.notify('account/rateLimits/updated',{rateLimits:{limitId:'codex',primary:{usedPercent:42}}});return payload;});
   const view=await readCodexAllowance(owner,true,new Date(now.getTime()+31000));expect(view.windows[0].usedPercent.value).toBe(42);expect(view.windows[0].usedPercent.source).toBe('account/rateLimits/updated');
  });
+ it('buffers initial-read notifications in order and retains omitted full-read fields',async()=>{
+  vi.stubEnv('CODEX_ALLOWANCE_BRIDGE_ENABLED','1');const r=runtime();
+  r.request.mockImplementation(async method=>{if(method==='account/read')return{account:{type:'chatgpt'}};
+   r.notify('account/rateLimits/updated',{rateLimits:{limitId:'codex',primary:{usedPercent:42}}});
+   r.notify('account/rateLimits/updated',{rateLimits:{limitId:'codex',primary:{usedPercent:43}}});return payload;});
+  const view=await readCodexAllowance(owner,true,now);expect(view.windows[0].usedPercent).toMatchObject({value:43,source:'account/rateLimits/updated'});
+  expect(view.windows[0].windowDurationMins).toEqual({value:15,source:'account/rateLimits/read',observedAt:now.toISOString()});
+  expect(view.windows[0].resetsAt.value).toBe(payload.rateLimits.primary.resetsAt);expect(view.lastReadAt).toBe(now.toISOString());
+ });
+ it('keeps first-read notifications private when the account gate or full read fails',async()=>{
+  vi.stubEnv('CODEX_ALLOWANCE_BRIDGE_ENABLED','1');const r=runtime();
+  r.request.mockImplementation(async()=>{r.notify('account/rateLimits/updated',payload);return{account:{type:'apiKey'}};});
+  expect((await readCodexAllowance(owner,true,now)).windows).toEqual([]);expect((await readCodexAllowance(owner)).windows).toEqual([]);
+  r.request.mockImplementation(async method=>{if(method==='account/read')return{account:{type:'chatgpt'}};r.notify('account/rateLimits/updated',payload);throw new Error('failed full read');});
+  expect((await readCodexAllowance(owner,true,new Date(now.getTime()+31000))).windows).toEqual([]);expect((await readCodexAllowance(owner)).windows).toEqual([]);
+ });
+ it('does not repopulate old account quota when final authorization emits an account change',async()=>{
+  vi.stubEnv('CODEX_ALLOWANCE_BRIDGE_ENABLED','1');const r=runtime();
+  r.authorize.mockResolvedValueOnce(true).mockImplementationOnce(async()=>{r.notify('account/updated',{authMode:null});return true;});
+  expect((await readCodexAllowance(owner,true,now)).state).toBe('unavailable');
+  const cached=await readCodexAllowance(owner);expect(cached.state).toBe('needs_auth');expect(cached.windows).toEqual([]);expect(cached.lastReadAt).toBeNull();
+ });
+ it('does not mutate a retired cache when final authorization replaces the runtime',async()=>{
+  vi.stubEnv('CODEX_ALLOWANCE_BRIDGE_ENABLED','1');const r=runtime();
+  r.authorize.mockResolvedValueOnce(true).mockImplementationOnce(async()=>{runtime('new-connection');return true;});
+  expect((await readCodexAllowance(owner,true,now)).windows).toEqual([]);expect((await readCodexAllowance(owner)).windows).toEqual([]);
+ });
  it('fences account changes and connection retirement while a full read is in flight',async()=>{
   vi.stubEnv('CODEX_ALLOWANCE_BRIDGE_ENABLED','1');const r=runtime();r.request.mockImplementation(async method=>{if(method==='account/read')return{account:{type:'chatgpt'}};r.notify('account/updated',{authMode:null});return payload;});
   expect((await readCodexAllowance(owner,true,now)).windows).toEqual([]);
