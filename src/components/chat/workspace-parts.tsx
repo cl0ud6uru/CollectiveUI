@@ -114,7 +114,7 @@ export function WorkspaceApproval({
         <Button size="sm" disabled={disabled} variant="ghost" onClick={() => onDeny(id)}>
           <X className="h-4 w-4" /> Deny
         </Button>
-        {name === "workspace_bash" && <span className="ml-auto text-xs text-subtle">Commands always ask. Your workspace has no network.</span>}
+        {name === "workspace_bash" && <span className="ml-auto text-xs text-subtle">Workspace permissions control approvals. Your workspace has no network.</span>}
       </div>
     </div>
   );

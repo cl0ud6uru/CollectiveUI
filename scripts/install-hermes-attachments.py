@@ -32,11 +32,11 @@ def patched(api, runs):
                        '                **_STATIC_FEATURE_FLAGS,\n                "run_attachments": _api_attachments.FEATURE,')
     api = replace_once(api, '    @_admit_api_agent_request\n    async def _handle_runs(',
                        '    @_require_auth\n    async def _handle_attachment_upload(self, request):\n'
-                       '        return await _api_attachments.handle_upload(self, request, _api_request_profile.get() or "default")\n\n'
+                       '        return await _api_attachments.handle_upload(self, request, _api_request_profile.get())\n\n'
                        '    @_admit_api_agent_request\n    async def _handle_runs(')
     runs = replace_once(runs, '    if not user_message:\n        return _json_error(_openai_error, "No user message found in input", status=400)',
                         '    user_message, attachment_error = await _api_server._api_attachments.bind_run(\n'
-                        '        self, request, body, user_message, _api_server._api_request_profile.get() or "default")\n'
+                        '        self, request, body, user_message, _api_server._api_request_profile.get())\n'
                         '    if attachment_error is not None:\n        return attachment_error\n'
                         '    if not user_message:\n        return _json_error(_openai_error, "No user message found in input", status=400)')
     for text in (api, runs):

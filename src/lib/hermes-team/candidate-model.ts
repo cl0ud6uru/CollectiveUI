@@ -111,7 +111,8 @@ export async function executeCandidateModel(request: Request, contextId: string,
     appId:initial.context.modelRoute.billing==='admin'?initial.context.modelRoute.id.slice(4):null,
     providerKind:initial.transport.providerKind,
     model:initial.context.modelRoute.model,purpose:purpose==='reply'?'chat' as const:purpose==='subagent'?'delegate' as const:purpose==='learning'?'memory' as const:'draft' as const,
-    billingSource:initial.context.modelRoute.billing==='admin'?'org' as const:'chatgpt_plan' as const,credentialId:initial.context.personalConnectionId});
+    billingSource:initial.context.modelRoute.billing==='admin'?'org' as const:'chatgpt_plan' as const,credentialId:initial.context.personalConnectionId,
+    billingRoute:`${initial.context.modelRoute.billing==='admin'?'api':'subscription'}:${initial.context.modelRoute.integration}`});
   let receiptId: string | undefined;
   const current=()=>loadCandidateContext(contextId,authorization,purpose,routes);
   const gateway=createTeamModelGateway<Record<string,unknown>,CandidateResponse>({ routes,now:Date.now,
@@ -161,6 +162,9 @@ export async function executeCandidateModel(request: Request, contextId: string,
           const fresh=await loadCandidateContext(contextId,authorization,purpose,routes,tx);
           if(abort.signal.aborted)throw new HttpError(409,'The native requester cancelled.');
           const wire=await loadCandidateModelWire(fresh.context,wireProtocol,tx,dependencies.fetch);
+          // Freeze exactly the selectors of this wire, before its request starts. Never consult current app
+          // configuration to relabel a historical event after dispatch.
+          if (wire.attribution) await tx.update(usageEvents).set(wire.attribution).where(eq(usageEvents.id,id));
           return { response:wire.send(body,abort.signal),secrets:wire.secrets };
         });
         watch=setTimeout(()=>void check(),250);

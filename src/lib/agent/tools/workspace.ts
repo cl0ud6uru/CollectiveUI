@@ -59,7 +59,7 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
     tool: tool({
       description:
         "Run a bash command in the user's private workspace (Debian, git, python3, node, a C toolchain; no network). " +
-        "The working directory is /home/agent/workspace. The user approves every command, so batch related steps into one command.",
+        "The working directory is /home/agent/workspace. Workspace permission settings determine whether approval is needed. Batch related steps into one command.",
       inputSchema: z.object({
         command: z.string().min(1).max(16_000).describe("The bash command (runs with bash -c)"),
         cwd: z.string().max(1024).optional().describe("Working directory, relative to the workspace"),

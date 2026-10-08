@@ -134,8 +134,17 @@ class AttachmentStore:
 
 
 def _store(profile):
-    from hermes_cli.profiles import get_profile_dir
-    return AttachmentStore(Path(get_profile_dir(profile)) / "attachments" / "collectiveui")
+    # Routing/auth middleware already selected the runtime home. Resolving a
+    # routing label again loses named single-profile and custom gateway homes.
+    from hermes_constants import get_hermes_home
+    return AttachmentStore(Path(get_hermes_home()) / "attachments" / "collectiveui")
+
+
+def _profile_identity(profile):
+    if profile is not None:
+        return profile
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    return profile_name_for_home(get_hermes_home()) or "default"
 
 
 def _scope(adapter, request, profile, session_id):
@@ -157,6 +166,7 @@ def _error(error):
 async def handle_upload(adapter, request, profile):
     from aiohttp import web
     try:
+        profile = _profile_identity(profile)
         scope = _scope(adapter, request, profile, request.headers.get("X-Hermes-Session-Id"))
         if request.content_length is not None and request.content_length > MAX_FILE_BYTES:
             raise AttachmentError("An attachment exceeds 8 MiB.", 413)
@@ -187,6 +197,7 @@ async def bind_run(adapter, request, body, user_message, profile):
     if "file_ids" not in body:
         return user_message, None
     try:
+        profile = _profile_identity(profile)
         if not isinstance(user_message, str):
             raise AttachmentError("Attachment runs require text input.")
         scope = _scope(adapter, request, profile, body.get("session_id"))
