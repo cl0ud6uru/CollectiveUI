@@ -35,6 +35,9 @@ import { CommandResultCard } from "./command-result";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Tip } from "@/components/ui/tooltip";
 import { PetChatActivity } from "@/components/pets/pet-context";
+import { WorkspaceBrowser, useWorkspaceAccess, type WorkspaceCommandHistory } from "./workspace-browser";
+import { artifactPath } from "@/lib/chat/workspace-artifacts";
+import { WorkspaceFileContext } from "./workspace-context";
 import { hasPendingAsyncTasks } from "@/lib/delegation/policy";
 import type { ConversationSnapshot } from "@/lib/chat/snapshot";
 import styles from "./chat.module.css";
@@ -103,6 +106,11 @@ export function Chat({
   const [conversationId] = useState(() => givenId ?? newId());
   const { user, branding, upsertConversation, setMobileOpen, apps, bots, setBotLive, setChatStatus, serverBots } = useShell();
   const [target, setTarget] = useState<TargetOption | null>(initialTarget);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceFileRequest, setWorkspaceFileRequest] = useState<{ path: string; id: number }>();
+  const workspaceToggleRef = useRef<HTMLButtonElement>(null);
+  const workspaceAllowed = useWorkspaceAccess(!embedded && !target?.hermes && !target?.hermesTeam);
+  const closeWorkspace = useCallback(() => { setWorkspaceOpen(false); workspaceToggleRef.current?.focus(); }, []);
   const [started, setStarted] = useState(!isNew);
   const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
   const [searchPending, setSearchPending] = useState(true);
@@ -114,6 +122,11 @@ export function Chat({
   // Deliberately visit-local: every chat mount/reload starts collapsed. Opening
   // details never writes a preference or remounts the conversation/composer.
   const [detailsView, setDetailsView] = useState<"desktop" | "mobile" | null>(null);
+  const openWorkspaceFile = useCallback((value: string) => {
+    const path = artifactPath(value);
+    if (!path) return;
+    setDetailsView(null); setWorkspaceOpen(true); setWorkspaceFileRequest({ path, id: Date.now() });
+  }, []);
   const detailsId = useId();
   const detailsToggleRef = useRef<HTMLButtonElement>(null);
   const detailsFocusRef = useRef<HTMLElement | null>(null);
@@ -337,7 +350,14 @@ export function Chat({
   const liveReply = busy && lastMessage?.role === "assistant" ? lastMessage : null;
   const toolRunning = !!liveReply?.parts.some((p) => isToolUIPart(p) && ["input-streaming", "input-available", "approval-responded"].includes(p.state));
   const workspaceRunning = !!liveReply?.parts.some((p) => isToolUIPart(p) && p.type.startsWith("tool-workspace_") && ["input-streaming", "input-available", "approval-responded"].includes(p.state));
-  const usesWorkspace = messages.some((m) => m.parts.some((p) => isToolUIPart(p) && p.type.startsWith("tool-workspace_")));
+  const workspaceHistory = useMemo<WorkspaceCommandHistory>(() => messages.flatMap(message => message.parts.flatMap(part => {
+    if (!isToolUIPart(part) || part.type !== "tool-workspace_bash" || !part.output) return [];
+    const input = part.input as { command?: unknown } | undefined;
+    const output = part.output as { stdout?: unknown; stderr?: unknown; status?: string };
+    return typeof input?.command === "string" ? [{ id: part.toolCallId, command: input.command, output: [output.stdout, output.stderr].filter(value => typeof value === "string").join("\n"), running: output.status === "running" }] : [];
+  })), [messages]);
+  const workspaceRevision = messages.flatMap(message => message.parts).filter(part => isToolUIPart(part) && part.type.startsWith("tool-workspace_") && part.state === "output-available").length;
+  useEffect(() => { if (workspaceRevision) window.dispatchEvent(new Event("workspace-files-changed")); }, [workspaceRevision]);
   const awaitingApproval = !busy && lastMessage?.role === "assistant" && lastMessage.parts.some(needsAction);
   const replyHasText = !!liveReply?.parts.some((p) => p.type === "text" && p.text);
   const botState: BlobState = awaitingApproval ? "waiting" : awaitingTasks ? "working" : !busy ? "idle" : toolRunning ? "working" : status === "submitted" || !replyHasText ? "thinking" : "working";
@@ -564,6 +584,7 @@ export function Chat({
   };
 
   return (
+    <WorkspaceFileContext.Provider value={workspaceAllowed ? openWorkspaceFile : null}>
     <div className="flex h-full">
       <div ref={paneRef} className="@container/chat-pane flex h-full min-w-0 flex-1 flex-col">
         {/* Header */}
@@ -590,11 +611,13 @@ export function Chat({
           <div className={cn("flex shrink-0 items-center gap-1", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
             {user.isAdmin && <SpendingHealth />}
             {target?.kind === "bot" && !embedded && <BotChatNavigation botId={target.id} isHome={isBotHome} conversationId={conversationId} onNewHome={() => void executeCommand("/new", [])} />}
-            {target?.kind === "bot" && !embedded && (usesWorkspace || workspaceRunning) && (
+            {workspaceAllowed && (
               <button
-                onClick={openDetails}
+                ref={workspaceToggleRef}
+                onClick={() => { setDetailsView(null); setWorkspaceOpen(value => !value); }}
                 className={cn("rounded-lg p-2 hover:bg-hover", workspaceRunning ? "text-working" : "text-muted")}
-                aria-label={workspaceRunning ? `${target.name}'s workspace is busy` : `${target.name}'s workspace`}
+                aria-label={workspaceOpen ? "Hide workspace" : "Open workspace"}
+                aria-expanded={workspaceOpen}
                 title={workspaceRunning ? "Working in the workspace" : "Workspace"}
               >
                 <Monitor className={cn("h-4 w-4", workspaceRunning && "motion-safe:animate-pulse")} />
@@ -605,7 +628,7 @@ export function Chat({
               <Tip label={detailsLabel}>
                 <button
                   ref={detailsToggleRef}
-                  onClick={detailsView ? closeDetails : openDetails}
+                  onClick={() => { setWorkspaceOpen(false); if (detailsView) closeDetails(); else openDetails(); }}
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
                   aria-label={detailsLabel}
                   aria-expanded={detailsView !== null}
@@ -802,6 +825,7 @@ export function Chat({
           </>
         )}
       </div>
+      {workspaceAllowed && <WorkspaceBrowser open={workspaceOpen} onClose={closeWorkspace} fileRequest={workspaceFileRequest} history={workspaceHistory} onInsertPath={path => composerRef.current?.appendText(`\`${path}\``)} />}
       {target?.kind === "bot" && !embedded && (
         <div id={detailsId} onFocusCapture={(event) => { detailsFocusRef.current = event.target; }} hidden={detailsView !== "desktop"}>
           {detailsView === "desktop" && <BotSidePanel bot={target} onClose={closeDetails} panelId={detailsId} />}
@@ -813,6 +837,7 @@ export function Chat({
         </DialogContent>
       </Dialog>}
     </div>
+    </WorkspaceFileContext.Provider>
   );
 }
 

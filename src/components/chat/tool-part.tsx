@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
 import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
+import { useWorkspaceFileOpener } from "./workspace-context";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -245,6 +246,7 @@ export function ToolPartView({
   readOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const openWorkspaceFile = useWorkspaceFileOpener();
   const name = getToolOrDynamicToolName(part);
   const d = describe(name);
   const Icon = d.icon;
@@ -368,7 +370,10 @@ export function ToolPartView({
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
-      {artifact && <a href={artifact.downloadUrl} download className="mt-2 inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>}
+      {artifact && <div className="mt-2 flex flex-wrap gap-2">
+        {openWorkspaceFile && <button onClick={() => openWorkspaceFile(artifact.path)} className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 hover:bg-hover">Open {artifact.path.split("/").at(-1)}</button>}
+        <a href={artifact.downloadUrl} download className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>
+      </div>}
       {open && (
         <div className="mt-2 space-y-2">
           <div className="text-xs font-medium text-subtle">Input</div>
