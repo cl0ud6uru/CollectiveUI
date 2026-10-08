@@ -24,8 +24,8 @@ export function remaining(limit: SpendLimit, amounts: Money[], known: boolean): 
   const spent = amounts.find(a => a.currency === limit.currency)?.value ?? 0;
   return { value: Math.max(0, limit.amount - spent), currency: limit.currency };
 }
-export function applicableRemaining(snapshot: SpendingSnapshot, project: string | null): Money | null {
-  if (snapshotStale(snapshot)) return null;
+export function applicableRemaining(snapshot: SpendingSnapshot, project: string | null, now = Date.now()): Money | null {
+  if (snapshotStale(snapshot, now)) return null;
   const org = remaining(snapshot.organizationLimit, snapshot.amounts, snapshot.costsStatus === 'known');
   if (!project) return org;
   const row = snapshot.projects.find(p => p.id === project);

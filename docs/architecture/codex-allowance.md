@@ -1,0 +1,24 @@
+# Personal Codex allowance: disabled app-server adapter
+
+This implementation adds an owner-only allowance UI in Settings and a read-only supported-protocol adapter. It is **not a working live connection** in the current repository. Production registers no runtime; `CODEX_ALLOWANCE_BRIDGE_ENABLED` defaults off. Enabling that flag alone still returns “No supported authenticated Codex app-server is connected.” Tests and screenshots use synthetic app-server fixtures, not a signed-in account.
+
+## Architecture decision
+
+Repository inspection found native Hermes profile device sign-in (`src/docker-hermes/oauth.ts`, broker/bridge), the direct ChatGPT provider's cached response headers (`src/lib/llm/chatgpt/fetch.ts` / `store.ts`), and held official Team plan/auth integrations. None establishes a supported, isolated per-user Codex app-server account transport. Hermes `/usage` reports local chat token activity, not provider allowance. The new adapter does not query unofficial/private HTTP quota endpoints, open existing OAuth secrets, use organization keys, start new sign-ins, or alter the held official-sign-in work. No runtime migration was introduced.
+
+## Remaining activation requirement
+
+A separately authorized runtime integration must supply one isolated Codex app-server already authenticated to the intended user's ChatGPT account and register its server-owned `CodexAllowanceRuntime` with `registerCodexAllowanceRuntime`. The smallest additional broker wiring is:
+
+1. Derive owner, immutable connection ID and auth epoch from trusted runtime ownership; never accept browser-supplied endpoints, identity, tokens or profile paths.
+2. Implement `authorize(principal)` so every cache read/refresh verifies current owner, portal session/revocation, runtime availability and the original account/connection auth epoch. Retire/re-register on auth or connection changes.
+3. Forward only `account/read` and `account/rateLimits/read` JSON-RPC requests, returning their decoded `result`; forward `account/updated` and `account/rateLimits/updated` notifications to the listener. The runtime transport must manage its own connection lifecycle and cancellation. Pass no credentials through this allowance API.
+4. After separate approval and actual owned-runtime verification, set the disabled feature flag and register the transport in the same server process serving owner requests. The current in-memory adapter requires process-local transport registration; it is not a cross-worker runtime registry. Runtime retirement calls the returned disposer. An organization billing key cannot activate this integration.
+
+No credential is collected by the allowance interface. GET/POST `/api/me/codex-allowance` derive owner solely from `requirePrincipal`; an admin cannot select another owner. The adapter also reauthorizes cache reads and checks registration/auth epoch after I/O. Refresh checks `account/read` reports `type: chatgpt`; API-key authentication is rejected. Account changes erase cached quota. Old transport notifications cannot update a replacement connection. All response bodies are whitelisted numeric facts and labels. Transport errors are replaced with a generic message and are never logged. Reads are bounded by a 10-second timeout and a 30-second per-owner refresh minimum.
+
+Full reads replace the snapshot and include only returned primary/secondary windows. Multi-bucket `rateLimitsByLimitId` is supported. Sparse notifications merge only present fields and preserve omitted fields' original observation time and source; explicit null removes a window. A notification arriving during a full read is not overwritten by the older read. Each field retains its source and timestamp. The UI renders returned percentage, duration and reset, leaving omitted values unknown. It does not synthesize five-hour/weekly windows, compute allowance from tokens, or calculate API-dollar spend. Percentages and remaining money are never combined. Observed percentages are labeled stale after five minutes or a returned reset deadline; idle UI timers also age provider-dollar data. Cache polling can surface already-received notifications without requesting live quota; explicit refresh initiates the supported read.
+
+## Official contract verified 2026-10-08
+
+[Codex app-server rate limits](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt) documents `account/rateLimits/read`, `account/rateLimits/updated`, `usedPercent`, `windowDurationMins`, `resetsAt`, the backward-compatible single bucket and optional multi-bucket map. The documented example itself uses a 15-minute primary window with no secondary window, which is why this UI renders returned durations rather than assuming plan windows.

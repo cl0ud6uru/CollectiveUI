@@ -162,6 +162,9 @@ export async function executeCandidateModel(request: Request, contextId: string,
           const fresh=await loadCandidateContext(contextId,authorization,purpose,routes,tx);
           if(abort.signal.aborted)throw new HttpError(409,'The native requester cancelled.');
           const wire=await loadCandidateModelWire(fresh.context,wireProtocol,tx,dependencies.fetch);
+          // Freeze exactly the selectors of this wire, before its request starts. Never consult current app
+          // configuration to relabel a historical event after dispatch.
+          if (wire.attribution) await tx.update(usageEvents).set(wire.attribution).where(eq(usageEvents.id,id));
           return { response:wire.send(body,abort.signal),secrets:wire.secrets };
         });
         watch=setTimeout(()=>void check(),250);

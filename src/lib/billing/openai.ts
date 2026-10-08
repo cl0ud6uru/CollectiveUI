@@ -30,7 +30,9 @@ export async function readOpenAISpending(organization: string, key: string, proj
       try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 2_000_000) throw new ReadError('unknown'); chunks.push(value); } }
       finally { await reader.cancel().catch(() => {}); }
       const bytes = new Uint8Array(size); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-      return JSON.parse(new TextDecoder().decode(bytes));
+      const text = new TextDecoder().decode(bytes);
+      if (key && text.includes(key)) throw new ReadError('unknown');
+      return JSON.parse(text);
     } catch (error) { throw error instanceof ReadError ? error : new ReadError('unavailable'); }
   };
   const limit = async (path: string): Promise<SpendLimit> => {

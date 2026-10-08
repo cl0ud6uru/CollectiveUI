@@ -14,6 +14,11 @@ describe('route-based subscription isolation',()=>{
   for(const billingSource of ['hermes','chatgpt_plan','org'] as const) await recordUsage({purpose:'delegate',billingSource,providerKind:'hermes',model:'gpt-api-model',appId:'bot'},mapUsage({inputTokens:{total:99}}),{searchToolCostEstimateMicros:10000});
   expect(rows.every(row=>row.costMicros===null && row.searchToolCostEstimateMicros===null)).toBe(true);
  });
+ it('excludes an explicit subscription route even if an upstream source incorrectly says org',async()=>{
+  const rows:UsageEvent[]=[];setUsageWriter(async row=>{rows.push(row);});
+  await recordUsage({purpose:'memory',billingSource:'org',providerKind:'openai',model:'any',appId:'app',billingRoute:'subscription:codex'},mapUsage({inputTokens:{total:12}}),{searchToolCostEstimateMicros:10000});
+  expect(rows[0]).toMatchObject({costMicros:null,searchToolCostEstimateMicros:null,inputTokens:12});
+ });
  it('copies immutable routing facts per call; changing a connection cannot relabel history',async()=>{
   const rows:UsageEvent[]=[];setUsageWriter(async row=>{rows.push(row);});
   const context={purpose:'chat' as const,billingSource:'org' as const,providerKind:'openai' as const,model:'subscription-looking-model',appId:'app',providerConnectionId:'first',providerOrganization:'org-one',providerProject:'proj-one',billingRoute:'api:openai'};

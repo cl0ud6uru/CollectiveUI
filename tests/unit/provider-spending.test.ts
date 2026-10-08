@@ -38,6 +38,10 @@ describe('provider-reported spending', () => {
       expect(value.costsStatus).toBe('unknown'); expect(value.amounts).toEqual([]);
     }
   });
+  it('rejects provider payloads that echo a stored billing secret', async () => {
+    const snapshot = await readOpenAISpending('org','sk-admin-fixture',[],now,(async input => response(String(input).includes('/costs?') ? {...page,data:[{...bucket,results:[{...bucket.results[0],project_id:'sk-admin-fixture'}]}]} : {...limit,enforcement:{status:'sk-admin-fixture'}})) as typeof fetch);
+    expect(snapshot.costsStatus).toBe('unknown');expect(snapshot.organizationLimit.status).toBe('unknown');expect(JSON.stringify(snapshot)).not.toContain('sk-admin-fixture');
+  });
   it('bounds pagination, parses all returned pages, retains sparse daily buckets', async () => {
     const snapshot = await readOpenAISpending('org', 'fixture', [], now, (async input => {
       const url = new URL(String(input)); if (!url.pathname.endsWith('costs')) return response(limit);

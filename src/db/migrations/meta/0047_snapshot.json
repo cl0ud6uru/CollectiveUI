@@ -9818,7 +9818,7 @@
       "checkConstraints": {
         "usage_events_api_cost_check": {
           "name": "usage_events_api_cost_check",
-          "value": "(\"usage_events\".\"billing_source\" = 'org' and \"usage_events\".\"provider_kind\" not in ('chatgpt', 'hermes')) or (\"usage_events\".\"cost_micros\" is null and \"usage_events\".\"search_tool_cost_estimate_micros\" is null)"
+          "value": "(\"usage_events\".\"billing_source\" = 'org' and \"usage_events\".\"provider_kind\" not in ('chatgpt', 'hermes') and (\"usage_events\".\"billing_route\" is null or \"usage_events\".\"billing_route\" like 'api:%')) or (\"usage_events\".\"cost_micros\" is null and \"usage_events\".\"search_tool_cost_estimate_micros\" is null)"
         }
       },
       "isRLSEnabled": false

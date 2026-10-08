@@ -17,7 +17,7 @@ export const CANDIDATE_MODEL_ADAPTERS = Object.freeze({
   'collective-codex-responses-v1': 'responses',
   [OFFICIAL_PLAN_ADAPTER]:'responses',
 } satisfies Record<string,TeamNativeModelProtocol>);
-export type CandidateModelWire = { send(body: Record<string,unknown>, signal: AbortSignal): Promise<Response>; secrets: string[] };
+export type CandidateModelWire = { attribution?: import("@/lib/llm/resolve").ApiUsageAttribution; send(body: Record<string,unknown>, signal: AbortSignal): Promise<Response>; secrets: string[] };
 
 /** Server-only transport. No ambient provider key, native auth pool, alternate model or redirect fallback. */
 export async function loadCandidateModelWire(context: CandidateContext, protocol: TeamNativeModelProtocol, tx: Tx, baseFetch: typeof fetch = fetch): Promise<CandidateModelWire> {
@@ -55,5 +55,5 @@ export async function loadCandidateModelWire(context: CandidateContext, protocol
   const config = provider.config as { organization?: string; project?: string };
   const headers = { 'Content-Type':'application/json',Authorization:`Bearer ${key}`,
     ...(config.organization ? { 'OpenAI-Organization':config.organization } : {}), ...(config.project ? { 'OpenAI-Project':config.project } : {}) };
-  return { secrets:[key],send:(body,signal)=>baseFetch(url,{ method:'POST',headers,body:JSON.stringify(body),signal,redirect:'error' }) };
+  return { attribution:provider.usageAttribution,secrets:[key],send:(body,signal)=>baseFetch(url,{ method:'POST',headers,body:JSON.stringify(body),signal,redirect:'error' }) };
 }

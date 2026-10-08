@@ -1,5 +1,5 @@
 'use client';
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { AdminHeader, Card, Stat, Table, Td } from './ui';
 import { Button } from '@/components/ui/button';
 import { saveBillingConfiguration } from '@/app/admin/spending/actions';
@@ -8,6 +8,8 @@ import { applicableRemaining, moneyText, remaining, snapshotStale, type BillingA
 const amountsText = (amounts: Money[], known: boolean) => !known ? 'Unknown' : amounts.length ? amounts.map(moneyText).join(' · ') : 'No costs reported';
 const limitText = (limit: SpendLimit | undefined) => !limit ? 'Unknown' : limit.status === 'known' ? moneyText(limit.amount === null || !limit.currency ? null : { value: limit.amount, currency: limit.currency }) : limit.status.replaceAll('_', ' ');
 export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }) {
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const [accounts, setAccounts] = useState(initial);
   const [selected, setSelected] = useState(initial[0]?.id ?? '');
   const [project, setProject] = useState('');
@@ -16,13 +18,13 @@ export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }
   const [busy, start] = useTransition();
   const account = accounts.find(a => a.id === selected);
   const snapshot = account?.enabled ? account.snapshot : null;
-  const stale = snapshot ? snapshotStale(snapshot) : false;
+  const stale = snapshot ? snapshotStale(snapshot, clock) : false;
   const selectedProject = snapshot?.projects.find(p => p.id === project);
   const ownLimit = project ? snapshot?.projectLimits[project] : snapshot?.organizationLimit;
   const ownCosts = project ? selectedProject?.amounts ?? [] : snapshot?.amounts ?? [];
   const costsKnown = snapshot && (project ? snapshot.breakdownStatus : snapshot.costsStatus) === 'known';
   const projectIds = snapshot ? [...new Set([...snapshot.projects.flatMap(p => p.id ? [p.id] : []), ...Object.keys(snapshot.projectLimits)])] : [];
-  const available = snapshot && !account?.lastError ? applicableRemaining(snapshot, project || null) : null;
+  const available = snapshot && !account?.lastError ? applicableRemaining(snapshot, project || null, clock) : null;
   const max = Math.max(1, ...(snapshot?.daily.flatMap(d => d.amounts.map(a => Math.abs(a.value))) ?? []));
   async function refresh() {
     setError(''); setNotice('');
@@ -56,7 +58,7 @@ export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }
         <Stat label={project ? 'Project month-to-date costs' : 'Organization month-to-date costs'} value={amountsText(ownCosts, !!costsKnown)} sub="Actual provider-reported costs; reporting may be delayed" />
         <Stat label={project ? 'Project monthly spending limit' : 'Organization monthly spending limit'} value={limitText(ownLimit)} sub={`Provider enforcement: ${ownLimit?.enforcement ?? 'unknown'}`} />
         <Stat label="Applicable remaining allowance" value={moneyText(available)} sub={project ? 'Bounded by the organization and project limits; subject to reporting delay' : 'Subject to provider reporting delay; no local cap is enforced'} />
-        {project && <Stat label="Parent organization limit" value={limitText(snapshot.organizationLimit)} sub={`Remaining: ${moneyText(remaining(snapshot.organizationLimit, snapshot.amounts, snapshot.costsStatus === 'known'))} · Enforcement: ${snapshot.organizationLimit.enforcement ?? 'unknown'}`} />}
+        {project && <Stat label="Parent organization limit" value={limitText(snapshot.organizationLimit)} sub={`Remaining: ${moneyText(remaining(snapshot.organizationLimit, snapshot.amounts, snapshot.costsStatus === 'known' && !stale && !account?.lastError))} · Enforcement: ${snapshot.organizationLimit.enforcement ?? 'unknown'}`} />}
       </div>
       <section aria-labelledby="spending-trends" className="space-y-3"><h2 id="spending-trends" className="font-semibold">Daily organization costs</h2>
         <p className="text-xs text-muted">Returned daily buckets only; missing days are not inferred. Currency totals stay separate.</p>

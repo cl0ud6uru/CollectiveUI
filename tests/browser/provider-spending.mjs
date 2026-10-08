@@ -33,7 +33,8 @@ try{
   if(width===390||width===1280){const out=path.join(root,'docs/screenshots/provider-spending');await mkdir(out,{recursive:true});await page.screenshot({path:path.join(out,`dashboard-${width}.png`),fullPage:true});}
   await page.getByRole('combobox',{name:'Billing account'}).selectOption('two');await expect(page.getByText('Provider spending is disabled.',{exact:false})).toBeVisible();await expect(page.getByRole('button',{name:'Refresh provider data'})).toBeDisabled();
  }
- await page.goto(`${base}/stale`);await expect(page.getByText('Stale snapshot.',{exact:false})).toBeVisible();await expect(page.getByText('Unknown',{exact:true})).toBeVisible();
+ await page.goto(`${base}/stale`);await page.getByRole('combobox',{name:'Spending scope'}).selectOption('proj-one');await expect(page.getByText('Stale snapshot.',{exact:false})).toBeVisible();await expect(page.getByText('Unknown',{exact:true})).toBeVisible();await expect(page.getByText('Remaining: Unknown',{exact:false})).toBeVisible();
+ await page.goto(base);await page.evaluate(()=>{const observed=Date.now();Date.now=()=>observed+16*60000;});await expect(page.getByText('Stale snapshot.',{exact:false})).toBeVisible();await expect(page.getByText('Unknown',{exact:true})).toBeVisible();
  await page.goto(`${base}/permissions`);await expect(page.getByText('Project breakdown permission denied.',{exact:false})).toBeVisible();
  await page.getByRole('button',{name:'Refresh provider data'}).click();await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
  await page.goto(`${base}/empty`);await page.getByText('Billing configuration',{exact:true}).click();

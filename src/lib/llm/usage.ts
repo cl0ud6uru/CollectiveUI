@@ -105,7 +105,7 @@ export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsag
     ...search,
     // Only verified organization API routes may carry dollar estimates. Subscription and unknown Hermes
     // activity retain tokens/call counts, including delegated and background work.
-    ...(ctx.billingSource !== "org" || ctx.providerKind === "chatgpt" || ctx.providerKind === "hermes"
+    ...(ctx.billingSource !== "org" || ctx.providerKind === "chatgpt" || ctx.providerKind === "hermes" || (ctx.billingRoute != null && !ctx.billingRoute.startsWith("api:"))
       ? { costMicros: null, searchToolCostEstimateMicros: null } : {}),
   };
   const p = Promise.resolve()
