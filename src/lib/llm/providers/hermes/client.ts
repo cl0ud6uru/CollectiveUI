@@ -4,6 +4,7 @@
  * profile's whole toolset (terminal included), so it never leaves the server and never appears in an error message.
  */
 import { lookup as dnsLookup } from "node:dns/promises";
+import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { z } from "zod";
 import type { Discovery, HermesSkill, HermesToolset } from "@/lib/chat/hermes-commands";
@@ -137,8 +138,33 @@ export async function startRun(t: HermesTarget, r: StartRun): Promise<string> {
   if (r.instructions) body.instructions = r.instructions;
   if (r.model) body.model = r.model;
   if (r.attachments?.length) {
-    if (!t.local) throw new HermesError("rejected", 400, "Native file transport is unavailable on this Hermes connection.");
-    body.attachments = nativeAttachments.parse(r.attachments);
+    const files = nativeAttachments.parse(r.attachments);
+    if (t.local) body.attachments = files;
+    else {
+      if (!r.sessionId || !r.sessionKey) throw new HermesError("rejected", 400, "Original files require a Hermes conversation. No prompt was sent.");
+      const caps = await json<{ features?: { run_attachments?: { version?: number } } }>(await call(t, "/v1/capabilities", { signal: r.signal }));
+      if (caps.features?.run_attachments?.version !== 1) throw new HermesError("rejected", 400,
+        "This Hermes server does not support original-file delivery yet. Install the remote attachment adapter. No files or prompt were sent.");
+      const ids: string[] = [];
+      // Stage every file sequentially and verify its receipt before admitting any inference.
+      for (const [index, file] of files.entries()) {
+        const data = Buffer.from(file.contentBase64, "base64");
+        const sha256 = createHash("sha256").update(data).digest("hex");
+        const receipt = z.object({ id: z.string().regex(/^[a-f0-9]{32}$/), sha256: z.string(), size: z.number().int(), name: z.string(), media_type: z.string() }).parse(
+          await json(await call(t, "/v1/attachments", {
+            method: "POST", body: new Uint8Array(data), signal: r.signal,
+            headers: { "Content-Type": file.mediaType, "X-Hermes-Filename": encodeURIComponent(file.name),
+              "X-Hermes-Session-Id": r.sessionId, "X-Hermes-Session-Key": r.sessionKey,
+              "Idempotency-Key": `${r.idempotencyKey}:file:${index}` },
+          })),
+        );
+        if (receipt.sha256 !== sha256 || receipt.size !== data.length || receipt.name !== file.name || receipt.media_type !== file.mediaType)
+          throw new HermesError("protocol", 502, "Hermes did not confirm the original attachment bytes. No prompt was sent.");
+        ids.push(receipt.id);
+      }
+      body.file_ids = ids;
+      if (!r.input.trim()) body.input = "Review the uploaded files.";
+    }
   }
   const res = await call(t, "/v1/runs", {
     method: "POST",

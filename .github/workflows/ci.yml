@@ -13,6 +13,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  remote-hermes-attachments:
+    name: Remote Hermes original-file transport
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 47676981f55de91231fdeef2f0eec47e7c209e78
+          path: .hermes-attachments-source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install 'aiohttp>=3.12,<4'
+      - name: Validate the exact upstream patch without installing or restarting anything
+        run: python scripts/install-hermes-attachments.py --hermes-source .hermes-attachments-source
+      - name: Check profile homes with the exact upstream helpers and synthetic HTTP
+        env:
+          HERMES_ATTACHMENTS_SOURCE: ${{ github.workspace }}/.hermes-attachments-source
+        run: python -B tests/fixtures/hermes-attachments-profiles.py
+      - name: Exercise original-byte delivery and protected file binding with synthetic profiles only
+        env:
+          HERMES_ATTACHMENTS_PYTHON: python
+        run: npx vitest run --project unit tests/unit/hermes-attachment-http.test.ts tests/unit/hermes-attachment-adapter.test.ts tests/unit/hermes-remote-attachments.test.ts tests/unit/hermes-native-attachments.test.ts tests/unit/hermes-provider.test.ts
   checks:
     name: Typecheck, lint and unit tests
     runs-on: ubuntu-latest

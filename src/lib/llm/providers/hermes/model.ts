@@ -235,15 +235,15 @@ export class HermesLanguageModel implements LanguageModelV4 {
         void stopRun(stale.target, stale.runId).catch(() => {});
       }
     }
-    const attachments = target.local ? newestNativeAttachments(prompt) : [];
-    const input = target.local ? newestNativeText(prompt) : lastUserInput(prompt);
+    const attachments = newestNativeAttachments(prompt);
+    const input = newestNativeText(prompt);
     if (!input && !attachments.length) throw new HermesError("rejected", 400, "There's no message to send.");
     const runId = await startRun(target, {
       input,
       attachments,
       sessionId,
       instructions: target.local ? undefined : systemText(prompt) || undefined,
-      idempotencyKey: target.local && this.ctx.run ? `portal-${this.ctx.run.id}` : `portal-${randomUUID()}`,
+      idempotencyKey: this.ctx.run ? `portal-${this.ctx.run.id}` : `portal-${randomUUID()}`,
       sessionKey,
       model: this.ctx.requestedModel,
       // No abort signal: once Hermes has the run its id must come back, so a Stop meanwhile can stop it (consume()).

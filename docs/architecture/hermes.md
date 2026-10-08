@@ -214,8 +214,13 @@ Hermes has no end users: one API key opens a whole profile, including its termin
 - **Later:** Hermes inside each person's own workspace sandbox through ACP and `@ai-sdk/harness-acp` (true per-person
   isolation; needs sandbox networking).
 
-**Known H1 limits:** editing or regenerating a message doesn't rewind Hermes' copy of the conversation; attachments are
-sent as text only; live tool rows show Hermes' previews, not full arguments; an approval must be answered within
+**Original attachments:** shared remote Runs connections require the version-pinned attachment adapter described in
+[Remote Hermes original attachments](hermes-remote-attachments.md). The portal transfers owned original bytes and
+binds verified upload IDs to the run. A server without this capability refuses attachment turns before upload or
+inference instead of silently dropping originals. Local/native connections retain their existing native attachment transport.
+
+**Known H1 limits:** editing or regenerating a message doesn't rewind Hermes' copy of the conversation;
+live tool rows show Hermes' previews, not full arguments; an approval must be answered within
 Hermes' timeout.
 
 ## Ideas from Paperclip (backlog)
