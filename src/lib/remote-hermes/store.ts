@@ -9,6 +9,7 @@ import { getSetting } from '@/lib/settings';
 import { DashboardClient, dashboardSecretsSchema, type DashboardSecrets } from './client';
 import { assertRemoteHermesAdmission, dashboardBase } from './policy';
 import { dashboardFetch } from './transport';
+import { retireNativeConnection } from './lifecycle';
 import { remoteConnectionAAD as aad } from './secrets';
 
 export const remoteConnectionInput = z.object({
@@ -42,16 +43,24 @@ export async function connectRemoteHermes(userId: string, raw: RemoteConnectionI
     : dashboardSecretsSchema.parse({ mode: 'sessionToken', sessionToken: input.sessionToken });
   // Verify the credential on an authenticated endpoint before retaining it.
   const profiles = await new DashboardClient(input.baseUrl, transport, secrets).profiles();
+  let retiredId: string | undefined;
   const connection = await db.transaction(async tx => {
     // Share lock serializes final admission against an administrator disabling connections.
     await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
     assertRemoteHermesAdmission(await getSetting('remoteHermes', tx));
     const [existing] = await tx.select().from(remoteHermesConnections).where(and(eq(remoteHermesConnections.userId, userId), eq(remoteHermesConnections.baseUrl, input.baseUrl))).for('update');
-    const id = existing?.id ?? newId();
+    // A sign-in is a new authorization identity, even when profile names overlap.
+    // Retire local session bindings/receipts through the FK cascade rather than
+    // letting the replacement account inherit server-owned native IDs.
+    const id = newId();
+    if (existing) {
+      retiredId = existing.id;
+      await tx.delete(remoteHermesConnections).where(eq(remoteHermesConnections.id, existing.id));
+    }
     const values = { name: input.name, authMode: input.mode, version: status.version ?? null, secretEnc: encrypt(JSON.stringify(secrets), aad(id, userId)), updatedAt: new Date() };
-    if (existing) return (await tx.update(remoteHermesConnections).set(values).where(eq(remoteHermesConnections.id, id)).returning(publicColumns))[0];
     return (await tx.insert(remoteHermesConnections).values({ ...values, id, userId, baseUrl: input.baseUrl }).returning(publicColumns))[0];
   });
+  if (retiredId) retireNativeConnection(userId, retiredId);
   return { connection, profiles };
 }
 

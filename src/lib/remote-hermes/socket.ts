@@ -1,5 +1,8 @@
 import WebSocket, { type ClientOptions } from 'ws';
 import { HttpError } from '@/lib/authz';
+import type { Tx } from '@/db';
+
+export type DispatchBoundary = <T>(method: string, params: RpcRecord, dispatch: () => T, tx?: Tx) => Promise<{ value: T }>;
 
 export type RpcRecord = Record<string, unknown>;
 export type NativeFrame = { jsonrpc: '2.0'; id?: string | number; method?: string; params?: RpcRecord; result?: RpcRecord; error?: { code?: number } };
@@ -32,11 +35,15 @@ export class DashboardSocket {
   state: SocketState = 'disconnected';
   serverRequests: string[] = [];
   private epoch = 0;
+  private closed = false;
   get connectionEpoch() { return this.epoch; }
   constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame) => void,
-    private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {}) {}
+    private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {},
+    private authorize: (method: string, params: RpcRecord) => Promise<void> = async () => {},
+    private boundary: DispatchBoundary = async (method, params, dispatch) => { await this.authorize(method, params); return { value: dispatch() }; }) {}
   private setState(state: SocketState) { this.state = state; this.changed(state); }
   async connect(): Promise<void> {
+    if (this.closed) throw new HttpError(409, 'Hermes connection was retired. Sign in again.');
     this.wanted = true;
     if (this.ready) return;
     if (this.connecting) return this.connecting;
@@ -84,6 +91,7 @@ export class DashboardSocket {
       const capabilities = await this.send('client.capabilities', { server_requests: true }, 30_000);
       this.serverRequests = Array.isArray(capabilities.server_requests) ? capabilities.server_requests.filter((v): v is string => typeof v === 'string') : [];
       if (!this.serverRequests.includes('approval')) throw new HttpError(501, 'This Hermes version does not support native approval prompts. Update Hermes before chatting.');
+      if (!this.wanted || this.ws !== ws) throw new NativeConnectionChanged();
       this.ready = true;
       ++this.epoch;
       const wasReconnect = this.everConnected;
@@ -117,29 +125,48 @@ export class DashboardSocket {
   }
   /** Sensitive setters must stay on the exact socket that supplied their verified snapshot. */
   callConnected(method: string, params: RpcRecord, expectedEpoch: number, timeoutMs = 30_000): Promise<RpcRecord> {
-    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN || !expectedEpoch || this.epoch !== expectedEpoch) throw new NativeConnectionChanged();
-    return this.send(method, params, timeoutMs);
+    return this.dispatchConnected(method, params, expectedEpoch, timeoutMs).then(({ reply }) => reply);
   }
-  private send(method: string, params: RpcRecord, timeoutMs: number): Promise<RpcRecord> {
+  /** Start under the caller's locks, then await reply only after committing. */
+  dispatchConnected(method: string, params: RpcRecord, expectedEpoch: number, timeoutMs = 30_000, tx?: Tx): Promise<{ reply: Promise<RpcRecord> }> {
+    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN || !expectedEpoch || this.epoch !== expectedEpoch) throw new NativeConnectionChanged();
+    return this.dispatch(method, params, timeoutMs, tx);
+  }
+  private async send(method: string, params: RpcRecord, timeoutMs: number): Promise<RpcRecord> {
+    return (await this.dispatch(method, params, timeoutMs)).reply;
+  }
+  private async dispatch(method: string, params: RpcRecord, timeoutMs: number, tx?: Tx): Promise<{ reply: Promise<RpcRecord> }> {
     if (!this.ws || !this.transportReady || this.ws.readyState !== WebSocket.OPEN) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
-    if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');
-    const id = ++this.sequence;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new HttpError(504, 'Hermes did not confirm this operation. Refresh the native session before trying again.')); }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.ws!.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }), error => {
-        if (error) { clearTimeout(timer); this.pending.delete(id); reject(new HttpError(502, 'Hermes disconnected before confirming this operation. Refresh the session.')); }
+    const ws = this.ws;
+    const { value: reply } = await this.boundary(method, params, () => {
+      if (this.ws !== ws || !this.transportReady || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
+      if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');
+      const id = ++this.sequence;
+      const pending = new Promise<RpcRecord>((resolve, reject) => {
+        const timer = setTimeout(() => { this.pending.delete(id); reject(new HttpError(504, 'Hermes did not confirm this operation. Refresh the native session before trying again.')); }, timeoutMs);
+        this.pending.set(id, { resolve, reject, timer });
+        this.ws!.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }), error => {
+          if (error) { clearTimeout(timer); this.pending.delete(id); reject(new HttpError(502, 'Hermes disconnected before confirming this operation. Refresh the session.')); }
+        });
       });
-    });
+      // A close/error can arrive before the transaction commit returns the reply.
+      void pending.catch(() => {});
+      return pending;
+    }, tx);
+    return { reply };
   }
   /** Only server-verified pending requests are answered; values are never logged or retained. */
-  answer(id: string | number, result?: RpcRecord) {
+  async answer(id: string | number, result?: RpcRecord) {
     if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) throw new HttpError(409, 'Reconnect and reload the pending prompt before answering.');
-    this.ws.send(JSON.stringify(result ? { jsonrpc: '2.0', id, result } : { jsonrpc: '2.0', id, error: { code: -32601, message: 'Unsupported interaction' } }));
+    const ws = this.ws;
+    await this.boundary('$answer', { id }, () => {
+      if (this.ws !== ws || !this.ready || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
+      ws.send(JSON.stringify(result ? { jsonrpc: '2.0', id, result } : { jsonrpc: '2.0', id, error: { code: -32601, message: 'Unsupported interaction' } }));
+    });
   }
   private rejectPending() {
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new HttpError(502, 'Hermes disconnected. The operation may have been accepted; refresh instead of resending it.')); }
     this.pending.clear();
   }
-  close() { this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
+  close() { this.closed = true; this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
 }

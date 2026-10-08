@@ -15,6 +15,24 @@ async function fixture() {
 }
 const ready = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: {} } });
 describe('native Hermes socket', () => {
+  it('rechecks authorization on a ready socket before RPCs, guarded setters and native answers', async () => {
+    const { server, url } = await fixture(); const received: unknown[] = [];
+    server.on('connection', ws => { ws.send(ready); ws.on('message', raw => {
+      const input = JSON.parse(String(raw)); received.push(input);
+      if (input.method) ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'] } }));
+    }); });
+    let revoked = false;
+    const authorize = vi.fn(async () => { if (revoked) throw new Error('Authorization revoked'); });
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}, () => {}, async () => {}, authorize);
+    resources.push(() => socket.close());
+    await socket.call('session.resume', {});
+    const epoch = socket.connectionEpoch;
+    revoked = true;
+    await expect(socket.call('projects.list', {})).rejects.toThrow('Authorization revoked');
+    await expect(socket.callConnected('config.set', {}, epoch)).rejects.toThrow('Authorization revoked');
+    await expect(socket.answer('old-request', { choice: 'once' })).rejects.toThrow('Authorization revoked');
+    expect(received).toHaveLength(2);
+  });
   it('pins the WebSocket upgrade to the validated address instead of resolving the URL host again', async () => {
     const { server, url } = await fixture(); url.hostname = 'dashboard.example.invalid';
     const lookup = vi.fn<NonNullable<RequestOptions['lookup']>>((_host, _options, callback) => callback(null, '127.0.0.1', 4));

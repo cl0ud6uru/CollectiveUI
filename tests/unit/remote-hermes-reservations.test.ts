@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const f = vi.hoisted(() => ({ row: {} as Record<string, unknown>, receipts: [] as Record<string, unknown>[], call: vi.fn(), frame: (_frame: unknown) => { void _frame; }, lock: Promise.resolve() }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
+vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => ({ address: '93.184.216.34', family: 4 }) }));
 vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
   return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown) => void) { f.frame = frame; } close() {} } };
@@ -21,6 +22,7 @@ vi.mock('@/db', () => {
   const selection = (table: { [key: symbol]: unknown }, condition: unknown) => {
     const name = table[Symbol.for('drizzle:Name')];
     if (name === 'settings') return [];
+    if (name === 'remote_hermes_connections') return [{ id: 'connection', userId: 'owner', baseUrl: 'https://hermes.example.com' }];
     if (name === 'remote_hermes_turns') return f.receipts.filter(r => query(condition).params.includes(r.requestId));
     return matches(condition) ? [{ ...f.row }] : [];
   };
