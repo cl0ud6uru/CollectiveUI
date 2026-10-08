@@ -86,7 +86,7 @@ run("MCP servers against mcp-echo (integration)", () => {
     const long = ts.entries.find((e) => e.name.endsWith("__long_text"))!;
     const capped = (await long.tool.execute!({ size: 50_000 }, { toolCallId: "t2", messages: [] } as never)) as { content: { text: string }[] };
     expect(capped.content[0].text.startsWith("startx")).toBe(true);
-    expect(capped.content[0].text).toHaveLength(1024);
+    expect(Buffer.byteLength(JSON.stringify(capped), "utf8")).toBeLessThanOrEqual(1024);
     expect(capped.content[0].text).not.toMatch(/[\u{E0000}-\u{E007F}]/u);
     expect(capped.content[1].text).toMatch(/Truncated/);
     const connections = (await stats()).requests;

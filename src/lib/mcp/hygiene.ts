@@ -25,65 +25,98 @@ export type McpCallResult = { content?: ContentPart[]; structuredContent?: unkno
 
 const note = (text: string): ContentPart => ({ type: "text", text });
 
-/**
- * Cleans a tools/call result and caps it at the server's budget (characters, roughly bytes of text), so one
- * chatty tool can't flood the model's context or the stored conversation. Text is cut with a note saying so;
- * images or audio that don't fit are replaced by a note. structuredContent is dropped when content exists (the
- * model reads content) or when it doesn't fit.
- */
-export function capResult(result: McpCallResult, budgetChars: number): McpCallResult {
-  if (!Array.isArray(result.content)) {
-    const raw = stripHidden(JSON.stringify(result) ?? "");
-    if (raw.length <= budgetChars) return JSON.parse(raw) as McpCallResult;
-    return { content: [note(`${raw.slice(0, budgetChars)}\n[Truncated: the result was ${kb(raw.length)}, the limit is ${kb(budgetChars)}.]`)] };
-  }
+/** Hard limit on returned parts, including the single omission/truncation note. */
+export const MAX_RESULT_PARTS = 64;
 
-  let left = budgetChars;
-  const out: ContentPart[] = [];
-  const parts = result.content;
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
+/**
+ * Budget is UTF-8 bytes of JSON.stringify(returned result), including the envelope and notes.
+ * Only model-facing content fields, structuredContent and the boolean isError flag survive.
+ * Stops at the first omission; never emits one uncharged note per rejected part.
+ * Budgets smaller than the empty result envelope (or non-finite budgets) are rejected.
+ * This is a post-parse bound, not a transport/memory allocation limit.
+ */
+export function capResult(result: McpCallResult, budgetBytes: number): McpCallResult {
+  if (!result || typeof result !== "object" || Array.isArray(result)) result = {};
+  const capped: McpCallResult = { content: [] };
+  if (typeof result.isError === "boolean") capped.isError = result.isError;
+  const bytes = () => Buffer.byteLength(JSON.stringify(capped), "utf8");
+  if (!Number.isFinite(budgetBytes) || Math.floor(budgetBytes) < bytes())
+    throw new RangeError("MCP result budget cannot fit the empty result envelope.");
+  const budget = Math.floor(budgetBytes);
+  const out = capped.content!;
+  const add = (part: ContentPart) => {
+    if (out.length >= MAX_RESULT_PARTS) return false;
+    out.push(part);
+    if (bytes() <= budget) return true;
+    out.pop();
+    return false;
+  };
+  const truncate = (text?: string, message = "[Truncated.]") => {
+    // Charge the note first; then spend the remaining space on a text prefix.
+    const hasNote = add(note(message));
+    if (text !== undefined && out.length < MAX_RESULT_PARTS) {
+      const part = note("");
+      if (hasNote) out.splice(out.length - 1, 0, part);
+      else out.push(part);
+      if (bytes() > budget) { out.splice(out.indexOf(part), 1); return; }
+      let low = 0, high = text.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        part.text = text.slice(0, mid);
+        if (bytes() <= budget) low = mid;
+        else high = mid - 1;
+      }
+      // Do not split an astral character at the byte boundary.
+      if (low > 0 && /[\uD800-\uDBFF]/.test(text[low - 1])) low--;
+      part.text = text.slice(0, low);
+    }
+  };
+  const parts = Array.isArray(result.content) ? result.content : [];
+  if (!parts.length) {
+    if (result.structuredContent !== undefined) {
+      const raw = stripHidden(JSON.stringify(result.structuredContent) ?? "null");
+      capped.structuredContent = JSON.parse(raw);
+      if (bytes() > budget) {
+        delete capped.structuredContent;
+        truncate(raw);
+      }
+    } else if (!Array.isArray(result.content)) truncate();
+    return capped;
+  }
+  for (const part of parts) {
+    // Reserve one part slot for the final omission note.
+    if (out.length >= MAX_RESULT_PARTS - 1) { truncate(); break; }
+    if (!part || typeof part !== "object") { truncate(); break; }
     if (part.type === "text" && typeof part.text === "string") {
       const text = stripHidden(part.text);
-      if (text.length <= left) {
-        out.push({ ...part, text });
-        left -= text.length;
-        continue;
+      if (!add(note(text))) { truncate(text); break; }
+    } else if ((part.type === "image" || part.type === "audio") &&
+      typeof part.data === "string" && typeof part.mimeType === "string") {
+      if (!add({ type: part.type, data: stripHidden(part.data), mimeType: stripHidden(part.mimeType) })) {
+        truncate(undefined, `[${part.type === "image" ? "Image" : "Audio"} omitted: over the result budget.]`);
+        break;
       }
-      out.push({ ...part, text: text.slice(0, Math.max(0, left)) });
-      const rest = parts.length - i - 1;
-      out.push(note(`[Truncated: the result was longer than ${kb(budgetChars)}${rest ? `; ${rest} more part(s) omitted` : ""}.]`));
-      left = 0;
+    } else if (part.type === "resource_link" || part.type === "resource") {
+      const clean: ContentPart = { type: part.type };
+      const fields = (source: Record<string, unknown>, keys: string[]) => {
+        const value: Record<string, unknown> = {};
+        for (const key of keys) {
+          if (typeof source[key] === "string") value[key] = stripHidden(source[key]);
+        }
+        return value;
+      };
+      if (part.type === "resource_link") Object.assign(clean, fields(part, ["uri", "name", "title", "description", "mimeType"]));
+      else if (part.resource && typeof part.resource === "object" && !Array.isArray(part.resource))
+        clean.resource = fields(part.resource as Record<string, unknown>, ["uri", "mimeType", "text", "blob"]);
+      else { truncate(); break; }
+      const text = JSON.stringify(clean);
+      if (!add(note(text))) { truncate(text); break; }
+    } else {
+      truncate(undefined, "[Truncated: unsupported content part omitted.]");
       break;
     }
-    if ((part.type === "image" || part.type === "audio") && typeof part.data === "string") {
-      if (part.data.length <= left) {
-        out.push(part);
-        left -= part.data.length;
-      } else out.push(note(`[${part.type === "image" ? "Image" : "Audio"} omitted: ${kb(part.data.length)} is over the ${kb(budgetChars)} limit.]`));
-      continue;
-    }
-    // Resources, links and anything newer: pass as text (what the SDK does too).
-    const text = stripHidden(JSON.stringify(part));
-    if (text.length <= left) {
-      out.push(note(text));
-      left -= text.length;
-    } else {
-      out.push(note(`[A ${part.type} part was omitted: over the ${kb(budgetChars)} limit.]`));
-    }
-  }
-  const capped: McpCallResult = { content: out };
-  if (result.isError) capped.isError = true;
-  if (!out.length && result.structuredContent !== undefined) {
-    const structured = stripHidden(JSON.stringify(result.structuredContent) ?? "");
-    if (structured.length <= budgetChars) capped.structuredContent = JSON.parse(structured);
-    else capped.content = [note(`${structured.slice(0, budgetChars)}\n[Truncated: over the ${kb(budgetChars)} limit.]`)];
   }
   return capped;
-}
-
-function kb(chars: number) {
-  return chars < 1024 ? `${chars} characters` : `${Math.round(chars / 1024)} KB`;
 }
 
 type ModelOutput = Awaited<ReturnType<NonNullable<Tool["toModelOutput"]>>>;
