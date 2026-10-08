@@ -1,11 +1,21 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-const f = vi.hoisted(() => ({ call: vi.fn() }));
+const f = vi.hoisted(() => ({ call: vi.fn(), epoch: 1 }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
+vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => ({ address: '93.184.216.34', family: 4 }) }));
 vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
-  return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; close() {} } };
+  return { ...actual, DashboardSocket: class {
+    state = 'connected';
+    call = f.call;
+    async callWithEpoch(...args: unknown[]) {
+      // Capture the epoch that dispatched the RPC, not the epoch when its reply arrives.
+      const epoch = f.epoch;
+      return { result: await f.call(...args), epoch };
+    }
+    close() {}
+  } };
 });
 import { db, pool } from '@/db';
 import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
@@ -21,7 +31,7 @@ let owner: string, connection: string, session: string;
 const row = async () => (await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, session)))[0];
 describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks', () => {
   beforeEach(async () => {
-    vi.clearAllMocks(); owner = newId(); connection = newId(); session = newId();
+    vi.clearAllMocks(); f.epoch = 1; owner = newId(); connection = newId(); session = newId();
     await db.insert(users).values({ id: owner, upn: `fixture-${owner}`, name: 'Synthetic fixture', identityRealm: 'local', authSource: 'local' });
     await db.insert(remoteHermesConnections).values({ id: connection, userId: owner, name: 'Fixture', baseUrl: `https://${connection}.example.com`, authMode: 'sessionToken', secretEnc: 'synthetic' });
     await db.insert(remoteHermesSessions).values({ id: session, connectionId: connection, profile: 'default', storedId: 'stored', status: 'running' });
@@ -29,6 +39,20 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
   });
   afterEach(async () => { nativeHub(owner, connection).close(); await db.delete(users).where(eq(users.id, owner)); });
   afterAll(async () => { await pool.end(); });
+  it('retains the dispatch epoch for a delayed resume and uses the next epoch after reconnect', async () => {
+    const snapshot = deferred<unknown>(); f.call.mockReturnValueOnce(snapshot.promise);
+    const hub = nativeHub(owner, connection);
+    f.epoch = 7;
+    const refresh = hub.refresh(await row());
+    await vi.waitFor(() => expect(f.call).toHaveBeenCalledWith('session.resume', {
+      session_id: 'stored', profile: 'default', cols: 80, inline_images: false, close_on_disconnect: false,
+    }));
+    f.epoch = 8; snapshot.resolve(idle); await refresh;
+    expect(hub.sessions.get(session)?.socketEpoch).toBe(7);
+    await hub.refresh(await row());
+    expect(hub.sessions.get(session)?.socketEpoch).toBe(8);
+    expect((await row()).runtimeId).toBe('runtime');
+  });
   it('initializes reservation columns and rejects inconsistent queue states', async () => {
     expect(await row()).toMatchObject({ revision: 0, admissionRequestId: null, queueRequestId: null, queueStatus: null });
     await expect(db.update(remoteHermesSessions).set({ queueStatus: 'queued' }).where(eq(remoteHermesSessions.id, session))).rejects.toThrow();

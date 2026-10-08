@@ -146,6 +146,35 @@ describe("buildToolset workspace wiring", () => {
     expect(ts.approval(call("workspace_read", { path: "a" }))).toEqual({ type: "user-approval", reason: "Organization policy requires approval for every call." });
   });
 
+  it("explicit workspace permissions run office work automatically and keep hard denials", async () => {
+    rows.set(botTools, [{ toolKey: "workspace", approval: "ask", config: { approvals: {
+      workspace_bash: "auto", workspace_write: "auto", workspace_edit: "auto", workspace_read: "auto", workspace_import_attachment: "auto",
+    } } }]);
+    const ts = await buildToolset(newCtx());
+    for (const name of ["workspace_bash", "workspace_write", "workspace_edit", "workspace_read", "workspace_import_attachment"]) {
+      expect(ts.approval(call(name, { command: "printf fixture" }))).toBeUndefined();
+    }
+    expect(ts.approval(call("workspace_list"))).toBe("user-approval");
+    expect(ts.approval(call("workspace_bash", { command: "rm -rf ~" }))).toMatchObject({ type: "denied" });
+  });
+
+  it("explicit automatic permissions cannot bypass organization requirements", async () => {
+    rows.set(botTools, [{ toolKey: "workspace", approval: "auto", config: { approvals: { workspace_bash: "auto" } } }]);
+    for (const enforcedApproval of [["workspace"], ["workspace_bash"]]) {
+      const ts = await buildToolset(newCtx({ toolSettings: { disabledTools: [], enforcedApproval, maxStepsCap: 10 } as never }));
+      expect(ts.approval(call("workspace_bash", { command: "ls" }))).toEqual({ type: "user-approval", reason: "Organization policy requires approval for every call." });
+    }
+  });
+
+  it("switching commands back to ask ignores grants and invalid override modes", async () => {
+    rows.set(toolGrants, [{ toolName: "workspace_bash" }]);
+    for (const mode of ["ask", "smart", "invalid"]) {
+      rows.set(botTools, [{ toolKey: "workspace", approval: "auto", config: { approvals: { workspace_bash: mode } } }]);
+      const ts = await buildToolset(newCtx());
+      expect(ts.approval(call("workspace_bash", { command: "ls" }))).toBe("user-approval");
+    }
+  });
+
   it("obvious foot-guns are refused outright, with a reason and no Run card", async () => {
     const ts = await buildToolset(newCtx());
     expect(ts.approval(call("workspace_bash", { command: "rm -rf ~" }))).toEqual({ type: "denied", reason: expect.stringContaining("isn't run") });

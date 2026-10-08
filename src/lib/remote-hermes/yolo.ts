@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db';
-import { remoteHermesSessions, remoteHermesTurns, settings } from '@/db/schema';
+import { remoteHermesSessions, remoteHermesTurns } from '@/db/schema';
 import { encrypt, decrypt } from '@/lib/crypto';
 import { HttpError } from '@/lib/authz';
 import { newId } from '@/lib/ids';
@@ -61,7 +61,7 @@ export async function nativeSessionYolo(ownerId: string, connectionId: string, s
     return c;
   }
   async function lockPolicy(tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) {
-    await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
+    await hub.lockBoundary(tx);
     assertSessionYoloAdmission(await getSetting('remoteHermes', tx));
   }
   if (input.operation === 'prepare') return db.transaction(async tx => {
@@ -87,16 +87,17 @@ export async function nativeSessionYolo(ownerId: string, connectionId: string, s
   const c = cached()!; c.row = reserved; c.view.uncertain = true;
   let sent = false;
   try {
-    await db.transaction(async tx => {
+    const { reply } = await db.transaction(async tx => {
       await lockPolicy(tx);
       const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, sessionId)).for('update');
       const live = sameTarget(current, target);
       if (target.expiresAt <= Date.now() || !current || current.status !== 'admitting' || current.admissionRequestId !== target.requestId || current.queueRequestId || live.view.running || live.view.queuePending || live.view.queued || live.pending.size || live.view.prompts.length)
         throw new HttpError(409, 'This YOLO confirmation is no longer ready. Review the native conversation before changing its mode.');
       sent = true;
-      const result = await hub.socket.callConnected('config.set', { profile: target.profile, session_id: target.runtimeId, scope: 'session', key: 'yolo', value: target.value }, target.socketEpoch);
-      if (result.key !== 'yolo' || result.scope !== 'session' || result.value !== (target.value === 'on' ? '1' : '0')) throw new HttpError(502, 'Hermes did not confirm the requested session YOLO state. Refresh before continuing.');
+      return hub.socket.dispatchConnected('config.set', { profile: target.profile, session_id: target.runtimeId, scope: 'session', key: 'yolo', value: target.value }, target.socketEpoch, 30_000, tx);
     });
+    const result = await reply;
+    if (result.key !== 'yolo' || result.scope !== 'session' || result.value !== (target.value === 'on' ? '1' : '0')) throw new HttpError(502, 'Hermes did not confirm the requested session YOLO state. Refresh before continuing.');
   } catch (error) {
     const definitive = !sent || error instanceof NativeConnectionChanged || error instanceof NativeRpcError && [-32601, 4001].includes(error.code!);
     await settle(definitive ? 'idle' : 'uncertain');

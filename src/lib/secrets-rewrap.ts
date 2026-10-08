@@ -1,6 +1,7 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
 import { liveActivities, aiApps, chatgptDeviceLogins, hermesConnections, mcpServers, routines, userTokens, providerConnections } from "@/db/schema";
+import { rewrapRemoteHermesSecrets } from "@/lib/remote-hermes/store";
 import { connectionAAD } from "@/lib/hermes-provisioning/config";
 import { AAD, encrypt, needsRewrap, rewrap } from "@/lib/crypto";
 import { rewrapChatGPTSecrets } from "@/lib/llm/chatgpt/store";
@@ -8,6 +9,7 @@ import { appSecretNeedsRowBinding, openAppSecret, sealAppSecret } from "@/lib/ll
 import { providerConnectionAad } from "@/lib/llm/provider-connections";
 import { getSetting, setSetting } from "@/lib/settings";
 import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
+import { rewrapBillingSecrets } from "@/lib/billing/secrets";
 
 /**
  * Re-encrypts every stored secret under the primary key (with AAD). Idempotent: values that are already
@@ -16,6 +18,7 @@ import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
  */
 export async function rewrapAllSecrets(): Promise<number> {
   let changed = 0;
+  changed += await rewrapBillingSecrets();
   for (const row of await db.select().from(liveActivities)) {
     const next = rewrap(row.tokenEnc, `live_activities.token_enc|${row.sessionId}|${row.activityId}`);
     if (next) {
@@ -38,6 +41,9 @@ export async function rewrapAllSecrets(): Promise<number> {
       changed++;
     }
   }
+
+  // Personal account credentials stay owned by their dedicated credential store.
+  changed += await rewrapRemoteHermesSecrets();
 
   // App credentials are bound to their row (AAD "ai_apps.api_key_enc|<id>"); older values used the column only.
   for (const row of await db.select({ id: aiApps.id, apiKeyEnc: aiApps.apiKeyEnc }).from(aiApps).where(isNotNull(aiApps.apiKeyEnc))) {

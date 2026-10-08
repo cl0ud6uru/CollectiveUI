@@ -1,5 +1,6 @@
 "use client";
 
+import { CodexAllowance } from "@/components/settings/codex-allowance";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTheme } from "next-themes";
@@ -120,6 +121,7 @@ export function SettingsView({
       <div className="min-w-0 flex-1 space-y-6">
         {/* Preserve one-time recovery codes if someone switches settings sections before saving them. */}
         <div hidden={tab !== "Security"}>{security}</div>
+        {tab === "General" && <CodexAllowance />}
         {tab === "General" && (
           <>
             <Field label="Theme">

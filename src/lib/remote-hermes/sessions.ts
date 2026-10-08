@@ -66,9 +66,7 @@ export async function nativeSnapshot(ownerId: string, connectionId: string, sess
   const policy = await getSetting('remoteHermes');
   const hub = nativeHub(ownerId, connectionId);
   if (!policy.enabled && !active(row.status)) {
-    const cached = hub.sessions.get(row.id);
-    if (cached) return { ...cached.view, admissionAllowed: false, yoloAllowed: false };
-    throw new HttpError(403, 'Personal remote Hermes is disabled. Saved conversations are retained.');
+    return hub.retainedView(row);
   }
   return { ...await hub.view(row), admissionAllowed: policy.enabled, yoloAllowed: policy.enabled && policy.allowSessionYolo === true };
 }

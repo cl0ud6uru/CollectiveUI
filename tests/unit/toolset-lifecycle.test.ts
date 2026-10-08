@@ -170,6 +170,35 @@ describe("closed handles don't come back to life (a stream still running after i
 
   beforeEach(() => connectMcp.mockReset());
 
+  it('applies resultBudgetKb as serialized bytes through the connector', async () => {
+    const { mcpTools } = await real();
+    const client = fakeClient();
+    client.callTool.mockResolvedValue({ isError: true, extra: 'x'.repeat(10000), content: [{ type: 'text', text: '漢😀'.repeat(1000), extra: 'x'.repeat(10000) }], structuredContent: { ignored: true } } as never);
+    connectMcp.mockResolvedValue(client);
+    const ts = mcpTools({ ...mcpServer, resultBudgetKb: 1 }, opts());
+    const r = await call(ts.entries[0]);
+    expect(Buffer.byteLength(JSON.stringify(r))).toBeLessThanOrEqual(1024);
+    expect(r).toMatchObject({ isError: true });
+    expect(r).not.toHaveProperty('structuredContent');
+    expect(r).not.toHaveProperty('extra');
+    await ts.close();
+  });
+
+  it('retains connector failure and abort behavior instead of returning a capped success', async () => {
+    const { mcpTools } = await real();
+    const { McpToolError } = await import('@/lib/mcp/errors');
+    const client = fakeClient();
+    client.callTool.mockRejectedValue(new Error('connector failed'));
+    connectMcp.mockResolvedValue(client);
+    const ts = mcpTools(mcpServer, opts());
+    await expect(call(ts.entries[0])).rejects.toBeInstanceOf(McpToolError);
+    await expect(call(ts.entries[0])).rejects.toThrow(/connector failed/);
+    const abort = new AbortController(); abort.abort();
+    const err = new Error('aborted'); client.callTool.mockRejectedValue(err);
+    await expect(ts.entries[0].tool.execute!({}, { toolCallId: 't1', messages: [], abortSignal: abort.signal } as never)).rejects.toBe(err);
+    await ts.close();
+  });
+
   it("a lazy MCP toolset doesn't reconnect after close()", async () => {
     const { mcpTools, McpToolsetClosedError } = await real();
     const client = fakeClient();

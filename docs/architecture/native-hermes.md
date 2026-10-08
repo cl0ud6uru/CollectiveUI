@@ -25,6 +25,16 @@ History requests include native compacted display rows, preserving earlier turns
 
 Native multimodal history retains recognized text blocks and image/audio markers while omitting attachment payloads, URLs and unknown fields from the browser projection. Older dashboard versions retain their native REST lineage limits, including versions that expose only the current compression segment.
 
+## Credential and policy lifecycle
+
+A successful manual sign-in at an existing owner/dashboard URL replaces the connection with a fresh local connection ID. The transaction retires the old connection and cascades its local session bindings and no-replay receipts; no old stored/runtime ID is transferred to the replacement account, even if both accounts advertise identical profile names. Native conversations on Hermes are not deleted. Reopen them through the replacement account's authenticated listing. Ordinary token refresh retains the connection identity. A failed replacement transaction leaves the previous connection and bindings intact.
+
+After replacement commits, the web process eagerly closes the old socket and clears its cache. Old hub/socket references cannot reconnect. Other web processes discover retirement through a database ownership/identity check before every native RPC, native answer and cached view; no distributed invalidation broadcast is claimed. As before, hubs require a single web instance or sticky routing. In-flight work already dispatched cannot be recalled or replayed. A turn running under the retired account is not rebound to the replacement account; use that account's native dashboard for any remaining recovery.
+
+Socket dispatch also reads the current organization policy, including for warm sockets and epoch-guarded setters. Private-destination revocation blocks all new prompts, uploads, steering, queues, commands, inspection and settings operations. The existing pinned socket may only resume or interrupt a durable, owned active binding, answer its server-verified pending interaction, or send its heartbeat. It cannot reconnect to a revoked destination. Idle, unrelated profile/session IDs and invented prompt/approval IDs are not recovery authorizations. Disabling admission without revoking the destination still allows admitted turns to reconnect, receive answers and stop. These checks do not revoke work already accepted by the remote Hermes server or provide distributed cancellation.
+
+Regression coverage uses real loopback WebSockets for ready-socket revocation, cached identity fencing, setters/answers, recovery boundaries and reconnect behavior, plus PGlite executing migrations `0030`–`0032` to verify replacement with overlapping account profiles, active bindings, receipt cascades and unrelated-owner preservation. No additional migration, production policy change or real credential is required.
+
 ## Setup
 
 Apply migrations `0030_remote_hermes_connections`, `0031_remote_hermes_sessions` and `0032_remote_hermes_reservations` using the normal deployment migration process. This implementation does not migrate the deployed database or publish/deploy the app.
@@ -44,6 +54,21 @@ Unit checks cover password/PKCE exchange, native token decoding and refresh, cre
 `npm run test:hermes-ui` uses the real workspace component with an isolated synthetic HTTP fixture and headless Chromium. It checks history, live response, attachment submission, approvals, clarification, protected prompts, steering, queueing, disablement, stop and profile switches with draft/file cleanup and stale response rejection. It does not exercise real dashboard authentication or replace a live Hermes compatibility check.
 
 `tests/integration/remote-hermes.test.ts` and `tests/integration/remote-hermes-reservations.test.ts` check real database identity/receipt constraints, owned bindings, fixture cascade cleanup, queue reservation contention, revision reconciliation, unknown queue recovery and late acknowledgements. It runs only when `REMOTE_HERMES_INTEGRATION=1` and `DATABASE_URL` points to a disposable database named `hermes_fixture`; never set these to production. All migrations have been checked against a disposable pgvector/Postgres database. A real remote Hermes server has not yet been used for end-to-end verification.
+
+### Reservation fixture evidence (issue #97, partial)
+
+The reservation socket is **synthetic** and implements `callWithEpoch`: it captures the epoch at RPC dispatch, including when a reply is delayed across a simulated reconnect. The suite checks that the hub retains that dispatch epoch and updates it on the next resume, alongside the database reservation/race assertions. This is not evidence of real dashboard transport or live runtime compatibility.
+
+To repeat the database checks, migrate a **disposable** pgvector/PostgreSQL database named `hermes_fixture`, then run:
+
+```sh
+REMOTE_HERMES_INTEGRATION=1 DATABASE_URL="$FIXTURE_DATABASE_URL" \
+  npm test -- --project integration \
+  tests/integration/remote-hermes-reservations.test.ts \
+  tests/integration/remote-hermes-rewrap.test.ts
+```
+
+Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d`, PostgreSQL 17.11 on x86_64 Linux. The two suites passed 8 tests against a freshly migrated disposable database. No Hermes dashboard was launched or contacted, and no production credentials or inference were used. Real pinned-dashboard auth/refresh, attachments, prompts, reconnect/stop, history and reservations remain unverified; the live conformance portion of #97 remains open.
 
 ## Remaining work
 
