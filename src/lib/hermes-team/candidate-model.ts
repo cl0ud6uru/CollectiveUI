@@ -111,7 +111,8 @@ export async function executeCandidateModel(request: Request, contextId: string,
     appId:initial.context.modelRoute.billing==='admin'?initial.context.modelRoute.id.slice(4):null,
     providerKind:initial.transport.providerKind,
     model:initial.context.modelRoute.model,purpose:purpose==='reply'?'chat' as const:purpose==='subagent'?'delegate' as const:purpose==='learning'?'memory' as const:'draft' as const,
-    billingSource:initial.context.modelRoute.billing==='admin'?'org' as const:'chatgpt_plan' as const,credentialId:initial.context.personalConnectionId});
+    billingSource:initial.context.modelRoute.billing==='admin'?'org' as const:'chatgpt_plan' as const,credentialId:initial.context.personalConnectionId,
+    billingRoute:`${initial.context.modelRoute.billing==='admin'?'api':'subscription'}:${initial.context.modelRoute.integration}`});
   let receiptId: string | undefined;
   const current=()=>loadCandidateContext(contextId,authorization,purpose,routes);
   const gateway=createTeamModelGateway<Record<string,unknown>,CandidateResponse>({ routes,now:Date.now,

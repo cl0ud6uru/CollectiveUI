@@ -25,7 +25,8 @@ function tokenRows(since: SQL) {
            coalesce(e.cache_read_tokens, 0)::bigint as cache_read_tokens, coalesce(e.cache_write_tokens, 0)::bigint as cache_write_tokens,
            coalesce(e.reasoning_tokens, 0)::bigint as reasoning_tokens,
            coalesce(e.hosted_search_calls, 0)::bigint as hosted_search_calls,
-           coalesce(e.search_tool_cost_estimate_micros, 0)::bigint as search_tool_cost_estimate_micros
+           case when e.billing_source = 'org' and e.provider_kind not in ('chatgpt', 'hermes')
+                then coalesce(e.search_tool_cost_estimate_micros, 0) else 0 end::bigint as search_tool_cost_estimate_micros
     from usage_events e
     left join conversations c on c.id = e.conversation_id
     left join ai_apps ca on ca.id = c.app_id

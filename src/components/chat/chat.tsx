@@ -20,6 +20,7 @@ import { AssistantMessage, hasContent, UserMessage, type BranchInfo } from "./me
 import { DelegatedApprovals } from "./delegated-approvals";
 import { ShareButton } from "./share-dialog";
 import { useShell } from "./shell-context";
+import { SpendingHealth } from "./spending-health";
 import { TargetPicker } from "./target-picker";
 import type { TargetOption } from "./types";
 import { BotAvatar, bubbleTint, type BlobState } from "@/components/bots/bot-avatar";
@@ -587,6 +588,7 @@ export function Chat({
             )}
           </div>
           <div className={cn("flex shrink-0 items-center gap-1", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
+            {user.isAdmin && <SpendingHealth />}
             {target?.kind === "bot" && !embedded && <BotChatNavigation botId={target.id} isHome={isBotHome} conversationId={conversationId} onNewHome={() => void executeCommand("/new", [])} />}
             {target?.kind === "bot" && !embedded && (usesWorkspace || workspaceRunning) && (
               <button

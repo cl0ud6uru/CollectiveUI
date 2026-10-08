@@ -168,8 +168,10 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
     if (reason) throw new ProviderUnavailableError(reason);
   }
   const instance = await PROVIDERS[ctx.kind].create(ctx);
-  const middleware = [usageMiddleware(usageContext(app, opts, app.model))];
-  if (opts.nativeSearch) middleware.unshift(nativeSearchMiddleware(usageContext(app, opts, app.model), opts.nativeSearch));
+  const attribution = await apiUsageAttribution(app, opts.q);
+  const usage = { ...usageContext(app, opts, app.model), ...attribution };
+  const middleware = [usageMiddleware(usage)];
+  if (opts.nativeSearch) middleware.unshift(nativeSearchMiddleware(usage, opts.nativeSearch));
   if (ctx.kind !== "openai-compatible") middleware.unshift(defaultsMiddleware(ctx.kind, ctx.config, app.model, opts.purpose));
   return {
     model: wrapLanguageModel({ model: instance.chat(app.model), middleware }),
@@ -177,6 +179,16 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
     capabilities: capabilitiesFor(app),
     replayKey: null,
   };
+}
+
+/** Copy selectors at dispatch; historical events never consult the model's current connection. */
+export async function apiUsageAttribution(app: AppRow, q: DbOrTx = db) {
+  const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId, q) : null;
+  const config = (connection ? connectionConfig(connection, app.providerConfig) : app.providerConfig) as { organization?: string; project?: string };
+  return { providerConnectionId: connection?.id ?? null,
+    providerOrganization: app.provider === "openai" ? connection?.organization ?? config.organization ?? null : null,
+    providerProject: app.provider === "openai" ? connection?.project ?? config.project ?? null : null,
+    billingRoute: `api:${app.provider}` };
 }
 
 /** Embedding model for an app that has one configured. Usage is recorded by the caller (src/lib/llm/embeddings.ts). */

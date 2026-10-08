@@ -362,6 +362,23 @@ export const providerConnections = pgTable("provider_connections", {
   updatedAt: updatedAt(),
 }, (t) => [check("provider_connections_provider_check", sql`${t.provider} = 'openai'`)]);
 
+/** Dedicated read-only billing credentials; never an inference connection or bot credential. */
+export const providerBillingAccounts = pgTable("provider_billing_accounts", {
+  id: id(),
+  name: text("name").notNull(),
+  organization: text("organization").notNull(),
+  adminKeyEnc: text("admin_key_enc").notNull(),
+  enabled: boolean("enabled").notNull().default(false),
+  showHealthBar: boolean("show_health_bar").notNull().default(false),
+  revision: integer("revision").notNull().default(1),
+  snapshot: jsonb("snapshot").$type<import("@/lib/billing/contracts").SpendingSnapshot>(),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+});
+
 export const aiApps = pgTable(
   "ai_apps",
   {
@@ -1011,6 +1028,11 @@ export const usageEvents = pgTable(
     purpose: text("purpose").$type<ModelPurpose>().notNull(),
     billingSource: text("billing_source").$type<BillingSource>().notNull(),
     credentialId: text("credential_id"),
+    /** Historical routing facts. Never join current model/connection configuration to assign spend. */
+    providerConnectionId: text("provider_connection_id"),
+    providerOrganization: text("provider_organization"),
+    providerProject: text("provider_project"),
+    billingRoute: text("billing_route"),
     /** Total input tokens, including cached reads and writes. */
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
@@ -1028,6 +1050,7 @@ export const usageEvents = pgTable(
     index("usage_events_message_idx").on(t.messageId),
     index("usage_events_app_idx").on(t.appId),
     index("usage_events_bot_idx").on(t.botId),
+    check("usage_events_api_cost_check", sql`(${t.billingSource} = 'org' and ${t.providerKind} not in ('chatgpt', 'hermes')) or (${t.costMicros} is null and ${t.searchToolCostEstimateMicros} is null)`),
   ],
 );
 

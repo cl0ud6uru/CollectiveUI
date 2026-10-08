@@ -1,7 +1,7 @@
 import { embed, embedMany } from "ai";
 import type { DbOrTx } from '@/db';
 import { embeddingApp } from "./apps";
-import { resolveEmbeddingModel } from "./resolve";
+import { apiUsageAttribution, resolveEmbeddingModel } from "./resolve";
 import { newUsageScope, recordUsage, type UsageScope } from "./usage";
 
 export type EmbedContext = { userId?: string | null; conversationId?: string | null; botId?: string | null };
@@ -24,7 +24,7 @@ export async function embedTexts(texts: string[], ctx: EmbedContext = {}, option
     tokens = r.usage?.tokens;
   }
   const write = recordUsage(
-    { purpose: "embedding", billingSource: "org", providerKind: app.provider, model: app.embeddingModel!, appId: app.id, ...ctx, scope: usage ?? (q ? newUsageScope({}, q) : undefined) },
+    { purpose: "embedding", billingSource: "org", providerKind: app.provider, model: app.embeddingModel!, appId: app.id, ...await apiUsageAttribution(app, q), ...ctx, scope: usage ?? (q ? newUsageScope({}, q) : undefined) },
     {
       // Many OpenAI-compatible embedding servers omit usage (the SDK reports NaN).
       inputTokens: typeof tokens === "number" && Number.isFinite(tokens) ? tokens : null,

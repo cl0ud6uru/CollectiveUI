@@ -8,6 +8,7 @@ import { appSecretNeedsRowBinding, openAppSecret, sealAppSecret } from "@/lib/ll
 import { providerConnectionAad } from "@/lib/llm/provider-connections";
 import { getSetting, setSetting } from "@/lib/settings";
 import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
+import { rewrapBillingSecrets } from "@/lib/billing/secrets";
 
 /**
  * Re-encrypts every stored secret under the primary key (with AAD). Idempotent: values that are already
@@ -16,6 +17,7 @@ import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
  */
 export async function rewrapAllSecrets(): Promise<number> {
   let changed = 0;
+  changed += await rewrapBillingSecrets();
   for (const row of await db.select().from(liveActivities)) {
     const next = rewrap(row.tokenEnc, `live_activities.token_enc|${row.sessionId}|${row.activityId}`);
     if (next) {
