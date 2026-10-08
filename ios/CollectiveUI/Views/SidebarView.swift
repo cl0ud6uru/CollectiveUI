@@ -38,6 +38,7 @@ struct SidebarView: View {
 
             List {
                 Section {
+                    navigationAction("Home", symbol: "house") { model.selection = nil; onClose() }
                     navigationAction("New chat", symbol: "square.and.pencil") { showCompose = true }
                     navigationAction("Search chats", symbol: "magnifyingglass") {
                         showSearch = true
@@ -79,10 +80,14 @@ struct SidebarView: View {
             .scrollContentBackground(.hidden)
             .refreshable { await model.refreshShell() }
 
+            Divider().overlay(PortalTheme.border)
             Button { showSettings = true } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "person.crop.circle").font(.title2)
-                    Text(model.shell?.user?.name ?? "Settings").font(.subheadline).lineLimit(1)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.sessionInfo?.user?.name ?? model.shell?.user?.name ?? "Settings").font(.subheadline.weight(.medium)).lineLimit(1)
+                        Text("Account & settings").font(.caption).foregroundStyle(PortalTheme.muted)
+                    }
                     Spacer()
                     Image(systemName: "gearshape").font(.subheadline)
                 }

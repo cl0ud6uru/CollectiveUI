@@ -138,19 +138,57 @@ struct ChatDetailView: View {
                     Spacer()
                     PortalIconButton(label: "New chat", symbol: "square.and.pencil", action: onCompose)
                 }.padding(.horizontal, 8)
-                Spacer()
-                PortalMark(size: 44)
-                Text("What can I help with?")
-                    .font(.title2.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 20)
-                Button("Start a new chat", action: onCompose)
-                    .buttonStyle(.borderedProminent)
-                    .tint(PortalTheme.ink)
-                    .foregroundStyle(PortalTheme.onInk)
-                    .clipShape(Capsule())
-                    .padding(.top, 20)
-                Spacer()
+                ScrollView {
+                    VStack(spacing: 24) {
+                        Spacer(minLength: 40)
+                        Text(app.shell?.branding.welcomeText.isEmpty == false ? app.shell!.branding.welcomeText : "What can I help with?")
+                            .font(.title.weight(.regular))
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("home.welcome")
+                        Button(action: onCompose) {
+                            HStack {
+                                Image(systemName: "plus").frame(width: 32, height: 44)
+                                Text("Select a model or browse bots").font(.body).foregroundStyle(PortalTheme.muted)
+                                Spacer(minLength: 0)
+                                Image(systemName: "arrow.up").foregroundStyle(PortalTheme.onInk)
+                                    .frame(width: 32, height: 32).background(PortalTheme.ink, in: Circle())
+                            }.padding(12)
+                                .background(PortalTheme.surface, in: RoundedRectangle(cornerRadius: 26))
+                                .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(PortalTheme.border, lineWidth: 1))
+                        }.buttonStyle(.plain).accessibilityLabel("Start a new chat")
+                        if !app.apps.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Models").font(.caption.weight(.medium)).foregroundStyle(PortalTheme.muted)
+                                ForEach(app.apps) { target in
+                                    Button { app.startNewChat(with: target) } label: {
+                                        HStack(spacing: 12) {
+                                            AvatarView(icon: target.icon, size: 28)
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(target.name).font(.subheadline.weight(.medium))
+                                                if let detail = target.detail { Text(detail).font(.caption).foregroundStyle(PortalTheme.muted) }
+                                            }
+                                            Spacer()
+                                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(PortalTheme.subtle)
+                                        }.padding(14).frame(minHeight: 60).contentShape(Rectangle())
+                                            .background(PortalTheme.sidebar, in: RoundedRectangle(cornerRadius: 14))
+                                    }.buttonStyle(.plain).accessibilityIdentifier("home.target." + target.id)
+                                }
+                            }
+                        }
+                        if !app.bots.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Bot homes").font(.caption.weight(.medium)).foregroundStyle(PortalTheme.muted)
+                                ForEach(app.bots.prefix(4)) { bot in
+                                    Button { app.selection = .bot(botId: bot.id, kind: "home", nonce: "home") } label: {
+                                        BotRow(bot: bot).padding(14).frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+                                            .background(PortalTheme.sidebar, in: RoundedRectangle(cornerRadius: 14))
+                                    }.buttonStyle(.plain).accessibilityIdentifier("home.bot." + bot.id)
+                                }
+                            }
+                        }
+                        Spacer(minLength: 40)
+                    }.frame(maxWidth: 720).padding(24).frame(maxWidth: .infinity)
+                }
             }
         }
     }

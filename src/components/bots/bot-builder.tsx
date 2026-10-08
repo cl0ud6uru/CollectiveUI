@@ -32,6 +32,8 @@ import { ServiceGrantEditor } from "./service-grant-editor";
 import type { ServiceGrantInput } from "@/lib/bots/service-policy";
 import { HermesTeamPolicy, type HermesTeamPolicyValue, type HermesTeamModelOption } from "./hermes-team-policy";
 
+import { WORKSPACE_PERMISSIONS } from "@/lib/bots/tool-config";
+
 type Option = { id: string; name: string };
 type ToolChoice = BotInput["tools"][number];
 
@@ -40,6 +42,43 @@ const APPROVAL_LABELS: Record<ApprovalMode, string> = {
   ask: "Ask me first",
   smart: "Ask unless read-only",
 };
+
+function WorkspacePermissions({ choice, onChange }: { choice: ToolChoice; onChange: (c: ToolChoice) => void }) {
+  const approvals = choice.config?.approvals ?? {};
+  const update = (names: readonly string[], mode: ApprovalMode) => onChange({
+    ...choice,
+    config: { approvals: { ...approvals, ...Object.fromEntries(names.map((name) => [name, mode])) } },
+  });
+  return (
+    <div className="space-y-3 px-3 pb-3 pl-10">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" size="sm" variant="outline" onClick={() => update(WORKSPACE_PERMISSIONS.flatMap((p) => [...p.names]), "auto")}>Allow office work automatically</Button>
+        <span className="text-xs text-muted">Read files, create documents and run commands without repeated prompts.</span>
+      </div>
+      {WORKSPACE_PERMISSIONS.map((permission) => {
+        const fallback = permission.defaultMode === "auto" ? choice.approval : "ask";
+        const values = permission.names.map((name) => approvals[name] ?? fallback);
+        const mode = values.every((value) => value === values[0]) ? values[0] : "mixed";
+        return (
+          <div key={permission.label} className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0 flex-1 basis-48">
+              <span className="block text-xs font-medium">{permission.label}</span>
+              <span className="block text-xs text-muted">{permission.description}</span>
+            </div>
+            <Select aria-label={`${permission.label} permission`} value={mode} className="h-8 w-auto text-xs"
+              onChange={(e) => update(permission.names, e.target.value as ApprovalMode)}>
+              {mode === "mixed" && <option value="mixed" disabled>Custom permissions</option>}
+              {mode === "smart" && <option value="smart" disabled>Runs automatically</option>}
+              <option value="auto">Runs automatically</option>
+              <option value="ask">Ask me first</option>
+            </Select>
+          </div>
+        );
+      })}
+      <p className="text-xs text-muted">Applies to this bot for everyone who uses it. Organization approval requirements still apply. The workspace has no network access.</p>
+    </div>
+  );
+}
 
 /** An MCP server's tools on this bot: which ones it gets and, per tool, how approval works. */
 function McpToolChoices({ option, choice, onChange, service = false }: { option: ToolOption; choice: ToolChoice; onChange: (c: ToolChoice) => void; service?: boolean }) {
@@ -494,7 +533,7 @@ export function BotBuilder({
                             <span className="block text-sm font-medium">{t.label}</span>
                             <span className="block text-xs text-muted">{searchReason ?? t.description}</span>
                           </label>
-                          {on && !service && t.key !== "openai_web_search" && (
+                          {on && !service && t.key !== "openai_web_search" && t.key !== "workspace" && (
                             <Select
                               value={on.approval}
                               onChange={(e) => replace({ ...on, approval: e.target.value as ApprovalMode })}
@@ -509,6 +548,7 @@ export function BotBuilder({
                           {on && t.key === "openai_web_search" && <p className="col-start-2 text-xs text-muted sm:col-span-2">{SEARCH_COST_NOTICE}</p>}
                         </div>
                         {on && isMcp && <McpToolChoices option={t} choice={on} onChange={replace} service={service} />}
+                        {on && t.key === "workspace" && <WorkspacePermissions choice={on} onChange={replace} />}
                       </div>
                     );
                   })}
