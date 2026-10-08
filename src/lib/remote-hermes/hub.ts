@@ -1,11 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { HttpError } from '@/lib/authz';
-import { db } from '@/db';
-import { remoteHermesConnections, remoteHermesSessions } from '@/db/schema';
+import { db, type DbOrTx, type Tx } from '@/db';
+import { remoteHermesConnections, remoteHermesSessions, settings } from '@/db/schema';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import type { ClientOptions } from 'ws';
 import type { RequestOptions } from 'node:http';
-import { getSetting } from '@/lib/settings';
+import { getSetting, type RemoteHermesSettings } from '@/lib/settings';
 import { isPrivateAddress } from '@/lib/agent/tools/web';
 import { registerNativeConnection } from './lifecycle';
 import { remoteAccess } from './store';
@@ -43,21 +43,38 @@ export class NativeHub {
         if (!(await getSetting('remoteHermes')).enabled && cached.row.status === 'idle') continue;
         try { await this.refresh(cached.row); } catch { cached.view.uncertain = true; }
       }
-    }, (method, params) => this.authorize(method, params));
+    }, async () => {}, (method, params, dispatch, tx) => this.dispatchBoundary(method, params, dispatch, tx));
   }
-  async assertIdentity() {
+  async assertIdentity(q: DbOrTx = db, lock = false) {
     if (this.retired) throw new HttpError(409, 'This Hermes sign-in was replaced. Open a conversation from the new connection.');
-    const [connection] = await db.select().from(remoteHermesConnections).where(and(eq(remoteHermesConnections.userId, this.ownerId), eq(remoteHermesConnections.id, this.connectionId)));
-    if (!connection) {
+    const query = q.select().from(remoteHermesConnections).where(and(eq(remoteHermesConnections.userId, this.ownerId), eq(remoteHermesConnections.id, this.connectionId)));
+    const [connection] = await (lock ? query.for('share') : query);
+    if (!connection || this.retired) {
       this.close();
       throw new HttpError(409, 'This Hermes sign-in was replaced. Open a conversation from the new connection.');
     }
     return connection;
   }
-  /** Check durable identity and current policy on every dispatch, including warm sockets. */
-  private async authorize(method: string, params: RpcRecord) {
-    const connection = await this.assertIdentity();
-    const policy = await getSetting('remoteHermes');
+  /** Lock order matches replacement: policy -> connection -> session (if needed).
+   * Callers with a transaction must acquire this before their session lock and
+   * pass that transaction to the socket, never open a second pool transaction. */
+  async lockBoundary(tx: Tx) {
+    await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
+    return this.assertIdentity(tx, true);
+  }
+  /** The synchronous send/cache selection is the linearization point. Returning
+   * an envelope prevents transaction() from awaiting a remote acknowledgement. */
+  private async dispatchBoundary<T>(method: string, params: RpcRecord, dispatch: () => T, tx?: Tx): Promise<{ value: T }> {
+    const run = async (q: Tx) => {
+      const connection = await this.lockBoundary(q);
+      await this.authorize(method, params, connection, await getSetting('remoteHermes', q), q);
+      if (this.retired) throw new HttpError(409, 'This Hermes sign-in was replaced.');
+      return { value: dispatch() };
+    };
+    return tx ? run(tx) : db.transaction(run);
+  }
+  /** Check durable identity and current policy inside the dispatch boundary. */
+  private async authorize(method: string, params: RpcRecord, connection: typeof remoteHermesConnections.$inferSelect, policy: RemoteHermesSettings, q: DbOrTx) {
     // A live socket remains pinned to its admitted address; new upgrades still
     // use dashboardAddress and cannot reconnect to a revoked private destination.
     const address = this.pinned?.baseUrl === connection.baseUrl ? this.pinned :
@@ -66,7 +83,7 @@ export class NativeHub {
     if (policy.enabled && !revoked) return;
     // Only an already admitted, durable binding can recover on the old socket.
     // No steering, uploads, queues, commands, setters or inspection are exempt.
-    const rows = await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.connectionId, this.connectionId));
+    const rows = await q.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.connectionId, this.connectionId));
     const active = rows.filter(row => row.status !== 'idle' || row.queueRequestId);
     if ((method === 'ping' || (method === 'client.capabilities' && !revoked)) && active.length) return;
     const cached = method === '$answer' ? [...this.sessions.values()].find(c => [...c.pending.values()].some(p => p.nativeId === params.id)) : undefined;
@@ -77,7 +94,7 @@ export class NativeHub {
     }
     throw new HttpError(403, revoked ? 'This private Hermes destination was revoked. Only active-turn recovery on its existing socket is allowed.' : 'Personal remote Hermes is disabled. Only active-turn recovery is allowed.');
   }
-  async validate(row: Session) { await this.authorize('session.resume', { session_id: row.storedId, profile: row.profile }); }
+  async validate(row: Session) { await this.dispatchBoundary('session.resume', { session_id: row.storedId, profile: row.profile }, () => {}); }
   touch() {
     clearTimeout(this.idle);
     this.idle = setTimeout(() => {
@@ -130,6 +147,7 @@ export class NativeHub {
     }
     view.prompts = [...pending.values()].map(p => p.prompt);
     const current = await db.transaction(async tx => {
+      await this.lockBoundary(tx);
       const [latest] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
       if (!latest) throw new HttpError(404, 'Native Hermes chat not found.');
       // Only a snapshot started after the last mutation can settle that mutation.
@@ -144,28 +162,40 @@ export class NativeHub {
         queueRequestId: clearQueue ? null : latest.queueRequestId, queueStatus: clearQueue ? null : queueStatus,
         revision: sql`${remoteHermesSessions.revision} + 1`, updatedAt: new Date() }).where(eq(remoteHermesSessions.id, row.id)).returning())[0];
     });
-    await this.assertIdentity();
-    view.queuePending = !!current.queueRequestId;
-    view.uncertain = current.status === 'admitting' || current.status === 'uncertain' || current.queueStatus === 'uncertain';
-    view.running ||= current.status === 'running' || current.status === 'waiting' || !!current.queueRequestId;
-    const cached = this.sessions.get(row.id);
-    if (cached && cached.eventRevision !== eventRevision) {
-      // Keep events received while the snapshot was being read (deltas and native requests too).
-      if (current.revision >= cached.row.revision) cached.row = current;
-      cached.view.queuePending = view.queuePending;
-      cached.view.uncertain ||= view.uncertain;
-      return cached.view;
-    }
-    this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now(), eventRevision, socketEpoch });
-    this.changes.emit(row.id);
-    return view;
+    return db.transaction(async tx => {
+      await this.lockBoundary(tx);
+      view.queuePending = !!current.queueRequestId;
+      view.uncertain = current.status === 'admitting' || current.status === 'uncertain' || current.queueStatus === 'uncertain';
+      view.running ||= current.status === 'running' || current.status === 'waiting' || !!current.queueRequestId;
+      const cached = this.sessions.get(row.id);
+      if (cached && cached.eventRevision !== eventRevision) {
+        // Keep events received while the snapshot was being read (deltas and native requests too).
+        if (current.revision >= cached.row.revision) cached.row = current;
+        cached.view.queuePending = view.queuePending;
+        cached.view.uncertain ||= view.uncertain;
+        return cached.view;
+      }
+      this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now(), eventRevision, socketEpoch });
+      this.changes.emit(row.id);
+      return view;
+    });
   }
   async view(row: Session) {
-    await this.validate(row);
-    this.touch();
-    const cached = this.sessions.get(row.id);
-    if (!cached || Date.now() - cached.refreshedAt > 5000) return this.refresh(row);
-    return cached.view;
+    const { value } = await this.dispatchBoundary('session.resume', { session_id: row.storedId, profile: row.profile }, () => {
+      this.touch();
+      const cached = this.sessions.get(row.id);
+      return cached && Date.now() - cached.refreshedAt <= 5000 ? cached.view : undefined;
+    });
+    return value ?? this.refresh(row);
+  }
+  /** Disabled idle history remains retained, but never crosses a retired identity. */
+  async retainedView(row: Session) {
+    return db.transaction(async tx => {
+      await this.lockBoundary(tx);
+      const cached = this.sessions.get(row.id);
+      if (!cached) throw new HttpError(403, 'Personal remote Hermes is disabled. Saved conversations are retained.');
+      return { ...cached.view, admissionAllowed: false, yoloAllowed: false };
+    });
   }
   private onFrame(frame: NativeFrame) {
     const p = record(frame.params);

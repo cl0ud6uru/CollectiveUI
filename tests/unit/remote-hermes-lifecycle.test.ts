@@ -3,25 +3,65 @@ import { WebSocketServer } from 'ws';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { remoteHermesSessions } from '@/db/schema';
 
-const f = vi.hoisted(() => ({ base: '', exists: true, enabled: true, approved: true, status: 'running', rows: [] as Record<string, unknown>[] }));
-vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }) }));
+const f = vi.hoisted(() => ({ base: '', exists: true, enabled: true, approved: true, status: 'running', rows: [] as Record<string, unknown>[], policyWait: undefined as (() => Promise<void>) | undefined, locks: 0, unlock: [] as (() => void)[], delayReply: false }));
+vi.mock('@/lib/settings', () => ({ getSetting: async () => { await f.policyWait?.(); return { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }; } }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ baseUrl: f.base, policy: { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }, secrets: { mode: 'sessionToken', sessionToken: 'synthetic' } }) }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => {
   if (!f.approved) throw new Error('Private destination revoked');
   return { address: '127.0.0.1', family: 4 };
 } }));
-vi.mock('@/db', () => ({ db: { select: () => ({ from: (table: Record<symbol, unknown>) => ({ where: (condition: Parameters<PgDialect['sqlToQuery']>[0]) => {
-  const { params } = new PgDialect().sqlToQuery(condition);
-  if (table[Symbol.for('drizzle:Name')] === 'remote_hermes_connections') return Promise.resolve(f.exists && params.includes('owner') && params.includes('connection') ? [{ id: 'connection', userId: 'owner', baseUrl: f.base }] : []);
-  return Promise.resolve(f.rows.map(row => ({ ...row, status: f.status })));
-} }) }) } }));
+vi.mock('@/db', () => {
+  const query = () => ({ from: (table: Record<symbol, unknown>) => ({ where: (condition: Parameters<PgDialect['sqlToQuery']>[0]) => {
+    const read = () => {
+      const { params } = new PgDialect().sqlToQuery(condition);
+      if (table[Symbol.for('drizzle:Name')] === 'settings') return [];
+      if (table[Symbol.for('drizzle:Name')] === 'remote_hermes_connections') return f.exists && params.includes('owner') && params.includes('connection') ? [{ id: 'connection', userId: 'owner', baseUrl: f.base }] : [];
+      return f.rows.map(row => ({ ...row, status: f.status }));
+    };
+    return { then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(read()).then(resolve), for: async () => { ++f.locks; return read(); } };
+  } }) });
+  const db = { select: query, transaction: async (run: (tx: { select: typeof query }) => Promise<unknown>) => {
+    try { return await run({ select: query }); }
+    finally { f.locks = 0; f.unlock.splice(0).forEach(resolve => resolve()); }
+  } };
+  return { db };
+});
 import { NativeHub } from '@/lib/remote-hermes/hub';
 import { retireNativeConnection } from '@/lib/remote-hermes/lifecycle';
 import { promptView, sessionView } from '@/lib/remote-hermes/view';
 
 const resources: (() => void)[] = [];
 afterEach(() => resources.splice(0).reverse().forEach(close => close()));
-beforeEach(() => { f.exists = true; f.enabled = true; f.approved = true; f.status = 'running'; f.rows = []; });
+beforeEach(() => { f.exists = true; f.enabled = true; f.approved = true; f.status = 'running'; f.rows = []; f.policyWait = undefined; f.locks = 0; f.unlock = []; f.delayReply = false; });
+const gate = () => { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; };
+async function replaceInOtherProcess() {
+  if (f.locks) await new Promise<void>(resolve => f.unlock.push(resolve));
+  f.exists = false; // No local retirement callback: the other process cannot close this socket.
+}
+it.each(['dispatch', 'cached view'] as const)('serializes replacement during policy authorization against %s', async operation => {
+  const { hub, row, received } = await fixture();
+  const entered = gate(); const resume = gate();
+  f.policyWait = async () => { entered.release(); await resume.promise; };
+  f.delayReply = true;
+  const pending = operation === 'dispatch' ? hub.socket.call('projects.list', { profile: 'default' }) : hub.view(row);
+  // Attach a handler before cleanup can reject an unacknowledged RPC.
+  const outcome = pending.catch(error => error);
+  await entered.promise;
+  let committed = false;
+  const replacement = replaceInOtherProcess().then(() => { committed = true; });
+  try {
+    await Promise.resolve(); await Promise.resolve();
+    expect(committed).toBe(false);
+  } finally { resume.release(); }
+  await replacement;
+  expect(committed).toBe(true);
+  expect(f.locks).toBe(0); // Dispatch releases the fence without waiting for the native reply.
+  if (operation === 'dispatch') {
+    await vi.waitFor(() => expect(received.some(frame => frame.method === 'projects.list')).toBe(true));
+    hub.close(); await outcome;
+  } else { expect(await outcome).toMatchObject({ id: row.id }); }
+  await expect(hub.view(row)).rejects.toThrow('replaced');
+});
 async function fixture() {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -33,7 +73,7 @@ async function fixture() {
     ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready' } }));
     ws.on('message', raw => {
       const input = JSON.parse(String(raw)); received.push(input);
-      if (input.method) ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'], session_id: 'runtime-a' } }));
+      if (input.method && !(f.delayReply && input.method === 'projects.list')) ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'], session_id: 'runtime-a' } }));
     });
   });
   const hub = new NativeHub('owner', 'connection'); resources.push(() => hub.close());

@@ -4,7 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 const f = vi.hoisted(() => ({ enabled: true, owner: 'owner', status: 'idle', receipt: null as null | { digest: string }, updates: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), refresh: vi.fn(), identity: vi.fn(), admissions: 0, disableAtLock: false }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, view: f.refresh, assertIdentity: f.identity, answer: f.answer, sessions: new Map([['session', { row: { id: 'session', status: f.status, runtimeId: 'runtime' }, view: { running: f.status === 'running', uncertain: false }, pending: new Map() }]]) }) }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, view: f.refresh, assertIdentity: f.identity, retainedView: async () => { await f.identity(); return { running: false, admissionAllowed: false, yoloAllowed: false }; }, answer: f.answer, sessions: new Map([['session', { row: { id: 'session', status: f.status, runtimeId: 'runtime' }, view: { running: f.status === 'running', uncertain: false }, pending: new Map() }]]) }) }));
 vi.mock('@/db', () => ({ db: {
   select: () => ({ from: () => ({ where: () => ({ orderBy: async () => [] }), innerJoin: () => ({ where: (condition: unknown) => {
     const { params } = new PgDialect().sqlToQuery(condition as Parameters<PgDialect['sqlToQuery']>[0]);
