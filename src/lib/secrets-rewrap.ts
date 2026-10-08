@@ -1,7 +1,7 @@
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "@/db";
-import { liveActivities, aiApps, chatgptDeviceLogins, hermesConnections, remoteHermesConnections, mcpServers, routines, userTokens, providerConnections } from "@/db/schema";
-import { remoteConnectionAAD } from "@/lib/remote-hermes/secrets";
+import { liveActivities, aiApps, chatgptDeviceLogins, hermesConnections, mcpServers, routines, userTokens, providerConnections } from "@/db/schema";
+import { rewrapRemoteHermesSecrets } from "@/lib/remote-hermes/store";
 import { connectionAAD } from "@/lib/hermes-provisioning/config";
 import { AAD, encrypt, needsRewrap, rewrap } from "@/lib/crypto";
 import { rewrapChatGPTSecrets } from "@/lib/llm/chatgpt/store";
@@ -40,18 +40,8 @@ export async function rewrapAllSecrets(): Promise<number> {
     }
   }
 
-  // Include inactive connections and both authentication modes. Compare the whole encrypted
-  // envelope so a refresh/reconnect committed after the scan can never be overwritten.
-  for (const row of await db.select().from(remoteHermesConnections)) {
-    const next = rewrap(row.secretEnc, remoteConnectionAAD(row.id, row.userId));
-    if (next) {
-      const updated = await db.update(remoteHermesConnections).set({ secretEnc: next })
-        .where(and(eq(remoteHermesConnections.id, row.id), eq(remoteHermesConnections.userId, row.userId),
-          eq(remoteHermesConnections.secretEnc, row.secretEnc)))
-        .returning({ id: remoteHermesConnections.id });
-      changed += updated.length;
-    }
-  }
+  // Personal account credentials stay owned by their dedicated credential store.
+  changed += await rewrapRemoteHermesSecrets();
 
   // App credentials are bound to their row (AAD "ai_apps.api_key_enc|<id>"); older values used the column only.
   for (const row of await db.select({ id: aiApps.id, apiKeyEnc: aiApps.apiKeyEnc }).from(aiApps).where(isNotNull(aiApps.apiKeyEnc))) {

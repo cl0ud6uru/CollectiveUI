@@ -20,6 +20,7 @@ import { db } from '@/db';
 import { remoteHermesConnections as connections, users } from '@/db/schema';
 import { decrypt, encrypt } from '@/lib/crypto';
 import { rewrapAllSecrets } from '@/lib/secrets-rewrap';
+import { rewrapRemoteHermesSecrets } from '@/lib/remote-hermes/store';
 
 const oldKey = randomBytes(32).toString('base64'), newKey = randomBytes(32).toString('base64');
 const aad = (id: string, owner = 'owner') => `remote_hermes_connections.secret_enc|${id}|${owner}`;
@@ -49,6 +50,14 @@ beforeEach(async () => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 afterAll(async () => { await fixture.client?.close(); });
+
+it('the dedicated credential store owns personal secret rewrap', async () => {
+  await seed('session', token); rotate();
+  expect(await rewrapRemoteHermesSecrets()).toBe(1);
+  expect(await rewrapRemoteHermesSecrets()).toBe(0);
+  vi.stubEnv('ENCRYPTION_KEYS', `new:${newKey}`);
+  expect(JSON.parse(decrypt((await rows())[0].secretEnc, aad('session')))).toEqual(token);
+});
 
 it('global rewrap covers inactive password and session-token connections, with exact owner/row AAD', async () => {
   // Neither connection has a session; inactivity must not exclude credentials.
