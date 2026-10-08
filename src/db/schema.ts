@@ -627,7 +627,7 @@ export const botUserAccess = pgTable("bot_user_access", {
 /** "smart": run without asking only when a trusted MCP server marks the tool read-only; otherwise ask. */
 export type ApprovalMode = "auto" | "ask" | "smart";
 
-/** Per-tool choices for a tool group (MCP servers): which tools the bot gets and per-tool approval overrides. */
+/** Per-tool choices for MCP servers and workspace: tool selection and approval overrides. */
 export type BotToolConfig = { tools?: string[]; approvals?: Record<string, ApprovalMode> };
 
 export const botTools = pgTable(
