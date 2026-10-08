@@ -9,7 +9,6 @@ struct ChatView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var model: ChatModel
-    @State private var headerHeight: CGFloat = 90
     @State private var scrollPolicy = ChatScrollPolicy()
     @State private var userIsScrolling = false
     @State private var distanceFromBottom: CGFloat = 0
@@ -25,27 +24,11 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .top) {
-                messageList
-                    // Fade continuously behind the floating portrait header.
-                    // Compact layouts reserve its space, preserving readable lines.
-                    .mask(alignment: .top) {
-                        VStack(spacing: 0) {
-                            LinearGradient(
-                                stops: [.init(color: .clear, location: 0),
-                                        .init(color: .black.opacity(0.25), location: 0.35),
-                                        .init(color: .black, location: 1)],
-                                startPoint: .top, endPoint: .bottom
-                            ).frame(height: compactHeader ? 0 : headerHeight + 16)
-                            Rectangle()
-                        }
-                    }
-                    .padding(.top, compactHeader ? headerHeight : 0)
-                header
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                        if height > 0 && abs(headerHeight - height) > 1 { headerHeight = height }
-                    }
-            }
+            header
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.header")
+                .padding(.bottom, 8)
+            messageList
             bottomBar
         }
         .background(PortalTheme.background)
@@ -87,8 +70,7 @@ struct ChatView: View {
                         BotIdentityView(botId: model.target?.id, icon: model.assistantIcon, size: 32, activity: model.avatarActivity)
                     }
                     Text(model.target?.name ?? model.displayTitle)
-                        .font(.subheadline.weight(.medium)).lineLimit(1)
-                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .font(.subheadline.weight(.medium)).lineLimit(compactHeader ? 2 : 1)
                         .accessibilityLabel(model.assistantName + ", " + model.statusLabel)
                 }
                 Spacer(minLength: 4)
@@ -335,8 +317,8 @@ struct ChatView: View {
             }
             .frame(width: width)
             .padding(.horizontal, 16)
-            .padding(.bottom, compactHeader ? 0 : 12)
-            .padding(.top, compactHeader ? 8 : headerHeight + 20)
+            .padding(.bottom, 12)
+            .padding(.top, 12)
     }
 
     @ViewBuilder

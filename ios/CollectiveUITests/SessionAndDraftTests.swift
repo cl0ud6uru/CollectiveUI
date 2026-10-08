@@ -42,6 +42,55 @@ final class SessionAndDraftTests: XCTestCase {
             previewData: Data([1, 2, 3]))
     }
 
+    func testCurrentSessionRoleOverridesCachedAdministratorShell() async throws {
+        FixtureProtocol.handler = { _ in .init(data: Data(#"{"user":{"id":"member","name":"Member","isAdmin":false},"deviceName":"QA"}"#.utf8)) }
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        model.shell = try JSONDecoder().decode(ShellResponse.self, from: Data(#"{"user":{"id":"member","name":"Member","isAdmin":true}}"#.utf8))
+        await model.loadSessionInfo()
+        XCTAssertTrue(model.settingsAccess.isValidated)
+        XCTAssertFalse(model.settingsAccess.isAdmin)
+        XCTAssertEqual(model.sessionInfo?.user?.isAdmin, false)
+    }
+
+    func testFailedSessionValidationDoesNotTrustCachedAdministrator() async {
+        FixtureProtocol.handler = { _ in .init(status: 503) }
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        await model.loadSessionInfo()
+        XCTAssertFalse(model.settingsAccess.isValidated)
+        XCTAssertFalse(model.settingsAccess.isAdmin)
+        XCTAssertNil(model.sessionInfo)
+    }
+
+    func testLateResponsesCannotRepopulateAfterServerChange() async {
+        let shellRequested = expectation(description: "Shell request started")
+        let sessionRequested = expectation(description: "Session request started")
+        FixtureProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/shell") {
+                shellRequested.fulfill()
+                return .init(data: Data(#"{"user":{"id":"admin","name":"Admin","isAdmin":true}}"#.utf8), delay: 0.3)
+            }
+            if request.httpMethod == "GET", request.url!.path.hasSuffix("/session") {
+                sessionRequested.fulfill()
+                return .init(data: Data(#"{"user":{"id":"admin","name":"Admin","isAdmin":true},"deviceName":"QA"}"#.utf8), delay: 0.3)
+            }
+            return .init()
+        }
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        let shellTask = Task { await model.refreshShell() }
+        let sessionTask = Task { await model.loadSessionInfo() }
+        await fulfillment(of: [shellRequested, sessionRequested], timeout: 3)
+        model.changeServer()
+        await shellTask.value
+        await sessionTask.value
+        XCTAssertNil(model.shell)
+        XCTAssertNil(model.sessionInfo)
+        XCTAssertFalse(model.settingsAccess.isAdmin)
+        XCTAssertEqual(model.phase, .setup)
+    }
+
     func testReconstructedChatRetainsIsolatedDraftAndAttachmentReferences() {
         let model = app()
         let queen = ChatModel(app: model, conversationId: "queen", newChatTarget: nil)

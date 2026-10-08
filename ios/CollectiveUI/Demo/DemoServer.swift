@@ -32,6 +32,10 @@ final class DemoServer: @unchecked Sendable {
     private init() {
         let now = Date()
         userJSON = DemoServer.parseFixture(DemoFixtures.user, now: now)
+        if DemoMode.value(after: "--demo-role") == "member", case .object(var user) = userJSON {
+            user["isAdmin"] = .bool(false)
+            userJSON = .object(user)
+        }
         brandingJSON = DemoServer.parseFixture(DemoFixtures.branding, now: now)
         apps = DemoServer.parseFixture(DemoFixtures.apps, now: now).arrayValue ?? []
         bots = DemoServer.parseFixture(DemoFixtures.bots, now: now).arrayValue ?? []

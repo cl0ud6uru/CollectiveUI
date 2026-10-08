@@ -86,6 +86,57 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
     }
 
+    func testAdministratorSettingsNavigateToTheRealWebsiteWithoutOpeningTheNetwork() {
+        app.launchArguments = ["--demo", "--demo-screen", "settings", "--demo-appearance", "dark"]
+        app.launch()
+        tap(app.buttons["settings.section.admin"])
+        XCTAssertTrue(app.buttons["settings.users"].waitForExistence(timeout: 5))
+        capture("parity-admin-destinations")
+        tap(app.buttons["settings.users"])
+        XCTAssertTrue(app.staticTexts["settings.destinationURL"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["settings.destinationURL"].label, "https://demo.collectiveui.app/admin/users")
+        XCTAssertTrue(app.staticTexts["settings.offline"].exists)
+        XCTAssertFalse(app.buttons["settings.openWebsite"].exists)
+        capture("parity-admin-users-handoff")
+    }
+
+    func testMemberSettingsHideAdministrationAndNavigatePersonalSecurity() {
+        app.launchArguments = ["--demo", "--demo-screen", "settings", "--demo-role", "member", "--demo-appearance", "light"]
+        app.launch()
+        XCTAssertTrue(app.buttons["settings.section.account"].waitForExistence(timeout: 15))
+        XCTAssertFalse(app.buttons["settings.section.admin"].exists)
+        let security = app.buttons["settings.security"]
+        for _ in 0..<4 {
+            if security.exists && security.isHittable { break }
+            app.scrollViews["settings.content"].swipeUp()
+        }
+        capture("parity-member-settings")
+        tap(security)
+        XCTAssertTrue(app.staticTexts["settings.destinationURL"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["settings.destinationURL"].label, "https://demo.collectiveui.app/settings?tab=security")
+        capture("parity-personal-security-handoff")
+    }
+
+    func testWelcomeUsesServerBrandingAndOpensANativeModelConversation() {
+        app.launchArguments = ["--demo", "--demo-screen", "welcome", "--demo-appearance", "dark", "--demo-reset-drafts"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["home.welcome"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.staticTexts["home.welcome"].label, "Welcome back, Jordan.")
+        capture("parity-welcome")
+        tap(app.buttons["home.target.app-fast"])
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        capture("parity-new-native-model-chat")
+    }
+
+    func testChatHeaderNeverOverlapsTheTranscriptViewport() {
+        launch("demo-research")
+        let header = app.otherElements["chat.header"]
+        let transcript = app.scrollViews["chat.transcript"]
+        XCTAssertTrue(header.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(transcript.frame.minY, header.frame.maxY)
+        capture("parity-readable-chat-header")
+    }
+
     func testDraftsStayWithTheirConversationAndSurviveRelaunch() {
         launch("demo-research")
         let researchDraft = "Research draft\nReturn adds a line"
