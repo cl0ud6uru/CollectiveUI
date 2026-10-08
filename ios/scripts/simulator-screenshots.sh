@@ -4,7 +4,7 @@
 # Usage: ios/scripts/simulator-screenshots.sh <path/to/CollectiveUI.app> <output-dir>
 #
 # The app must be a Debug simulator build: demo mode (--demo) only exists in Debug.
-set -uo pipefail
+set -euo pipefail
 
 APP_PATH="${1:?path to CollectiveUI.app}"
 OUT_DIR="${2:?output directory}"
@@ -57,13 +57,14 @@ shot() {
   xcrun simctl terminate "$udid" "$BUNDLE_ID" >/dev/null 2>&1 || true
   xcrun simctl ui "$udid" appearance "$appearance" || true
   sleep 1
-  xcrun simctl launch "$udid" "$BUNDLE_ID" --demo "$@" >/dev/null || return 1
+  xcrun simctl launch "$udid" "$BUNDLE_ID" --demo --demo-appearance "$appearance" "$@" >/dev/null || return 1
   sleep "$wait_seconds"
-  xcrun simctl io "$udid" screenshot "$OUT_DIR/$name.png" >/dev/null
+  xcrun simctl io "$udid" screenshot "$OUT_DIR/$name.png" >/dev/null || return 1
+  test -s "$OUT_DIR/$name.png" || return 1
 }
 
 run() {
-  "$@" || echo "::warning::Scenario failed: $*"
+  "$@" || { echo "::error::Scenario failed: $*"; exit 1; }
 }
 
 IPHONE="$(pick_device "iPhone 16 Pro" "iPhone" || true)"
@@ -80,6 +81,9 @@ if [ -n "$IPHONE" ]; then
   run shot "$IPHONE" light iphone-05-new-chat 6 --demo-screen newchat
   run shot "$IPHONE" light iphone-06-inbox 6 --demo-screen inbox
   run shot "$IPHONE" light iphone-07-settings 6 --demo-screen settings
+  run shot "$IPHONE" light iphone-12-welcome 6 --demo-screen welcome
+  run shot "$IPHONE" light iphone-13-admin-settings 6 --demo-screen settings --demo-settings-section admin
+  run shot "$IPHONE" light iphone-14-member-settings 6 --demo-screen settings --demo-role member
   run shot "$IPHONE" light iphone-08-search 7 --demo-screen search
   run shot "$IPHONE" light iphone-09-sign-in 5 --demo-screen signin
   run shot "$IPHONE" light iphone-10-setup 5 --demo-screen setup
@@ -92,14 +96,14 @@ if [ -n "$IPHONE" ]; then
   xcrun simctl io "$IPHONE" recordVideo --codec=h264 --force "$OUT_DIR/demo-streaming.mp4" &
   RECORDER=$!
   sleep 2
-  xcrun simctl launch "$IPHONE" "$BUNDLE_ID" --demo --demo-open home-bot-atlas \
+  xcrun simctl launch "$IPHONE" "$BUNDLE_ID" --demo --demo-appearance light --demo-open home-bot-atlas \
     --demo-send "How do I enable the iOS app on our server?" >/dev/null || echo "::warning::Video launch failed"
   sleep 16
   xcrun simctl io "$IPHONE" screenshot "$OUT_DIR/iphone-11-streamed-reply.png" >/dev/null || true
   kill -INT "$RECORDER" 2>/dev/null || true
   wait "$RECORDER" 2>/dev/null || true
 else
-  echo "::warning::No iPhone simulator available"
+  echo "::error::No iPhone simulator available"; exit 1
 fi
 
 if [ -n "$IPAD" ]; then
@@ -107,8 +111,10 @@ if [ -n "$IPAD" ]; then
   run shot "$IPAD" light ipad-01-research-chat 8 --demo-open demo-research
   run shot "$IPAD" dark ipad-dark-01-research-chat 8 --demo-open demo-research
   run shot "$IPAD" light ipad-02-image-chat 8 --demo-open demo-image
+  run shot "$IPAD" light ipad-03-welcome 6 --demo-screen welcome
+  run shot "$IPAD" dark ipad-04-admin-settings 6 --demo-screen settings --demo-settings-section admin
 else
-  echo "::warning::No iPad simulator available"
+  echo "::error::No iPad simulator available"; exit 1
 fi
 
 for udid in "$IPHONE" "$IPAD"; do
