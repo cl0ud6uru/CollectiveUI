@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 const ITEMS = [
   { href: "/admin", label: "Usage", icon: BarChart3 },
+  { href: "/admin/spending", label: "Provider spending", icon: BarChart3 },
   { href: "/admin/apps", label: "Connections", icon: AppWindow },
   { href: "/admin/hermes", label: "Managed Hermes", icon: Bot },
   { href: "/admin/groups", label: "Groups", icon: UsersRound },

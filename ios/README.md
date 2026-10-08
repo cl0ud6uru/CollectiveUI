@@ -84,19 +84,71 @@ The app uses OAuth-style PKCE inside `ASWebAuthenticationSession`. This works wi
 
 The device appears in the server session list under its device name. Signing out revokes the token (`DELETE /api/mobile/v1/session`) and clears the Keychain. Any `401` response also signs the app out.
 
+## Mobile website parity and settings
+
+Design authority: `src/app/globals.css`, `src/components/sidebar/sidebar.tsx`,
+`src/components/chat/chat.tsx`, `composer.tsx`, `message.tsx`, `chat.module.css`,
+`src/components/settings-view.tsx` and `src/components/admin/admin-nav.tsx`.
+The app uses the site's neutral palette, server welcome copy, bot identities, rounded
+surfaces and destination names rather than an iOS grouped Form. Home lets you open a
+native model conversation or a bot home; its composer-shaped target chooser opens
+New chat, not a fake input. The sidebar adds Home while retaining search, projects,
+chat actions and the account footer. iPad retains split navigation; native Dynamic
+Type, large touch targets and Reduce Motion remain supported.
+
+**Native settings:** device-only appearance, Live Activities, native account/server/
+session facts and confirmed native sign-out. These do not edit website preferences.
+
+**Website controls:** General (default target), Security, Personalization, Memory,
+Approvals, Connected accounts, Workspace and Data controls link to the actual
+`/settings?tab=…` sections. Website capability policies may hide Connected accounts
+or Workspace and fall back to General. Current administrators additionally receive
+Usage, Connections, Managed Hermes, Groups, Users, Bots, Pets, Bots & tools, MCP
+servers, Workspaces, Activity and Organization settings at the existing `/admin`
+routes. Admin access is validated against the current mobile session, not cached
+shell roles, and rechecked before opening. Validation failures hide administration.
+Late session/shell responses are ignored after logout or server change.
+
+A destination preview shows the exact configured-server URL. **Open website** uses
+`SFSafariViewController` with ordinary website authentication. Web sign-in may be
+required; it may use a different account. No mobile bearer token, cookies or scripts
+are injected into the browser, and no backend authentication bridge was added.
+URLs come from a fixed catalog, preserve installation subpaths and reject bases
+with credentials, queries, fragments or path traversal. The website independently
+enforces admin/security permissions (`src/lib/session.ts`). Safari owns subsequent
+navigation, including identity-provider redirects; this is not a locked-down web
+view. Native sign-out does **not** sign out browser sessions. Access refreshes on
+browser dismissal/foreground, and pending destinations clear when login changes.
+
+Offline demo website previews do not open a browser or make network requests.
+Use `--demo-role member` for non-admin fixtures, `--demo-settings-section admin`
+with `--demo-screen settings` for the administrator directory, and `--demo-screen
+welcome` for the welcome screen. Regression tests capture personal/admin route
+previews, role visibility, welcome navigation and header/transcript separation.
+The screenshot script explicitly sets `--demo-appearance` per scenario, requires
+both iPhone/iPad and fails on any required screenshot failure or empty file.
+
+Local Linux guardrails: `python3 ios/scripts/test-parity-contracts.py` checks source
+contracts only, **not** rendering or native compilation. The Foundation-only
+settings policy XCTest suite can run in isolation with `bash ios/scripts/test-settings-policy.sh`
+when Docker Swift execution is authorized. Full package/app unit tests, Debug and
+Release builds, simulator regressions, large-text/orientation checks and actual
+light/dark iPhone/iPad screenshot review still require macOS/Xcode CI. No visual
+parity claim should be made until those screenshots have been inspected.
+
 ## Architecture
 
 ### Appearance and chat input
 
-The native views use a black dark-mode canvas, floating material controls, a compact sidebar,
+The native views use the website's #181818 dark canvas, a compact sidebar,
 bot artwork and the website's message colors. `PortalTheme` centralizes adaptive colors; the interface remains
 SwiftUI, with a native `UITextView` for the composer. Return (including a hardware keyboard's Enter)
 inserts a newline. Only the Send button submits a message.
 
 Settings → Appearance saves System, Light or Dark independently of the phone's setting.
-Messages fade continuously behind the floating portrait header; compact layouts reserve space for readable text.
+The chat header sits outside the scrolling viewport at every text size and orientation, so identity controls never obscure messages.
 The unified composer has its plus menu inside the capsule and the microphone on the right. Its placeholder is
-`Type / for commands`. Typing `/` or choosing Commands in the plus menu opens the command picker without submitting; bot skills come from the conversation snapshot,
+`Ask anything` for models or `Message <bot>` for bots. Typing `/` or choosing Commands in the plus menu opens the command picker without submitting; bot skills come from the conversation snapshot,
 and Hermes controls use `/api/chat/commands` (including its revision and retry identifiers).
 Control failures retain the draft, and controls with attachments are rejected locally without losing files.
 After an uncertain chat submission, the app checks persisted message status before allowing another send.

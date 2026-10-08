@@ -30,6 +30,7 @@ import { queueTeamAccessReconciliation } from '@/lib/hermes-team/revocation';
 import { TEAM_MODEL_PURPOSES,VERIFIED_TEAM_MODEL_ROUTES,type VerifiedTeamModelRoute } from '@/lib/hermes-team/model-policy';
 import { VERIFIED_TEAM_TOOL_ADAPTERS } from '@/lib/hermes-team/tool-policy';
 import { HERMES_COMMIT } from '@/local-hermes/config';
+import { sealProviderCredential } from '@/lib/llm/provider-connections';
 import { sealAppSecret } from '@/lib/llm/secrets';
 import { sealCredentialSecret } from '@/lib/llm/chatgpt/store';
 import { snapshotHash } from '@/lib/mcp/snapshot';
@@ -124,6 +125,16 @@ describe('Concrete candidate native model handlers and durable admission',()=>{
     const current=await issueTeamCandidateContext(alice,'fresh-run','default',routes);
     await executeCandidateModel(request(current.modelTokens.reply,modelBody()),current.contextId,'reply','chat_completions',modelBody(),{routes,fetch});
     expect((await db.select().from(schema.usageEvents))[0].providerKind).toBe('openai');expect(String(fetch.mock.calls[0][0])).toBe('https://api.openai.com/v1/chat/completions');
+  });
+  it('records immutable connection, organization and project selectors from native admin dispatch',async()=>{
+    await db.insert(schema.providerConnections).values({id:'billing-native',name:'Synthetic billed API',organization:'org-native',project:'proj-native',credentialEnc:sealProviderCredential('billing-native','synthetic-api-credential'),createdBy:admin.user.id});
+    await db.update(schema.aiApps).set({provider:'openai',baseUrl:null,providerConnectionId:'billing-native',apiKeyEnc:null,providerConfig:{organization:'org-native',project:'proj-native'}}).where(eq(schema.aiApps.id,'provider'));
+    route.transportHash=(await candidateWireMetadata(admin,route)).hash;
+    await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);const fetch=mockedFetch();
+    await executeCandidateModel(request(grant.modelTokens.reply,modelBody()),grant.contextId,'reply','chat_completions',modelBody(),{routes,fetch});
+    const headers=new Headers(fetch.mock.calls[0][1]?.headers);expect(headers.get('OpenAI-Organization')).toBe('org-native');expect(headers.get('OpenAI-Project')).toBe('proj-native');
+    await db.update(schema.aiApps).set({providerConnectionId:null,providerConfig:{organization:'org-other',project:'proj-other'}}).where(eq(schema.aiApps.id,'provider'));
+    expect((await db.select().from(schema.usageEvents))[0]).toMatchObject({providerConnectionId:'billing-native',providerOrganization:'org-native',providerProject:'proj-native',billingRoute:'api:openai'});
   });
   it('fixed SDK headers allow different requests and safely replay identical payloads; tampered UUIDs fail',async()=>{
     await readyRun(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);const fetch=mockedFetch();

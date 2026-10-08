@@ -34,6 +34,7 @@ final class AppModel {
     var shell: ShellResponse? = nil
     var shellError: String? = nil
     var sessionInfo: SessionInfo? = nil
+    private(set) var settingsAccess = SettingsSessionAccess()
     var selection: ChatRoute? = nil
     var banner: Banner? = nil
     var isSigningIn: Bool = false
@@ -133,6 +134,7 @@ final class AppModel {
     }
 
     private func rebuildClient() {
+        settingsAccess.invalidate()
         guard let serverURL else {
             api = nil
             return
@@ -204,6 +206,7 @@ final class AppModel {
         serverInfo = nil
         token = nil
         shell = nil
+        sessionInfo = nil
         selection = nil
         rebuildConversationStates()
         rebuildClient()
@@ -320,12 +323,15 @@ final class AppModel {
 
     func refreshShell() async {
         guard let api, token != nil else { return }
+        let generation = settingsAccess.generation
         do {
             let fresh = try await api.shell()
+            guard settingsAccess.generation == generation else { return }
             shell = fresh
             shellError = nil
             liveActivities.restore()
         } catch {
+            guard settingsAccess.generation == generation else { return }
             if error.isUnauthorized || error.isCancellation {
                 return
             }
@@ -335,10 +341,18 @@ final class AppModel {
 
     func loadSessionInfo() async {
         guard let api, token != nil else { return }
+        let generation = settingsAccess.generation
+        let request = settingsAccess.beginValidation()
+        sessionInfo = nil
         do {
-            sessionInfo = try await api.currentSession()
+            let fresh = try await api.currentSession()
+            guard settingsAccess.completeValidation(isAdmin: fresh.user?.isAdmin == true,
+                generation: generation, request: request) else { return }
+            sessionInfo = fresh
         } catch {
-            // Settings shows what it has.
+            // Unknown or failed role validation remains fail-closed. Never fall
+            // back to shell.user for administrator controls.
+            settingsAccess.failValidation(generation: generation, request: request)
         }
     }
 
