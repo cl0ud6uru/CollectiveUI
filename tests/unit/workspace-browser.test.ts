@@ -81,6 +81,61 @@ describe("direct terminal commands", () => {
     f.exec.mockImplementation((_ref, _req, options) => new Promise((_resolve, reject) => { signal = options.signal; signal!.addEventListener("abort", () => reject(new Error("stopped"))); }));
     const response = await terminal(run()); await response.body!.cancel(); expect(signal!.aborted).toBe(true);
   });
+  it("preserves daemon gaps between head and tail without double-counting exit totals", async () => {
+    f.exec.mockImplementation(async (_ref, _req, options) => {
+      options.onFrame({ t: "out", d: Buffer.from("head\n").toString("base64") });
+      options.onFrame({ t: "gap", s: "out", n: 100000 });
+      options.onFrame({ t: "gap", s: "err", n: 25 });
+      options.onFrame({ t: "out", d: Buffer.from("tail\n").toString("base64") });
+      return { code: 0, reason: "exited", dropped: { out: 100000, err: 25 } };
+    });
+    const frames = (await (await terminal(run())).text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(frames).toEqual([
+      { type: "output", stream: "out", text: "head\n" },
+      { type: "gap", stream: "out", bytes: 100000, source: "daemon" },
+      { type: "gap", stream: "err", bytes: 25, source: "daemon" },
+      { type: "output", stream: "out", text: "tail\n" },
+      { type: "exit", code: 0, reason: "exited", truncated: true, dropped: { out: 100000, err: 25 }, limited: { out: 0, err: 0 } },
+    ]);
+  });
+  it("reports omissions supplied only in daemon exit metadata", async () => {
+    f.exec.mockResolvedValue({ code: 0, reason: "exited", dropped: { out: 20, err: 30 } });
+    const frames = (await (await terminal(run())).text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(frames.at(-1)).toMatchObject({ truncated: true, dropped: { out: 20, err: 30 }, limited: { out: 0, err: 0 } });
+  });
+  it("keeps gap information available when execution is interrupted before its exit", async () => {
+    f.exec.mockImplementation(async (_ref, _req, options) => {
+      options.onFrame({ t: "gap", s: "err", n: 120 });
+      throw new Error("connection lost");
+    });
+    const frames = (await (await terminal(run())).text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(frames[0]).toEqual({ type: "gap", stream: "err", bytes: 120, source: "daemon" });
+    expect(frames.at(-1)).toMatchObject({ type: "error" });
+  });
+  it("does not report clipping for complete output exactly at the portal limit", async () => {
+    f.exec.mockImplementation(async (_ref, _req, options) => {
+      options.onFrame({ t: "out", d: Buffer.alloc(32 * 1024, 65).toString("base64") });
+      return { code: 0, reason: "exited", dropped: { out: 0, err: 0 } };
+    });
+    const frames = (await (await terminal(run())).text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(frames.filter(frame => frame.type === "gap")).toEqual([]);
+    expect(frames.at(-1)).toMatchObject({ truncated: false, dropped: { out: 0, err: 0 }, limited: { out: 0, err: 0 } });
+  });
+  it("counts portal clipping separately from daemon omissions across stdout and stderr", async () => {
+    f.exec.mockImplementation(async (_ref, _req, options) => {
+      options.onFrame({ t: "out", d: Buffer.alloc(32 * 1024 - 2, 65).toString("base64") });
+      options.onFrame({ t: "err", d: Buffer.from("error").toString("base64") });
+      options.onFrame({ t: "out", d: Buffer.from("tail").toString("base64") });
+      return { code: 0, reason: "exited", dropped: { out: 100, err: 0 } };
+    });
+    const frames = (await (await terminal(run())).text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(frames.filter(frame => frame.type === "output").map(frame => frame.text).join("").length).toBe(32 * 1024);
+    expect(frames.filter(frame => frame.type === "gap")).toEqual([
+      { type: "gap", stream: "err", bytes: 3, source: "limit" },
+      { type: "gap", stream: "out", bytes: 4, source: "limit" },
+    ]);
+    expect(frames.at(-1)).toMatchObject({ truncated: true, dropped: { out: 100, err: 0 }, limited: { out: 4, err: 3 } });
+  });
 });
 describe("uploads and previews", () => {
   it("preserves existing names by placing uploads in a fresh owner-local folder", async () => {

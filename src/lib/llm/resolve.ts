@@ -87,7 +87,7 @@ function enabledKindOf(app: AppRow): EnabledKind {
 }
 
 /** Builds the provider context from an app row: parsed config and decoded credentials, never the environment. */
-export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}, q: DbOrTx = db): Promise<ProviderContext> {
+export async function providerContextFor(app: AppRow, extra: Pick<ProviderContext, "fetch" | "generateAuthToken"> = {}, q: DbOrTx = db): Promise<ProviderContext & { usageAttribution: ApiUsageAttribution }> {
   const kind = enabledKindOf(app);
   const connection = app.providerConnectionId ? await activeProviderConnection(app.providerConnectionId, q) : undefined;
   if (connection && kind !== connection.provider) throw new ProviderConfigError(app.name, "saved provider connection kind mismatch");
@@ -109,7 +109,11 @@ export async function providerContextFor(app: AppRow, extra: Pick<ProviderContex
   } else if (kind !== "openai-compatible") {
     throw new ProviderConfigError(app.name, `${kind}: no credentials stored`);
   }
-  return { appId: app.id, appName: app.name, kind, baseUrl: connection ? connection.baseUrl : app.baseUrl, config, secret, ...extra };
+  const selectors = config as { organization?: string; project?: string };
+  const usageAttribution = { providerConnectionId: connection?.id ?? null,
+    providerOrganization: kind === "openai" ? selectors.organization ?? null : null,
+    providerProject: kind === "openai" ? selectors.project ?? null : null, billingRoute: `api:${kind}` };
+  return { usageAttribution, appId: app.id, appName: app.name, kind, baseUrl: connection ? connection.baseUrl : app.baseUrl, config, secret, ...extra };
 }
 
 export function capabilitiesFor(app: AppRow): ModelCapabilities {
@@ -168,8 +172,9 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
     if (reason) throw new ProviderUnavailableError(reason);
   }
   const instance = await PROVIDERS[ctx.kind].create(ctx);
-  const middleware = [usageMiddleware(usageContext(app, opts, app.model))];
-  if (opts.nativeSearch) middleware.unshift(nativeSearchMiddleware(usageContext(app, opts, app.model), opts.nativeSearch));
+  const usage = { ...usageContext(app, opts, app.model), ...ctx.usageAttribution };
+  const middleware = [usageMiddleware(usage)];
+  if (opts.nativeSearch) middleware.unshift(nativeSearchMiddleware(usage, opts.nativeSearch));
   if (ctx.kind !== "openai-compatible") middleware.unshift(defaultsMiddleware(ctx.kind, ctx.config, app.model, opts.purpose));
   return {
     model: wrapLanguageModel({ model: instance.chat(app.model), middleware }),
@@ -179,13 +184,19 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
   };
 }
 
+export type ApiUsageAttribution = Pick<UsageContext, "providerConnectionId" | "providerOrganization" | "providerProject" | "billingRoute">;
+
 /** Embedding model for an app that has one configured. Usage is recorded by the caller (src/lib/llm/embeddings.ts). */
-export async function resolveEmbeddingModel(app: AiApp, q: DbOrTx = db): Promise<EmbedModel> {
+export async function resolveEmbeddingDispatch(app: AiApp, q: DbOrTx = db): Promise<{ model: EmbedModel; attribution: ApiUsageAttribution }> {
   const ctx = await providerContextFor(app, {}, q);
   if (!app.embeddingModel || !supportsEmbeddings(ctx.kind)) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   if (!instance.embedding) throw new ProviderUnavailableError(`${app.name} doesn't provide embeddings.`);
-  return instance.embedding(app.embeddingModel);
+  return { model: instance.embedding(app.embeddingModel), attribution: ctx.usageAttribution };
+}
+
+export async function resolveEmbeddingModel(app: AiApp, q: DbOrTx = db): Promise<EmbedModel> {
+  return (await resolveEmbeddingDispatch(app, q)).model;
 }
 
 /** Purposes a Hermes profile serves: conversations, never background work (titles, memory, drafts, embeddings). */

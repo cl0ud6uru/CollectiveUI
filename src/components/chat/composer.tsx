@@ -15,7 +15,7 @@ import type { VoiceTarget } from "@/lib/voice/client";
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
 
-export type ComposerHandle = { focus: () => void; setText: (t: string) => void; appendText: (t: string) => void };
+export type ComposerHandle = { focus: () => void; setText: (t: string) => void; appendText: (t: string) => void; submit: (text?: string) => Promise<void> };
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -68,6 +68,7 @@ export const Composer = forwardRef<
   const commandChosen = useRef(false);
 
   useImperativeHandle(ref, () => ({
+    submit,
     focus: () => taRef.current?.focus(),
     setText: (t: string) => {
       setText(t);
@@ -145,14 +146,19 @@ export const Composer = forwardRef<
   // While a reply is running you can still send: the current turn stops and your new instruction goes next.
   const canSend = !disabled && !uploading && !submitting && hasContent;
 
-  async function submit() {
-    if (!canSend || sendingRef.current) return;
+  async function submit(starterText?: string) {
+    if (starterText !== undefined && uploading) {
+      toast.info("Wait for your files to finish uploading, then try again.");
+      return;
+    }
+    const messageText = (starterText ?? text).trim();
+    if (disabled || uploading || submitting || sendingRef.current || (!messageText && !files.some((f) => f.uploaded))) return;
     sendingRef.current = true;
     setSubmitting(true);
     const draft = text;
     const sentKeys = new Set(files.map((f) => f.key));
     try {
-      const accepted = await onSend(text.trim(), files.flatMap((f) => (f.uploaded ? [f.uploaded] : [])));
+      const accepted = await onSend(messageText, files.flatMap((f) => (f.uploaded ? [f.uploaded] : [])));
       if (accepted !== false) {
         setText((current) => current === draft ? "" : current);
         setFiles((current) => current.filter((f) => !sentKeys.has(f.key)));
@@ -450,7 +456,7 @@ export const Composer = forwardRef<
               </button>
             ) : (
               <button
-                onClick={submit}
+                onClick={() => void submit()}
                 disabled={!canSend}
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-fg text-bg transition-opacity disabled:opacity-30"
                 style={tint ? { background: tint.bg, color: tint.fg } : undefined}

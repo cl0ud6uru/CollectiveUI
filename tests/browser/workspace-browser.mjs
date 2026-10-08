@@ -44,6 +44,16 @@ const server = createServer(async (req, res) => {
    let body='';for await(const chunk of req)body+=chunk; const command=JSON.parse(body).command;
    res.setHeader('Content-Type','application/x-ndjson');res.write(JSON.stringify({type:'start'})+'\n');
    if(command==='sleep 30'){const timer=setInterval(()=>res.write(JSON.stringify({type:'heartbeat'})+'\n'),50);res.on('close',()=>{streamStopped=true;clearInterval(timer)});return;}
+   if(command==='large output') {
+    res.write(JSON.stringify({type:'output',text:'HEAD-'+ 'x'.repeat(300000)})+'\n');
+    res.end(JSON.stringify({type:'exit',code:0,reason:'exited',truncated:false,dropped:{out:0,err:0},limited:{out:0,err:0}})+'\n');return;
+   }
+   if(command==='gapped output') {
+    res.write(JSON.stringify({type:'output',text:'before-gap'})+'\n');
+    res.write(JSON.stringify({type:'gap',stream:'out',bytes:100000,source:'daemon'})+'\n');
+    res.write(JSON.stringify({type:'output',text:'after-gap'})+'\n');
+    res.end(JSON.stringify({type:'exit',code:0,reason:'exited',truncated:true,dropped:{out:100000,err:0},limited:{out:0,err:0}})+'\n');return;
+   }
    res.write(JSON.stringify({type:'output',text:'workspace ready\n'})+'\n');res.end(JSON.stringify({type:'exit',code:0,reason:'exit'})+'\n');return;
   }
   if(url.pathname==='/api/workspace/upload'){for await(const chunk of req){}files['uploads/fixture/inventory.csv']='uploaded';res.end(JSON.stringify({path:'uploads/fixture/inventory.csv',bytes:8}));return;}
@@ -75,6 +85,15 @@ try {
  await page.getByRole('tab',{name:'Terminal',exact:true}).click();await expect(page.getByLabel('Terminal output')).toContainText('Processed 48 endpoints');
  await page.getByLabel('Run your own command').fill("printf 'workspace ready\\n'");await page.getByRole('button',{name:'Run',exact:true}).click();await expect(page.getByLabel('Terminal output')).toContainText('workspace ready');await expect(page.getByText('Exit 0',{exact:true})).toBeVisible();
  await page.screenshot({path:path.join(shots,'desktop-terminal.png')});
+ await page.getByLabel('Run your own command').fill('large output');await page.getByRole('button',{name:'Run',exact:true}).click();
+ await expect(page.getByText('Showing the most recent 262,144 characters; 37,861 earlier characters removed from this display.',{exact:true})).toBeVisible();
+ const largeOutput=page.getByLabel('Terminal output').locator('article').last().locator('pre');
+ expect((await largeOutput.textContent()).length).toBe(262144);expect(await largeOutput.textContent()).not.toContain('HEAD-');
+ await page.getByLabel('Run your own command').fill('gapped output');await page.getByRole('button',{name:'Run',exact:true}).click();
+ await expect(page.getByText('100,000 bytes omitted by the workspace service (stdout: 100000, stderr: 0).',{exact:true})).toBeVisible();
+ const gapOutput=await page.getByLabel('Terminal output').locator('article').last().locator('pre').textContent();
+ expect(gapOutput.indexOf('before-gap')).toBeLessThan(gapOutput.indexOf('[100000 bytes of stdout omitted'));
+ expect(gapOutput.indexOf('[100000 bytes of stdout omitted')).toBeLessThan(gapOutput.indexOf('after-gap'));
  await page.getByLabel('Run your own command').fill('sleep 30');await page.getByRole('button',{name:'Run',exact:true}).click();await page.getByRole('button',{name:'Stop',exact:true}).click();await expect(page.getByText('Stop requested. The workspace is cancelling this command.',{exact:true})).toBeVisible();await expect.poll(()=>streamStopped).toBe(true);
  const separator=page.getByRole('separator',{name:'Resize workspace panel'});await separator.focus();await page.keyboard.press('ArrowLeft');await expect(separator).toHaveAttribute('aria-valuenow','624');
  await page.getByRole('button',{name:'Close workspace',exact:true}).click();await expect(page.getByRole('complementary',{name:'Your workspace'})).toBeHidden();await page.getByRole('button',{name:'Open workspace'}).click();
@@ -86,7 +105,7 @@ try {
   await expect(page.getByRole('button',{name:'Use in chat'})).toBeInViewport();await page.screenshot({path:path.join(shots,`mobile-${width}.png`)});
   await page.getByRole('tab',{name:'Terminal',exact:true}).click();await expect(page.getByLabel('Run your own command')).toBeInViewport();await page.getByRole('button',{name:'Close workspace',exact:true}).click();await expect(page.getByRole('dialog')).toBeHidden();await page.getByRole('button',{name:'Open workspace'}).click();await page.getByRole('tab',{name:'Files',exact:true}).click();
  }
- expect(errors).toEqual([]);console.log('PASS: file trees, tabs, inert previews, downloads, uploads, draft preservation, terminal streaming/stop, resizing, 320/390px mobile; no browser errors.');
+ expect(errors).toEqual([]);console.log('PASS: file trees, tabs, inert previews, downloads, uploads, draft preservation, terminal streaming/stop/daemon gaps/client clipping, resizing, 320/390px mobile; no browser errors.');
 } finally {
  await browser?.close();
  if(process.argv.includes('--serve')) console.log(`Preview running at ${address} (synthetic data; real components).`);

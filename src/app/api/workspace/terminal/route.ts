@@ -54,22 +54,36 @@ export async function POST(req: Request) {
         let ended = false;
         const send = (event: object) => { if (!ended && !abort.signal.aborted) controller.enqueue(encoder.encode(JSON.stringify(event) + "\n")); };
         let outputBytes = 0;
+        const dropped = { out: 0, err: 0 };
+        const limited = { out: 0, err: 0 };
         const outputLimit = settings.outputKb * 1024;
         const heartbeat = setInterval(() => send({ type: "heartbeat" }), 15000);
         void client.exec(ref, { isolation: requiredIsolation(settings), command: data.data.command, cwd, timeoutMs: settings.commandTimeoutSec * 1000, execId }, {
           signal: abort.signal,
           onFrame(frame) {
             if (frame.t === "start") send({ type: "start" });
+            if (frame.t === "gap") {
+              dropped[frame.s] += frame.n;
+              send({ type: "gap", stream: frame.s, bytes: frame.n, source: "daemon" });
+            }
             if (frame.t === "out" || frame.t === "err") {
               const bytes = Buffer.from(frame.d, "base64");
               const remaining = Math.max(0, outputLimit - outputBytes);
               if (remaining) send({ type: "output", stream: frame.t, text: cleanText(bytes.subarray(0, remaining)) });
+              const omitted = bytes.length - Math.min(bytes.length, remaining);
+              if (omitted) {
+                limited[frame.t] += omitted;
+                send({ type: "gap", stream: frame.t, bytes: omitted, source: "limit" });
+              }
               outputBytes += bytes.length;
             }
           },
         }).then(async result => {
           await touchSandbox(p.user.id);
-          send({ type: "exit", code: result.code, reason: result.reason, truncated: outputBytes > outputLimit });
+          // Exit totals include the gap frames; do not count the same omission twice.
+          dropped.out = Math.max(dropped.out, result.dropped?.out ?? 0);
+          dropped.err = Math.max(dropped.err, result.dropped?.err ?? 0);
+          send({ type: "exit", code: result.code, reason: result.reason, truncated: outputBytes > outputLimit || dropped.out + dropped.err > 0, dropped, limited });
         }).catch(() => send({ type: "error", text: "The command stopped or the workspace connection was interrupted. Check its output before retrying." }))
           .finally(() => { clearInterval(heartbeat); req.signal.removeEventListener("abort", onAbort); ended = true; if (!abort.signal.aborted) controller.close(); });
       },

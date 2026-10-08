@@ -5,13 +5,13 @@ import { ChevronRight, Copy, Download, FileCode2, FileText, Folder, FolderOpen, 
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import type { WorkspaceBrowserStatus, WorkspaceFilePreview } from "@/lib/sandbox/browser";
+import { appendTerminalOutput, terminalOmissionNotice, type CommandEvent, type TerminalOmissions } from "@/lib/chat/terminal-output";
 import type { ListEntry } from "@/sandboxd/protocol/types";
 import styles from "./workspace-browser.module.css";
 
 type Listing = { entries: ListEntry[]; truncated: boolean };
 type FileTab = { path: string; preview?: WorkspaceFilePreview; loading: boolean; error?: string };
-type Command = { id: string; command: string; output: string; status: "running" | "done" | "error" | "stopped"; code?: number; detail?: string };
-type CommandEvent = { type: string; text?: string; code?: number; reason?: string; truncated?: boolean };
+type Command = { id: string; command: string; output: string; status: "running" | "done" | "error" | "stopped"; code?: number; detail?: string; clippedCharacters?: number; omissions?: TerminalOmissions };
 export type WorkspaceCommandHistory = { id: string; command: string; output: string; running: boolean }[];
 
 const baseName = (path: string) => path.split("/").at(-1) ?? path;
@@ -180,8 +180,15 @@ export function WorkspaceBrowser({ open, onClose, onInsertPath, history = [], fi
       const consume = (line: string) => {
         if (!line) return;
         const event = JSON.parse(line) as CommandEvent;
-        if (event.type === "output" && mounted.current) setCommands(previous => previous.map(item => item.id === id ? { ...item, output: (item.output + (event.text ?? "")).slice(-256 * 1024) } : item));
-        if (event.type === "exit") { ended = true; patch({ status: event.code === 0 ? "done" : "error", code: event.code, detail: event.truncated ? "Output shortened to the workspace output limit." : event.reason !== "exit" && event.reason !== "completed" ? event.reason : undefined }); }
+        if ((event.type === "output" || event.type === "gap") && mounted.current) setCommands(previous => previous.map(item => {
+          if (item.id !== id) return item;
+          if (event.type === "output") return { ...item, ...appendTerminalOutput(item.output, event.text ?? "", item.clippedCharacters) };
+          const omissions = item.omissions ?? { dropped: { out: 0, err: 0 }, limited: { out: 0, err: 0 } };
+          const key = event.source === "limit" ? "limited" : "dropped", stream = event.stream ?? "out", bytes = event.bytes ?? 0;
+          const next = { ...omissions, [key]: { ...omissions[key], [stream]: omissions[key][stream] + bytes } };
+          return { ...item, omissions: next, ...appendTerminalOutput(item.output, `\n[${bytes} bytes of ${stream === "out" ? "stdout" : "stderr"} omitted by ${event.source === "limit" ? "the workspace output limit" : "the workspace service"}]\n`, item.clippedCharacters) };
+        }));
+        if (event.type === "exit") { ended = true; patch({ status: event.code === 0 ? "done" : "error", code: event.code, omissions: { dropped: event.dropped ?? { out: 0, err: 0 }, limited: event.limited ?? { out: 0, err: 0 } }, detail: event.truncated && !event.dropped && !event.limited ? "Some command output was omitted." : event.reason !== "exit" && event.reason !== "exited" && event.reason !== "completed" ? event.reason : undefined }); }
         if (event.type === "error") { ended = true; patch({ status: "error", detail: event.text }); }
       };
       while (true) {
@@ -256,7 +263,7 @@ export function WorkspaceBrowser({ open, onClose, onInsertPath, history = [], fi
       <div ref={terminalRef} className={styles.terminalOutput} tabIndex={0} aria-label="Terminal output">
         {!commands.length && !history.length && <div className={styles.terminalWelcome}><p>Ready when you are.</p><span>Run a command below, or watch your bot’s commands here.</span><span>Commands run in your isolated workspace without network access.</span></div>}
         {history.map(item => <article key={item.id} className={styles.command}><p className={styles.commandSource}>From this chat · {item.running ? "Running" : "Bot command"}</p><div className={styles.commandLine}><span>$</span><code>{item.command}</code></div><pre>{item.output || (item.running ? "Waiting for output…" : "No output")}</pre></article>)}
-        {commands.map(item => <article key={item.id} className={styles.command}><div className={styles.commandLine}><span>$</span><code>{item.command}</code></div><pre>{item.output}</pre><div className={cn(styles.commandResult, item.status === "error" && styles.failed)}>{item.status === "running" ? <><Loader2 size={12} className="animate-spin" />Running…</> : item.status === "stopped" ? "Stopped" : item.code !== undefined ? `Exit ${item.code}` : "Could not run"}{item.detail && <span>{item.detail}</span>}</div></article>)}
+        {commands.map(item => <article key={item.id} className={styles.command}><div className={styles.commandLine}><span>$</span><code>{item.command}</code></div><pre>{item.output}</pre><div className={cn(styles.commandResult, item.status === "error" && styles.failed)}>{item.status === "running" ? <><Loader2 size={12} className="animate-spin" />Running…</> : item.status === "stopped" ? "Stopped" : item.code !== undefined ? `Exit ${item.code}` : "Could not run"}{item.detail && <span>{item.detail}</span>}{terminalOmissionNotice(item.omissions, item.clippedCharacters) && <span role="status">{terminalOmissionNotice(item.omissions, item.clippedCharacters)}</span>}</div></article>)}
       </div>
       <form className={styles.commandForm} onSubmit={runCommand}><label htmlFor="workspace-command">Run your own command</label><div className={styles.commandInput}><span aria-hidden>$</span><input id="workspace-command" value={command} onChange={event => setCommand(event.target.value)} disabled={running} placeholder="e.g. ls -la" autoComplete="off" spellCheck={false} />{running ? <button type="button" className={styles.stopButton} onClick={() => commandAbort.current?.abort()}><Square size={12} />Stop</button> : <button className={styles.runButton} disabled={!command.trim()}><Play size={12} />Run</button>}</div><p>Run executes your command. Bot commands still need approval in chat.</p></form>
     </section>}
