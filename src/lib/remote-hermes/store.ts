@@ -9,6 +9,7 @@ import { getSetting } from '@/lib/settings';
 import { DashboardClient, dashboardSecretsSchema, type DashboardSecrets } from './client';
 import { assertRemoteHermesAdmission, dashboardBase } from './policy';
 import { dashboardFetch } from './transport';
+import { remoteConnectionAAD as aad } from './secrets';
 
 export const remoteConnectionInput = z.object({
   name: z.string().trim().min(1).max(100),
@@ -20,7 +21,7 @@ export const remoteConnectionInput = z.object({
     ctx.addIssue({ code: 'custom', message: 'Enter the credentials for the chosen sign-in method.' });
 });
 export type RemoteConnectionInput = z.input<typeof remoteConnectionInput>;
-const aad = (id: string, owner: string) => `remote_hermes_connections.secret_enc|${id}|${owner}`;
+
 const publicColumns = { id: remoteHermesConnections.id, name: remoteHermesConnections.name, baseUrl: remoteHermesConnections.baseUrl, authMode: remoteHermesConnections.authMode, version: remoteHermesConnections.version };
 export type RemoteConnectionView = { id: string; name: string; baseUrl: string; authMode: 'password' | 'sessionToken'; version: string | null };
 
