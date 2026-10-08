@@ -25,6 +25,16 @@ History requests include native compacted display rows, preserving earlier turns
 
 Native multimodal history retains recognized text blocks and image/audio markers while omitting attachment payloads, URLs and unknown fields from the browser projection. Older dashboard versions retain their native REST lineage limits, including versions that expose only the current compression segment.
 
+## Credential and policy lifecycle
+
+A successful manual sign-in at an existing owner/dashboard URL replaces the connection with a fresh local connection ID. The transaction retires the old connection and cascades its local session bindings and no-replay receipts; no old stored/runtime ID is transferred to the replacement account, even if both accounts advertise identical profile names. Native conversations on Hermes are not deleted. Reopen them through the replacement account's authenticated listing. Ordinary token refresh retains the connection identity. A failed replacement transaction leaves the previous connection and bindings intact.
+
+After replacement commits, the web process eagerly closes the old socket and clears its cache. Old hub/socket references cannot reconnect. Other web processes discover retirement through a database ownership/identity check before every native RPC, native answer and cached view; no distributed invalidation broadcast is claimed. As before, hubs require a single web instance or sticky routing. In-flight work already dispatched cannot be recalled or replayed. A turn running under the retired account is not rebound to the replacement account; use that account's native dashboard for any remaining recovery.
+
+Socket dispatch also reads the current organization policy, including for warm sockets and epoch-guarded setters. Private-destination revocation blocks all new prompts, uploads, steering, queues, commands, inspection and settings operations. The existing pinned socket may only resume or interrupt a durable, owned active binding, answer its server-verified pending interaction, or send its heartbeat. It cannot reconnect to a revoked destination. Idle, unrelated profile/session IDs and invented prompt/approval IDs are not recovery authorizations. Disabling admission without revoking the destination still allows admitted turns to reconnect, receive answers and stop. These checks do not revoke work already accepted by the remote Hermes server or provide distributed cancellation.
+
+Regression coverage uses real loopback WebSockets for ready-socket revocation, cached identity fencing, setters/answers, recovery boundaries and reconnect behavior, plus PGlite executing migrations `0030`–`0032` to verify replacement with overlapping account profiles, active bindings, receipt cascades and unrelated-owner preservation. No additional migration, production policy change or real credential is required.
+
 ## Setup
 
 Apply migrations `0030_remote_hermes_connections`, `0031_remote_hermes_sessions` and `0032_remote_hermes_reservations` using the normal deployment migration process. This implementation does not migrate the deployed database or publish/deploy the app.

@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const f = vi.hoisted(() => ({ enabled: true, owner: 'owner', status: 'idle', receipt: null as null | { digest: string }, updates: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), refresh: vi.fn(), admissions: 0, disableAtLock: false }));
+const f = vi.hoisted(() => ({ enabled: true, owner: 'owner', status: 'idle', receipt: null as null | { digest: string }, updates: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), refresh: vi.fn(), identity: vi.fn(), admissions: 0, disableAtLock: false }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, view: f.refresh, answer: f.answer, sessions: new Map([['session', { row: { id: 'session', status: f.status, runtimeId: 'runtime' }, view: { running: f.status === 'running', uncertain: false }, pending: new Map() }]]) }) }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, view: f.refresh, assertIdentity: f.identity, answer: f.answer, sessions: new Map([['session', { row: { id: 'session', status: f.status, runtimeId: 'runtime' }, view: { running: f.status === 'running', uncertain: false }, pending: new Map() }]]) }) }));
 vi.mock('@/db', () => ({ db: {
   select: () => ({ from: () => ({ where: () => ({ orderBy: async () => [] }), innerJoin: () => ({ where: (condition: unknown) => {
     const { params } = new PgDialect().sqlToQuery(condition as Parameters<PgDialect['sqlToQuery']>[0]);
@@ -29,6 +29,7 @@ const receipt = '9fd64d53-084f-4898-96e0-59ea8fdc623f';
 describe('remote native session admission and continuity', () => {
   beforeEach(() => {
     vi.clearAllMocks(); f.enabled = true; f.owner = 'owner'; f.status = 'idle'; f.receipt = null; f.updates = []; f.admissions = 0; f.disableAtLock = false;
+    f.identity.mockReset().mockResolvedValue(undefined);
     f.refresh.mockResolvedValue({ running: false }); f.call.mockResolvedValue({ status: 'streaming' }); f.answer.mockResolvedValue({ answered: true });
   });
   it('preserves native page metadata and opens a listed pin using its recorded offset', async () => {
@@ -65,6 +66,12 @@ describe('remote native session admission and continuity', () => {
     await nativeControl('owner', 'connection', 'session', 'stop');
     await nativeControl('owner', 'connection', 'session', 'answer', { requestId: 'ask', answer: { choice: 'deny' } });
     expect(f.call).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime', profile: 'default' }); expect(f.answer).toHaveBeenCalledOnce();
+  });
+  it('does not expose an idle disabled cache from a retired sign-in', async () => {
+    f.enabled = false;
+    f.identity.mockRejectedValue(new Error('Sign-in replaced'));
+    await expect(nativeSnapshot('owner', 'connection', 'session')).rejects.toThrow('Sign-in replaced');
+    expect(f.refresh).not.toHaveBeenCalled();
   });
   it('does not cold-resume an idle chat after access is disabled', async () => {
     f.enabled = false;

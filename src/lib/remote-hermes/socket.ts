@@ -32,11 +32,14 @@ export class DashboardSocket {
   state: SocketState = 'disconnected';
   serverRequests: string[] = [];
   private epoch = 0;
+  private closed = false;
   get connectionEpoch() { return this.epoch; }
   constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame) => void,
-    private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {}) {}
+    private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {},
+    private authorize: (method: string, params: RpcRecord) => Promise<void> = async () => {}) {}
   private setState(state: SocketState) { this.state = state; this.changed(state); }
   async connect(): Promise<void> {
+    if (this.closed) throw new HttpError(409, 'Hermes connection was retired. Sign in again.');
     this.wanted = true;
     if (this.ready) return;
     if (this.connecting) return this.connecting;
@@ -84,6 +87,7 @@ export class DashboardSocket {
       const capabilities = await this.send('client.capabilities', { server_requests: true }, 30_000);
       this.serverRequests = Array.isArray(capabilities.server_requests) ? capabilities.server_requests.filter((v): v is string => typeof v === 'string') : [];
       if (!this.serverRequests.includes('approval')) throw new HttpError(501, 'This Hermes version does not support native approval prompts. Update Hermes before chatting.');
+      if (!this.wanted || this.ws !== ws) throw new NativeConnectionChanged();
       this.ready = true;
       ++this.epoch;
       const wasReconnect = this.everConnected;
@@ -120,8 +124,11 @@ export class DashboardSocket {
     if (!this.ready || this.ws?.readyState !== WebSocket.OPEN || !expectedEpoch || this.epoch !== expectedEpoch) throw new NativeConnectionChanged();
     return this.send(method, params, timeoutMs);
   }
-  private send(method: string, params: RpcRecord, timeoutMs: number): Promise<RpcRecord> {
+  private async send(method: string, params: RpcRecord, timeoutMs: number): Promise<RpcRecord> {
     if (!this.ws || !this.transportReady || this.ws.readyState !== WebSocket.OPEN) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
+    const ws = this.ws;
+    await this.authorize(method, params);
+    if (this.ws !== ws || !this.transportReady || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
     if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
@@ -133,13 +140,16 @@ export class DashboardSocket {
     });
   }
   /** Only server-verified pending requests are answered; values are never logged or retained. */
-  answer(id: string | number, result?: RpcRecord) {
+  async answer(id: string | number, result?: RpcRecord) {
     if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) throw new HttpError(409, 'Reconnect and reload the pending prompt before answering.');
-    this.ws.send(JSON.stringify(result ? { jsonrpc: '2.0', id, result } : { jsonrpc: '2.0', id, error: { code: -32601, message: 'Unsupported interaction' } }));
+    const ws = this.ws;
+    await this.authorize('$answer', { id });
+    if (this.ws !== ws || !this.ready || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
+    ws.send(JSON.stringify(result ? { jsonrpc: '2.0', id, result } : { jsonrpc: '2.0', id, error: { code: -32601, message: 'Unsupported interaction' } }));
   }
   private rejectPending() {
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new HttpError(502, 'Hermes disconnected. The operation may have been accepted; refresh instead of resending it.')); }
     this.pending.clear();
   }
-  close() { this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
+  close() { this.closed = true; this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
 }

@@ -35,6 +35,21 @@ describe('remote Hermes credential admission', () => {
       return { returning: async () => [{ id: values.id, name: values.name, baseUrl: values.baseUrl, authMode: values.authMode, version: values.version }] };
     } }));
   });
+  it('retires the old connection identity when account B replaces account A at the same URL', async () => {
+    const remove = vi.fn().mockResolvedValue(undefined);
+    fixture.transaction.mockImplementation(async run => run({
+      select: () => ({ from: (table: Record<symbol, unknown>) => ({ where: () => ({ for: async () => table[Symbol.for('drizzle:Name')] === 'settings' ? [] : [{ id: 'account-a-connection' }] }) }) }),
+      delete: () => ({ where: remove }),
+      update: () => ({ set: () => ({ where: () => ({ returning: async () => [{ id: 'account-a-connection' }] }) }) }),
+      insert: fixture.insert,
+    }));
+    fixture.login.mockResolvedValue({ mode: 'password', accessToken: 'account-b', userId: 'account-b' });
+    fixture.profiles.mockResolvedValue([{ name: 'default' }]);
+    const result = await connectRemoteHermes('owner-1', input);
+    expect(result.connection.id).not.toBe('account-a-connection');
+    expect(remove).toHaveBeenCalledOnce();
+    expect(fixture.values?.userId).toBe('owner-1');
+  });
   it('rejects sign-in before credentials are sent when organization access is off', async () => {
     fixture.getSetting.mockResolvedValue({ enabled: false, privateGateways: [] });
     await expect(connectRemoteHermes('owner-1', input)).rejects.toThrow('disabled');
