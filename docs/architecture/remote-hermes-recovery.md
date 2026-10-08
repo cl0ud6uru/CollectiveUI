@@ -26,14 +26,18 @@ receipts. It does not change approval policy, socket authentication or deploymen
   unobserved queue remains reserved even across idle snapshots, completion
   events, cache loss and browser reload.
 - Both Stop and `/stop` request native interruption and then refresh state,
-  including when the interrupt reply is lost. Only the ordinary fenced native
-  evidence rules settle reservations. An interrupt reply is **not** a barrier
-  against an older deferred dispatch. Snapshot failure marks the cached view
-  uncertain and does not turn a successful interrupt into confirmed completion.
+  including when the interrupt reply is lost. Reconciliation waits until the
+  interrupt RPC settles, joins any older in-flight refresh (even if it fails),
+  and starts a new snapshot. It never resets the single-flight slot or overlaps
+  resume writes, so an older cache write cannot overwrite the fresh result.
+  Only the ordinary fenced native evidence rules settle reservations. An
+  interrupt reply is **not** a barrier against an older deferred dispatch.
+  Snapshot failure marks the cached view uncertain and does not turn a
+  successful interrupt into confirmed completion.
 - Snapshot revision/event checks and request-ID settlement checks remain intact.
   A late acknowledgement for a consumed queue cannot replace a newer reservation.
 
-## Remaining evidence gap — do not implement an idle/timeout reset
+## Remaining evidence gap — #90 is partial; do not implement an idle/timeout reset
 
 A crashed admission that was never confirmed, or a queue that was submitted but
 never observed, can still remain reserved indefinitely. This patch intentionally
@@ -70,7 +74,11 @@ hub source, with isolated RPC/database boundaries and row-lock/SQL-predicate
 modeling. Coverage includes all three attachment paths, staged cleanup failure,
 method-not-found, lost prompt acknowledgement and RPC 4018, reload, native running
 and queue evidence, both stop shapes, lost interrupt reply, unknown queues,
-concurrent reservations, stale snapshots and late acknowledgements.
+concurrent reservations, stale snapshots and late acknowledgements. Deferred
+interrupt/concurrent-resume regressions cover Stop and `/stop`, lost interrupt
+replies, older snapshot failures and fresh post-interrupt snapshot failures. The
+concurrent-resume tests failed on the pre-fix branch because only two resumes
+were dispatched instead of the required third, post-interrupt snapshot.
 
 The attachment, method-not-found and stop regression tests were run red before
 the corresponding source changes. Restoring pre-fix `sessions.ts` afterwards

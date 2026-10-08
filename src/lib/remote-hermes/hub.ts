@@ -62,6 +62,15 @@ export class NativeHub {
     this.refreshing.set(row.id, operation);
     try { return await operation; } finally { this.refreshing.delete(row.id); }
   }
+  /** Called after a control RPC settles: older snapshots cannot reconcile it. */
+  async refreshAfterPending(row: Session): Promise<NativeSessionView> {
+    // Drain, rather than replace, the single-flight slot. A superseded resume
+    // must finish its cache/DB writes before the post-control snapshot begins.
+    while (this.refreshing.has(row.id)) {
+      try { await this.refreshing.get(row.id); } catch { /* Still require a fresh snapshot after an older failure. */ }
+    }
+    return this.refresh(row);
+  }
   private async refreshInner(row: Session) {
     const [observed] = await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id));
     if (!observed) throw new HttpError(404, 'Native Hermes chat not found.');

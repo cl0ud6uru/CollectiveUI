@@ -243,9 +243,10 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
     try {
       return await hub.socket.call('session.interrupt', params);
     } finally {
-      // Interrupt acknowledgement is not a dispatch barrier. Read native state
-      // even if its reply was lost; refresh preserves unobserved reservations.
-      try { await hub.refresh(hub.sessions.get(row.id)?.row ?? row); }
+      // Interrupt acknowledgement is not a dispatch barrier. After it settles
+      // (even on a lost reply), drain older reads and begin a new native snapshot.
+      // Fresh evidence still cannot release unobserved reservations.
+      try { await hub.refreshAfterPending(hub.sessions.get(row.id)?.row ?? row); }
       catch { const current = hub.sessions.get(row.id); if (current) current.view.uncertain = true; }
     }
   }

@@ -53,7 +53,7 @@ import { nativeHub } from '@/lib/remote-hermes/hub';
 import { NativeRpcError } from '@/lib/remote-hermes/socket';
 const id1 = '9fd64d53-084f-4898-96e0-59ea8fdc623f', id2 = 'af63e18c-0581-44c5-8654-8f226b2660a8';
 const idle = { session_id: 'runtime', stored_session_id: 'stored', running: false, info: { title: 'Synthetic' }, messages: [] };
-function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
+function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; }
 beforeEach(() => {
   vi.clearAllMocks(); f.receipts = []; f.lock = Promise.resolve();
   f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: null, status: 'idle', revision: 0, queueRequestId: null, queueStatus: null };
@@ -157,6 +157,63 @@ it.each(['stop', 'command'] as const)('reconciles native evidence after %s witho
   await nativeControl('owner', 'connection', 'session', operation, operation === 'command' ? { text: '/stop' } : {});
   expect(f.row).toMatchObject({ status: 'idle', admissionRequestId: null, queueRequestId: null, queueStatus: null });
   expect(f.call.mock.calls.filter(c => c[0] === 'session.resume')).toHaveLength(2);
+});
+
+it.each((['stop', 'command'] as const).flatMap(operation =>
+  (['success', 'lost interrupt reply', 'fresh snapshot failure', 'older snapshot failure'] as const).map(outcome => [operation, outcome] as const),
+))('waits for a concurrent pre-interrupt resume before fresh %s reconciliation (%s)', async (operation, outcome) => {
+  Object.assign(f.row, { status: 'running', admissionRequestId: id1, queueRequestId: id2, queueStatus: 'queued' });
+  const interrupt = deferred<unknown>(), stale = deferred<unknown>(), fresh = deferred<unknown>();
+  let resumes = 0, settled = false;
+  const running = { ...idle, running: true, queued: { user: 'Next' } };
+  f.call.mockImplementation((method: string) => {
+    if (method === 'commands.catalog') return Promise.resolve({ pairs: [['/stop', 'Stop']] });
+    if (method === 'session.interrupt') return interrupt.promise;
+    if (method === 'session.resume') {
+      resumes++;
+      if (resumes === 1) return Promise.resolve(running);
+      if (resumes === 2) return stale.promise;
+      expect(settled).toBe(true);
+      return fresh.promise;
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+  let finished = false;
+  const stop = nativeControl('owner', 'connection', 'session', operation, operation === 'command' ? { text: '/stop' } : {}).then(
+    value => { finished = true; return { value, error: null }; },
+    error => { finished = true; return { value: null, error }; },
+  );
+  await vi.waitFor(() => expect(f.call.mock.calls.some(c => c[0] === 'session.interrupt')).toBe(true));
+  const hub = nativeHub('owner', 'connection');
+  const concurrent = hub.refresh(f.row as never).catch((error: unknown) => error);
+  await vi.waitFor(() => expect(resumes).toBe(2));
+  expect(settled).toBe(false);
+  settled = true;
+  if (outcome === 'lost interrupt reply') interrupt.reject(new Error('Lost interrupt reply'));
+  else interrupt.resolve({ status: 'interrupted' });
+  await Promise.resolve();
+  expect(resumes).toBe(2); // Never overlap resumes or reset the single-flight slot.
+  if (outcome === 'older snapshot failure') stale.reject(new Error('Older snapshot failed'));
+  else stale.resolve(running);
+  await concurrent;
+  await vi.waitFor(() => expect(resumes).toBe(3));
+  expect(finished).toBe(false);
+  expect(f.row.queueRequestId).toBe(id2);
+  if (outcome === 'fresh snapshot failure') fresh.reject(new Error('Fresh snapshot failed'));
+  else fresh.resolve(idle);
+  const result = await stop;
+  if (outcome === 'lost interrupt reply') expect(result.error).toHaveProperty('message', 'Lost interrupt reply');
+  else expect(result.error).toBeNull();
+  if (outcome === 'fresh snapshot failure') {
+    expect(result.value).toMatchObject({ status: 'interrupted' });
+    expect(f.row).toMatchObject({ status: 'running', admissionRequestId: id1, queueRequestId: id2, queueStatus: 'queued' });
+    expect(hub.sessions.get('session')!.view).toMatchObject({ running: true, queuePending: true, uncertain: true });
+  } else {
+    expect(f.row).toMatchObject({ status: 'idle', admissionRequestId: null, queueRequestId: null, queueStatus: null });
+    expect(hub.sessions.get('session')!.view).toMatchObject({ running: false, queuePending: false, uncertain: false });
+  }
+  expect(f.receipts).toHaveLength(0);
+  expect(f.call.mock.calls.filter(c => c[0] === 'session.interrupt')).toHaveLength(1);
 });
 
 it('retains an uncertain queue reservation through idle recovery and releases acknowledged consumption', async () => {
