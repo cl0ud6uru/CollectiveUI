@@ -15,7 +15,7 @@ import type { VoiceTarget } from "@/lib/voice/client";
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
 
-export type ComposerHandle = { focus: () => void; setText: (t: string) => void };
+export type ComposerHandle = { focus: () => void; setText: (t: string) => void; appendText: (t: string) => void };
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -71,6 +71,10 @@ export const Composer = forwardRef<
     focus: () => taRef.current?.focus(),
     setText: (t: string) => {
       setText(t);
+      requestAnimationFrame(() => taRef.current?.focus());
+    },
+    appendText: (t: string) => {
+      setText(current => `${current}${current && !/\s$/.test(current) ? " " : ""}${t}`);
       requestAnimationFrame(() => taRef.current?.focus());
     },
   }));
