@@ -18,7 +18,7 @@ export const requiredIsolation = (s: SandboxSettings) => (s.allowRunc ? ("any" a
 /**
  * A guard against obvious foot-guns (wiping the workspace root, fork bombs, formatting devices). NOT a security
  * control: shell strings are trivially obfuscated. The boundary is the container (no network, no privileges, its own
- * volume), and every command already needs the person's approval.
+ * volume). The bot's workspace permissions determine whether commands need approval.
  */
 const HARD_DENIED: [RegExp, string][] = [
   [/:\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;?\s*:/, "a fork bomb"],

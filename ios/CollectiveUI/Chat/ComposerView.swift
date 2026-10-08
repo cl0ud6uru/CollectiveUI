@@ -68,7 +68,9 @@ struct ComposerView: View {
                 }
             }
             .padding(2)
-            .modifier(ChatGlass(cornerRadius: 26))
+            .background(PortalTheme.surface, in: RoundedRectangle(cornerRadius: 26))
+            .overlay(RoundedRectangle(cornerRadius: 26).strokeBorder(PortalTheme.border, lineWidth: 1))
+            .shadow(color: .black.opacity(0.05), radius: 8, y: 3)
             .padding(.horizontal, 12)
         }
         .frame(maxWidth: 840)
@@ -107,7 +109,7 @@ struct ComposerView: View {
     private var messageInput: some View {
         ZStack(alignment: .topLeading) {
             if model.composerText.isEmpty {
-                Text("Type / for commands")
+                Text(model.target?.kind == "bot" ? "Message " + model.assistantName : "Ask anything")
                     .font(.body)
                     .foregroundStyle(PortalTheme.muted)
                     .padding(.top, 11)

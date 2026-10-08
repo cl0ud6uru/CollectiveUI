@@ -3,13 +3,14 @@ import { z } from 'zod';
 import { db } from '@/db';
 import { remoteHermesConnections, settings } from '@/db/schema';
 import { HttpError } from '@/lib/authz';
-import { decrypt, encrypt } from '@/lib/crypto';
+import { decrypt, encrypt, rewrap } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
 import { getSetting } from '@/lib/settings';
 import { DashboardClient, dashboardSecretsSchema, type DashboardSecrets } from './client';
 import { assertRemoteHermesAdmission, dashboardBase } from './policy';
 import { dashboardFetch } from './transport';
 import { retireNativeConnection } from './lifecycle';
+import { remoteConnectionAAD as aad } from './secrets';
 
 export const remoteConnectionInput = z.object({
   name: z.string().trim().min(1).max(100),
@@ -21,7 +22,7 @@ export const remoteConnectionInput = z.object({
     ctx.addIssue({ code: 'custom', message: 'Enter the credentials for the chosen sign-in method.' });
 });
 export type RemoteConnectionInput = z.input<typeof remoteConnectionInput>;
-const aad = (id: string, owner: string) => `remote_hermes_connections.secret_enc|${id}|${owner}`;
+
 const publicColumns = { id: remoteHermesConnections.id, name: remoteHermesConnections.name, baseUrl: remoteHermesConnections.baseUrl, authMode: remoteHermesConnections.authMode, version: remoteHermesConnections.version };
 export type RemoteConnectionView = { id: string; name: string; baseUrl: string; authMode: 'password' | 'sessionToken'; version: string | null };
 
@@ -82,6 +83,24 @@ export async function remoteProfiles(userId: string, connectionId: string) {
   });
   // Commit rotated tokens before another native request can fail: refresh is an external side effect.
   return client.profiles();
+}
+
+/** Rewrap personal credentials without replacing a concurrent refresh or reconnect. */
+export async function rewrapRemoteHermesSecrets(): Promise<number> {
+  let changed = 0;
+  // Include inactive connections and both authentication modes. Compare the whole encrypted
+  // envelope so a refresh/reconnect committed after the scan can never be overwritten.
+  for (const row of await db.select().from(remoteHermesConnections)) {
+    const next = rewrap(row.secretEnc, aad(row.id, row.userId));
+    if (next) {
+      const updated = await db.update(remoteHermesConnections).set({ secretEnc: next })
+        .where(and(eq(remoteHermesConnections.id, row.id), eq(remoteHermesConnections.userId, row.userId),
+          eq(remoteHermesConnections.secretEnc, row.secretEnc)))
+        .returning({ id: remoteHermesConnections.id });
+      changed += updated.length;
+    }
+  }
+  return changed;
 }
 
 /** Continuation callers must first authorize a server-loaded active session binding. */

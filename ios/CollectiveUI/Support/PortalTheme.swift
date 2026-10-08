@@ -3,11 +3,11 @@ import UIKit
 
 /// Native equivalents of src/app/globals.css. Color is reserved for bot identity and activity.
 enum PortalTheme {
-    static let background = adaptive("ffffff", "000000")
+    static let background = adaptive("ffffff", "181818")
     static let sidebar = adaptive("f9f9f9", "111111")
     static let surface = adaptive("ffffff", "262626")
     static let surfaceSecondary = adaptive("f4f4f4", "2a2a2a")
-    static let botBubble = adaptive("f0f0f0", "242424")
+    static let botBubble = adaptive("f0f0f0", "262626")
     static let ink = adaptive("0d0d0d", "ececec")
     static let onInk = adaptive("ffffff", "111111")
     static let muted = adaptive("5d5d5d", "a8a8a8")

@@ -55,6 +55,21 @@ Unit checks cover password/PKCE exchange, native token decoding and refresh, cre
 
 `tests/integration/remote-hermes.test.ts` and `tests/integration/remote-hermes-reservations.test.ts` check real database identity/receipt constraints, owned bindings, fixture cascade cleanup, queue reservation contention, revision reconciliation, unknown queue recovery and late acknowledgements. It runs only when `REMOTE_HERMES_INTEGRATION=1` and `DATABASE_URL` points to a disposable database named `hermes_fixture`; never set these to production. All migrations have been checked against a disposable pgvector/Postgres database. A real remote Hermes server has not yet been used for end-to-end verification.
 
+### Reservation fixture evidence (issue #97, partial)
+
+The reservation socket is **synthetic** and implements `callWithEpoch`: it captures the epoch at RPC dispatch, including when a reply is delayed across a simulated reconnect. The suite checks that the hub retains that dispatch epoch and updates it on the next resume, alongside the database reservation/race assertions. This is not evidence of real dashboard transport or live runtime compatibility.
+
+To repeat the database checks, migrate a **disposable** pgvector/PostgreSQL database named `hermes_fixture`, then run:
+
+```sh
+REMOTE_HERMES_INTEGRATION=1 DATABASE_URL="$FIXTURE_DATABASE_URL" \
+  npm test -- --project integration \
+  tests/integration/remote-hermes-reservations.test.ts \
+  tests/integration/remote-hermes-rewrap.test.ts
+```
+
+Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d`, PostgreSQL 17.11 on x86_64 Linux. The two suites passed 8 tests against a freshly migrated disposable database. No Hermes dashboard was launched or contacted, and no production credentials or inference were used. Real pinned-dashboard auth/refresh, attachments, prompts, reconnect/stop, history and reservations remain unverified; the live conformance portion of #97 remains open.
+
 ## Remaining work
 
 - Extend managed/local RPC and shared chat controls where the pinned runtime supports attachments, clarification, protected prompts, steering, queues and snapshots. Preserve process/filesystem isolation, approval semantics and profile identity checks.

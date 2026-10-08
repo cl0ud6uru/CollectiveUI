@@ -46,7 +46,7 @@ import { nativeSearchAvailability } from "@/lib/agent/native-search";
 import { BUILTIN_TOOLS } from "@/lib/agent/types";
 import { availableBuiltinKeys } from "@/lib/bots/available-tools";
 import { botDraftInstructions, botDraftSchema, describeDraftFailure, DRAFT_DESCRIPTION_MAX_LENGTH, finalizeDraft, INCOMPLETE_DRAFT, NO_UTILITY_MODEL, type BotDraftResult } from "@/lib/bots/draft";
-import { ApprovalModeSchema, BotToolConfigSchema, normalizeToolConfig } from "@/lib/bots/tool-config";
+import { ApprovalModeSchema, BotToolConfigSchema, normalizeToolConfig, normalizeWorkspaceConfig } from "@/lib/bots/tool-config";
 import { randomBlob } from "@/components/bots/bot-avatar";
 import { loadBotActivity, loadWorkspacePreview } from "@/lib/chat/activity";
 import { botDefaultSchema } from "@/lib/pets/shared";
@@ -122,8 +122,7 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
   const tools = input.tools
     .filter((t) => (builtin.has(t.key) || mcpIds.has(t.key)) && !toolSettings.disabledTools.includes(t.key) &&
       !(t.key.startsWith("mcp:") && toolSettings.disabledTools.includes("mcp")))
-    // Per-tool choices only apply to MCP servers; an empty choice is the same as none.
-    .map((t) => ({ ...t, config: t.key.startsWith("mcp:") ? normalizeToolConfig(t.config) : null }));
+    .map((t) => ({ ...t, config: t.key === "workspace" ? normalizeWorkspaceConfig(t.config) : t.key.startsWith("mcp:") ? normalizeToolConfig(t.config) : null }));
   if (input.executionMode === "service") {
     if (tools.length !== input.tools.length) throw new HttpError(400, "A selected connector is unavailable. Review the tool selection before saving.");
     for (const tool of tools) {
