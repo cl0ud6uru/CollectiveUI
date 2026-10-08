@@ -74,7 +74,7 @@ export const BUILTIN_TOOLS: { key: string; label: string; description: string; d
   {
     key: "workspace",
     label: "Workspace",
-    description: "Run commands and edit files in each person's own offline sandbox. Commands always ask; file changes ask unless always allowed.",
+    description: "Work with files and run commands in each person's own offline workspace. Choose which actions need approval below.",
     defaultApproval: "auto",
   },
 ];

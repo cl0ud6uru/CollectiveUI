@@ -110,6 +110,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   );
   const hosted = await nativeSearchFor(ctx, configured);
   const modes = new Map(configured.map((t) => [t.toolKey, t.approval]));
+  const workspaceApprovals = configured.find((t) => t.toolKey === "workspace")?.config?.approvals ?? {};
   const entries: ToolEntry[] = [];
   const closers: (() => Promise<void>)[] = [];
   const warnings: string[] = [...hosted.warnings];
@@ -262,11 +263,13 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
       const blocked = isHardDenied(String((toolCall.input as { command?: unknown } | undefined)?.command ?? ""));
       if (blocked) return { type: "denied", reason: blocked };
     }
+    const workspaceMode = entry.key === "workspace" ? workspaceApprovals[entry.name] : undefined;
+    const explicitWorkspaceMode = workspaceMode === "auto" || workspaceMode === "ask" ? workspaceMode : undefined;
     const decision = resolveApproval({
       toolName: entry.name,
       toolKey: entry.key,
-      mode: modes.get(entry.key) ?? "auto",
-      sensitive: !!entry.sensitive,
+      mode: explicitWorkspaceMode ?? modes.get(entry.key) ?? "auto",
+      sensitive: !!entry.sensitive && explicitWorkspaceMode !== "auto",
       enforced: ctx.toolSettings.enforcedApproval,
       grants,
       mcp: entry.mcp,
