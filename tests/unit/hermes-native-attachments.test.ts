@@ -11,6 +11,26 @@ const message = (id: string, files: string[]): PortalUIMessage => ({ id, role: '
 const attachment = (id: string, size = 4) => ({ id, userId: 'owner', filename: `${id}.pdf`, storageKey: `owned/${id}`, mediaType: 'application/pdf', size, extractedText: 'Do not downgrade native PDF to extracted text.' });
 beforeEach(() => { fixture.rows = []; vi.clearAllMocks(); fixture.get.mockResolvedValue(Buffer.from('PDF bytes')); });
 describe('native Hermes owned attachment resolution', () => {
+  it('preserves owned original documents and images for a remote Hermes profile without relying on extraction', async () => {
+    fixture.rows = [
+      { ...attachment('Document'), filename: 'example.doc', mediaType: 'application/msword', extractedText: null },
+      { ...attachment('Scan'), filename: 'example.pdf', extractedText: '' },
+      { ...attachment('Image'), filename: 'example.png', mediaType: 'image/png', extractedText: null },
+    ];
+    const bytes = new Map([
+      ['owned/Document', Buffer.from('synthetic legacy document bytes')],
+      ['owned/Scan', Buffer.from('synthetic scanned PDF bytes')],
+      ['owned/Image', Buffer.from('synthetic image bytes')],
+    ]);
+    fixture.get.mockImplementation(async (key: string) => bytes.get(key));
+    const result = await resolveAttachmentsForModel([message('new', ['Document', 'Scan', 'Image'])],
+      { ...app, providerConfig: { baseURL: 'https://hermes.example.test', profile: 'example' } }, 'owner');
+    expect(result[0].parts).toEqual(fixture.rows.map(row => ({
+      type: 'file', filename: row.filename, mediaType: row.mediaType,
+      url: `data:${row.mediaType};base64,${bytes.get(String(row.storageKey))!.toString('base64')}`,
+    })));
+    expect(fixture.get.mock.calls).toEqual([['owned/Document'], ['owned/Scan'], ['owned/Image']]);
+  });
   it('reads only resolved owned files from the newest user turn and never fetches arbitrary URLs', async () => {
     fixture.rows = [attachment('Old'), attachment('New')];
     const history = [message('old', ['Old']), message('new', ['New', 'Foreign'])];
