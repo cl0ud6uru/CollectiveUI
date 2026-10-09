@@ -17,3 +17,7 @@ export function allowedHermesModels(app: Pick<AiApp, "providerConfig">): string[
 }
 
 export type HermesRunContext = { targetKey: string; model: string | null; provisionId?: string | null };
+
+/** The caller-supplied Runs identity, shared by inference and session controls. */
+export const hermesSessionId = (conversationId: string, botId?: string | null) =>
+  `portal-${conversationId}${botId ? `-${botId}` : ""}`;

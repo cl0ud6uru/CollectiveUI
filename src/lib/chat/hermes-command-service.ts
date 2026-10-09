@@ -4,8 +4,8 @@ import { agentRuns, conversations, hermesChatSettings, hermesRunContexts, usageE
 import { resolveTurnTarget } from "@/lib/agent/target";
 import type { Principal } from "@/lib/auth/groups";
 import { HttpError } from "@/lib/authz";
-import { discoverHermes } from "@/lib/llm/providers/hermes/client";
-import { allowedHermesModels, hermesTargetKey } from "@/lib/llm/providers/hermes/scope";
+import { discoverHermes, sessionApprovalMode } from "@/lib/llm/providers/hermes/client";
+import { allowedHermesModels, hermesSessionId, hermesTargetKey } from "@/lib/llm/providers/hermes/scope";
 import { hermesTargetFor } from "@/lib/llm/resolve";
 import { assertHermesIdle, hermesSettings } from "@/lib/runs/hermes-context";
 import { reconcileHermesStop, stopHermesConversation } from "@/lib/runs/hermes-stop";
@@ -24,7 +24,7 @@ export async function resolveCommandTarget(p: Principal, input: CommandTarget) {
   if (conv?.isGroup || (conv && conv.source !== "chat")) throw new HttpError(400, "Slash controls are available in direct chats, not groups or routine results.");
   const target = conv ?? { appId: input.botId ? null : (input.appId ?? null), botId: input.botId ?? null };
   const { app, bot } = await resolveTurnTarget(p, target);
-  return { conv, app, bot, input, userId: p.user.id };
+  return { conv, app, bot, input, userId: p.user.id, isAdmin: p.isAdmin };
 }
 type Target = Awaited<ReturnType<typeof resolveCommandTarget>>;
 
@@ -40,8 +40,17 @@ export async function commandCatalog(t: Target): Promise<HermesCommandCatalog | 
     discovery = { models: unavailable, skills: unavailable, tools: unavailable, canStopRemotely: false, capabilityWarning: unavailable.reason };
   }
   const allowed = allowedHermesModels(t.app);
+  let yolo: HermesCommandCatalog["yolo"];
+  if (!isLocalHermes(t.app)) {
+    try {
+      const state = await readYolo(t);
+      yolo = { available: true, enabled: state.enabled };
+    } catch (err) {
+      yolo = { available: false, reason: err instanceof HttpError ? err.message : "Session approval status could not be verified." };
+    }
+  }
   return {
-    backend: "hermes", commands: isLocalHermes(t.app) ? HERMES_COMMANDS.filter(c => !["model", "skills", "tools"].includes(c.name)) : HERMES_COMMANDS, ...discovery,
+    backend: "hermes", commands: isLocalHermes(t.app) ? HERMES_COMMANDS.filter(c => !["model", "skills", "tools", "yolo"].includes(c.name)) : HERMES_COMMANDS, ...discovery, yolo,
     models: discovery.models.available ? { available: true, items: discovery.models.items.filter((m) => allowed.includes(m) && m !== "default") } : discovery.models,
     modelRoutes: discovery.models.available ? discovery.models.items.filter((m) => m !== "default").map((id) => ({ id, allowed: allowed.includes(id) })) : [],
     requestedModel: settings?.model ?? null, revision: settings?.revision ?? 0,
@@ -54,6 +63,50 @@ async function ensureConversation(tx: Tx, t: Target) {
   if (!conv || conv.userId !== t.userId) throw new HttpError(404, "Conversation not found");
   if (conv.botId !== (t.bot?.id ?? null) || conv.appId !== (t.bot ? null : t.app.id) || conv.isGroup || conv.source !== "chat")
     throw new HttpError(409, "This conversation's target changed. Reload before trying again.");
+}
+
+function assertYoloTarget(t: Target) {
+  if (!t.bot || isLocalHermes(t.app)) throw new HttpError(400, "Session YOLO is available only in remote Hermes bot chats.");
+  if (t.bot.ownerId !== t.userId && !t.isAdmin) throw new HttpError(403, "Only the bot owner or an admin can control session YOLO in their own chat.");
+}
+
+async function readYolo(t: Target, enabled?: boolean, connection: Tx | typeof db = db) {
+  assertYoloTarget(t);
+  const targetKey = hermesTargetKey(t.app);
+  const settings = await hermesSettings(t.input.conversationId, connection);
+  const contexts = await connection.select({ targetKey: hermesRunContexts.targetKey, provisionId: hermesRunContexts.provisionId }).from(hermesRunContexts)
+    .innerJoin(agentRuns, eq(agentRuns.id, hermesRunContexts.runId))
+    .where(and(eq(agentRuns.conversationId, t.input.conversationId), eq(agentRuns.userId, t.userId)));
+  if ((settings && settings.targetKey !== targetKey) || contexts.some(c => c.targetKey !== targetKey))
+    throw new HttpError(409, "This chat's Hermes connection changed. Start a fresh chat before controlling session approvals.");
+  const provisionIds = [...new Set(contexts.map(c => c.provisionId).filter(Boolean))];
+  if (provisionIds.length > 1) throw new HttpError(409, "This chat's remote profile binding is ambiguous. Start a fresh chat.");
+  const { target } = await hermesTargetFor(t.app, { userId: t.userId, botId: t.bot!.id, provisionId: provisionIds[0], verify: true });
+  return sessionApprovalMode(target, hermesSessionId(t.input.conversationId, t.bot!.id), enabled);
+}
+
+async function executeYolo(t: Target, args: string): Promise<CommandResult> {
+  if (!["", "status", "on", "off"].includes(args)) throw new HttpError(400, "Use /yolo status, /yolo on or /yolo off. Bare /yolo shows status.");
+  assertYoloTarget(t);
+  const mutation = args === "on" || args === "off";
+  const outcome = mutation ? await db.transaction(async tx => {
+    await lockUserRuns(tx, t.userId);
+    await ensureConversation(tx, t);
+    await assertHermesIdle(tx, t.input.conversationId);
+    // Commit the connection binding even if a PUT succeeds but its readback is lost.
+    // Approval state remains remote-only; an uncertain write is not reported as success.
+    const settings = await hermesSettings(t.input.conversationId, tx);
+    if (!settings) await tx.insert(hermesChatSettings).values({ conversationId: t.input.conversationId, targetKey: hermesTargetKey(t.app), model: null, revision: 0 }).onConflictDoNothing();
+    try { return { state: await readYolo(t, args === "on", tx) }; }
+    catch (error) { return { error }; }
+  }) : { state: await readYolo(t) };
+  if ("error" in outcome) throw outcome.error;
+  const state = outcome.state;
+  return { title: "Session YOLO", lines: [
+    `YOLO ${state.enabled ? "ON — tool approval prompts are bypassed" : "OFF — normal tool approvals apply"} (verified by Hermes).`,
+    `Scope: this session only. Profile: ${state.profile}. Session: ${state.session_id}.`,
+    "Shared profile and global approval configuration are unchanged. /new starts a separate session; sandbox, tool and network restrictions remain unchanged.",
+  ], conversationId: mutation ? t.input.conversationId : undefined, revision: (await hermesSettings(t.input.conversationId))?.revision ?? 0 };
 }
 
 const MODEL_NOTE = "This is a request for future turns in this chat. Hermes may select a different runtime; /status shows the last reported model. Shared profile defaults are unchanged.";
@@ -70,8 +123,9 @@ export async function executeHermesCommand(p: Principal, input: CommandTarget & 
   }
   if (t.app.provider !== "hermes") throw new HttpError(400, "Only /new and /reset are available for this bot.");
   if (namespace !== "hermes" || !HERMES_COMMANDS.some((c) => c.name === name)) throw new HttpError(400, unsupportedHermesCommand(name, namespace));
-  if (isLocalHermes(t.app) && ["model", "skills", "tools"].includes(name))
+  if (isLocalHermes(t.app) && ["model", "skills", "tools", "yolo"].includes(name))
     throw new HttpError(400, "This Local Hermes pilot does not expose native model, skill or tool management commands. The bot's selected model and native profile configuration remain authoritative; manage the profile in Hermes after stopping the controller.");
+  if (name === "yolo") return executeYolo(t, args);
   if (name !== "model" && args) throw new HttpError(400, `/${name} doesn't accept arguments here.`);
   if (name === "help" && isLocalHermes(t.app)) return { title: "Local Hermes pilot", lines: [
     "/status, /usage, /new, /reset and /stop are available. Native model, skills, tools, branching, clarify and secret prompts are not exposed in this pilot.",
