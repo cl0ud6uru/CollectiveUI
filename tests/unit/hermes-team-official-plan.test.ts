@@ -18,6 +18,7 @@ import { storeVerifiedOfficialPlanGrant,validateOfficialPlanRequest,officialPlan
 import { teamNativeAvailability,setTeamConversationModelChoice,teamConversationModelView } from '@/lib/hermes-team/candidate-availability';
 import { TEAM_MODEL_PURPOSES,VERIFIED_TEAM_MODEL_ROUTES,type VerifiedTeamModelRoute } from '@/lib/hermes-team/model-policy';
 import { HERMES_COMMIT } from '@/local-hermes/config';
+import { completeOfficialPlanTransfer,startOfficialPlanTransfer,type OfficialPlanTransferServices } from '@/lib/hermes-team/official-plan-vm-transfer';
 let admin:Principal,alice:Principal,bob:Principal;
 const route:VerifiedTeamModelRoute={id:'official-synthetic',adapterId:OFFICIAL_PLAN_ADAPTER,model:'synthetic-model',billing:'personal',integration:'openai_chatgpt_plan_usage',credentialHandling:'server_gateway',limitContract:'local_only',
  evidence:{id:'synthetic-only',hermesRevision:HERMES_COMMIT,adapterId:OFFICIAL_PLAN_ADAPTER,model:'synthetic-model',integration:'openai_chatgpt_plan_usage',purposes:TEAM_MODEL_PURPOSES,verifiedAt:1,expiresAt:4102444800000}};
@@ -25,11 +26,11 @@ const routes=[route];
 const payload=(tools=false)=>({model:route.model,input:[{role:'user',content:'Synthetic useful procedure'}],...(tools?{tools:[{type:'function',name:'memory',description:'Private native memory',parameters:{type:'object',properties:{content:{type:'string'}}},strict:false}]}:{})});
 const request=(token:string,body:unknown)=>new Request('https://app.test.invalid/api/hermes-team/native/test',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${token}`},body:JSON.stringify(body)});
 const stream=(output:unknown[]=[],usage:unknown={input_tokens:2,output_tokens:3})=>new Response(`data: ${JSON.stringify({type:'response.completed',response:{id:'synthetic',status:'completed',output,usage}})}\n\n`,{headers:{'content-type':'text/event-stream'}});
-async function ingest(p:Principal,suffix='initial',catalog=[route.model]){
+async function ingest(p:Principal,suffix='initial',catalog=[route.model],verifiedWorkspace=true){
  const access=`synthetic-${p.user.id}-official-${suffix}`;
  const services={verifyAccessToken:vi.fn().mockResolvedValue({issuer:'https://auth.openai.com',audience:OFFICIAL_PLAN_ORIGIN,subject:`official-${p.user.id}`,clientId:'issued-synthetic-client',scopes:['chatgpt.tokens.use.direct','resource.invoke'],issuedAt:Date.now()-1000,notBefore:Date.now()-1000,expiresAt:Date.now()+3500000}),
  fetch:vi.fn<typeof fetch>().mockImplementation(async(url,init)=>{expect(String(url)).toBe(`${OFFICIAL_PLAN_ORIGIN}/models`);expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${access}`);expect(init?.redirect).toBe('error');return Response.json({models:catalog.map(slug=>({slug,display_name:slug,visibility:'list'}))});})};
- expect(await storeVerifiedOfficialPlanGrant(p,{clientId:'issued-synthetic-client',hostId:`synthetic-host-${p.user.id}`,subject:`official-${p.user.id}`,access,refresh:`synthetic-refresh-${p.user.id}`,idToken:`synthetic-id-token-${p.user.id}`},services)).toEqual({connected:true});return {services,access};
+ expect(await storeVerifiedOfficialPlanGrant(p,{clientId:'issued-synthetic-client',hostId:`synthetic-host-${p.user.id}`,subject:`official-${p.user.id}`,access,refresh:`synthetic-refresh-${p.user.id}`,idToken:`synthetic-id-token-${p.user.id}`,provenance:verifiedWorkspace?{ownerId:p.user.id,clientId:'issued-synthetic-client',subject:`official-${p.user.id}`,workspaceId:'business-work',sourceHostId:`source-${p.user.id}`,destinationHostId:`synthetic-host-${p.user.id}`,transportId:'synthetic-transfer',handoffId:'synthetic-fixture',refreshOwner:'collective_vm',verifiedAt:Date.now(),expiresAt:Date.now()+86400000}:undefined},services)).toEqual({connected:true});return {services,access};
 }
 beforeAll(async()=>{await fixture.client!.waitReady;for(const file of readdirSync('src/db/migrations').filter(f=>f.endsWith('.sql')).sort())await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`,'utf8').replace('CREATE EXTENSION IF NOT EXISTS vector;','').replace(/\bvector\b/g,'real[]'));},45000);
 beforeEach(async()=>{
@@ -38,7 +39,7 @@ beforeEach(async()=>{
  await db.insert(schema.users).values([{id:'admin',upn:'admin@test.invalid',name:'Admin',isAdmin:true,authSource:'local',identityRealm:'local'},{id:'alice',upn:'alice@test.invalid',name:'Alice',authSource:'local',identityRealm:'local'},{id:'bob',upn:'bob@test.invalid',name:'Bob',authSource:'local',identityRealm:'local'}]);
  admin=(await loadPrincipal('admin'))!;alice=(await loadPrincipal('alice'))!;bob=(await loadPrincipal('bob'))!;
  await db.insert(schema.bots).values({id:'team',ownerId:'admin',name:'Team',visibility:'groups'});await db.insert(schema.botUserAccess).values([{botId:'team',userId:'alice'},{botId:'team',userId:'bob'}]);
- await configureTeam(admin,'team',{enabled:true,expectedVersion:0,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,adminRouteId:'app:never-company'}});
+ await configureTeam(admin,'team',{enabled:true,expectedVersion:0,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,personalWorkspaceId:'business-work',adminRouteId:'app:never-company'}});
  await ingest(alice);await ingest(bob);route.transportHash=(await candidateWireMetadata(alice,route)).hash;
 });
 afterAll(async()=>{await fixture.client!.close();vi.unstubAllEnvs();});
@@ -47,8 +48,53 @@ async function run(p=alice,id='run'){
  await db.update(schema.hermesTeamProfiles).set({state:'ready',binding:{bindingId:'a'.repeat(32),ownerId:profile.ownerKey,botId:'team',teamBotId:'team',appId:'team',runtimeId:`synthetic-${p.user.id}-runtime`,profile:`cui-team-${'b'.repeat(32)}`,identity:`synthetic-${p.user.id}-identity`,purpose:'team-member',name:'Team',modelPolicy:'personal_required'}}).where(eq(schema.hermesTeamProfiles.id,profile.id));
  await db.insert(schema.agentRuns).values({id,userId:p.user.id,botId:'team',conversationId:chat.conversationId,messageId:`${id}-message`});return {chat,profile};
 }
+async function workTransfer(p:Principal,workspaceId:string|null='business-work',suffix='work'){
+ const clientId=`issued-work-${p.user.id}`,subject=`official-${p.user.id}`;
+ const services:OfficialPlanTransferServices={fetch:vi.fn<typeof fetch>().mockResolvedValue(Response.json({models:[{slug:route.model,visibility:'list'}]})),
+  verifier:{verifyAccessToken:vi.fn(async()=>({issuer:'https://auth.openai.com' as const,audience:'https://api.openai.com/v1' as const,subject,clientId,scopes:['chatgpt.tokens.use.direct','resource.invoke'],issuedAt:Date.now()-1000,notBefore:Date.now()-1000,expiresAt:Date.now()+3500000})),verifyIdToken:vi.fn(async()=>({subject})),revocationEndpoint:vi.fn()},
+  transports:[{id:'synthetic-supported-transfer',hostId:'persisted-shared-vm',read:vi.fn(async()=>({version:1,client_id:clientId,subject,source_host_id:`source-${p.user.id}`,access_token:`synthetic-${p.user.id}-official-${suffix}`,refresh_token:`synthetic-${p.user.id}-refresh-${suffix}`,id_token:`synthetic-${p.user.id}-id-${suffix}`})),
+   verifyHandoff:vi.fn(async(actor,ticket)=>({ownerId:actor.user.id,clientId,subject,workspaceId:workspaceId??undefined,sourceHostId:`source-${actor.user.id}`,destinationHostId:ticket.hostId,transportId:ticket.transportId,handoffId:ticket.id,refreshOwner:'collective_vm' as const,verifiedAt:Date.now(),expiresAt:Date.now()+86400000}))}]};
+ const {transferId}=await startOfficialPlanTransfer(p,{clientId,subject,workspaceId:workspaceId??undefined},services);await completeOfficialPlanTransfer(p,transferId,services);
+}
 
 describe('Distinct official personal Responses candidate',()=>{
+ it('admits the caller’s exact chosen registration without asserting a literal workspace ID or Business entitlement',async()=>{
+  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id}});
+  await workTransfer(alice,null);await run();const grant=await issueTeamCandidateContext(alice,'run','default',routes),fetch=vi.fn<typeof globalThis.fetch>().mockResolvedValue(stream());
+  expect((await candidateModelHttp(request(grant.modelTokens.reply,payload()),{contextId:grant.contextId,purpose:'reply',operation:['responses']},{routes,fetch})).status).toBe(200);
+  expect(new Headers(fetch.mock.calls[0][1]!.headers).get('authorization')).toBe('Bearer synthetic-alice-official-work');expect((await db.select().from(schema.officialPlanConnections)).find(row=>row.selected&&row.userId==='alice')?.provenance?.workspaceId).toBeUndefined();
+ });
+ it('funds one shared Audit Bot with each initiating work account across reply, learning, delegation and utility after a protected transfer',async()=>{
+  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,personalWorkspaceId:'business-work'}});
+  await workTransfer(alice);await workTransfer(bob);
+  const a=await run(alice,'alice-audit'),b=await run(bob,'boss-audit');expect(a.profile.id).not.toBe(b.profile.id);const profiles=await db.select().from(schema.hermesTeamProfiles);expect(profiles.find(row=>row.id===a.profile.id)?.binding?.runtimeId).toBe('synthetic-alice-runtime');expect(profiles.find(row=>row.id===b.profile.id)?.binding?.runtimeId).toBe('synthetic-bob-runtime');
+  const ag=await issueTeamCandidateContext(alice,'alice-audit','default',routes),bg=await issueTeamCandidateContext(bob,'boss-audit','default',routes);
+  const fetch=vi.fn<typeof globalThis.fetch>().mockResolvedValue(stream());
+  for(const [grant,actor] of [[ag,'alice'],[bg,'bob']] as const)for(const purpose of TEAM_MODEL_PURPOSES){
+   fetch.mockResolvedValueOnce(stream());const req=request(grant.modelTokens[purpose],payload()),repeat=req.clone();const response=await candidateModelHttp(req,{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch});expect(response.status).toBe(200);
+   expect(new Headers(fetch.mock.calls.at(-1)![1]!.headers).get('authorization')).toBe(`Bearer synthetic-${actor}-official-work`);
+   const replay=await candidateModelHttp(repeat,{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch});expect(replay.status).toBe(200);
+  }
+  expect(fetch).toHaveBeenCalledTimes(8);const usage=await db.select().from(schema.usageEvents);expect(usage).toHaveLength(8);expect(usage.every(row=>row.billingSource==='chatgpt_plan'&&row.costMicros===null&&row.appId===null)).toBe(true);
+  expect(usage.filter(row=>row.userId==='alice')).toHaveLength(4);expect(usage.filter(row=>row.userId==='bob')).toHaveLength(4);
+  await expect(teamConversationModelView(bob,a.chat.conversationId,routes)).rejects.toMatchObject({status:404});
+  expect(JSON.stringify(await teamConversationModelView(alice,a.chat.conversationId,routes))).not.toMatch(/business-work|issued-work|persisted-shared|official-alice|synthetic-alice/);
+ },20000);
+ it('requires workspace provenance and denies every purpose when a valid account reconnects in the wrong workspace',async()=>{
+  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,personalWorkspaceId:'business-work'}});
+  await ingest(alice,'unproven',[route.model],false);await run();await expect(issueTeamCandidateContext(alice,'run','default',routes)).rejects.toMatchObject({status:409});
+  await workTransfer(alice);const grant=await issueTeamCandidateContext(alice,'run','default',routes);await workTransfer(alice,'foreign-work','foreign');const fetch=vi.fn<typeof globalThis.fetch>();
+  for(const purpose of TEAM_MODEL_PURPOSES)expect((await candidateModelHttp(request(grant.modelTokens[purpose],payload()),{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch})).status).toBeGreaterThanOrEqual(400);
+  expect(fetch).not.toHaveBeenCalled();expect(await db.select().from(schema.usageEvents)).toHaveLength(0);
+ });
+ it('rechecks work registration at stream completion and denies cached/helper output after mid-run revocation',async()=>{
+  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,personalWorkspaceId:'business-work'}});
+  await workTransfer(alice);await run();const grant=await issueTeamCandidateContext(alice,'run','default',routes);
+  const fetch=vi.fn<typeof globalThis.fetch>().mockImplementation(async()=>new Response(new ReadableStream<Uint8Array>({start(controller){setTimeout(()=>{void db.update(schema.officialPlanConnections).set({status:'revoked'}).where(eq(schema.officialPlanConnections.userId,'alice')).then(()=>{controller.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3},"output":[]}}\n\n'));controller.close();});},10);}}),{headers:{'content-type':'text/event-stream'}}));
+  expect((await candidateModelHttp(request(grant.modelTokens.reply,payload()),{contextId:grant.contextId,purpose:'reply',operation:['responses']},{routes,fetch})).status).toBe(409);
+  for(const purpose of TEAM_MODEL_PURPOSES)expect((await candidateModelHttp(request(grant.modelTokens[purpose],payload()),{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch})).status).toBeGreaterThanOrEqual(400);
+  expect(fetch).toHaveBeenCalledOnce();expect((await db.select().from(schema.usageEvents))[0]).toMatchObject({userId:'alice',billingSource:'chatgpt_plan',costMicros:null});
+ });
  it('keeps production inventory closed and has no official OAuth/codex credential reuse',async()=>{expect(VERIFIED_TEAM_MODEL_ROUTES).toEqual([]);const {chat}=await run();expect(await db.select().from(schema.userCredentials)).toEqual([]);await expect(issueTeamCandidateContext(alice,'run')).rejects.toMatchObject({status:409});expect(await teamNativeAvailability(alice,'team','member',{conversationId:chat.conversationId})).toMatchObject({available:false});expect((await teamChatStatus(alice,'team',chat.conversationId)).modelAccessAvailable).toBe(false);});
  it('admits two owners independently through one generic tested route and never exposes credential identity in chat status',async()=>{
   const a=await run(alice,'alice-run'),b=await run(bob,'bob-run');const aliceWire=await candidateWireMetadata(alice,route),bobWire=await candidateWireMetadata(bob,route);expect(aliceWire.hash).toBe(bobWire.hash);expect(aliceWire.personalBindingHash).not.toBe(bobWire.personalBindingHash);
@@ -104,7 +150,7 @@ describe('Distinct official personal Responses candidate',()=>{
   const [b]=await db.select().from(schema.officialPlanConnections).where(eq(schema.officialPlanConnections.userId,'bob'));expect(()=>openOfficialPlanSecret({...b,tokenBundleEnc:a.tokenBundleEnc})).toThrow();expect(()=>openOfficialPlanSecret({...a,tokenBundleEnc:'legacy-unbound'})).toThrow();
  });
  it('rejects required hard limits and unsupported selectors/hosted tools before reservations or credential transport',async()=>{
-  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,requireHardLimits:true}});await run();await expect(issueTeamCandidateContext(alice,'run','default',routes)).rejects.toMatchObject({status:409});expect(await db.select().from(schema.hermesTeamCandidateContexts)).toHaveLength(0);
+  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,requireHardLimits:true}});await ingest(alice,'unproven',[route.model],false);await run();await expect(issueTeamCandidateContext(alice,'run','default',routes)).rejects.toMatchObject({status:409});expect(await db.select().from(schema.hermesTeamCandidateContexts)).toHaveLength(0);
   for(const body of [{...payload(),max_output_tokens:1000000},{...payload(),temperature:1},{...payload(),previous_response_id:'other'},{...payload(),tools:[{type:'mcp',server_url:'https://unsafe.test'}]},{...payload(),tool_choice:{type:'function',name:'memory'}},{...payload(),input:[{type:'message',role:'system',content:'unsafe'}]}])expect(()=>validateOfficialPlanRequest(body,route.model)).toThrow();
   expect(()=>validateOfficialPlanRequest(payload(),route.model,true)).toThrow();
  });

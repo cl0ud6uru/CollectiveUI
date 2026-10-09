@@ -11,7 +11,7 @@ export async function loadTeamPersonalAccess(p: Principal, integration: TeamMode
   if(!['hermes_native_codex','openai_chatgpt_plan_usage'].includes(integration))return null;
   const fresh = await loadPrincipal(p.user.id, q);
   if (!fresh || fresh.user.sessionVersion !== p.user.sessionVersion) return null;
-  if(integration==='openai_chatgpt_plan_usage'){try{const row=await officialPlanMetadata(fresh.user.id,undefined,q,now);return row?{id:row.id,userId:row.userId,integration,status:'active',expiresAt:row.expiresAt}:null;}catch{return null;}}
+  if(integration==='openai_chatgpt_plan_usage'){try{const row=await officialPlanMetadata(fresh.user.id,undefined,q,now);return row?{id:row.id,userId:row.userId,integration,status:'active',expiresAt:row.expiresAt,workspaceId:row.workspaceId}:null;}catch{return null;}}
   const [row] = await q.select({ id: userCredentials.id, userId: userCredentials.userId,
     status: userCredentials.status, expiresAt: userCredentials.expiresAt }).from(userCredentials)
     .where(and(eq(userCredentials.userId, fresh.user.id), eq(userCredentials.provider, 'chatgpt')));
