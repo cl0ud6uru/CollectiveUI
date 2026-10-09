@@ -8,6 +8,7 @@ import { loadPrincipal,type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { OFFICIAL_PLAN_ORIGIN,OFFICIAL_PLAN_REQUIRED_SCOPES,openOfficialPlanSecret,officialPlanTokenAad,prepareOfficialPlanGrant,persistOfficialPlanGrant,type OfficialPlanConnection,type VerifiedOfficialAccessClaims } from './official-plan';
 import { createOfficialPlanVerifier } from './official-plan-signatures';
+import { OfficialPlanProvenanceSchema } from './official-plan-provenance';
 
 export const OFFICIAL_AUTHORIZE_URL='https://auth.openai.com/api/accounts/authorize';
 export const OFFICIAL_TOKEN_URL='https://auth.openai.com/api/accounts/oauth/token';
@@ -34,9 +35,20 @@ export function officialLoopbackUri(value:string){
  return uri.href;
 }
 async function principal(p:Principal,q:DbOrTx=db){const fresh=await loadPrincipal(p.user.id,q);if(!fresh || fresh.user.disabled || fresh.user.sessionVersion!==p.user.sessionVersion)throw new HttpError(403,'The account session changed.');return fresh;}
-async function ownerLock(tx:Tx,p:Principal){await tx.execute(sql`select id from users where id = ${p.user.id} for update`);await principal(p,tx);}
-async function selected(p:Principal,q:DbOrTx=db){return (await q.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true))).for('update'))[0];}
+export async function ownerLock(tx:Tx,p:Principal){await tx.execute(sql`select id from users where id = ${p.user.id} for update`);await principal(p,tx);}
+export async function selected(p:Principal,q:DbOrTx=db){return (await q.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true))).for('update'))[0];}
+/** Expired transfers can never complete; retire them so an abandoned handoff stops fencing other account operations. */
+export async function retireExpiredTransfers(p:Principal,q:DbOrTx,now=new Date(Date.now())){
+ // Expired in-flight imports remain uncertain; they are never resumed after restart.
+ await q.update(officialPlanTransfers).set({state:'cancelled',updatedAt:now}).where(and(eq(officialPlanTransfers.userId,p.user.id),eq(officialPlanTransfers.state,'pending'),sql`${officialPlanTransfers.expiresAt} <= ${now}`));
+ await q.update(officialPlanTransfers).set({state:'needs_attention',updatedAt:now}).where(and(eq(officialPlanTransfers.userId,p.user.id),eq(officialPlanTransfers.state,'importing'),sql`${officialPlanTransfers.expiresAt} <= ${now}`));
+}
+export async function retireExpiredAuthAttempts(p:Principal,q:DbOrTx,now=new Date(Date.now())){
+ await q.update(officialPlanAuthAttempts).set({state:'expired',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'pending'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
+ await q.update(officialPlanAuthAttempts).set({state:'needs_attention',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'exchanging'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
+}
 async function fenceTransfer(p:Principal,q:DbOrTx){
+ await retireExpiredTransfers(p,q);
  const [transfer]=await q.select({id:officialPlanTransfers.id}).from(officialPlanTransfers).where(and(eq(officialPlanTransfers.userId,p.user.id),inArray(officialPlanTransfers.state,['pending','importing'])));
  if(transfer)throw new HttpError(409,'Complete or cancel the protected credential transfer first.');
 }
@@ -79,8 +91,7 @@ export async function startOfficialPlanAuth(p:Principal,reauth=false,services:Of
  return db.transaction(async tx=>{
   await ownerLock(tx,p);const now=new Date();
   await fenceTransfer(p,tx);
-  await tx.update(officialPlanAuthAttempts).set({state:'expired',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'pending'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
-  await tx.update(officialPlanAuthAttempts).set({state:'needs_attention',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'exchanging'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
+  await retireExpiredAuthAttempts(p,tx,now);
   const recent=await tx.select({id:officialPlanAuthAttempts.id,state:officialPlanAuthAttempts.state}).from(officialPlanAuthAttempts).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),gte(officialPlanAuthAttempts.createdAt,new Date(now.getTime()-600000))));
   if(recent.length>=5 || recent.some(row=>row.state==='pending'||row.state==='exchanging'))throw new HttpError(409,'Complete or reconcile the existing official sign-in first.');
   const connection=await selected(p,tx);if(reauth && (!connection || connection.hostId!==hostId))throw new HttpError(409,'Reconnect requires the retained registration and its stable loopback host.');
@@ -151,6 +162,9 @@ export async function operateOfficialPlanAuth(p:Principal,kind:'refresh'|'revoke
    return {already:{disconnected:true as const,remoteRevocationConfirmed:prior?.state==='complete'}};
   }
   if(kind==='refresh' && row.status!=='active')throw new HttpError(409,'Reconnect the official account first.');
+  // Rotation consumes the old refresh token, so an expired transfer approval must reject before provider I/O, not after.
+  const provenance=row.provenance?OfficialPlanProvenanceSchema.parse(row.provenance):null,now=Date.now();
+  if(kind==='refresh' && provenance && (provenance.verifiedAt>now || provenance.expiresAt<=now))throw new HttpError(409,'The approved work registration needs verification. Reconnect before refreshing.');
   const [prior]=await tx.select().from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.connectionId,row.id),eq(officialPlanAuthOperations.credentialRevision,row.revision),eq(officialPlanAuthOperations.kind,kind))).for('update');
   if(prior)throw new HttpError(409,'The official token operation was already claimed. Reconnect if its result is uncertain.');
   const bundle=openOfficialPlanSecret(row);if(kind==='refresh' && !bundle.refresh)throw new HttpError(409,'The official account cannot refresh yet.');

@@ -23,6 +23,8 @@ const tokenSchema = z.object({ access_token: z.string().min(1).max(16000), refre
   token_type: z.string().refine(v => v.toLowerCase() === 'bearer'), expires_in: z.number().int().positive().max(3660), scope: z.string().max(4000),
   earliest_refresh_at: z.union([z.string().max(256), z.number().finite(), z.null()]).optional() }).passthrough();
 const random = () => randomBytes(32).toString('base64url');
+/** Ticket times come from the VM clock; tolerate the same skew as the receiver's own checks. */
+const CLOCK_SKEW_MS = 60000;
 
 /** An already approved pairing is supplied by installation; this class does not provision trust or accept uploaded token files. */
 export class OfficialPlanLocalCompanion {
@@ -85,7 +87,7 @@ export class OfficialPlanLocalCompanion {
       if (reconnect && !prior.snapshot) throw companionFailure();
       const retainedClient = prior.snapshot?.body.clientId ?? prior.registrationClientId, reauthorize = Boolean(retainedClient);
       const clientId = retainedClient ?? 'dynamic_agent_client', state = random(), nonce = random(), verifier = random();
-      let server: Server | undefined, accepted = false, cancelled = false, timer: ReturnType<typeof setTimeout> | undefined, processing: Promise<void> | undefined;
+      let server: Server | undefined, accepted = false, cancelled = false, activated = false, timer: ReturnType<typeof setTimeout> | undefined, processing: Promise<void> | undefined;
       let resolveDone!: () => void, rejectDone!: (error: Error) => void;
       const done = new Promise<void>((resolve, reject) => { resolveDone = resolve; rejectDone = reject; }); void done.catch(() => {});
       const journal: Journal = { ...prior, revision: prior.revision + 1, phase: 'signing_in' };
@@ -106,7 +108,7 @@ export class OfficialPlanLocalCompanion {
             const tokens = await this.exchange(new URLSearchParams({ grant_type: 'authorization_code', client_id: issued, code: callback.searchParams.get('code')!, code_verifier: verifier, redirect_uri: journal.attempt!.redirectUri, resource: RESOURCE }));
             const recorded = await this.record(tokens, issued, { nonce, ...(prior.snapshot ? { subject: prior.snapshot.body.subject } : {}) });
             if (cancelled || signal?.aborted) throw companionFailure();
-            this.authority(); await this.save({ version: 1, revision: journal.revision + 1, phase: 'active', ...recorded }); finish(200); resolveDone();
+            this.authority(); await this.save({ version: 1, revision: journal.revision + 1, phase: 'active', ...recorded }); activated = true; finish(200); resolveDone();
           } catch { finish(400); rejectDone(companionFailure()); } };
           const pending = handle(); if (!processing && accepted) processing = pending;
         });
@@ -123,8 +125,12 @@ export class OfficialPlanLocalCompanion {
         const launched = openBrowser(url.href); void launched.catch(() => {});
         await Promise.race([launched, done]); await done;
         return { connectedLocally: true };
-      } catch { cancelled = true; await processing; await this.save({ ...prior, registrationClientId: journal.registrationClientId ?? retainedClient, revision: journal.revision + 1, phase: 'needs_attention', attempt: undefined }); throw companionFailure(); }
-      finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); server?.closeAllConnections(); await new Promise<void>(resolve => { if (server?.listening) server.close(() => resolve()); else resolve(); }); }
+      } catch {
+        cancelled = true; await processing;
+        // A timeout/abort that lands mid-save must not overwrite the newly stored grant with the superseded one.
+        if (activated) return { connectedLocally: true };
+        await this.save({ ...prior, registrationClientId: journal.registrationClientId ?? retainedClient, revision: journal.revision + 1, phase: 'needs_attention', attempt: undefined }); throw companionFailure();
+      } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); server?.closeAllConnections(); await new Promise<void>(resolve => { if (server?.listening) server.close(() => resolve()); else resolve(); }); }
     });
   }
   async refresh() {
@@ -149,7 +155,7 @@ export class OfficialPlanLocalCompanion {
       if (journal.phase !== 'active' || !journal.file || !journal.snapshot || body.pairingId !== this.pairing.pairingId || body.ownerId !== this.pairing.appOwnerId
         || body.pairingDigest !== transcriptDigest({ pairingId: this.pairing.pairingId, ownerId: this.pairing.appOwnerId, sourceHostId: this.pairing.sourceHostId, sourceSigningPublicKey: this.pairing.sourceSigningPublicKey, approvedUntil: this.pairing.approvedUntil })
         || body.sourceHostId !== this.pairing.sourceHostId || body.destinationHostId !== this.pairing.receiverHostId || body.clientId !== journal.snapshot.body.clientId || body.subject !== journal.snapshot.body.subject
-        || body.credentialDigest !== credentialDigest(journal.file) || body.snapshotDigest !== transcriptDigest(journal.snapshot) || body.expiresAt <= Date.now() || body.createdAt > Date.now()) throw companionFailure();
+        || body.credentialDigest !== credentialDigest(journal.file) || body.snapshotDigest !== transcriptDigest(journal.snapshot) || body.expiresAt <= Date.now() || body.createdAt > Date.now() + CLOCK_SKEW_MS) throw companionFailure();
       const custody = signTranscript({ version: 1 as const, ticketDigest: transcriptDigest(body), snapshotDigest: body.snapshotDigest, credentialDigest: body.credentialDigest,
         journalRevision: journal.revision + 1, suspendedAt: Date.now(), refreshOwner: 'collective_vm' as const }, this.pairing.sourceSigningPrivateKey);
       const suspended: Journal = { ...journal, revision: journal.revision + 1, phase: 'suspended', ticket, custody }; await this.save(suspended);

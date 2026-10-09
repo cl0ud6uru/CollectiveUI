@@ -1677,6 +1677,7 @@ export const officialPlanTransfers=pgTable('official_plan_transfers',{
   expiresAt:timestamp('expires_at',{withTimezone:true}).notNull(),createdAt:createdAt(),updatedAt:updatedAt(),
 },t=>[uniqueIndex('official_plan_transfer_open_owner_idx').on(t.userId).where(sql`${t.state} in ('pending','importing')`),
   uniqueIndex('official_plan_transfer_refresh_owner_idx').on(t.refreshHash),
+  index('official_plan_transfer_unresolved_idx').on(t.expectedConnectionId,t.expectedRevision).where(sql`${t.state} in ('importing','needs_attention')`),
   check('official_plan_transfer_state_check',sql`${t.state} in ('pending','importing','complete','cancelled','needs_attention')`),
   check('official_plan_transfer_identity_check',sql`${t.sessionVersion} >= 0 and length(${t.transportId}) between 1 and 256 and length(${t.hostId}) between 1 and 256 and length(${t.clientId}) between 1 and 256 and length(${t.subject}) between 1 and 256 and (${t.workspaceId} is null or length(${t.workspaceId}) between 1 and 256) and ((${t.expectedConnectionId} is null) = (${t.expectedRevision} is null)) and (${t.expectedRevision} is null or ${t.expectedRevision} > 0)`),
   check('official_plan_transfer_receipt_check',sql`(${t.refreshHash} is null or ${t.refreshHash} ~ '^[a-f0-9]{64}$') and ${t.expiresAt} > ${t.createdAt} and ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'`),

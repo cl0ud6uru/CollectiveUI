@@ -141,6 +141,21 @@ describe('Protected official VM transfer and durable owner custody (synthetic on
     await expect(operateOfficialPlanAuth(alice, 'refresh', { ...services, transports: [] })).rejects.toMatchObject({ status: 409 }); await cancelOfficialPlanTransfer(alice, id);
     expect((await db.select().from(schema.officialPlanConnections))[0]).toEqual(before); expect(await officialPlanMetadata('alice', 'synthetic-model')).toBeTruthy();
   });
+  it('stops fencing refresh once an abandoned pending transfer expires', async () => {
+    await connected(); await stage(alice, 'two');
+    io.mockImplementation(async url => String(url) === OFFICIAL_TOKEN_URL ? Response.json({ access_token: 'synthetic-access-alice-two', refresh_token: 'synthetic-refresh-alice-two', token_type: 'Bearer', expires_in: 3500, scope: 'chatgpt.tokens.use.direct resource.invoke' }) : Response.json({ models: [{ slug: 'synthetic-model', visibility: 'list' }] }));
+    await expect(operateOfficialPlanAuth(alice, 'refresh', { ...services, transports: [] })).rejects.toMatchObject({ status: 409 });
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 600001);
+    expect(await operateOfficialPlanAuth(alice, 'refresh', { ...services, transports: [] })).toEqual({ connected: true });
+    expect((await db.select().from(schema.officialPlanTransfers)).map(row => row.state).sort()).toEqual(['cancelled', 'complete']);
+  });
+  it('rejects refresh after the transfer approval expires without spending the refresh token', async () => {
+    await connected(); const row = (await db.select().from(schema.officialPlanConnections))[0]; io.mockClear();
+    vi.spyOn(Date, 'now').mockReturnValue(row.provenance!.expiresAt + 1);
+    await expect(operateOfficialPlanAuth(alice, 'refresh', { ...services, transports: [] })).rejects.toMatchObject({ status: 409 });
+    expect(io).not.toHaveBeenCalled(); expect(await db.select().from(schema.officialPlanAuthOperations)).toEqual([]);
+    expect(openOfficialPlanSecret((await db.select().from(schema.officialPlanConnections))[0]).refresh).toBe(file().refresh_token);
+  });
   it.each(['public-file', 'public-directory', 'symlink', 'oversize', 'invalid-json'] as const)('rejects %s staging without credential leakage or provider I/O', async kind => {
     const id = await stage(), directory = join(root, sha256Hex('alice'), id), path = join(directory, 'credentials.json');
     if (kind === 'public-file') await chmod(path, 0o644); if (kind === 'public-directory') await chmod(directory, 0o755);

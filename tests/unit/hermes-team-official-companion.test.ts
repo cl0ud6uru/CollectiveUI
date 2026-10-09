@@ -105,6 +105,11 @@ describe('Executable same-tool local SIWC companion and authenticated VM receive
     const { ticket, envelope } = await suspended(); vi.spyOn(Date, 'now').mockReturnValue(ticket.body.expiresAt + 1);
     await expect(c.receiver.receive(envelope)).rejects.toMatchObject({ status: 409 }); expect(await db.select().from(schema.officialPlanConnections)).toEqual([]);
   });
+  it('transfers when the laptop clock trails the VM within the shared skew window', async () => {
+    await c.local.signIn(c.browser); const ticket = await c.receiver.challenge(await c.local.offer());
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(ticket.body.createdAt - 2000); const envelope = await c.local.suspend(ticket); clock.mockRestore();
+    expect(await c.local.acknowledge(await c.receiver.receive(envelope))).toEqual({ transferred: true }); expect(await db.select().from(schema.officialPlanConnections)).toHaveLength(1);
+  });
   it('serializes source refresh and rejects suspension against a stale pre-refresh snapshot', async () => {
     await c.local.signIn(c.browser); const ticket = await c.receiver.challenge(await c.local.offer());
     const result = await Promise.allSettled([c.local.refresh(), c.local.refresh()]); expect(result.filter(r => r.status === 'fulfilled')).toHaveLength(1);

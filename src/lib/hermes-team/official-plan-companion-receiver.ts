@@ -84,7 +84,7 @@ export class OfficialPlanCompanionReceiver {
       if (ticket.transferId !== row.id || ticket.expiresAt <= Date.now() || ticket.clientId !== row.clientId || ticket.subject !== row.subject
         || ticket.credentialDigest !== digest || custody.credentialDigest !== digest || snapshot.credentialDigest !== digest
         || custody.ticketDigest !== transcriptDigest(ticket) || custody.snapshotDigest !== ticket.snapshotDigest || transcriptDigest(handoff.snapshot) !== ticket.snapshotDigest
-        || custody.suspendedAt < ticket.createdAt || custody.suspendedAt > Date.now() + 60000 || custody.suspendedAt >= ticket.expiresAt || snapshot.expiresAt <= Date.now()) throw companionFailure();
+        || custody.suspendedAt < ticket.createdAt - 60000 || custody.suspendedAt > Date.now() + 60000 || custody.suspendedAt >= ticket.expiresAt || snapshot.expiresAt <= Date.now()) throw companionFailure();
       return { ownerId: current.user.id, clientId: ticket.clientId, subject: ticket.subject, sourceHostId: pair.sourceHostId, destinationHostId: row.hostId,
         transportId: row.transportId, handoffId: row.id, refreshOwner: 'collective_vm', verifiedAt: Date.now(), expiresAt: pair.approvedUntil };
     });
@@ -105,10 +105,8 @@ export class OfficialPlanCompanionReceiver {
       await store.write('delivery.json', { custodyDigest }); // Durable claim before staging/provider I/O.
       try {
         await store.write('handoff.json', { custody: payload.custody, snapshot: payload.snapshot }); await store.write('credentials.json', payload.file);
+        // assertHandoffCurrent re-checks actor, session and pairing inside the commit; the ack reflects that commit.
         await completeOfficialPlanTransfer(p, row.id, this.services);
-        // Pairing/session changes after provider I/O must not bless an acknowledgment.
-        const current = await this.actor(); if (current.user.id !== p.user.id || current.user.sessionVersion !== p.user.sessionVersion) throw companionFailure();
-        await this.pairing(current, pair.pairingId);
         return signTranscript({ version: 1 as const, ticketDigest: envelope.ticketDigest, custodyDigest, state: 'complete' as const, at: Date.now() }, this.installation.signingPrivateKey);
       } finally { await store.remove('credentials.json'); }
     }));
