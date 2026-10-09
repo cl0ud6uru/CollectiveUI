@@ -87,9 +87,9 @@ async function readYolo(t: Target, enabled?: boolean, connection: Tx | typeof db
 }
 
 async function executeYolo(t: Target, args: string): Promise<CommandResult> {
-  if (!["", "status", "on", "off"].includes(args)) throw new HttpError(400, "Use /yolo status, /yolo on or /yolo off. Bare /yolo shows status.");
+  if (!["", "status", "on", "off"].includes(args)) throw new HttpError(400, "Use /yolo to toggle, /yolo status to inspect, or /yolo on|off to set the mode.");
   assertYoloTarget(t);
-  const mutation = args === "on" || args === "off";
+  const mutation = args !== "status";
   const outcome = mutation ? await db.transaction(async tx => {
     await lockUserRuns(tx, t.userId);
     await ensureConversation(tx, t);
@@ -98,7 +98,11 @@ async function executeYolo(t: Target, args: string): Promise<CommandResult> {
     // Approval state remains remote-only; an uncertain write is not reported as success.
     const settings = await hermesSettings(t.input.conversationId, tx);
     if (!settings) await tx.insert(hermesChatSettings).values({ conversationId: t.input.conversationId, targetKey: hermesTargetKey(t.app), model: null, revision: 0 }).onConflictDoNothing();
-    try { return { state: await readYolo(t, args === "on", tx) }; }
+    try {
+      // Read the verified backend state inside the same admission lock as the write.
+      const enabled = args === "" ? !(await readYolo(t, undefined, tx)).enabled : args === "on";
+      return { state: await readYolo(t, enabled, tx) };
+    }
     catch (error) { return { error }; }
   }) : { state: await readYolo(t) };
   if ("error" in outcome) throw outcome.error;
@@ -129,7 +133,7 @@ export async function executeHermesCommand(p: Principal, input: CommandTarget & 
   if (name === "yolo") return executeYolo(t, args);
   if (name !== "model" && args) throw new HttpError(400, `/${name} doesn't accept arguments here.`);
   if (name === "help" && isLocalHermes(t.app)) return { title: "Local Hermes pilot", lines: [
-    `/status, /usage, /new, /reset and /stop${isDockerHermes(t.app) ? "" : ", plus /yolo status|on|off"} are available. Native model, skills, tools and branching are not exposed in this pilot.`,
+    `/status, /usage, /new, /reset and /stop${isDockerHermes(t.app) ? "" : ", plus /yolo (toggle) and /yolo status|on|off"} are available. Native model, skills, tools and branching are not exposed in this pilot.`,
     "Hermes owns this bot's persona, skills, memory and saved sessions. Stop the controller before using another Hermes app with this profile.",
     "Commands do not enter inference. Use // to send literal leading slash text.",
   ] };

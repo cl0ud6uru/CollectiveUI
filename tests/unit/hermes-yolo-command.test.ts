@@ -47,9 +47,26 @@ beforeEach(() => {
   f.conv = { id: 'chat123', userId: 'owner', botId: 'bot456', appId: null, source: 'chat', isGroup: false } as Conversation;
   f.contexts = []; f.hermesSettings = null; f.idle.mockResolvedValue(undefined);
   f.target.mockResolvedValue({ target: remote });
-  f.mode.mockResolvedValue({ session_id: 'portal-chat123-bot456', profile: 'alice', enabled: true, scope: 'session' });
+  f.mode.mockReset().mockResolvedValue({ session_id: 'portal-chat123-bot456', profile: 'alice', enabled: true, scope: 'session' });
 });
-it.each(['/yolo', '/yolo status', '/yolo on', '/yolo off'])('executes %s without inference on exact Runs identity', async text => {
+it.each(['remote', 'local'])('bare /yolo toggles %s backend state on successive calls while status is read-only', async transport => {
+  if (transport === 'local') f.app.providerConfig.local = { runtimeId: 'a'.repeat(64), bindingId: 'b'.repeat(32), ownerId: 'owner', botId: 'bot456', model: '', provider: '' };
+  let enabled = false;
+  f.mode.mockImplementation(async (_target, session_id, next?: boolean) => {
+    if (next !== undefined) enabled = next;
+    return { session_id, profile: 'alice', enabled, scope: 'session' };
+  });
+  expect((await command('/yolo')).lines[0]).toContain('YOLO ON');
+  expect(enabled).toBe(true);
+  expect((await command('/yolo')).lines[0]).toContain('YOLO OFF');
+  expect(enabled).toBe(false);
+  expect((await command('/yolo')).lines[0]).toContain('YOLO ON');
+  expect((await command('/yolo status')).lines[0]).toContain('YOLO ON');
+  expect(enabled).toBe(true);
+  expect(f.lock).toHaveBeenCalledTimes(3);
+  expect(f.idle).toHaveBeenCalledTimes(3);
+});
+it.each(['/yolo status', '/yolo on', '/yolo off'])('executes %s without inference on exact Runs identity', async text => {
   const result = await command(text);
   expect(result.title).toBe('Session YOLO');
   expect(f.mode).toHaveBeenCalledWith(remote, 'portal-chat123-bot456', text.endsWith(' on') ? true : text.endsWith(' off') ? false : undefined);
@@ -82,9 +99,9 @@ it.each(['/yolo yes', '/yolo on now'])('rejects invalid syntax %s before HTTP', 
   await expect(command(text)).rejects.toMatchObject({ status: 400 });
   expect(f.target).not.toHaveBeenCalled();
 });
-it('rejects active or unconfirmed stopped runs before HTTP mutation', async () => {
+it.each(['/yolo', '/yolo off'])('rejects active or unconfirmed stopped runs before %s HTTP mutation', async text => {
   f.idle.mockRejectedValue(Object.assign(new Error('busy'), { status: 409 }));
-  await expect(command('/yolo off')).rejects.toMatchObject({ status: 409 });
+  await expect(command(text)).rejects.toMatchObject({ status: 409 });
   expect(f.mode).not.toHaveBeenCalled();
 });
 it('refuses changed connection before sending stored session ID', async () => {
@@ -92,7 +109,7 @@ it('refuses changed connection before sending stored session ID', async () => {
   await expect(command('/yolo on')).rejects.toMatchObject({ status: 409 });
   expect(f.mode).not.toHaveBeenCalled();
 });
-it.each(['/yolo', '/yolo status', '/yolo on', '/yolo off'])('executes %s for the paired local controller and publishes its verified status', async text => {
+it.each(['/yolo status', '/yolo on', '/yolo off'])('executes %s for the paired local controller and publishes its verified status', async text => {
   f.app.providerConfig.local = { runtimeId: 'a'.repeat(64), bindingId: 'b'.repeat(32), ownerId: 'owner', botId: 'bot456', model: '', provider: '' };
   const local = { baseUrl: 'http://local-hermes.invalid', profile: 'b'.repeat(32), apiKey: '', local: true };
   f.target.mockResolvedValue({ target: local });
