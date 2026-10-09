@@ -109,7 +109,12 @@ function CredentialLogin({ callbackUrl, provider = "local" }: { callbackUrl: str
       if (result.codes) { setReplenished(result); setFlow(""); }
       else if (result.ticket) await complete(result.ticket, result.mustChangePassword);
       else setFlow(result.flow!);
-    } catch { setError("Unable to sign in. Check your credentials or try again later."); setFlow(""); }
+    } catch (err) {
+      setError((err as { code?: string }).code === "directory_unavailable"
+        ? "Can't reach the company directory right now. Try again in a few minutes, or contact IT if this continues."
+        : "Unable to sign in. Check your credentials or try again later.");
+      setFlow("");
+    }
     finally { setPending(false); }
   }
   async function passkey() {

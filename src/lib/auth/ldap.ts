@@ -34,6 +34,15 @@ export type LdapConfig = {
 
 export { ldapEnabled } from "./config";
 
+/** Connection, TLS, CA file, service-bind or search failure: the directory is the problem, not the user's password. */
+export class LdapUnavailableError extends Error {
+  constructor(cause: unknown) { super("LDAP directory unavailable", { cause }); this.name = "LdapUnavailableError"; }
+}
+
+async function directory<T>(work: () => T | Promise<T>): Promise<T> {
+  try { return await work(); } catch (err) { throw err instanceof LdapUnavailableError ? err : new LdapUnavailableError(err); }
+}
+
 export function ldapConfigFromEnv(): LdapConfig {
   return {
     url: process.env.LDAP_URL ?? "",
@@ -105,17 +114,17 @@ export async function authenticateLdap(
   // An empty password would be an "unauthenticated bind" that many servers accept — always reject.
   if (!username || !password) return null;
 
-  const service = newClient(cfg);
+  const service = await directory(() => newClient(cfg));
   try {
-    await service.bind(cfg.bindDn, cfg.bindPassword);
+    await directory(() => service.bind(cfg.bindDn, cfg.bindPassword));
     const filter = cfg.userFilter.replaceAll("{{username}}", escapeFilterValue(username));
-    const { searchEntries } = await service.search(cfg.baseDn, {
+    const { searchEntries } = await directory(() => service.search(cfg.baseDn, {
       scope: "sub",
       filter,
       sizeLimit: 2,
       attributes: identityAttributes,
       explicitBufferAttributes: ["objectGUID"],
-    });
+    }));
     if (searchEntries.length !== 1) return null;
     let entry = searchEntries[0];
     if (allowIdentity && !await allowIdentity(entry.dn)) return null;
@@ -132,13 +141,13 @@ export async function authenticateLdap(
 
     // Read AD constructed account status at the entry itself, including in memberOf mode.
     if (cfg.groupMode === "ad" || hasAdGuid(entry)) {
-      const status = await service.search(entry.dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
-        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
+      const status = await directory(() => service.search(entry.dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
+        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] }));
       if (status.searchEntries.length !== 1) return null;
       entry = status.searchEntries[0];
     }
     if (!ldapAccountActive(entry, cfg)) return null;
-    return await resolveEntry(service, entry, username, cfg);
+    return await directory(() => resolveEntry(service, entry, username, cfg));
   } finally {
     await service.unbind().catch(() => {});
   }

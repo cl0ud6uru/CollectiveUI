@@ -46,3 +46,7 @@ next-env.d.ts
 /playwright-report
 __pycache__/
 !.env.example
+
+# internal CA certificates mounted by docker-compose.yml (see certs/README.md)
+/certs/*
+!/certs/README.md
