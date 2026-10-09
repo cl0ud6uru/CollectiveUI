@@ -1,7 +1,8 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { AiApp, Bot, Conversation } from '@/db/schema';
 import type { Principal } from '@/lib/auth/groups';
-const f = vi.hoisted(() => ({ conv: null as Conversation | null, app: {} as AiApp, bot: null as Bot | null, contexts: [] as unknown[], idle: vi.fn(), lock: vi.fn(), mode: vi.fn(), target: vi.fn(), insert: vi.fn() }));
+type Settings = { conversationId: string; targetKey: string; model: string | null; revision: number };
+const f = vi.hoisted(() => ({ conv: null as Conversation | null, app: {} as AiApp, bot: null as Bot | null, contexts: [] as unknown[], hermesSettings: null as Settings | null, idle: vi.fn(), lock: vi.fn(), mode: vi.fn(), target: vi.fn(), insert: vi.fn(), update: vi.fn() }));
 vi.mock('@/db', async () => {
   const schema = await import('@/db/schema');
   const connection = {
@@ -10,15 +11,26 @@ vi.mock('@/db', async () => {
       const chain = { where: () => chain, innerJoin: () => chain, orderBy: () => chain, limit: async () => rows, then: (resolve: (r: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };
       return chain;
     } }),
-    insert: () => ({ values: () => ({ onConflictDoNothing: async () => { f.insert(); f.conv ??= { id: 'chat123', userId: 'owner', appId: null, botId: 'bot456', isGroup: false, source: 'chat' } as Conversation; } }) }),
+    insert: (table: unknown) => ({ values: (values: Settings) => ({
+      onConflictDoNothing: async () => {
+        f.insert();
+        if (table === schema.hermesChatSettings) f.hermesSettings ??= { ...values };
+        else f.conv ??= { id: 'chat123', userId: 'owner', appId: null, botId: 'bot456', isGroup: false, source: 'chat' } as Conversation;
+      },
+      onConflictDoUpdate: ({ set }: { set: Omit<Settings, 'conversationId'> }) => ({ returning: async () => {
+        f.update(set);
+        f.hermesSettings = { ...values, ...set };
+        return [f.hermesSettings];
+      } }),
+    }) }),
     transaction: async (fn: (tx: unknown) => unknown) => fn(connection),
   };
   return { db: connection };
 });
 vi.mock('@/lib/agent/target', () => ({ resolveTurnTarget: async () => ({ app: f.app, bot: f.bot }) }));
 vi.mock('@/lib/llm/resolve', () => ({ hermesTargetFor: f.target }));
-vi.mock('@/lib/llm/providers/hermes/client', () => ({ sessionApprovalMode: f.mode, discoverHermes: async () => ({ models: { available: true, items: [] }, skills: { available: true, items: [] }, tools: { available: true, items: [] }, canStopRemotely: true }) }));
-vi.mock('@/lib/runs/hermes-context', () => ({ assertHermesIdle: f.idle, hermesSettings: async () => null }));
+vi.mock('@/lib/llm/providers/hermes/client', () => ({ sessionApprovalMode: f.mode, discoverHermes: async () => ({ models: { available: true, items: ['allowed-model'] }, skills: { available: true, items: [] }, tools: { available: true, items: [] }, canStopRemotely: true }) }));
+vi.mock('@/lib/runs/hermes-context', () => ({ assertHermesIdle: f.idle, hermesSettings: async () => f.hermesSettings }));
 vi.mock('@/lib/runs/lock', () => ({ lockUserRuns: f.lock }));
 vi.mock('@/lib/runs/hermes-stop', () => ({}));
 vi.mock('@/lib/runs/store', () => ({}));
@@ -27,13 +39,13 @@ import { commandCatalog, executeHermesCommand, resolveCommandTarget } from '@/li
 import { hermesTargetKey } from '@/lib/llm/providers/hermes/scope';
 const principal = { user: { id: 'owner' }, isAdmin: false } as Principal;
 const remote = { baseUrl: 'https://hermes.test', profile: 'alice', apiKey: 'synthetic' };
-const command = (text: string, p = principal) => executeHermesCommand(p, { conversationId: 'chat123', botId: 'bot456', text });
+const command = (text: string, p = principal, revision?: number) => executeHermesCommand(p, { conversationId: 'chat123', botId: 'bot456', text, revision });
 beforeEach(() => {
   vi.clearAllMocks();
-  f.app = { id: 'app789', name: 'Fixture', model: 'default', provider: 'hermes', baseUrl: remote.baseUrl, apiKeyEnc: 'synthetic', providerConfig: { profile: 'alice' } } as unknown as AiApp;
+  f.app = { id: 'app789', name: 'Fixture', model: 'default', provider: 'hermes', baseUrl: remote.baseUrl, apiKeyEnc: 'synthetic', providerConfig: { profile: 'alice', allowedModels: 'allowed-model' } } as unknown as AiApp;
   f.bot = { id: 'bot456', ownerId: 'owner' } as Bot;
   f.conv = { id: 'chat123', userId: 'owner', botId: 'bot456', appId: null, source: 'chat', isGroup: false } as Conversation;
-  f.contexts = []; f.idle.mockResolvedValue(undefined);
+  f.contexts = []; f.hermesSettings = null; f.idle.mockResolvedValue(undefined);
   f.target.mockResolvedValue({ target: remote });
   f.mode.mockResolvedValue({ session_id: 'portal-chat123-bot456', profile: 'alice', enabled: true, scope: 'session' });
 });
@@ -102,6 +114,32 @@ it('pins managed profile resolution to the recorded provision and rejects ambigu
   f.contexts.push({ targetKey: hermesTargetKey(f.app), provisionId: 'another-provision' });
   await expect(command('/yolo on')).rejects.toMatchObject({ status: 409 });
   expect(f.target).not.toHaveBeenCalled(); expect(f.mode).not.toHaveBeenCalled();
+});
+it.each(['/model default', '/model allowed-model'])('rejects %s after a first-run YOLO pin is retargeted without overwriting it', async text => {
+  await command('/yolo on');
+  const pinned = { ...f.hermesSettings! };
+  f.app.providerConfig.profile = 'bob';
+  f.target.mockClear(); f.mode.mockClear();
+  await expect(command(text, principal, pinned.revision)).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/fresh chat/i) });
+  expect(f.update).not.toHaveBeenCalled();
+  expect(f.hermesSettings).toEqual(pinned);
+  await expect(command('/yolo')).rejects.toMatchObject({ status: 409 });
+  expect(f.mode).not.toHaveBeenCalled();
+});
+it('preserves normal model changes and idempotent retries on the pinned target', async () => {
+  await command('/yolo on');
+  const targetKey = f.hermesSettings!.targetKey;
+  expect(await command('/model default')).toMatchObject({ revision: 0 });
+  expect(f.update).not.toHaveBeenCalled();
+  expect(await command('/model allowed-model', principal, 0)).toMatchObject({ revision: 1 });
+  expect(await command('/model allowed-model', principal, 0)).toMatchObject({ revision: 1 });
+  expect(f.update).toHaveBeenCalledTimes(1);
+  await expect(command('/model default', principal, 0)).rejects.toMatchObject({ status: 409 });
+  expect(f.update).toHaveBeenCalledTimes(1);
+  expect(await command('/model default', principal, 1)).toMatchObject({ revision: 2 });
+  expect(await command('/model default', principal, 1)).toMatchObject({ revision: 2 });
+  expect(f.update).toHaveBeenCalledTimes(2);
+  expect(f.hermesSettings).toEqual({ conversationId: 'chat123', targetKey, model: null, revision: 2 });
 });
 it('refuses direct non-bot Hermes conversation', async () => {
   f.bot = null;

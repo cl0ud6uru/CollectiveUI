@@ -196,6 +196,7 @@ async function setModel(t: Target, model: string | null, revision?: number): Pro
     await assertHermesIdle(tx, t.input.conversationId);
     const current = await hermesSettings(t.input.conversationId, tx);
     const targetKey = hermesTargetKey(t.app);
+    if (current && current.targetKey !== targetKey) throw new HttpError(409, "This chat's Hermes connection changed. Start a fresh chat before changing the model preference.");
     // Repeating an absolute selection is idempotent, including after a lost HTTP response.
     if (current?.model === model && current.targetKey === targetKey) return current;
     if (revision !== (current?.revision ?? 0)) throw new HttpError(409, "The model preference changed in another tab. Run /model and try again.");
