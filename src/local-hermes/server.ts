@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmod, open, unlink } from "node:fs/promises";
 import path from "node:path";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import { LocalController, LocalError } from "./controller";
 
 export async function body(req: IncomingMessage, maxBytes = 256 * 1024) {
@@ -64,7 +64,16 @@ export async function serveNative(controller: LocalController, bindingId: string
       controller.assertBinding(bindingId);
 
       if (req.method === "GET" && route === "/v1/capabilities") {
-        json(res, 200, { features: { run_submission: true, run_events_sse: true, run_stop: true, run_approval_response: true, approval_events: true, native_attachments: true, native_run_view: true, native_run_controls: true } }); return;
+        json(res, 200, { features: { session_approval_control: controller.supportsSessionApprovalControl, run_submission: true, run_events_sse: true, run_stop: true, run_approval_response: true, approval_events: true, native_attachments: true, native_run_view: true, native_run_controls: true } }); return;
+      }
+      const approvalSession = /^\/v1\/sessions\/([A-Za-z0-9_-]{1,160})\/approval-mode$/.exec(route);
+      if (approvalSession) {
+        if (req.method === 'GET') return json(res, 200, controller.sessionApprovalMode(bindingId, approvalSession[1]));
+        if (req.method === 'PUT') {
+          const input = z.object({ enabled: z.boolean() }).strict().parse(await body(req, 1024));
+          return json(res, 200, controller.sessionApprovalMode(bindingId, approvalSession[1], input.enabled));
+        }
+        throw new LocalError(405, 'Method not allowed');
       }
       if(req.method==='POST' && route==='/v1/learning') {
         const input=await body(req,1024);

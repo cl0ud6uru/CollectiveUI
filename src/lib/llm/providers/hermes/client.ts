@@ -280,6 +280,36 @@ export async function discoverHermes(t: HermesTarget): Promise<{
   };
 }
 
+const sessionApprovalSchema = z.object({
+  session_id: z.string().min(1), profile: z.string().min(1), enabled: z.boolean(), scope: z.literal("session"),
+});
+export type SessionApprovalMode = z.infer<typeof sessionApprovalSchema>;
+
+/** Verify remote Runs or private controller state; a successful PUT alone is never proof. */
+export async function sessionApprovalMode(t: HermesTarget, sessionId: string, enabled?: boolean): Promise<SessionApprovalMode> {
+  if (!t.profile || !sessionId) throw new HermesError("rejected", 400, "Session approval control requires an explicitly named profile or local binding.");
+  if (t.local && (t.baseUrl !== 'http://local-hermes.invalid' || !t.fetch || !/^[a-f0-9]{32}$/.test(t.profile)))
+    throw new HermesError('rejected', 400, 'Local approval control requires the private controller adapter and paired binding.');
+  const caps = await discoveryJson(t, "/v1/capabilities");
+  if (!z.object({ features: z.object({ session_approval_control: z.literal(true) }) }).safeParse(caps).success)
+    throw new HermesError("rejected", 400, "This backend does not advertise session approval control. Approval mode was not changed.");
+  const path = `/v1/sessions/${encodeURIComponent(sessionId)}/approval-mode`;
+  const verify = (value: unknown): SessionApprovalMode => {
+    const parsed = sessionApprovalSchema.safeParse(value);
+    if (!parsed.success || parsed.data.session_id !== sessionId || parsed.data.profile !== t.profile)
+      throw new HermesError("protocol", 502, "Session approval identity could not be verified. Use /yolo status before continuing.");
+    return parsed.data;
+  };
+  const current = verify(await discoveryJson(t, path));
+  if (enabled === undefined) return current;
+  // Absolute PUT is retryable; backend atomically enforces idle even for an idempotent request.
+  verify(await json(await call(t, path, { method: "PUT", body: JSON.stringify({ enabled }) })));
+  const confirmed = verify(await discoveryJson(t, path));
+  if (confirmed.enabled !== enabled)
+    throw new HermesError("protocol", 502, "Hermes did not confirm the requested session approval mode. Use /yolo status before continuing.");
+  return confirmed;
+}
+
 /** Features the portal relies on (from /v1/capabilities). */
 export const REQUIRED_FEATURES = ["run_submission", "run_events_sse", "run_stop", "run_approval_response", "approval_events"] as const;
 

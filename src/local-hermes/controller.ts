@@ -17,13 +17,14 @@ const Binding = z.object({ bindingId: id, ownerId: id, botId: id, appId: id, nam
 export type LocalBinding = z.infer<typeof Binding>;
 const Stored = z.object({ runtimeId: id, binding: Binding.optional(), sessions: z.record(z.string(), z.string()),
   receipts: z.record(z.string(), z.object({ runId: id, sessionKey: z.string(), status: z.enum(["running", "completed", "failed", "cancelled", "interrupted"]), digest: z.string().optional() })),
-  operations: z.record(z.string(), z.object({ runId: id, digest: z.string(), outcome: z.enum(["pending", "accepted", "rejected"]).optional() })).default({}) });
+  operations: z.record(z.string(), z.object({ runId: id, digest: z.string(), outcome: z.enum(["pending", "accepted", "rejected"]).optional() })).default({}),
+  sessionYolo: z.record(id, z.literal(true)).default({}) });
 type Stored = z.infer<typeof Stored>;
 export type LocalEvent = { event: string; [key: string]: unknown };
 type LocalRun = { id: string; receipt: string; sessionKey: string; nativeId?: string; status: string; cancel: boolean;
   output?: string; error?: string; events: LocalEvent[]; bytes: number; seq: number;
   inputs: Map<string, { nativeId: string | number; prompt: ManagedPrompt }>; queued?: string; queueClaim?: boolean; waitingQueuedStart?: boolean; submitted?: boolean;
-  approvals: Map<string, { nativeId: string | number; toolId?: string }>; tools: Map<string, string>; syntheticApproval?: string;
+  approvals: Map<string, { nativeId: string | number; toolId?: string; allowOnce: boolean }>; tools: Map<string, string>; syntheticApproval?: string;
   terminalCandidate?: { epoch: number; status: "completed" | "failed" | "cancelled"; error?: string; usage: RpcObject }; terminalEpoch?: number; settling?: boolean; controlAdmissions?: number;
   usageBefore?: RpcObject; runtime: RpcObject; timer?: NodeJS.Timeout; cancelTimer?: NodeJS.Timeout };
 
@@ -52,7 +53,7 @@ export class LocalController {
     try { this.stored = Stored.parse(JSON.parse(readFileSync(this.stateFile, "utf8"))); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Controller metadata is unreadable. Restore its original mapping; do not reset it to retry a turn.");
-      this.stored = { runtimeId: this.runtimeId, sessions: {}, receipts: {}, operations: {} };
+      this.stored = { runtimeId: this.runtimeId, sessions: {}, receipts: {}, operations: {}, sessionYolo: {} };
     }
     if (this.stored.runtimeId !== this.runtimeId) throw new Error("Installation changed. Restore the original controller paths; retained bindings cannot move to another profile.");
   }
@@ -173,6 +174,25 @@ export class LocalController {
       throw new LocalError(409, 'A profile in your runtime has unfinished work. Finish or stop its turn before changing settings.');
     this.settingsHold = true;
     return () => { this.settingsHold = false; };
+  }
+  get supportsSessionApprovalControl() { return !this.container; }
+  /** Controller-owned policy; never calls native config.set or changes a profile default. */
+  sessionApprovalMode(bindingId: string, sessionId: string, enabled?: boolean) {
+    this.assertStorage(); this.assertBinding(bindingId); id.parse(sessionId);
+    if (this.container) throw new LocalError(400, 'Session YOLO is not supported on this native transport.');
+    if (!this.rpc?.alive || this.starting || this.stopping) throw new LocalError(409, 'Start the local controller before verifying session approvals.');
+    if (enabled !== undefined) {
+      const release = this.holdForSettings();
+      try {
+        if (enabled) {
+          if (!Object.hasOwn(this.stored.sessionYolo, sessionId) && Object.keys(this.stored.sessionYolo).length >= 1000)
+            throw new LocalError(409, 'Session approval metadata capacity reached.');
+          this.stored.sessionYolo[sessionId] = true;
+        } else delete this.stored.sessionYolo[sessionId];
+        this.save();
+      } finally { release(); }
+    }
+    return { session_id: sessionId, profile: bindingId, scope: 'session' as const, enabled: Object.hasOwn(this.stored.sessionYolo, sessionId) };
   }
   begin(bindingId: string, raw: unknown, receipt: string) {
     this.container?.authorize?.();
@@ -321,13 +341,20 @@ export class LocalController {
       if (r.cancel) { this.rpc?.answer(f.id, { choice: "deny" }); return; }
       const candidates = [...r.tools].filter(([, name]) => name === (string(p.tool_name) || "terminal"));
       if (candidates.length > 1) { this.rpc?.answer(f.id, { choice: "deny" }); this.error = "Concurrent native approvals could not be paired safely; engine stopped."; this.halt(); return; }
+      // This is the recoverable approval RPC, after Hermes' hard deny/tool guards.
+      // Never grant persistent trust, answer protected prompts, or override a deny-only request.
+      if (!this.container && Object.hasOwn(this.stored.sessionYolo, r.sessionKey) &&
+          string(p.request_id) && Array.isArray(p.choices) && p.choices.includes('once')) {
+        this.rpc?.answer(f.id, { choice: 'once' });
+        return;
+      }
       const requestId = key();
       let toolId = candidates[0]?.[0];
       if (!toolId) {
         toolId = `approval_${requestId}`; r.syntheticApproval = toolId;
         this.emit(r, { event: "tool.started", tool: "approval", tool_id: toolId, preview: string(p.command) });
       }
-      r.approvals.set(requestId, { nativeId: f.id, toolId }); r.status = "waiting_for_approval";
+      r.approvals.set(requestId, { nativeId: f.id, toolId, allowOnce: Array.isArray(p.choices) && p.choices.includes('once') }); r.status = "waiting_for_approval";
       this.emit(r, { event: "approval.request", request_id: requestId, tool_id: toolId, command: string(p.command), description: string(p.description) });
       return;
     }
@@ -442,6 +469,7 @@ export class LocalController {
     const { request_id, choice } = z.object({ request_id: id, choice: z.enum(["once", "deny"]) }).strict().parse(raw);
     const r = this.runs.get(runId), pending = r?.approvals.get(request_id);
     if (!r || !pending || !active(r) || r.cancel || !this.rpc?.alive) throw new LocalError(409, "This native approval expired or was withdrawn");
+    if (choice === 'once' && !pending.allowOnce) throw new LocalError(403, 'This native request does not allow one-time approval.');
     r.approvals.delete(request_id); r.status = r.approvals.size ? "waiting_for_approval" : r.inputs.size ? "waiting_for_input" : "running";
     this.rpc.answer(pending.nativeId, { choice });
   }

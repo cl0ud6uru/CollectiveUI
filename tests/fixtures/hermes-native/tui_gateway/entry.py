@@ -92,10 +92,14 @@ for line in sys.stdin:
         with (home / 'fixture-prompts.jsonl').open('a') as log:
             log.write(json.dumps(dict(session=sid, text=text)) + '\n')
         reply(rid, status='streaming')
-        if text == 'approve':
+        if text in ('approve', 'deny-only', 'ambiguous-approvals', 'late-approval'):
+            if text == 'ambiguous-approvals':
+                event(sid, 'tool.start', dict(tool_id='other-native-tool', name='terminal', args=dict(command='echo other')))
             event(sid, 'tool.start', dict(tool_id='native-tool', name='terminal', args=dict(command='echo approved')))
             pending['srq-1'] = sid
-            send(dict(id='srq-1', method='approval', params=dict(session_id=sid, command='echo approved', description='Fixture approval', request_id='native-request', choices=['once', 'deny'])))
+            if text == 'late-approval':
+                time.sleep(0.1)
+            send(dict(id='srq-1', method='approval', params=dict(session_id=sid, command='echo approved', description='Fixture approval', request_id='native-request', choices=['deny'] if text == 'deny-only' else ['once', 'deny'])))
         elif text in ('clarify', 'single', 'protected'):
             pending['srq-input'] = (sid, text)
             params = dict(session_id=sid)
