@@ -50,3 +50,5 @@ __pycache__/
 # internal CA certificates mounted by docker-compose.yml (see certs/README.md)
 /certs/*
 !/certs/README.md
+# host-specific Compose overrides (auto-loaded by `docker compose`)
+/docker-compose.override.yml
