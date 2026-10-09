@@ -11,6 +11,12 @@ it('shows verified ON and OFF as persistent non-dismissible session state', () =
     expect(html).not.toContain('button');
   }
 });
+it('shows the real local controller as verifier and explains the native policy when OFF', () => {
+  const html = renderToStaticMarkup(createElement(SessionYoloStatus, { state: { available: true, enabled: false, verifier: 'local-controller' } }));
+  expect(html).toContain('last verified by the local controller');
+  expect(html).toContain('native approval policy applies');
+  expect(html).not.toContain('last verified by Hermes');
+});
 it('never presents unavailable or unchecked status as OFF', () => {
   for (const state of [undefined, { available: false as const, reason: 'Bad identity' }]) {
     const html = renderToStaticMarkup(createElement(SessionYoloStatus, { state }));

@@ -9,6 +9,7 @@ import { ControllerConfig, childEnvironment, installationId } from "@/local-herm
 import { listenController } from "@/local-hermes/server";
 import { LOCAL_ORIGIN, socketFetch } from "@/lib/local-hermes/client";
 import { randomUUID } from "node:crypto";
+import { sessionApprovalMode } from '@/lib/llm/providers/hermes/client';
 import { HermesLanguageModel, newestNativeAttachments } from "@/lib/llm/providers/hermes/model";
 import { closeAllParked } from "@/lib/llm/providers/hermes/runs";
 import { streamText, type ModelMessage } from "ai";
@@ -47,6 +48,96 @@ beforeEach(async () => {
 afterEach(async () => { closeAllParked(); await running?.close(); running = undefined; await controller.stop(); await rm(root, { recursive: true, force: true }); });
 
 describe("Local Hermes native pilot", () => {
+  it('persists session YOLO over IPC and consumes it for native one-time approval RPCs only', async () => {
+    running = await listenController(controller);
+    const target = { baseUrl: LOCAL_ORIGIN, profile: binding.bindingId, apiKey: '', local: true, fetch: socketFetch(config.socketPath) };
+    expect(await sessionApprovalMode(target, sessionId)).toMatchObject({ enabled: false, scope: 'session', session_id: sessionId, profile: binding.bindingId });
+    expect(await sessionApprovalMode(target, sessionId, true)).toMatchObject({ enabled: true });
+    const on = begin('approve', 'yolo-on'); await settled(on);
+    expect(controller.getRun(on).output).toBe('Tool once');
+    expect(controller.events(on, 0).events.some(e => e.event === 'approval.request')).toBe(false);
+    const other = begin('approve', 'yolo-other', 'fresh-session');
+    await until(() => controller.getRun(other).status === 'waiting_for_approval');
+    await expect(sessionApprovalMode(target, sessionId, false)).rejects.toMatchObject({ status: 409 });
+    await controller.cancel(other); await settled(other);
+    await running.close(); running = undefined;
+    controller = new LocalController(config); await controller.start();
+    running = await listenController(controller);
+    expect(await sessionApprovalMode(target, sessionId)).toMatchObject({ enabled: true });
+    const resumed = begin('approve', 'yolo-resumed'); await settled(resumed);
+    expect(controller.getRun(resumed).output).toBe('Tool once');
+    expect(await sessionApprovalMode(target, sessionId, false)).toMatchObject({ enabled: false });
+    const off = begin('approve', 'yolo-off');
+    await until(() => controller.getRun(off).status === 'waiting_for_approval');
+    const prompt = controller.events(off, 0).events.find(e => e.event === 'approval.request')!;
+    controller.approve(off, { request_id: prompt.request_id, choice: 'deny' }); await settled(off);
+    expect(controller.getRun(off).output).toBe('Tool deny');
+    expect(await sessionApprovalMode(target, 'fresh-session')).toMatchObject({ enabled: false });
+  });
+  it('streams normal-chat YOLO through the production AI SDK adapter without parking an approval', async () => {
+    running = await listenController(controller);
+    const target = { baseUrl: LOCAL_ORIGIN, profile: binding.bindingId, apiKey: '', local: true, fetch: socketFetch(config.socketPath) };
+    await sessionApprovalMode(target, sessionId, true);
+    const model = new HermesLanguageModel('native', { target, sessionId, sessionKey: null, interactive: true, approvalTimeoutSec: 30 });
+    const result = streamText({ model, messages: [{ role: 'user', content: 'approve' }] });
+    const parts = []; for await (const part of result.stream) parts.push(part);
+    expect(await result.text).toBe('Tool once');
+    expect(parts.some(part => part.type === 'tool-approval-request')).toBe(false);
+    expect(await sessionApprovalMode(target, sessionId)).toMatchObject({ enabled: true });
+  });
+  it('never lets YOLO or manual replies override a deny-only native approval', async () => {
+    controller.sessionApprovalMode(binding.bindingId, sessionId, true);
+    const run = begin('deny-only', 'yolo-deny-only');
+    await until(() => controller.getRun(run).status === 'waiting_for_approval');
+    const prompt = controller.events(run, 0).events.find(e => e.event === 'approval.request')!;
+    expect(() => controller.approve(run, { request_id: prompt.request_id, choice: 'once' })).toThrow('does not allow');
+    controller.approve(run, { request_id: prompt.request_id, choice: 'deny' }); await settled(run);
+    expect(controller.getRun(run).output).toBe('Tool deny');
+  });
+  it.each(['protected', 'ambiguous-approvals', 'late-approval'])('keeps YOLO behind protected, pairing and cancellation floors: %s', async text => {
+    controller.sessionApprovalMode(binding.bindingId, sessionId, true);
+    const run = begin(text, `floor-${text}`);
+    if (text === 'protected') {
+      await until(() => controller.getRun(run).status === 'waiting_for_input');
+      expect(() => controller.sessionApprovalMode(binding.bindingId, sessionId, false)).toThrow('unfinished');
+      const view = await controller.nativeView(run);
+      await controller.nativeControl(run, { operation: 'answer', requestId: view.prompts[0].id, answer: { value: 'synthetic-protected' } });
+    } else if (text === 'late-approval') {
+      await until(() => controller.events(run, 0).events.some(e => e.event === 'tool.started'));
+      await controller.cancel(run).catch(() => {});
+    }
+    await settled(run);
+    const log = await readFile(path.join(config.profileHome, 'fixture-approvals.jsonl'), 'utf8').catch(() => '');
+    expect(log).not.toContain('"choice": "once"');
+  });
+  it('reports stopped controller state as unavailable rather than verifying a cached preference', async () => {
+    controller.sessionApprovalMode(binding.bindingId, sessionId, true);
+    await controller.stop();
+    expect(() => controller.sessionApprovalMode(binding.bindingId, sessionId)).toThrow('Start');
+    expect(() => controller.sessionApprovalMode(binding.bindingId, sessionId, false)).toThrow('Start');
+    await controller.start();
+    expect(controller.sessionApprovalMode(binding.bindingId, sessionId).enabled).toBe(true);
+  });
+  it('fails closed on invalid IPC bodies, binding and durable storage failure', async () => {
+    running = await listenController(controller);
+    const f = socketFetch(config.socketPath);
+    const url = `${LOCAL_ORIGIN}/p/${binding.bindingId}/v1/sessions/${sessionId}/approval-mode`;
+    for (const invalid of [{ enabled: 'true' }, { enabled: true, scope: 'global' }, { enabled: true, session_id: 'other' }]) {
+      expect((await f(url, { method: 'PUT', body: JSON.stringify(invalid) })).status).toBe(400);
+    }
+    expect((await f(url.replace(binding.bindingId, 'forged'))).status).toBe(403);
+    expect(controller.sessionApprovalMode(binding.bindingId, sessionId).enabled).toBe(false);
+    const release = controller.holdForSettings();
+    try {
+      expect(() => controller.sessionApprovalMode(binding.bindingId, sessionId, true)).toThrow('unfinished');
+      expect(() => begin('hello', 'hold-yolo')).toThrow('settings');
+    } finally { release(); }
+    await chmod(config.stateDir, 0o500);
+    try { expect(() => controller.sessionApprovalMode(binding.bindingId, sessionId, true)).toThrow('persisted'); }
+    finally { await chmod(config.stateDir, 0o700); }
+    expect(() => controller.sessionApprovalMode(binding.bindingId, sessionId)).toThrow('persisted');
+    expect(JSON.parse(await readFile(path.join(config.stateDir, 'bindings.json'), 'utf8')).sessionYolo).toEqual({});
+  });
   it("streams native text, retains only IDs, and rejects duplicate admission/cross-session reuse", async () => {
     const run = begin("hello", "receipt-one");
     expect(begin("hello", "receipt-one")).toBe(run);

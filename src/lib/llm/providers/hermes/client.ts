@@ -285,9 +285,11 @@ const sessionApprovalSchema = z.object({
 });
 export type SessionApprovalMode = z.infer<typeof sessionApprovalSchema>;
 
-/** Remote Runs only. Never infer approval state from a local preference or a successful PUT alone. */
+/** Verify remote Runs or private controller state; a successful PUT alone is never proof. */
 export async function sessionApprovalMode(t: HermesTarget, sessionId: string, enabled?: boolean): Promise<SessionApprovalMode> {
-  if (t.local || !t.profile || !sessionId) throw new HermesError("rejected", 400, "Session approval control requires an explicitly named remote profile.");
+  if (!t.profile || !sessionId) throw new HermesError("rejected", 400, "Session approval control requires an explicitly named profile or local binding.");
+  if (t.local && (t.baseUrl !== 'http://local-hermes.invalid' || !t.fetch || !/^[a-f0-9]{32}$/.test(t.profile)))
+    throw new HermesError('rejected', 400, 'Local approval control requires the private controller adapter and paired binding.');
   const caps = await discoveryJson(t, "/v1/capabilities");
   if (!z.object({ features: z.object({ session_approval_control: z.literal(true) }) }).safeParse(caps).success)
     throw new HermesError("rejected", 400, "This backend does not advertise session approval control. Approval mode was not changed.");

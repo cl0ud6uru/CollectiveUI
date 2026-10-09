@@ -14,6 +14,7 @@ import { stopRunFor } from "@/lib/runs/store";
 import { HERMES_COMMANDS, parseHermesInput, unsupportedHermesCommand, type CommandResult, type HermesCommandCatalog } from "./hermes-commands";
 import { freshConversation } from "./fresh";
 import { isLocalHermes } from "@/lib/local-hermes/config";
+import { isDockerHermes } from "@/lib/docker-hermes/policy";
 
 export type CommandTarget = { conversationId: string; appId?: string; botId?: string };
 
@@ -41,16 +42,16 @@ export async function commandCatalog(t: Target): Promise<HermesCommandCatalog | 
   }
   const allowed = allowedHermesModels(t.app);
   let yolo: HermesCommandCatalog["yolo"];
-  if (!isLocalHermes(t.app)) {
+  if (!isDockerHermes(t.app)) {
     try {
       const state = await readYolo(t);
-      yolo = { available: true, enabled: state.enabled };
+      yolo = { available: true, enabled: state.enabled, ...(isLocalHermes(t.app) ? { verifier: 'local-controller' as const } : {}) };
     } catch (err) {
       yolo = { available: false, reason: err instanceof HttpError ? err.message : "Session approval status could not be verified." };
     }
   }
   return {
-    backend: "hermes", commands: isLocalHermes(t.app) ? HERMES_COMMANDS.filter(c => !["model", "skills", "tools", "yolo"].includes(c.name)) : HERMES_COMMANDS, ...discovery, yolo,
+    backend: "hermes", commands: isLocalHermes(t.app) ? HERMES_COMMANDS.filter(c => !["model", "skills", "tools", ...(isDockerHermes(t.app) ? ["yolo"] : [])].includes(c.name)) : HERMES_COMMANDS, ...discovery, yolo,
     models: discovery.models.available ? { available: true, items: discovery.models.items.filter((m) => allowed.includes(m) && m !== "default") } : discovery.models,
     modelRoutes: discovery.models.available ? discovery.models.items.filter((m) => m !== "default").map((id) => ({ id, allowed: allowed.includes(id) })) : [],
     requestedModel: settings?.model ?? null, revision: settings?.revision ?? 0,
@@ -66,7 +67,7 @@ async function ensureConversation(tx: Tx, t: Target) {
 }
 
 function assertYoloTarget(t: Target) {
-  if (!t.bot || isLocalHermes(t.app)) throw new HttpError(400, "Session YOLO is available only in remote Hermes bot chats.");
+  if (!t.bot || isDockerHermes(t.app)) throw new HttpError(400, "Session YOLO is available only in remote or Local Hermes bot chats.");
   if (t.bot.ownerId !== t.userId && !t.isAdmin) throw new HttpError(403, "Only the bot owner or an admin can control session YOLO in their own chat.");
 }
 
@@ -103,7 +104,7 @@ async function executeYolo(t: Target, args: string): Promise<CommandResult> {
   if ("error" in outcome) throw outcome.error;
   const state = outcome.state;
   return { title: "Session YOLO", lines: [
-    `YOLO ${state.enabled ? "ON — tool approval prompts are bypassed" : "OFF — normal tool approvals apply"} (verified by Hermes).`,
+    `YOLO ${isLocalHermes(t.app) ? (state.enabled ? "ON — eligible tool approvals are auto-approved once" : "OFF — native approval policy applies") : (state.enabled ? "ON — tool approval prompts are bypassed" : "OFF — normal tool approvals apply")} (verified by ${isLocalHermes(t.app) ? "the local controller" : "Hermes"}).`,
     `Scope: this session only. Profile: ${state.profile}. Session: ${state.session_id}.`,
     "Shared profile and global approval configuration are unchanged. /new starts a separate session; sandbox, tool and network restrictions remain unchanged.",
   ], conversationId: mutation ? t.input.conversationId : undefined, revision: (await hermesSettings(t.input.conversationId))?.revision ?? 0 };
@@ -123,12 +124,12 @@ export async function executeHermesCommand(p: Principal, input: CommandTarget & 
   }
   if (t.app.provider !== "hermes") throw new HttpError(400, "Only /new and /reset are available for this bot.");
   if (namespace !== "hermes" || !HERMES_COMMANDS.some((c) => c.name === name)) throw new HttpError(400, unsupportedHermesCommand(name, namespace));
-  if (isLocalHermes(t.app) && ["model", "skills", "tools", "yolo"].includes(name))
+  if (isLocalHermes(t.app) && (["model", "skills", "tools"].includes(name) || (isDockerHermes(t.app) && name === "yolo")))
     throw new HttpError(400, "This Local Hermes pilot does not expose native model, skill or tool management commands. The bot's selected model and native profile configuration remain authoritative; manage the profile in Hermes after stopping the controller.");
   if (name === "yolo") return executeYolo(t, args);
   if (name !== "model" && args) throw new HttpError(400, `/${name} doesn't accept arguments here.`);
   if (name === "help" && isLocalHermes(t.app)) return { title: "Local Hermes pilot", lines: [
-    "/status, /usage, /new, /reset and /stop are available. Native model, skills, tools, branching, clarify and secret prompts are not exposed in this pilot.",
+    `/status, /usage, /new, /reset and /stop${isDockerHermes(t.app) ? "" : ", plus /yolo status|on|off"} are available. Native model, skills, tools and branching are not exposed in this pilot.`,
     "Hermes owns this bot's persona, skills, memory and saved sessions. Stop the controller before using another Hermes app with this profile.",
     "Commands do not enter inference. Use // to send literal leading slash text.",
   ] };

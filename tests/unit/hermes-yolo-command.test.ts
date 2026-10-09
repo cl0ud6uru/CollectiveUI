@@ -92,8 +92,19 @@ it('refuses changed connection before sending stored session ID', async () => {
   await expect(command('/yolo on')).rejects.toMatchObject({ status: 409 });
   expect(f.mode).not.toHaveBeenCalled();
 });
-it.each(['local', 'docker'])('does not offer or execute Runs YOLO on %s transport', async kind => {
-  f.app.providerConfig[kind] = {};
+it.each(['/yolo', '/yolo status', '/yolo on', '/yolo off'])('executes %s for the paired local controller and publishes its verified status', async text => {
+  f.app.providerConfig.local = { runtimeId: 'a'.repeat(64), bindingId: 'b'.repeat(32), ownerId: 'owner', botId: 'bot456', model: '', provider: '' };
+  const local = { baseUrl: 'http://local-hermes.invalid', profile: 'b'.repeat(32), apiKey: '', local: true };
+  f.target.mockResolvedValue({ target: local });
+  f.mode.mockResolvedValue({ session_id: 'portal-chat123-bot456', profile: local.profile, enabled: true, scope: 'session' });
+  expect((await command(text, { ...principal, isAdmin: true })).title).toBe('Session YOLO');
+  expect(f.mode).toHaveBeenCalledWith(local, 'portal-chat123-bot456', text.endsWith(' on') ? true : text.endsWith(' off') ? false : undefined);
+  const catalog = await commandCatalog(await resolveCommandTarget({ ...principal, isAdmin: true }, { conversationId: 'chat123' }));
+  expect(catalog).toMatchObject({ yolo: { available: true, enabled: true, verifier: 'local-controller' } });
+  expect(catalog.backend === 'hermes' && catalog.commands.some(c => c.name === 'yolo')).toBe(true);
+});
+it('does not offer or execute Runs YOLO on docker transport', async () => {
+  f.app.providerConfig.docker = {};
   await expect(command('/yolo on')).rejects.toMatchObject({ status: 400 });
   const catalog = await commandCatalog(await resolveCommandTarget(principal, { conversationId: 'chat123' }));
   expect(catalog.backend === 'hermes' && catalog.commands.some(c => c.name === 'yolo')).toBe(false);
