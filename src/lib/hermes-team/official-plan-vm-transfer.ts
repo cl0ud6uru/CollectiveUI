@@ -36,6 +36,8 @@ export type OfficialPlanTransferTransport = {
    * The issued client itself is bound by OpenAI to the person's selected workspace. No production adapter exists.
    */
   verifyHandoff(p: Principal, ticket: OfficialPlanTransfer, fileHash: string, signal?: AbortSignal): Promise<OfficialPlanProvenance>;
+  /** Installation/pairing authority must still approve this handoff after provider I/O. */
+  assertHandoffCurrent?(p: Principal, ticket: OfficialPlanTransfer, signal: AbortSignal, tx: Tx): Promise<void>;
 };
 export const VERIFIED_OFFICIAL_VM_TRANSFERS: readonly OfficialPlanTransferTransport[] = Object.freeze([]);
 export type OfficialPlanTransferServices = Pick<OfficialAuthServices, 'fetch' | 'verifier'> & { transports: readonly OfficialPlanTransferTransport[] };
@@ -126,6 +128,7 @@ export async function completeOfficialPlanTransfer(p: Principal, transferId: str
       await owner(tx, p);
       const [current] = await tx.select().from(officialPlanTransfers).where(eq(officialPlanTransfers.id, ticket.id)).for('update');
       if (current?.state !== 'importing' || current.expiresAt.getTime() <= Date.now()) throw failure();
+      if (transport.assertHandoffCurrent) await bounded(signal => transport.assertHandoffCurrent!(p, ticket, signal, tx));
       const result = await persistOfficialPlanGrant(p, prepared, tx, { id: ticket.expectedConnectionId, revision: ticket.expectedRevision ?? undefined });
       await tx.update(officialPlanTransfers).set({ state: 'complete', updatedAt: new Date() }).where(eq(officialPlanTransfers.id, ticket.id));
       return result;

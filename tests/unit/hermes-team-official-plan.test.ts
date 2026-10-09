@@ -19,6 +19,8 @@ import { teamNativeAvailability,setTeamConversationModelChoice,teamConversationM
 import { TEAM_MODEL_PURPOSES,VERIFIED_TEAM_MODEL_ROUTES,type VerifiedTeamModelRoute } from '@/lib/hermes-team/model-policy';
 import { HERMES_COMMIT } from '@/local-hermes/config';
 import { completeOfficialPlanTransfer,startOfficialPlanTransfer,type OfficialPlanTransferServices } from '@/lib/hermes-team/official-plan-vm-transfer';
+import { syntheticCompanion } from '../fixtures/official-plan-companion';
+import { runOfficialPlanLocalCommand } from '@/lib/hermes-team/official-plan-companion-stdio';
 let admin:Principal,alice:Principal,bob:Principal;
 const route:VerifiedTeamModelRoute={id:'official-synthetic',adapterId:OFFICIAL_PLAN_ADAPTER,model:'synthetic-model',billing:'personal',integration:'openai_chatgpt_plan_usage',credentialHandling:'server_gateway',limitContract:'local_only',
  evidence:{id:'synthetic-only',hermesRevision:HERMES_COMMIT,adapterId:OFFICIAL_PLAN_ADAPTER,model:'synthetic-model',integration:'openai_chatgpt_plan_usage',purposes:TEAM_MODEL_PURPOSES,verifiedAt:1,expiresAt:4102444800000}};
@@ -65,14 +67,15 @@ describe('Distinct official personal Responses candidate',()=>{
   expect(new Headers(fetch.mock.calls[0][1]!.headers).get('authorization')).toBe('Bearer synthetic-alice-official-work');expect((await db.select().from(schema.officialPlanConnections)).find(row=>row.selected&&row.userId==='alice')?.provenance?.workspaceId).toBeUndefined();
  });
  it('funds one shared Audit Bot with each initiating work account across reply, learning, delegation and utility after a protected transfer',async()=>{
-  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,personalWorkspaceId:'business-work'}});
-  await workTransfer(alice);await workTransfer(bob);
+  await configureTeam(admin,'team',{enabled:true,expectedVersion:1,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id}});
+  const accessByOwner:Record<string,string>={};
+  for(const p of [alice,bob]){const companion=await syntheticCompanion(p,route.model);try{await runOfficialPlanLocalCommand('sign-in',[companion.driver]);await runOfficialPlanLocalCommand('transfer',[companion.driver]);accessByOwner[p.user.id]=companion.control.access;}finally{await companion.dispose();}}
   const a=await run(alice,'alice-audit'),b=await run(bob,'boss-audit');expect(a.profile.id).not.toBe(b.profile.id);const profiles=await db.select().from(schema.hermesTeamProfiles);expect(profiles.find(row=>row.id===a.profile.id)?.binding?.runtimeId).toBe('synthetic-alice-runtime');expect(profiles.find(row=>row.id===b.profile.id)?.binding?.runtimeId).toBe('synthetic-bob-runtime');
   const ag=await issueTeamCandidateContext(alice,'alice-audit','default',routes),bg=await issueTeamCandidateContext(bob,'boss-audit','default',routes);
   const fetch=vi.fn<typeof globalThis.fetch>().mockResolvedValue(stream());
   for(const [grant,actor] of [[ag,'alice'],[bg,'bob']] as const)for(const purpose of TEAM_MODEL_PURPOSES){
    fetch.mockResolvedValueOnce(stream());const req=request(grant.modelTokens[purpose],payload()),repeat=req.clone();const response=await candidateModelHttp(req,{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch});expect(response.status).toBe(200);
-   expect(new Headers(fetch.mock.calls.at(-1)![1]!.headers).get('authorization')).toBe(`Bearer synthetic-${actor}-official-work`);
+   expect(new Headers(fetch.mock.calls.at(-1)![1]!.headers).get('authorization')).toBe(`Bearer ${accessByOwner[actor]}`);
    const replay=await candidateModelHttp(repeat,{contextId:grant.contextId,purpose,operation:['responses']},{routes,fetch});expect(replay.status).toBe(200);
   }
   expect(fetch).toHaveBeenCalledTimes(8);const usage=await db.select().from(schema.usageEvents);expect(usage).toHaveLength(8);expect(usage.every(row=>row.billingSource==='chatgpt_plan'&&row.costMicros===null&&row.appId===null)).toBe(true);

@@ -20,14 +20,8 @@ import { getSetting } from "@/lib/settings";
 import { isChatModel, HERMES_BOT_ONLY_MESSAGE } from "@/lib/llm/model-policy";
 import { assertServicePublished, canEditBot } from "@/lib/bots/service";
 
-export class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
+import { HttpError } from "@/lib/http-error";
+export { HttpError } from "@/lib/http-error";
 
 export const forbidden = (msg = "Forbidden") => new HttpError(403, msg);
 export const notFound = (msg = "Not found") => new HttpError(404, msg);
