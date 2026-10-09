@@ -30,6 +30,7 @@ import { formatDuration, needsAction, useElapsed } from "./steps";
 import { BotSidePanel } from "@/components/bots/bot-side-panel";
 import { BotChatNavigation } from "./bot-chat-navigation";
 import { parseHermesInput, type CommandResult, type HermesCommandCatalog } from "@/lib/chat/hermes-commands";
+import { SessionYoloStatus } from "./session-yolo-status";
 import { buildCommandRequest, composerCommands } from "@/lib/chat/composer-commands";
 import { CommandResultCard } from "./command-result";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -157,12 +158,20 @@ export function Chat({
   const composerRef = useRef<ComposerHandle>(null);
   const commandScope = `${conversationId}:${target?.kind}:${target?.id}`;
   const [commandOutput, setCommandOutput] = useState<{ scope: string; result: CommandResult } | null>(null);
-  const [catalogState, setCatalogState] = useState<{ scope: string; value: HermesCommandCatalog | null; error?: boolean } | null>(null);
+  const [catalogState, setCatalogState] = useState<{ scope: string; version: number; value: HermesCommandCatalog | null; error?: boolean } | null>(null);
   const [catalogVersion, setCatalogVersion] = useState(0);
-  const catalog = catalogState?.scope === commandScope ? catalogState.value : null;
+  const catalog = catalogState?.scope === commandScope && catalogState.version === catalogVersion ? catalogState.value : null;
   const commandAttempt = useRef<{ scope: string; text: string; nextId: string } | null>(null);
   const commandRevisions = useRef(new Map<string, number>());
   const hermes = target?.hermes === true && target.kind !== "group";
+
+  useEffect(() => {
+    if (!hermes) return;
+    const refresh = () => setCatalogVersion(v => v + 1);
+    const timer = window.setInterval(refresh, 30_000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [hermes, commandScope]);
 
   useEffect(() => {
     if (!hermes) return;
@@ -176,9 +185,9 @@ export function Chat({
         const value = await response.json() as HermesCommandCatalog;
         if (!ac.signal.aborted) {
           if (value.backend === "hermes") commandRevisions.current.set(commandScope, Math.max(commandRevisions.current.get(commandScope) ?? 0, value.revision));
-          setCatalogState({ scope: commandScope, value: value.backend === "hermes" ? value : null });
+          setCatalogState({ scope: commandScope, version: catalogVersion, value: value.backend === "hermes" ? value : null });
         }
-      }).catch(() => { if (!ac.signal.aborted) setCatalogState({ scope: commandScope, value: null, error: true }); });
+      }).catch(() => { if (!ac.signal.aborted) setCatalogState({ scope: commandScope, version: catalogVersion, value: null, error: true }); });
     return () => ac.abort();
   }, [hermes, conversationId, target?.kind, target?.id, commandScope, catalogVersion]);
 
@@ -695,6 +704,7 @@ export function Chat({
                 <h1 className="mb-8 text-center text-[28px] font-normal">{branding.welcomeText}</h1>
               )}
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
+              {hermes && (!catalog || catalog.commands.some(c => c.name === "yolo")) && <SessionYoloStatus state={catalog?.yolo} />}
               <Composer
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
@@ -805,6 +815,7 @@ export function Chat({
                 </button>
               )}
               {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
+              {hermes && (!catalog || catalog.commands.some(c => c.name === "yolo")) && <SessionYoloStatus state={catalog?.yolo} />}
               <Composer
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
