@@ -27,7 +27,7 @@ import { chatgpt, PROVIDERS, type ChatModel, type EmbedModel, type ProviderConte
 import { checkHermesUrl, HermesLanguageModel, hermesTarget, stopRun as stopHermesRunOn, type HermesTarget } from "./providers/hermes";
 import { activeProviderConnection, connectionConfig, openProviderCredential } from "./provider-connections";
 import { decodeSecret, openAppSecret, SecretError, type AppSecret } from "./secrets";
-import { allowedHermesModels, hermesTargetKey } from "./providers/hermes/scope";
+import { allowedHermesModels, hermesSessionId, hermesTargetKey } from "./providers/hermes/scope";
 import type { UsageContext, UsageScope } from "./usage";
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { assertManagedConversation, managedTarget } from "@/lib/hermes-provisioning/store";
@@ -263,7 +263,7 @@ async function resolveHermes(app: AiApp, opts: ResolveModelOptions): Promise<Res
   const { target, approvalTimeoutSec } = await hermesTargetFor(app, userId && opts.botId ? { userId, botId: opts.botId, provisionId: snapshot?.provisionId, verify: true } : undefined);
   const model = new HermesLanguageModel(app.model, {
     target,
-    sessionId: conversationId ? `portal-${conversationId}${opts.botId ? `-${opts.botId}` : ""}` : null,
+    sessionId: conversationId ? hermesSessionId(conversationId, opts.botId) : null,
     // Session hint only, never a tenant boundary. Managed profiles use operator-isolated runtimes per user.
     sessionKey: userId ? `portal-${createHash("sha256").update(`${app.id}:${userId}${isManagedHermes(app) ? `:${opts.botId}` : ""}`).digest("hex").slice(0, 24)}` : null,
     interactive: opts.purpose === "chat" && opts.interactive === true,

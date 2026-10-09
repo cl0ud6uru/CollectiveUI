@@ -8,6 +8,7 @@ export const HERMES_COMMANDS: HermesCommand[] = [
   { name: "new", description: "Start a fresh session; keep this chat's history" },
   { name: "reset", description: "Alias for /new; keeps history and memory" },
   { name: "stop", description: "Cancel this chat's reply, including a pending approval" },
+  { name: "yolo", args: "[status | on | off]", description: "Verify or change approvals for this remote session only (owner/admin)" },
   { name: "model", args: "[allowed-route | default]", description: "Inspect or request a model for future turns in this chat" },
   { name: "skills", description: "List installed Hermes skills (discovery only)" },
   { name: "tools", description: "List Hermes toolsets (read only)" },
@@ -63,6 +64,7 @@ export type HermesCommandCatalog = {
   tools: Discovery<HermesToolset>;
   canStopRemotely: boolean;
   capabilityWarning?: string;
+  yolo?: { available: true; enabled: boolean } | { available: false; reason: string };
   requestedModel: string | null;
   revision: number;
 };
