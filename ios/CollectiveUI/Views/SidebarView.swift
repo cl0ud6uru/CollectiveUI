@@ -106,34 +106,24 @@ struct SidebarView: View {
             applyDemoSearch()
             #endif
         }
-        .alert("Rename chat", isPresented: renameBinding) {
+        .alert("Rename chat", item: $renameTarget) { target in
             TextField("Title", text: $renameText)
             Button("Save") {
-                if let target = renameTarget {
-                    let title = renameText
-                    Task {
-                        await model.rename(target, to: title)
-                    }
+                let title = renameText
+                Task {
+                    await model.rename(target, to: title)
                 }
-                renameTarget = nil
             }
-            Button("Cancel", role: .cancel) {
-                renameTarget = nil
-            }
+            Button("Cancel", role: .cancel) {}
         }
-        .alert("Delete chat?", isPresented: deleteBinding) {
+        .alert("Delete chat?", item: $deleteTarget) { target in
             Button("Delete", role: .destructive) {
-                if let target = deleteTarget {
-                    Task {
-                        await model.delete(target)
-                    }
+                Task {
+                    await model.delete(target)
                 }
-                deleteTarget = nil
             }
-            Button("Cancel", role: .cancel) {
-                deleteTarget = nil
-            }
-        } message: {
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
             Text("This chat will be permanently deleted.")
         }
     }
@@ -357,28 +347,6 @@ struct SidebarView: View {
     }
 
     // MARK: - Helpers
-
-    private var renameBinding: Binding<Bool> {
-        Binding(
-            get: { renameTarget != nil },
-            set: { presented in
-                if !presented {
-                    renameTarget = nil
-                }
-            }
-        )
-    }
-
-    private var deleteBinding: Binding<Bool> {
-        Binding(
-            get: { deleteTarget != nil },
-            set: { presented in
-                if !presented {
-                    deleteTarget = nil
-                }
-            }
-        )
-    }
 
     #if DEBUG
     /// `--demo-screen search` shows results for a sample query.

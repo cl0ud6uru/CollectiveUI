@@ -86,6 +86,72 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
     }
 
+    func testStatusRecoveryClearsTheErrorAndAttentionHeader() {
+        launch("home-bot-atlas", extra: ["--demo-stream-scenario", "recovery"])
+        enterDraft("Recover the offline Hermes fixture")
+        tap(app.buttons["Send"])
+        let check = app.buttons["Check message status"]
+        XCTAssertTrue(check.waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Needs attention") == true)
+        app.textViews["chatComposer"].typeText("Next draft remains separate")
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        capture("recovery-01-unconfirmed-error")
+        tap(check)
+        XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
+        XCTAssertFalse(check.exists)
+        XCTAssertFalse(app.staticTexts["Couldn't confirm the message status. Check again before sending another message."].exists)
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Next draft remains separate")
+        capture("recovery-02-ready")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
+        capture("recovery-03-foreground")
+    }
+
+    func testUnconfirmedMessageHasSafeOriginalRetry() {
+        launch("home-bot-atlas", extra: ["--demo-stream-scenario", "uncertain"])
+        enterDraft("Immutable original message")
+        tap(app.buttons["Send"])
+        let retry = app.buttons["Retry original message"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        capture("retry-01-confirmation-pending")
+        tap(retry)
+        XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
+        XCTAssertFalse(retry.exists)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Immutable original message").count, 1)
+        capture("retry-02-saved-once")
+    }
+
+    func testFailedAttachmentRequiresRemovalBeforeSend() {
+        launch("home-bot-atlas", extra: ["--demo-draft", "Please read the report", "--demo-attachment-scenario", "failed"])
+        let remove = app.buttons["Remove report.pdf"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        XCTAssertGreaterThanOrEqual(remove.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(remove.frame.height, 44)
+        capture("attachment-01-failed-and-retained")
+        tap(remove)
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Please read the report")
+        capture("attachment-02-removed-draft-kept")
+    }
+
+    func testCommandPickerAddsToDraftAndControlRunsOffline() {
+        launch("home-bot-atlas", extra: ["--demo-commands"])
+        let command = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "/new")).firstMatch
+        XCTAssertTrue(command.waitForExistence(timeout: 10))
+        capture("commands-01-picker")
+        tap(command)
+        XCTAssertTrue((app.textViews["chatComposer"].value as? String)?.hasPrefix("/new") == true)
+        XCTAssertFalse(app.staticTexts["Offline demo command"].exists)
+        tap(app.buttons["Send"])
+        XCTAssertTrue(app.staticTexts["Offline demo command"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "")
+        capture("commands-02-result")
+    }
+
     func testAdministratorSettingsNavigateToTheRealWebsiteWithoutOpeningTheNetwork() {
         app.launchArguments = ["--demo", "--demo-screen", "settings", "--demo-appearance", "dark"]
         app.launch()

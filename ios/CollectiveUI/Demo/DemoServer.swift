@@ -28,6 +28,8 @@ final class DemoServer: @unchecked Sendable {
     private var petAtlases: [String: Data] = [:]
     private var counter = 0
     private var regressionStreams: [String: UIMessageStreamReducer] = [:]
+    private var recoveryStatusFailures: Set<String> = []
+    private var uncertainAttempts: Set<String> = []
 
     private init() {
         let now = Date()
@@ -305,6 +307,9 @@ final class DemoServer: @unchecked Sendable {
     }
 
     private func snapshot(_ conversationId: String) -> DemoResponse {
+        if recoveryStatusFailures.remove(conversationId) != nil {
+            return failure("Offline fixture status unavailable", status: 503)
+        }
         if summary(for: conversationId) == nil {
             if conversationId.hasPrefix("home-") {
                 ensureHome(conversationId)
@@ -369,7 +374,21 @@ final class DemoServer: @unchecked Sendable {
             )
         }
         let parentId = body["parentId"]?.stringValue
+        let scenario = DemoMode.value(after: "--demo-stream-scenario")
+        if scenario == "uncertain", uncertainAttempts.insert(conversationId).inserted {
+            return failure("Offline fixture connection interrupted", status: 502)
+        }
+        if rows[conversationId]?.contains(where: { $0.id == message.id }) == true {
+            return failure("Duplicate message id", status: 409)
+        }
         appendRow(conversationId, MessageRow(id: message.id, parentId: parentId, createdAt: DemoServer.nowMillis(), message: message))
+        if scenario == "recovery" || scenario == "uncertain" {
+            let reply = UIMessage(id: "offline-recovered-reply", role: .assistant,
+                parts: [.text(TextPart(text: "Recovered offline reply. Your message was saved once.", state: "done"))])
+            appendRow(conversationId, MessageRow(id: reply.id, parentId: message.id, message: reply))
+            if scenario == "recovery" { recoveryStatusFailures.insert(conversationId) }
+            return failure("Offline fixture connection interrupted", status: 502)
+        }
         return streamAnswer(conversationId: conversationId, parentId: message.id, question: question, newTitle: newTitle)
     }
 

@@ -15,8 +15,13 @@ final class ConversationState {
     var text = "" { didSet { saveLater() } }
     var attachments: [ComposerAttachment] = [] { didSet { saveLater() } }
     var stoppedReplies: [StoppedReply] = [] { didSet { saveLater() } }
+    var pendingSubmission: PendingChatSubmission? { didSet { saveLater() } }
+    var pendingCommand: PendingCommandAttempt? { didSet { saveLater() } }
+    var requiresStatusCheck = false { didSet { saveLater() } }
     @ObservationIgnored var save: (() -> Void)?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    // A Stop acknowledgement belongs to a turn, even after its view detaches.
+    @ObservationIgnored var stopOperation: UUID?
 
     private func saveLater() {
         saveTask?.cancel()
@@ -82,6 +87,9 @@ final class ConversationStateStore {
         var text: String
         var attachments: [ComposerAttachment]
         var stoppedReplies: [StoppedReply]
+        var pendingSubmission: PendingChatSubmission?
+        var pendingCommand: PendingCommandAttempt?
+        var requiresStatusCheck: Bool?
     }
     private let directory: URL?
     private var states: [String: ConversationState] = [:]
@@ -116,10 +124,14 @@ final class ConversationStateStore {
                 return restored
             }
             state.stoppedReplies = saved.stoppedReplies
+            state.pendingSubmission = saved.pendingSubmission
+            state.pendingCommand = saved.pendingCommand
+            state.requiresStatusCheck = saved.requiresStatusCheck ?? (saved.pendingSubmission != nil)
         }
         state.save = { [weak self, weak state] in
             guard let self, self.isValid, let state, let file = self.file(for: conversationId), let directory = self.directory else { return }
-            let saved = Saved(text: state.text, attachments: state.attachments, stoppedReplies: state.stoppedReplies)
+            let saved = Saved(text: state.text, attachments: state.attachments, stoppedReplies: state.stoppedReplies,
+                pendingSubmission: state.pendingSubmission, pendingCommand: state.pendingCommand, requiresStatusCheck: state.requiresStatusCheck)
             guard let data = try? JSONEncoder().encode(saved) else { return }
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -148,6 +160,9 @@ final class ConversationStateStore {
             state.text = ""
             state.attachments = []
             state.stoppedReplies = []
+            state.pendingSubmission = nil
+            state.pendingCommand = nil
+            state.requiresStatusCheck = false
         }
         states = [:]
         if let directory { try? FileManager.default.removeItem(at: directory) }

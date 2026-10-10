@@ -35,7 +35,7 @@ struct ComposerView: View {
                 Text(error).font(.footnote).foregroundStyle(PortalTheme.danger).padding(.horizontal, 22)
             }
             if !model.attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
+                ScrollView(.horizontal) {
                     HStack(spacing: 8) {
                         ForEach(model.attachments) { attachment in
                             AttachmentChip(attachment: attachment) {
@@ -45,6 +45,7 @@ struct ComposerView: View {
                     }
                     .padding(.horizontal, 12)
                 }
+                .scrollIndicators(.hidden)
             }
 
             Group {
@@ -91,6 +92,10 @@ struct ComposerView: View {
                 if let draft = DemoMode.value(after: "--demo-draft") { model.composerText = draft }
                 if ProcessInfo.processInfo.arguments.contains("--demo-focus") { focusRequest += 1 }
                 if ProcessInfo.processInfo.arguments.contains("--demo-commands") { showCommands = true }
+                if DemoMode.value(after: "--demo-attachment-scenario") == "failed" {
+                    model.attachments = [ComposerAttachment(id: UUID(), filename: "report.pdf", mediaType: "application/pdf",
+                        progress: 1, uploaded: nil, errorText: "Upload interrupted. Remove the file and attach it again.")]
+                }
             }
             #endif
         }
@@ -375,9 +380,9 @@ struct AttachmentChip: View {
                     .lineLimit(1)
                 if let errorText = attachment.errorText {
                     Text(errorText)
-                        .font(.caption2)
-                        .foregroundStyle(Color.red)
-                        .lineLimit(1)
+                        .font(.caption)
+                        .foregroundStyle(PortalTheme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else if attachment.isUploading {
                     ProgressView(value: attachment.progress)
                         .frame(width: 80)
@@ -390,9 +395,11 @@ struct AttachmentChip: View {
             Button(action: onRemove) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remove attachment")
+            .accessibilityLabel("Remove " + attachment.filename)
         }
         .padding(6)
         .frame(maxWidth: 230)

@@ -8,11 +8,11 @@ private let chatBottomAnchor = "chat-bottom-anchor"
 struct ChatView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: ChatModel
     @State private var scrollPolicy = ChatScrollPolicy()
     @State private var userIsScrolling = false
     @State private var distanceFromBottom: CGFloat = 0
-    @State private var userScrollSettlement: Task<Void, Never>?
     @State private var showHistory = false
     @State private var showDetails = false
     let onOpenSidebar: () -> Void
@@ -46,12 +46,16 @@ struct ChatView: View {
         .onDisappear {
             model.deactivate()
         }
-        .alert("Couldn't send message", isPresented: alertBinding) {
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { model.deactivate() }
+            else if phase == .active { Task { await model.activate() } }
+        }
+        .alert("Couldn't send message", item: $model.alertMessage) { _ in
             Button("OK", role: .cancel) {
                 model.alertMessage = nil
             }
-        } message: {
-            Text(model.alertMessage ?? "")
+        } message: { message in
+            Text(message)
         }
     }
 
@@ -104,6 +108,7 @@ struct ChatView: View {
                         .modifier(ChatGlass(cornerRadius: 24))
                     }
                     .buttonStyle(.plain).accessibilityLabel("Bot details")
+                    .accessibilityValue(model.assistantName + ", " + model.statusLabel)
                 }
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
@@ -167,56 +172,31 @@ struct ChatView: View {
         }
     }
 
-    private var alertBinding: Binding<Bool> {
-        Binding(
-            get: { model.alertMessage != nil },
-            set: { presented in
-                if !presented {
-                    model.alertMessage = nil
-                }
-            }
-        )
-    }
-
     private var messageList: some View {
         GeometryReader { viewport in
             ScrollViewReader { proxy in
                 ScrollView {
                     transcript(width: max(0, min(800, viewport.size.width - 32)))
                         .frame(width: viewport.size.width)
-                        .background {
-                            GeometryReader { content in
-                                Color.clear.preference(key: TranscriptBottomPreference.self,
-                                    value: content.frame(in: .named("chat-viewport")).maxY)
-                            }
-                        }
                 }
-                .coordinateSpace(name: "chat-viewport")
                 .accessibilityIdentifier("chat.transcript")
                 .scrollDismissesKeyboard(.interactively)
-                .simultaneousGesture(DragGesture().onChanged { _ in
-                    userScrollSettlement?.cancel()
-                    userIsScrolling = true
-                    scrollPolicy.observe(distanceFromBottom: Double(distanceFromBottom), userIsScrolling: true)
-                }.onEnded { _ in
-                    // Give the native scroll view time to report its final offset, including
-                    // the start of deceleration, before allowing chunks to follow again.
-                    userScrollSettlement = Task {
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        guard !Task.isCancelled else { return }
-                        userIsScrolling = false
-                        scrollPolicy.observe(distanceFromBottom: Double(distanceFromBottom), userIsScrolling: false)
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    max(0, geometry.contentSize.height - geometry.visibleRect.maxY)
+                } action: { _, distance in
+                    distanceFromBottom = distance
+                    scrollPolicy.observe(distanceFromBottom: Double(distance), userIsScrolling: userIsScrolling)
+                }
+                .onScrollPhaseChange { _, phase in
+                    switch phase {
+                    case .tracking, .interacting, .decelerating: userIsScrolling = true
+                    default: userIsScrolling = false
                     }
-                })
-                .onPreferenceChange(TranscriptBottomPreference.self) { bottom in
-                    guard let bottom else { return }
-                    distanceFromBottom = max(0, bottom - viewport.size.height)
                     scrollPolicy.observe(distanceFromBottom: Double(distanceFromBottom), userIsScrolling: userIsScrolling)
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if !scrollPolicy.followsLatest && !model.messages.isEmpty {
                         Button {
-                            userScrollSettlement?.cancel()
                             userIsScrolling = false
                             scrollPolicy.jumpToLatest()
                             proxy.scrollTo(chatBottomAnchor, anchor: .bottom)
@@ -241,7 +221,6 @@ struct ChatView: View {
                     }
                 }
                 .onAppear { proxy.scrollTo(chatBottomAnchor, anchor: .bottom) }
-                .onDisappear { userScrollSettlement?.cancel() }
             }
         }
     }
@@ -254,11 +233,14 @@ struct ChatView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 48)
                 } else if let loadError = model.loadError {
-                    ContentUnavailableView(
-                        "Couldn't load this chat",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(loadError)
-                    )
+                    ContentUnavailableView {
+                        Label("Couldn't load this chat", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(loadError)
+                    } actions: {
+                        Button("Retry loading chat") { Task { await model.load(showSpinner: true) } }
+                            .buttonStyle(.bordered).frame(minHeight: 44)
+                    }
                 } else if model.messages.isEmpty && !model.isStreaming {
                     EmptyChatView(model: model)
                 }
@@ -296,7 +278,7 @@ struct ChatView: View {
                 if let result = model.commandResult {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(result.title).font(.subheadline.weight(.semibold))
-                        ForEach(Array(result.lines.enumerated()), id: \.offset) { line in Text(line.element).font(.subheadline) }
+                        ForEach(result.lines.enumerated(), id: \.offset) { line in Text(line.element).font(.subheadline) }
                     }
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14).background(PortalTheme.botBubble, in: RoundedRectangle(cornerRadius: 18))
@@ -307,7 +289,21 @@ struct ChatView: View {
                     InlineErrorView(text: inlineError)
                 }
                 if model.needsMessageStatusCheck {
-                    Button("Check message status") { Task { await model.checkMessageStatus() } }
+                    if model.isCheckingMessageStatus {
+                        ProgressView("Checking message status…").font(.footnote)
+                    } else {
+                        Button("Check message status") { Task { await model.checkMessageStatus() } }
+                            .buttonStyle(.bordered).frame(minHeight: 44)
+                    }
+                    if model.canRetryOriginalMessage {
+                        Button("Retry original message") { model.retryOriginalMessage() }
+                            .buttonStyle(.bordered).frame(minHeight: 44)
+                            .accessibilityHint("Retries the saved request without creating a duplicate message.")
+                    }
+                }
+                if model.hasDetachedReply && !model.needsMessageStatusCheck {
+                    Text("The reply is still running on the server.").font(.footnote)
+                    Button("Reconnect to reply") { model.resume() }
                         .buttonStyle(.bordered).frame(minHeight: 44)
                 }
 
@@ -345,13 +341,6 @@ struct ChatView: View {
         } else {
             ComposerView(model: model)
         }
-    }
-}
-
-private struct TranscriptBottomPreference: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        if let next = nextValue() { value = next }
     }
 }
 

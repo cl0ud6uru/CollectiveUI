@@ -11,6 +11,8 @@ final class FixtureProtocol: URLProtocol {
         var data = Data("{}".utf8)
         var finish = true
         var delay: TimeInterval = 0
+        var error: Error?
+        var errorDelay: TimeInterval = 0
     }
     static var handler: (URLRequest) -> Reply = { _ in Reply() }
 
@@ -32,7 +34,12 @@ final class FixtureProtocol: URLProtocol {
             headerFields: ["Content-Type": reply.contentType])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: reply.data)
-        if reply.finish { client?.urlProtocolDidFinishLoading(self) }
+        if let error = reply.error {
+            DispatchQueue.global().asyncAfter(deadline: .now() + reply.errorDelay) {
+                self.client?.urlProtocol(self, didFailWithError: error)
+            }
+        }
+        else if reply.finish { client?.urlProtocolDidFinishLoading(self) }
     }
     override func stopLoading() {}
 
@@ -60,6 +67,8 @@ private final class ChatFixture: @unchecked Sendable {
     var didStop = false
     var stopDelay: TimeInterval = 0
     var stopStatus = 200
+    var snapshotDelay: TimeInterval = 0
+    private(set) var snapshotCount = 0
     private var replyCount = 0
     private var replyId = "reply-a"
     init(_ scenario: Scenario) { self.scenario = scenario }
@@ -86,6 +95,7 @@ private final class ChatFixture: @unchecked Sendable {
         }
         if path.hasSuffix("/stop") { didStop = true; return .init(status: stopStatus, delay: stopDelay) }
         if path == "/api/chat/chat-a" {
+            snapshotCount += 1
             var rows: [JSONValue] = []
             if let user {
                 rows.append(.object(["id": .string(user.id), "parentId": .null, "message": user.toJSON()]))
@@ -94,7 +104,7 @@ private final class ChatFixture: @unchecked Sendable {
             }
             let snapshot: JSONValue = .object(["conversationId": "chat-a", "target": .object(["kind": "app", "id": "model", "name": "QA model"]),
                 "initialRows": .array(rows), "initialLeafId": user == nil ? .null : .string(replyId), "resume": .bool(!didStop && scenario != .normal)])
-            return .init(data: try! JSONEncoder().encode(snapshot))
+            return .init(data: try! JSONEncoder().encode(snapshot), delay: snapshotDelay)
         }
         return .init()
     }
@@ -208,6 +218,45 @@ final class ChatLifecycleTests: XCTestCase {
         chat.deactivate()
     }
 
+    func testConfirmedStopSurvivesDetachmentBeforeAcknowledgement() async {
+        prepare(.emptyStream)
+        fixture.stopDelay = 0.2
+        let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
+        chat.composerText = "Slow reply"
+        chat.send()
+        await waitUntil { chat.messages.last?.id == "reply-a" }
+        chat.stop()
+        chat.deactivate()
+        await waitUntil { !chat.conversationState.stoppedReplies.isEmpty }
+        let reopened = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+        await reopened.activate()
+        XCTAssertTrue(reopened.conversationState.showsStoppedPlaceholder(for: reopened.messages.last!))
+        XCTAssertFalse(reopened.isStreaming)
+        XCTAssertFalse(reopened.hasDetachedReply)
+        XCTAssertFalse(reopened.needsMessageStatusCheck)
+    }
+
+    func testStopAcknowledgementDuringReopenedStatusReadLoadsFreshSnapshot() async {
+        prepare(.emptyStream)
+        fixture.stopDelay = 0.15
+        fixture.snapshotDelay = 0.3
+        let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
+        chat.composerText = "Slow reply"
+        chat.send()
+        await waitUntil { chat.messages.last?.id == "reply-a" }
+        chat.stop()
+        chat.deactivate()
+        let reopened = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+        await reopened.activate()
+        await waitUntil { reopened.target != nil && !reopened.messages.isEmpty }
+        XCTAssertGreaterThanOrEqual(fixture.snapshotCount, 2)
+        XCTAssertTrue(reopened.conversationState.showsStoppedPlaceholder(for: reopened.messages.last!))
+        XCTAssertFalse(reopened.isStreaming)
+        XCTAssertFalse(reopened.needsMessageStatusCheck)
+        reopened.composerText = "Next request"
+        XCTAssertTrue(reopened.canSend)
+    }
+
     func testOldStopAcknowledgementCannotDisableStopOrLabelAReplacementReply() async {
         prepare(.normal)
         fixture.stopDelay = 0.5
@@ -215,9 +264,10 @@ final class ChatLifecycleTests: XCTestCase {
         chat.composerText = "First question"
         chat.send()
         chat.stop()
-        await waitUntil { !chat.isStreaming && fixture.didStop }
+        await waitUntil { !chat.isStreaming && !chat.needsMessageStatusCheck && !chat.isCheckingMessageStatus && fixture.didStop }
         XCTAssertTrue(chat.isStopping, "Old Stop acknowledgement is still pending")
         chat.composerText = "Next question"
+        XCTAssertTrue(chat.canSend)
         chat.send()
         XCTAssertFalse(chat.isStopping, "A replacement stream gets its own Stop state")
         await waitUntil { !chat.isStreaming }
@@ -235,9 +285,10 @@ final class ChatLifecycleTests: XCTestCase {
         chat.composerText = "First question"
         chat.send()
         chat.stop()
-        await waitUntil { !chat.isStreaming && fixture.didStop }
+        await waitUntil { !chat.isStreaming && !chat.needsMessageStatusCheck && !chat.isCheckingMessageStatus && fixture.didStop }
         XCTAssertTrue(chat.isStopping, "Old failed Stop acknowledgement is still pending")
         chat.composerText = "Next question"
+        XCTAssertTrue(chat.canSend)
         chat.send()
         await waitUntil { !chat.isStreaming }
         try? await Task.sleep(nanoseconds: 550_000_000)
