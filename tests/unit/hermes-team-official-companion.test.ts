@@ -53,7 +53,9 @@ describe('Executable same-tool local SIWC companion and authenticated VM receive
   it('rejects changed token bytes, forged receipt and wrong destinations without importing credentials', async () => {
     const { envelope } = await suspended();
     expect(JSON.stringify(envelope)).not.toContain(c.control.refresh); expect(JSON.stringify(envelope)).not.toContain(c.control.access);
-    await expect(c.receiver.receive({ ...envelope, ciphertext: `${envelope.ciphertext.slice(0, -1)}A` })).rejects.toMatchObject({ status: 409 });
+    // Flip a decoded byte; swapping the last base64url character can be a no-op (same char or ignored padding bits).
+    const tampered = Buffer.from(envelope.ciphertext, 'base64url'); tampered[0] ^= 1;
+    await expect(c.receiver.receive({ ...envelope, ciphertext: tampered.toString('base64url') })).rejects.toMatchObject({ status: 409 });
     await expect(c.receiver.receive({ ...envelope, ticketDigest: 'a'.repeat(64) })).rejects.toMatchObject({ status: 409 });
     expect(() => openCompanionPayload(envelope, 'invalid', c.pairing.sourceSigningPublicKey)).toThrow();
   });
