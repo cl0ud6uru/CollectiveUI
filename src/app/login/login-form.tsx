@@ -1,7 +1,7 @@
 "use client";
 
 import { startAuthentication, type PublicKeyCredentialRequestOptionsJSON } from "@collective/webauthn-browser";
-import { securityPost, type SecurityResult } from "@/lib/auth/security-client";
+import { securityPost, securityErrorMessage, type SecurityResult } from "@/lib/auth/security-client";
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -96,7 +96,7 @@ function CredentialLogin({ callbackUrl, provider = "local" }: { callbackUrl: str
   const endpoint = `/api/auth/${provider}-security`;
   async function complete(ticket: string, mustChangePassword = false) {
     const result = await completeSignIn(provider, { ticket, redirect: false, redirectTo: "/" });
-    if (!result?.ok || result.error) throw new Error("Unable to sign in");
+    if (!result?.ok || result.error) throw Object.assign(new Error("Unable to sign in"), { code: result?.code });
     // A full navigation also clears any cached UI from the previous identity/session.
     // The target is navigation only; the proxy/session layer independently enforces password changes.
     window.location.assign(mustChangePassword ? "/account/password" : callbackUrl);
@@ -110,9 +110,7 @@ function CredentialLogin({ callbackUrl, provider = "local" }: { callbackUrl: str
       else if (result.ticket) await complete(result.ticket, result.mustChangePassword);
       else setFlow(result.flow!);
     } catch (err) {
-      setError((err as { code?: string }).code === "directory_unavailable"
-        ? "Can't reach the company directory right now. Try again in a few minutes, or contact IT if this continues."
-        : "Unable to sign in. Check your credentials or try again later.");
+      setError(securityErrorMessage(err, "Unable to sign in. Check your credentials or try again later."));
       setFlow("");
     }
     finally { setPending(false); }
@@ -124,7 +122,7 @@ function CredentialLogin({ callbackUrl, provider = "local" }: { callbackUrl: str
       const response = await startAuthentication({ optionsJSON: options.options as PublicKeyCredentialRequestOptionsJSON });
       const result = await securityPost(endpoint, { action: "passkey-finish", flow: options.flow, response });
       await complete(result.ticket!, result.mustChangePassword);
-    } catch { setError("Passkey sign-in was not completed. Try again, use another passkey, or use your password and a recovery code."); }
+    } catch (err) { setError(securityErrorMessage(err, "Passkey sign-in was not completed. Try again, use another passkey, or use your password and a recovery code.")); }
     finally { setPending(false); }
   }
   if (replenished?.codes) return <section className="space-y-4" aria-live="polite">
@@ -136,7 +134,7 @@ function CredentialLogin({ callbackUrl, provider = "local" }: { callbackUrl: str
     <Button disabled={!savedCodes || pending} onClick={async () => {
       setPending(true);
       try { await complete(replenished.ticket!, replenished.mustChangePassword); }
-      catch { setError("The sign-in ticket expired. Start again with your password and one of the new codes you saved."); }
+      catch (err) { setError(securityErrorMessage(err, "The sign-in ticket expired. Start again with your password and one of the new codes you saved.")); }
       finally { setPending(false); }
     }}>Continue to account</Button>
     <button type="button" className="min-h-11 underline" disabled={!savedCodes || pending} onClick={() => { setReplenished(undefined); setError(""); }}>Start sign-in again</button>

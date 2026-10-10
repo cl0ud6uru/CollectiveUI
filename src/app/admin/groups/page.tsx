@@ -11,7 +11,7 @@ export default async function AdminGroupsPage() {
     db.select().from(groupMappings),
     knownExternalGroups(),
     db.select().from(groupMembers),
-    db.select({ id: users.id, name: users.name, email: users.email, upn: users.upn, disabled: users.disabled }).from(users).orderBy(users.name),
+    db.select({ id: users.id, name: users.name, email: users.email, upn: users.upn, disabled: users.disabled, identityRealm: users.identityRealm }).from(users).orderBy(users.name),
   ]);
   return (
     <div>

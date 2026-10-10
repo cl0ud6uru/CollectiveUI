@@ -10,7 +10,7 @@ vi.mock("@/db", async () => {
   fixture.client = new PGlite();
   return { db: drizzle(fixture.client, { schema }), schema };
 });
-vi.mock("@/lib/auth/ldap", () => ({ ldapEnabled: () => process.env.LDAP_ENABLED === "true", lookupLdapUser: fixture.lookup }));
+vi.mock("@/lib/auth/ldap", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/auth/ldap")>(), ldapEnabled: () => process.env.LDAP_ENABLED === "true", lookupLdapUser: fixture.lookup }));
 import { db, schema } from "@/db";
 import { findLdapGroupMember, savePortalGroup } from "@/lib/admin/groups";
 import { loadPrincipal, syncUserOnSignIn } from "@/lib/auth/groups";
@@ -90,4 +90,23 @@ it("preserves existing membership for clients omitting memberIds", async () => {
   fixture.lookup.mockResolvedValue({ ...identity, upn: "bob@fixture.invalid", name: "Bob" });
   await savePortalGroup({ ...input, id: groupId, memberIds: undefined, ldapUsernames: ["bob"] }, "admin");
   expect(await db.select().from(schema.groupMembers)).toHaveLength(2);
+});
+
+it("rechecks a preview on save and preserves all existing group data if the directory account changes", async () => {
+  const groupId = await savePortalGroup(input, "admin");
+  expect(await findLdapGroupMember("alice")).toMatchObject({ upn: identity.upn });
+  const before = await db.select().from(schema.groups);
+  const members = await db.select().from(schema.groupMembers);
+  fixture.lookup.mockResolvedValueOnce(null);
+  await expect(savePortalGroup({ ...input, id: groupId, name: "Changed", memberIds: [] }, "admin")).rejects.toThrow("No unique active LDAP user");
+  expect(await db.select().from(schema.groups)).toEqual(before);
+  expect(await db.select().from(schema.groupMembers)).toEqual(members);
+});
+
+it("allows explicit direct removal while retaining permissions inherited from a mapped directory group", async () => {
+  const groupId = await savePortalGroup({ ...input, mappings: [{ source: "ldap", externalId: "cn=helpdesk,dc=fixture" }] }, "admin");
+  const signedIn = await syncUserOnSignIn({ ...identity, source: "ldap", groups: [{ externalId: "cn=helpdesk,dc=fixture" }] });
+  await savePortalGroup({ ...input, id: groupId, mappings: [{ source: "ldap", externalId: "cn=helpdesk,dc=fixture" }], memberIds: [], ldapUsernames: [] }, "admin");
+  expect(await db.select().from(schema.groupMembers)).toHaveLength(0);
+  expect(await loadPrincipal(signedIn.id)).toMatchObject({ groupIds: [groupId] });
 });

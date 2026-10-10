@@ -80,7 +80,7 @@ An installation serves **one organization**; this is not a turnkey multi-tenant 
 
 ## Try it locally
 
-This walkthrough runs a **local demo with scripted replies**, so you do not need a paid model account. You need **Node.js 22.18+**, npm, Git and Docker Compose. Use a private development machine: the demo database and optional LDAP fixture have public passwords, and the development Compose file publishes their ports. For a server or team installation, follow the [deployment guide](docs/operations.md) instead.
+This walkthrough runs a **local demo with scripted replies**, so you do not need a paid model account. You need **Node.js 22.18+**, npm, Git, Docker Engine and **Compose v2**. Building the production or workspace images also requires **Buildx/BuildKit**: Ubuntu's `docker.io` packages need `docker-buildx`; Docker's official repository uses `docker-buildx-plugin`. See [build prerequisites and preflight](docs/operations.md#docker-build-prerequisites). Use a private development machine: the demo database and optional LDAP fixture have public passwords, and the development Compose file publishes their ports. For a server or team installation, follow the [deployment guide](docs/operations.md) instead.
 
 1. Get the code and start the demo dependencies:
 

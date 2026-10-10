@@ -74,6 +74,7 @@ jobs:
       - name: Exercise real browser requests with synthetic accounts and no inference
         run: |
           node tests/browser/starter-attachments.mjs
+          node tests/browser/first-run-ldap.mjs
           node tests/browser/hermes-team-builder.mjs
           node tests/browser/hermes-team-controls.mjs
           node tests/browser/hermes-team-chat-controls.mjs

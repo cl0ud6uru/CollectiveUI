@@ -5,7 +5,7 @@ import NextAuth, { CredentialsSignin, type NextAuthConfig } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 import { authenticateLdapPassword } from "@/lib/auth/ldap-account";
-import { LdapUnavailableError } from "@/lib/auth/ldap";
+import { LdapUnavailableError, logLdapUnavailable } from "@/lib/auth/ldap";
 import { db } from "@/db";
 import { localSecurity, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -69,7 +69,7 @@ if (ldapEnabled()) {
             return { id: user.id, name: user.name, email: user.email, sessionVersion: user.sessionVersion };
           });
         } catch (err) {
-          if (err instanceof LdapUnavailableError) { console.warn("[auth] LDAP directory unavailable"); throw new DirectoryUnavailable(); }
+          if (err instanceof LdapUnavailableError) { logLdapUnavailable(err); throw new DirectoryUnavailable(); }
           throw new InvalidLogin();
         }
       },

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { Client, type Entry } from "ldapts";
+import { Client, InvalidCredentialsError, NoSuchObjectError, ResultCodeError, SizeLimitExceededError, type Entry } from "ldapts";
 import { sha256Hex } from "@/lib/crypto";
 
 /**
@@ -36,11 +36,22 @@ export { ldapEnabled } from "./config";
 
 /** Connection, TLS, CA file, service-bind or search failure: the directory is the problem, not the user's password. */
 export class LdapUnavailableError extends Error {
-  constructor(cause: unknown) { super("LDAP directory unavailable", { cause }); this.name = "LdapUnavailableError"; }
+  constructor(cause: unknown, readonly stage = "directory") { super("LDAP directory unavailable", { cause }); this.name = "LdapUnavailableError"; }
 }
 
-async function directory<T>(work: () => T | Promise<T>): Promise<T> {
-  try { return await work(); } catch (err) { throw err instanceof LdapUnavailableError ? err : new LdapUnavailableError(err); }
+async function directory<T>(stage: string, work: () => T | Promise<T>): Promise<T> {
+  try { return await work(); } catch (err) { throw err instanceof LdapUnavailableError ? err : new LdapUnavailableError(err, stage); }
+}
+
+/** Never log server-supplied messages: they may contain account names, filters or credentials. */
+export function logLdapUnavailable(err: LdapUnavailableError) {
+  const knownCodes = new Set(["ENOENT", "EACCES", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN",
+    "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_EE_KEY_TOO_SMALL"]);
+  const code = (err.cause as { code?: unknown } | null)?.code;
+  const diagnostic = typeof code === "string" && knownCodes.has(code) ? code
+    : err.cause instanceof ResultCodeError ? `LDAP_RESULT_${err.cause.code}` : "check connection, TLS and directory configuration";
+  console.warn(`[auth] LDAP directory unavailable (${err.stage}; ${diagnostic})`);
 }
 
 export function ldapConfigFromEnv(): LdapConfig {
@@ -114,40 +125,32 @@ export async function authenticateLdap(
   // An empty password would be an "unauthenticated bind" that many servers accept — always reject.
   if (!username || !password) return null;
 
-  const service = await directory(() => newClient(cfg));
+  const service = await directory("client_configuration", () => newClient(cfg));
   try {
-    await directory(() => service.bind(cfg.bindDn, cfg.bindPassword));
-    const filter = cfg.userFilter.replaceAll("{{username}}", escapeFilterValue(username));
-    const { searchEntries } = await directory(() => service.search(cfg.baseDn, {
-      scope: "sub",
-      filter,
-      sizeLimit: 2,
-      attributes: identityAttributes,
-      explicitBufferAttributes: ["objectGUID"],
-    }));
-    if (searchEntries.length !== 1) return null;
-    let entry = searchEntries[0];
+    await directory("service_bind", () => service.bind(cfg.bindDn, cfg.bindPassword));
+    let entry = await findIdentityEntry(service, username, cfg);
+    if (!entry) return null;
     if (allowIdentity && !await allowIdentity(entry.dn)) return null;
 
     // Verify the password with a bind as the user.
-    const userClient = newClient(cfg);
+    const userClient = await directory("client_configuration", () => newClient(cfg));
     try {
       await userClient.bind(entry.dn, password);
-    } catch {
-      return null;
+    } catch (err) {
+      if (err instanceof InvalidCredentialsError) return null;
+      throw new LdapUnavailableError(err, "user_bind");
     } finally {
       await userClient.unbind().catch(() => {});
     }
 
     // Read AD constructed account status at the entry itself, including in memberOf mode.
     if (cfg.groupMode === "ad" || hasAdGuid(entry)) {
-      const status = await directory(() => service.search(entry.dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
-        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] }));
-      if (status.searchEntries.length !== 1) return null;
-      entry = status.searchEntries[0];
+      const status = await readAccountEntry(service, entry.dn);
+      if (!status) return null;
+      entry = status;
     }
     if (!ldapAccountActive(entry, cfg)) return null;
-    return await directory(() => resolveEntry(service, entry, username, cfg));
+    return await directory("group_search", () => resolveEntry(service, entry, username, cfg));
   } finally {
     await service.unbind().catch(() => {});
   }
@@ -156,27 +159,54 @@ export async function authenticateLdap(
 const identityAttributes = ["dn", "userPrincipalName", "sAMAccountName", "uid", "mail", "displayName", "cn", "memberOf",
   "objectGUID", "entryUUID", "userAccountControl", "msDS-User-Account-Control-Computed", "accountExpires", "pwdAccountLockedTime", "pwdStartTime", "pwdEndTime"];
 
+async function findIdentityEntry(service: Client, username: string, cfg: LdapConfig): Promise<Entry | null> {
+  return directory("identity_search", async () => {
+    try {
+      const { searchEntries } = await service.search(cfg.baseDn, {
+        scope: "sub", filter: cfg.userFilter.replaceAll("{{username}}", escapeFilterValue(username)),
+        sizeLimit: 2, attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"],
+      });
+      return searchEntries.length === 1 ? searchEntries[0] : null;
+    } catch (err) {
+      // A third matching entry raises this instead of returning the first two: still ambiguous, not an outage.
+      if (err instanceof SizeLimitExceededError) return null;
+      throw err;
+    }
+  });
+}
+
+async function readAccountEntry(service: Client, dn: string): Promise<Entry | null> {
+  return directory("account_status", async () => {
+    try {
+      const { searchEntries } = await service.search(dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
+        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
+      return searchEntries.length === 1 ? searchEntries[0] : null;
+    } catch (err) {
+      // A removed bound account is an invalid identity, not a broken directory configuration.
+      if (err instanceof NoSuchObjectError) return null;
+      throw err;
+    }
+  });
+}
+
 /** Exact service-account lookup for admins prestaging group membership. No user bind. */
 export async function lookupLdapUser(usernameInput: string, cfg = ldapConfigFromEnv()): Promise<LdapUser | null> {
   const username = normalizeUsername(usernameInput);
   if (!username || username.length > 254) return null;
-  const service = newClient(cfg);
+  const service = await directory("client_configuration", () => newClient(cfg));
   try {
-    await service.bind(cfg.bindDn, cfg.bindPassword);
-    const { searchEntries } = await service.search(cfg.baseDn, {
-      scope: "sub", filter: cfg.userFilter.replaceAll("{{username}}", escapeFilterValue(username)),
-      sizeLimit: 2, attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"],
-    });
-    if (searchEntries.length !== 1) return null;
-    let entry = searchEntries[0];
+    await directory("service_bind", () => service.bind(cfg.bindDn, cfg.bindPassword));
+    let entry = await findIdentityEntry(service, username, cfg);
+    if (!entry) return null;
+    // Custom search filters may use wildcards; prestaging must still match an exact account identifier.
+    if (![entry.userPrincipalName, entry.sAMAccountName, entry.uid].some(value => first(value)?.trim().toLowerCase() === username.toLowerCase())) return null;
     if (cfg.groupMode === "ad" || hasAdGuid(entry)) {
-      const status = await service.search(entry.dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
-        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
-      if (status.searchEntries.length !== 1) return null;
-      entry = status.searchEntries[0];
+      const status = await readAccountEntry(service, entry.dn);
+      if (!status) return null;
+      entry = status;
     }
     if (!ldapAccountActive(entry, cfg)) return null;
-    return await resolveEntry(service, entry, username, cfg);
+    return await directory("group_search", () => resolveEntry(service, entry, username, cfg));
   } finally { await service.unbind().catch(() => {}); }
 }
 
@@ -247,15 +277,13 @@ async function resolveEntry(service: Client, entry: Entry, username: string, cfg
 
 /** Service-account lookup only; never store or reuse a user's directory password. */
 export async function readLdapIdentity(dn: string, identity: string, cfg = ldapConfigFromEnv()): Promise<LdapUser | null> {
-  const service = newClient(cfg);
+  const service = await directory("client_configuration", () => newClient(cfg));
   try {
-    await service.bind(cfg.bindDn, cfg.bindPassword);
-    const { searchEntries } = await service.search(dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
-      attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
-    if (searchEntries.length !== 1) return null;
-    const entry = searchEntries[0];
+    await directory("service_bind", () => service.bind(cfg.bindDn, cfg.bindPassword));
+    const entry = await readAccountEntry(service, dn);
+    if (!entry) return null;
     if (ldapEntryIdentity(entry, cfg) !== identity || !ldapAccountActive(entry, cfg)) return null;
-    return await resolveEntry(service, entry, "", cfg);
+    return await directory("group_search", () => resolveEntry(service, entry, "", cfg));
   } finally { await service.unbind().catch(() => {}); }
 }
 
@@ -264,8 +292,11 @@ export async function authenticateLdapAtBinding(dn: string, identity: string, pa
   if (!password) return null;
   const user = await readLdapIdentity(dn, identity, cfg);
   if (!user) return null;
-  const client = newClient(cfg);
+  const client = await directory("client_configuration", () => newClient(cfg));
   try { await client.bind(dn, password); return user; }
-  catch { return null; }
+  catch (err) {
+    if (err instanceof InvalidCredentialsError) return null;
+    throw new LdapUnavailableError(err, "user_bind");
+  }
   finally { await client.unbind().catch(() => {}); }
 }

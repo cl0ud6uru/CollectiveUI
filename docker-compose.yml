@@ -1,6 +1,6 @@
 # Production-style stack: Postgres (pgvector) + web + worker.
 #   cp .env.example .env   # fill in secrets and choose local, Entra and/or LDAP authentication
-#   docker compose up -d --build
+#   bash scripts/build-images.sh   # preflight then build; see docs/operations.md for bootstrap/migrations
 # Add `--profile demo` to also start the mock LLM for a first look without a real model endpoint.
 # Workspaces (sandboxed containers bots can run commands in) are an add-on file: see docker-compose.sandbox.yml.
 services:

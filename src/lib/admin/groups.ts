@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { groupMappings, groupMembers, groups, users } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
 import { teamBotsEnabled } from "@/lib/hermes-team/policy";
-import { ldapEnabled, lookupLdapUser } from "@/lib/auth/ldap";
+import { ldapEnabled, lookupLdapUser, LdapUnavailableError, logLdapUnavailable } from "@/lib/auth/ldap";
 
 export const LdapUsername = z.string().trim().min(1).max(254);
 
@@ -14,7 +14,10 @@ export async function findLdapGroupMember(raw: string) {
   if (!ldapEnabled()) throw new HttpError(400, "LDAP is not enabled.");
   let user;
   try { user = await lookupLdapUser(username); }
-  catch { throw new HttpError(502, "LDAP lookup failed. Check the directory connection and try again."); }
+  catch (err) {
+    logLdapUnavailable(err instanceof LdapUnavailableError ? err : new LdapUnavailableError(err));
+    throw new HttpError(502, "LDAP lookup failed. Check the directory connection, TLS certificate and service-account settings, then try again.");
+  }
   if (!user) throw new HttpError(400, `No unique active LDAP user found for ${username}. Use their exact username or UPN.`);
   return { username, upn: user.upn.trim().toLowerCase(), name: user.name, email: user.email?.toLowerCase() ?? null };
 }

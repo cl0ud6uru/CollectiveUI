@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, X } from "lucide-react";
-import { deleteGroup, saveGroup, type GroupInput } from "@/app/admin/actions";
-import { findLdapUserForGroup } from "@/app/admin/groups/ldap-actions";
+import { deleteGroup, type GroupInput } from "@/app/admin/actions";
+import { findLdapUserForGroup, saveGroupWithFeedback, type LdapGroupMember } from "@/app/admin/groups/ldap-actions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/input";
@@ -23,14 +23,16 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
   const [ext, setExt] = useState("");
   const [pending, start] = useTransition();
   const [ldapUsername, setLdapUsername] = useState("");
-  const [ldapMembers, setLdapMembers] = useState<Awaited<ReturnType<typeof findLdapUserForGroup>>[]>([]);
+  const [ldapMembers, setLdapMembers] = useState<LdapGroupMember[]>([]);
   const [lookingUp, lookup] = useTransition();
   const mappings = g.mappings ?? [];
 
   function addLdapUser() {
     lookup(async () => {
       try {
-        const member = await findLdapUserForGroup(ldapUsername);
+        const result = await findLdapUserForGroup(ldapUsername);
+        if (!result.ok) { toast.error(result.error); return; }
+        const member = result.member;
         setLdapMembers(current => current.some(u => u.upn === member.upn) ? current : [...current, member]);
         setLdapUsername("");
       } catch (err) {
@@ -52,10 +54,10 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
       <DialogContent title={g.id ? `Edit ${g.name}` : "New group"} className="max-w-2xl">
         <div className="space-y-4">
           <Field label="Name">
-            <Input value={g.name ?? ""} onChange={(e) => setG({ ...g, name: e.target.value })} placeholder="Legal team" />
+            <Input aria-label="Name" value={g.name ?? ""} onChange={(e) => setG({ ...g, name: e.target.value })} placeholder="Legal team" />
           </Field>
           <Field label="Description">
-            <Input value={g.description ?? ""} onChange={(e) => setG({ ...g, description: e.target.value })} />
+            <Input aria-label="Description" value={g.description ?? ""} onChange={(e) => setG({ ...g, description: e.target.value })} />
           </Field>
           <label className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-sm">
             Members are portal admins
@@ -110,7 +112,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
             <UserPicker users={users} value={g.memberIds ?? []} onChange={memberIds => setG({ ...g, memberIds })} />
           </Field>
           {ldapEnabled && <Field label="Add LDAP user before first login" hint="Enter an exact LDAP username or UPN. Permissions are assigned when you save this group.">
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Input aria-label="LDAP username or UPN" placeholder="jdoe or jdoe@corp.com" value={ldapUsername}
                 disabled={lookingUp || pending} onChange={e => setLdapUsername(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); if (!lookingUp && !pending && ldapUsername.trim()) addLdapUser(); } }} />
@@ -132,7 +134,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
               onClick={() =>
                 start(async () => {
                   try {
-                    await saveGroup({
+                    const result = await saveGroupWithFeedback({
                       id: g.id,
                       name: g.name!,
                       description: g.description,
@@ -142,6 +144,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
                       memberIds: g.memberIds ?? [],
                       ldapUsernames: ldapMembers.map(member => member.username),
                     });
+                    if (!result.ok) { toast.error(result.error); return; }
                     toast.success("Group saved");
                     onClose();
                     router.refresh();
