@@ -163,7 +163,13 @@ final class CollectiveUIRegression: XCTestCase {
         launch("home-bot-atlas", extra: ["--demo-hermes-cancellation"])
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No files or prompt were sent")).firstMatch.exists)
         enterDraft("/reset")
-        tap(app.buttons["Send"])
+        // Typing the initial slash opens the native command popover. Dismiss
+        // that modal before interacting with the composer behind it.
+        tap(app.buttons["Close commands"])
+        let send = app.buttons["Send"]
+        capture("hermes-cancellation-00-reset-draft")
+        XCTAssertTrue(send.isEnabled)
+        tap(send)
         let warning = app.staticTexts["Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing. Your draft has been kept."]
         XCTAssertTrue(warning.waitForExistence(timeout: 10))
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")

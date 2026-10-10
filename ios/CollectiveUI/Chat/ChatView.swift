@@ -285,10 +285,12 @@ struct ChatView: View {
                 }
                 if let error = model.commandError { InlineErrorView(text: error) }
                 if model.target?.hermes == true && (model.commandError != nil || model.commandResult != nil || model.needsMessageStatusCheck || model.hasDetachedReply) {
-                    Button("Check Hermes status") { model.checkHermesStatus() }
-                        .buttonStyle(.bordered).frame(minHeight: 44)
-                        .disabled(!model.canCheckHermesStatus)
-                        .accessibilityHint("Checks the server reply and cancellation state while keeping your draft.")
+                    Button { model.checkHermesStatus() } label: {
+                        Text("Check Hermes status").frame(minHeight: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!model.canCheckHermesStatus)
+                    .accessibilityHint("Checks the server reply and cancellation state while keeping your draft.")
                 }
                 if model.isExecutingCommand { ProgressView("Running command…").font(.footnote) }
                 if let inlineError = model.inlineError {
