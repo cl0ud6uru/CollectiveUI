@@ -288,7 +288,7 @@ struct ChatView: View {
                 if let inlineError = model.inlineError {
                     InlineErrorView(text: inlineError)
                 }
-                if model.needsMessageStatusCheck {
+                if model.needsMessageStatusCheck && !model.isStreaming {
                     if model.isCheckingMessageStatus {
                         ProgressView("Checking message status…").font(.footnote)
                     } else {

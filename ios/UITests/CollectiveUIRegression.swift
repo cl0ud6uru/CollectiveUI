@@ -46,22 +46,29 @@ final class CollectiveUIRegression: XCTestCase {
         wait(for: [ready], timeout: seconds + 3)
     }
 
-    private func hasVisibleLatestFixtureParagraph(in transcript: XCUIElement) -> Bool {
-        let viewport = transcript.frame
-        let latest = transcript.staticTexts.matching(NSPredicate(format:
-            "identifier == %@ AND label BEGINSWITH %@", "chat.latestReplyParagraph", "QA line ")).element
-        guard latest.waitForExistence(timeout: 5) else { return false }
+    private func visibleLatestFixtureParagraph(in transcript: XCUIElement) -> (label: String, frame: CGRect)? {
         let deadline = Date().addingTimeInterval(5)
         repeat {
-            // Resolve the current tail and its frame together; a separate count can
-            // already be overtaken by incoming paragraphs before its frame resolves.
-            let frame = latest.frame
-            if frame.height > 0 && frame.minY > viewport.minY + 100 && frame.maxY < viewport.maxY {
-                return true
+            // Read the viewport, current tail identity, and its frame atomically.
+            // Separate live element queries can resolve different render passes
+            // while a new paragraph arrives every 0.2 seconds on slower simulators.
+            if let snapshot = try? transcript.snapshot() {
+                var pending: [any XCUIElementSnapshot] = [snapshot]
+                while let node = pending.popLast() {
+                    if node.elementType == .staticText,
+                       node.identifier == "chat.latestReplyParagraph",
+                       node.label.hasPrefix("QA line "), node.frame.height > 0,
+                       // Text accessibility bounds can exceed the drawn glyphs.
+                       // Require a meaningful visible portion of the newest text.
+                       snapshot.frame.intersection(node.frame).height >= min(44, node.frame.height) {
+                        return (node.label, node.frame)
+                    }
+                    pending.append(contentsOf: node.children)
+                }
             }
             settle(0.2)
         } while Date() < deadline
-        return false
+        return nil
     }
 
     private func enterDraft(_ text: String) {
@@ -252,7 +259,8 @@ final class CollectiveUIRegression: XCTestCase {
         settle(4)
         let transcript = app.scrollViews["chat.transcript"]
         let paragraphs = transcript.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "QA line "))
-        XCTAssertTrue(hasVisibleLatestFixtureParagraph(in: transcript), "The growing reply must render before the reader scrolls")
+        XCTAssertNotNil(visibleLatestFixtureParagraph(in: transcript), "The growing reply must render before the reader scrolls")
+        XCTAssertFalse(app.buttons["Check message status"].exists, "An attached live stream must not offer an unavailable recovery action")
         // The transcript extends behind the sticky header; start in visible message content.
         let dragStart = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let dragEnd = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
@@ -289,8 +297,16 @@ final class CollectiveUIRegression: XCTestCase {
         capture("stream-scrolled-away-after-updates")
         tap(app.buttons["Scroll to latest message"])
         settle(1)
+        capture("stream-after-jump")
         XCTAssertFalse(app.buttons["Scroll to latest message"].exists)
-        XCTAssertTrue(hasVisibleLatestFixtureParagraph(in: transcript), "Jumping to the latest reply must not leave a blank transcript")
+        let jumpedTail = visibleLatestFixtureParagraph(in: transcript)
+        XCTAssertNotNil(jumpedTail, "Jumping to the latest reply must not leave a blank transcript")
+        settle(2)
+        let followedTail = visibleLatestFixtureParagraph(in: transcript)
+        XCTAssertNotNil(followedTail, "The latest reply must stay visible as more paragraphs arrive after Jump")
+        XCTAssertNotEqual(jumpedTail?.label, followedTail?.label, "Jump must resume following incoming paragraphs")
+        XCTAssertTrue(app.buttons["Stop"].exists, "The reply must remain attached while following incoming paragraphs")
+        XCTAssertFalse(app.buttons["Check message status"].exists)
         tap(app.buttons["Stop"])
         capture("stream-after-jump-and-stop")
     }
