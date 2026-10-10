@@ -159,6 +159,28 @@ final class CollectiveUIRegression: XCTestCase {
         capture("commands-02-result")
     }
 
+    func testUnconfirmedHermesCancellationStatusPreservesResetDraft() {
+        launch("home-bot-atlas", extra: ["--demo-hermes-cancellation"])
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No files or prompt were sent")).firstMatch.exists)
+        enterDraft("/reset")
+        tap(app.buttons["Send"])
+        let warning = app.staticTexts["Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing. Your draft has been kept."]
+        XCTAssertTrue(warning.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
+        capture("hermes-cancellation-01-reset-kept")
+        let check = app.buttons["Check Hermes status"]
+        XCTAssertTrue(check.isHittable)
+        XCTAssertGreaterThanOrEqual(check.frame.height, 44)
+        tap(check)
+        XCTAssertTrue(app.staticTexts["Portal reply: failed (stop requested)."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles."].exists)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
+        XCTAssertFalse(warning.exists)
+        XCTAssertTrue(check.exists, "Status inspection stays available while cancellation remains unconfirmed")
+        XCTAssertTrue(check.isEnabled)
+        capture("hermes-cancellation-02-unconfirmed-status")
+    }
+
     // Also run on the dedicated iPad after simctl ui content_size sets the largest
     // accessibility size. The guidance and its removal action must fit together.
     func testAttachmentRecoveryGuidanceAndSettingsStayVisible() {

@@ -79,6 +79,13 @@ footer with the account name available to VoiceOver. `/new` and `/reset` retain 
 reconstruction or relaunch. After an uncertain `/yolo` toggle, inspect `/yolo status`
 and choose an explicit `/yolo on` or `/yolo off`.
 
+**Check Hermes status** runs only `/status` and keeps the current composer draft,
+attachments and any unconfirmed submission. It remains available after a command
+error or status result, including when ordinary message sending is guarded.
+An unconfirmed server cancellation remains unconfirmed; this inspection does not
+reset the conversation or authorize another reply. Follow the server's reported
+recovery instruction before retrying `/new` or `/reset`.
+
 `CollectiveUITests/ChatRecoveryTests.swift` uses synthetic transport failures,
 delayed snapshots, clean EOF and immutable requests. The standalone UI regressions
 exercise `--demo-stream-scenario recovery|uncertain` and
@@ -238,6 +245,7 @@ Launch arguments (Xcode: **Product → Scheme → Edit Scheme → Run → Argume
 | `--demo-sidebar-collapsed` | On iPad, show only the chat column |
 | `--demo-stream-scenario long` | Stream 600 deterministic offline lines over about 120 seconds for scroll regressions; Stop ends the fixture early |
 | `--demo-stream-scenario delayed` | Wait six seconds before visible output for immediate Stop regressions |
+| `--demo-hermes-cancellation` | Show a historical unsupported-file rejection and a synthetic unconfirmed cancellation; `/reset` is rejected and `/status` inspects without submitting the retained draft |
 | `--demo-reset-drafts` | Clear only the fixture session's saved drafts and local stopped-reply markers on launch; omit when checking relaunch persistence |
 
 Example:

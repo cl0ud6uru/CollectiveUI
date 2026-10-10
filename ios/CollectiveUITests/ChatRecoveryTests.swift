@@ -282,9 +282,61 @@ final class ChatRecoveryTests: XCTestCase {
         XCTAssertEqual(fixture.commandBodies.last?["newConversationId"], destination)
         XCTAssertEqual(fixture.postCount, 0)
     }
+
+    func testHistoricalFileRejectionAndUnconfirmedCancellationKeepResetDraftAndFence() async {
+        fixture.unconfirmedCancellation = true
+        let model = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+        await model.activate()
+        XCTAssertTrue(model.messages.last?.plainText.contains("No files or prompt were sent") == true)
+        model.composerText = "/reset"
+        model.send()
+        await waitUntil { fixture.commandBodies.count == 1 && !model.isExecutingCommand }
+        let destination = model.conversationState.pendingCommand?.nextId
+        XCTAssertNotNil(destination)
+        XCTAssertEqual(model.commandError, RecoveryFixture.cancellationError + " Your draft has been kept.")
+        XCTAssertEqual(model.composerText, "/reset")
+
+        model.checkHermesStatus()
+        model.checkHermesStatus()
+        await waitUntil { fixture.commandBodies.count == 2 && !model.isExecutingCommand }
+        XCTAssertEqual(fixture.commandBodies.last?["text"], "/status")
+        XCTAssertEqual(model.commandResult?.lines, [RecoveryFixture.unconfirmedStatus])
+        XCTAssertEqual(model.composerText, "/reset")
+        XCTAssertEqual(model.conversationState.pendingCommand?.nextId, destination)
+        XCTAssertNil(app.selection)
+        XCTAssertEqual(fixture.postCount, 0)
+        XCTAssertEqual(model.messages.count, 2)
+    }
+
+    func testHermesStatusInspectionPreservesUnconfirmedSubmissionAndNewerDraft() async {
+        fixture.unconfirmedCancellation = true
+        let model = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+        await model.activate()
+        let original = PendingChatSubmission(messageId: "unconfirmed-original", text: "Earlier request", attachments: [],
+            body: .object(["conversationId": "chat-a"]))
+        model.conversationState.pendingSubmission = original
+        model.needsMessageStatusCheck = true
+        model.composerText = "/reset"
+        XCTAssertFalse(model.canSend)
+        XCTAssertFalse(model.canRegenerate)
+        XCTAssertTrue(model.canCheckHermesStatus)
+        model.checkHermesStatus()
+        await waitUntil { fixture.commandBodies.count == 1 && !model.isExecutingCommand }
+        XCTAssertTrue(model.needsMessageStatusCheck)
+        XCTAssertEqual(model.conversationState.pendingSubmission?.messageId, original.messageId)
+        XCTAssertEqual(model.composerText, "/reset")
+        XCTAssertEqual(model.commandResult?.lines, [RecoveryFixture.unconfirmedStatus])
+        XCTAssertFalse(model.canSend)
+        XCTAssertFalse(model.canRegenerate)
+        XCTAssertEqual(fixture.postCount, 0)
+        XCTAssertNil(app.selection)
+    }
 }
 
 private final class RecoveryFixture: @unchecked Sendable {
+    static let cancellationError = "Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing."
+    static let unconfirmedStatus = "Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles."
+    var unconfirmedCancellation = false
     var partialFailure = false
     var serverFailure = false
     var omitPendingMessage = false
@@ -306,8 +358,15 @@ private final class RecoveryFixture: @unchecked Sendable {
             if let body = FixtureProtocol.body(request) {
                 commandBodies.append(body)
                 if body["text"]?.stringValue == "/status" {
+                    if unconfirmedCancellation {
+                        let result: JSONValue = .object(["title": "Chat status", "lines": .array([.string(Self.unconfirmedStatus)])])
+                        return .init(data: try! JSONEncoder().encode(result), delay: 0.1)
+                    }
                     return .init(data: Data(#"{"title":"Status","lines":["Idle"]}"#.utf8))
                 }
+            }
+            if unconfirmedCancellation {
+                return .init(status: 409, data: try! JSONEncoder().encode(JSONValue.object(["error": .string(Self.cancellationError)])))
             }
             return .init(status: 502)
         }
@@ -339,12 +398,18 @@ private final class RecoveryFixture: @unchecked Sendable {
         if request.url?.path == "/api/chat/chat-a" {
             snapshotCount += 1
             var rows: [JSONValue] = []
+            if unconfirmedCancellation {
+                rows = [.object(["id": "historical-user", "parentId": .null,
+                    "message": UIMessage(id: "historical-user", role: .user, parts: [.text(TextPart(text: "Please inspect this file"))]).toJSON()]),
+                    .object(["id": "reply-a", "parentId": "historical-user", "message": UIMessage(id: "reply-a", role: .assistant,
+                        parts: [.text(TextPart(text: "Hermes refused the request. This Hermes server does not support original-file delivery yet. No files or prompt were sent.", state: "done"))]).toJSON()])]
+            }
             if let user, !omitPendingMessage {
                 rows = [.object(["id": .string(user.id), "parentId": .null, "message": user.toJSON()]),
                     .object(["id": "reply-a", "parentId": .string(user.id), "message": UIMessage(id: "reply-a", role: .assistant,
                         parts: [.text(TextPart(text: "Recovered reply", state: "done"))]).toJSON()])]
             }
-            let snapshot: JSONValue = .object(["conversationId": "chat-a", "target": .object(["kind": "bot", "id": "hermes", "name": "Hermes"]),
+            let snapshot: JSONValue = .object(["conversationId": "chat-a", "target": .object(["kind": "bot", "id": "hermes", "name": "Hermes", "hermes": .bool(unconfirmedCancellation)]),
                 "initialRows": .array(rows), "initialLeafId": rows.isEmpty ? .null : "reply-a", "resume": .bool(runningReply)])
             return .init(status: snapshotStatus, data: try! JSONEncoder().encode(snapshot), delay: snapshotDelay)
         }

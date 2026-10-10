@@ -215,6 +215,17 @@ final class ChatModel {
         !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isStopping && !isExecutingCommand && !isLoading && loadError == nil && !isReadOnly && !isUnavailable
     }
 
+    /// Inspect Hermes without submitting the composer or bypassing message admission guards.
+    var canCheckHermesStatus: Bool {
+        target?.hermes == true && !isReadOnly && !isUnavailable && !isExecutingCommand && app.api != nil
+    }
+
+    func checkHermesStatus() {
+        guard canCheckHermesStatus else { return }
+        isExecutingCommand = true
+        commandTask = Task { await executeCommand("/status", preservesDraft: true) }
+    }
+
     var canRetryOriginalMessage: Bool {
         needsMessageStatusCheck && confirmedMissingSubmission && pendingDraft != nil && !isGroup && !isCheckingMessageStatus && !isStreaming && !isExecutingCommand && !isReadOnly && !isUnavailable
     }
@@ -379,7 +390,7 @@ final class ChatModel {
         } catch { /* Basic controls remain available if optional discovery fails. */ }
     }
 
-    private func executeCommand(_ text: String) async {
+    private func executeCommand(_ text: String, preservesDraft: Bool = false) async {
         defer { isExecutingCommand = false; commandTask = nil }
         guard let api = app.api, let target else { return }
         let isFreshCommand = text.range(of: #"^/(?:hermes\s+|portal\s+)?(?:new|reset)$"#,
@@ -404,7 +415,7 @@ final class ChatModel {
             commandResult = result
             commandRevision = max(commandRevision, result.revision ?? 0)
             if let freshAttemptId, commandAttempt?.nextId == freshAttemptId { commandAttempt = nil }
-            if composerText == originalDraft { composerText = "" }
+            if !preservesDraft && composerText == originalDraft { composerText = "" }
             conversationState.flush()
             if result.conversationId != nil { isNew = false }
             if let destination = result.destinationConversationId {
@@ -420,7 +431,7 @@ final class ChatModel {
                 let command = text.lowercased()
                 commandError = command == "/yolo" || command == "/hermes yolo"
                     ? "\(error.localizedDescription) Your draft has been kept. Check /yolo status before choosing /yolo on or /yolo off."
-                    : "\(error.localizedDescription) Your draft has been kept; you can retry."
+                    : "\(error.localizedDescription) Your draft has been kept."
             }
             await loadCommandCatalog()
         }

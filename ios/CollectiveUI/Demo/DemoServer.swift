@@ -74,6 +74,19 @@ final class DemoServer: @unchecked Sendable {
             ]
             leaves[conversationId] = assistantId
         }
+        if ProcessInfo.processInfo.arguments.contains("--demo-hermes-cancellation") {
+            bots = bots.map { bot in
+                guard bot["id"]?.stringValue == "bot-atlas", case .object(var fields) = bot else { return bot }
+                fields["hermes"] = .bool(true)
+                return .object(fields)
+            }
+            let user = UIMessage(id: "historical-user", role: .user, parts: [.text(TextPart(text: "Please inspect this file"))])
+            let reply = UIMessage(id: "historical-reply", role: .assistant, parts: [.text(TextPart(text:
+                "Hermes refused the request. This Hermes server does not support original-file delivery yet. No files or prompt were sent.", state: "done"))])
+            rows["home-bot-atlas"] = [MessageRow(id: user.id, parentId: nil, message: user),
+                MessageRow(id: reply.id, parentId: user.id, message: reply)]
+            leaves["home-bot-atlas"] = reply.id
+        }
     }
 
     /// Called once on the main actor with the rendered chart image.
@@ -102,6 +115,15 @@ final class DemoServer: @unchecked Sendable {
         if path == "/api/chat/commands" {
             if method == "GET" { return json(.object(["commands": .array([]), "revision": .number(0)])) }
             let command = DemoServer.jsonBody(body)?["text"]?.stringValue ?? ""
+            if ProcessInfo.processInfo.arguments.contains("--demo-hermes-cancellation") {
+                if command == "/status" {
+                    return json(.object(["title": "Chat status", "lines": .array([
+                        "Portal reply: failed (stop requested).",
+                        "Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles.",
+                    ])]))
+                }
+                return failure("Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing.", status: 409)
+            }
             return json(.object([
                 "title": .string("Offline demo command"),
                 "lines": .array([.string("Selected: " + command), .string("This is a local fixture; no server command was run.")]),
