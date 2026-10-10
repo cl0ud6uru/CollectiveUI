@@ -11,6 +11,7 @@ const require = createRequire(path.join(root, 'package.json'));
 const { build } = require('esbuild');
 const { chromium, expect } = require('@playwright/test');
 const postcss = require('postcss'), tailwind = require('@tailwindcss/postcss');
+const sharp = require('sharp');
 const dir = await mkdtemp(path.join(tmpdir(), 'bot-sidebar-portrait-'));
 const shots = process.env.BOT_PORTRAIT_SCREENSHOTS;
 const baseline = process.env.BOT_PORTRAIT_BASELINE === '1';
@@ -89,6 +90,19 @@ try {
       await portrait().scrollIntoViewIfNeeded();
       await expect.poll(()=>portrait().evaluate(img=>img.complete && img.naturalWidth)).toBe(1024);
       expect(await portrait().evaluate(img=>({height:img.naturalHeight,fit:getComputedStyle(img).objectFit,alt:img.alt,animations:img.getAnimations().length}))).toEqual({height:1536,fit:'contain',alt:'',animations:0});
+      const backing = await portrait().evaluate(img=>({
+        sidebar:getComputedStyle(img.closest('aside')).backgroundColor,
+        image:getComputedStyle(img).backgroundColor,
+        wrapper:getComputedStyle(img.parentElement).backgroundColor,
+      }));
+      expect(backing.image).toBe('rgba(0, 0, 0, 0)');expect(backing.wrapper).toBe('rgba(0, 0, 0, 0)');
+      // Inspect actual browser compositing, so hidden RGB under alpha cannot be mistaken for a visible rectangle.
+      const background = backing.sidebar.match(/\d+/g).slice(0,3).map(Number);
+      const {data,info} = await sharp(await portrait().screenshot()).ensureAlpha().raw().toBuffer({resolveWithObject:true});
+      for(const [x,y] of [[0,0],[info.width-1,0],[0,info.height-1],[info.width-1,info.height-1]]) {
+        const pixel = [...data.subarray((y*info.width+x)*4,(y*info.width+x)*4+3)];
+        expect(pixel.every((channel,index)=>Math.abs(channel-background[index])<=1)).toBe(true);
+      }
       const imageBox = await portrait().boundingBox(), controls = await panel.getByRole('button',{name:'Duplicate',exact:true}).boundingBox();
       expect(imageBox.y).toBeGreaterThanOrEqual(controls.y+controls.height);
       await capture('after-'+theme);
@@ -123,7 +137,7 @@ try {
     await page.route('**/portraits/hermes-assimilated.png',route=>route.abort());await ready('/');
     await expect(page.locator('[data-bot-portrait]')).toHaveCount(0);await expect(share).toBeVisible();
     await page.getByRole('button',{name:'Hide bot details',exact:true}).click();expect(await page.evaluate(()=>window.fixtureClosed)).toBe(true);
-    console.log('PASS: original pixels, containment, placement, light/dark, keyboard controls, decorative accessibility, reduced motion, short busy scrolling, 240/320px layouts, bot isolation, personal/default choices and missing-image fallback.');
+    console.log('PASS: supplied cutout, transparent browser compositing, containment, placement, light/dark, keyboard controls, decorative accessibility, reduced motion, short busy scrolling, 240/320px layouts, bot isolation, personal/default choices and missing-image fallback.');
   }
   expect(errors).toEqual([]);
 } finally {
