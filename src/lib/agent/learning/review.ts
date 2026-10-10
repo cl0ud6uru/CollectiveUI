@@ -12,6 +12,7 @@ import { cleanLearningText, containsPrivateIdentity, lessonDisposition, privateE
 import { learningIsEnabled, recordLearningRevision, visibleLearningScope } from "./store";
 import { learningReviewSchema, lessonContentSchema } from "./types";
 import { teamUsesNativeLearning, withNonTeamLearning } from '@/lib/hermes-team/learning';
+import { hasUnapprovedMemoryWrite, memoryConsentRequired } from "../memory-consent";
 
 async function runUsesHermesLearning(runId: string) {
   const [run] = await db.select({ conversationId: agentRuns.conversationId }).from(agentRuns).where(eq(agentRuns.id, runId));
@@ -121,6 +122,10 @@ export async function reviewNativeRun(runId: string) {
         // Serialize updates to the bot's shared topics; private lessons retain their user boundary.
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`bot-learning:${bot.id}`}))`);
         const settings = await getSetting("tools", tx);
+        // Recheck stored consent after generation. Mixed procedures can contain the
+        // same denied fact, so all lessons from this source require human approval.
+        const unapprovedMemory = hasUnapprovedMemoryWrite(await loadMessageRows(conv.id, tx));
+        const memoryNeedsApproval = await memoryConsentRequired(bot.id, tx);
         let added = 0;
         for (const lesson of output.lessons) {
           const disposition = lessonDisposition(lesson, successfulIds);
@@ -142,7 +147,8 @@ export async function reviewNativeRun(runId: string) {
           if (previous && previous.kind === lesson.kind && normalized(previous.content) === normalized(content)) continue;
           if (previous && JSON.stringify(previous.content) === JSON.stringify(content)) continue;
           // A pending proposal stays pending until a human explicitly approves it.
-          const status = settings.learningRequireApproval === true || previous?.status === "pending" || previous?.kind === "policy" ? "pending" : disposition.status;
+          const status = settings.learningRequireApproval === true || unapprovedMemory || memoryNeedsApproval ||
+            previous?.status === "pending" || previous?.kind === "policy" ? "pending" : disposition.status;
           const values = { kind: previous?.kind === "policy" || lesson.kind === "policy" ? "policy" as const : previous?.kind ?? lesson.kind, content, verification, status, version: (previous?.version ?? 0) + 1, updatedAt: new Date() };
           const [next] = previous
             ? await tx.update(botLearnings).set(values).where(eq(botLearnings.id, previous.id)).returning()

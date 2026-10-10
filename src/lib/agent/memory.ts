@@ -7,6 +7,8 @@ import { embedTexts, newUsageScope, restoreUsageAfterRollback, resolveModel, uti
 import { learnedPreferences } from "./learning/store";
 import { loadMessageRows, partsToText, pathTo } from "@/lib/chat/store";
 import { withNonTeamLearning } from '@/lib/hermes-team/learning';
+import { getSetting } from "@/lib/settings";
+import { hasUnapprovedMemoryWrite, memoryConsentRequired } from "./memory-consent";
 
 export type MemoryRow = { id: string; content: string; pinned: boolean; botId: string | null };
 
@@ -54,8 +56,10 @@ export async function selectMemories(opts: {
   return [...pinned, ...preferences, ...rest];
 }
 
-export async function addMemory(userId: string, botId: string | null, content: string, sourceConversationId?: string, q: DbOrTx = db, abortSignal?: AbortSignal, usage?: UsageScope) {
+export async function addMemory(userId: string, botId: string | null, content: string, sourceConversationId?: string, q: DbOrTx = db, abortSignal?: AbortSignal, usage?: UsageScope, mayWrite?: () => Promise<boolean>) {
   const [emb] = (await embedTexts([content], { userId, botId, conversationId: sourceConversationId }, { ...(abortSignal ? { abortSignal } : {}), ...(usage ? { usage } : {}), ...(q !== db ? { q, maxRetries: 0 } : {}) }).catch(() => null)) ?? [];
+  // Background embeddings can finish after consent changes, too.
+  if (mayWrite && !(await mayWrite())) return null;
   const [row] = await q
     .insert(memories)
     .values({ userId, botId, content: content.slice(0, 1000), embedding: emb, sourceConversationId })
@@ -80,6 +84,10 @@ export async function extractMemoriesFromConversation(conversationId: string) {
       const [conv] = await q.select().from(conversations).where(eq(conversations.id, conversationId));
       if (!conv || !(await memoryEnabled(conv.userId, q))) return 0;
       const rows = await loadMessageRows(conversationId, q);
+      const mayExtract = async () => (await memoryEnabled(conv.userId, q)) && !(await memoryConsentRequired(conv.botId, q)) &&
+        (await getSetting("tools", q)).learningRequireApproval !== true &&
+        !hasUnapprovedMemoryWrite(await loadMessageRows(conversationId, q));
+      if (hasUnapprovedMemoryWrite(rows) || !(await mayExtract())) return 0;
       const path = pathTo(rows, conv.currentLeafId);
       const since = conv.memoryProcessedAt?.getTime() ?? 0;
       const fresh = path.filter((m) => m.createdAt.getTime() > since);
@@ -118,10 +126,14 @@ export async function extractMemoriesFromConversation(conversationId: string) {
       });
       const { output } = await generation.finally(async () => { await Promise.allSettled(scope.pending); });
 
+      // A delayed result cannot outlive a denial or consent change during generation.
+      if (!(await mayExtract())) return 0;
+
       let added = 0;
       for (const m of output?.memories.slice(0, 5) ?? []) {
         if (!m.content.trim()) continue;
-        await addMemory(conv.userId, m.shared || !conv.botId ? null : conv.botId, m.content.trim(), conversationId, q, abortSignal, usage);
+        const id = await addMemory(conv.userId, m.shared || !conv.botId ? null : conv.botId, m.content.trim(), conversationId, q, abortSignal, usage, mayExtract);
+        if (!id) break;
         added++;
       }
       await q.update(conversations).set({ memoryProcessedAt: new Date() }).where(eq(conversations.id, conversationId));
