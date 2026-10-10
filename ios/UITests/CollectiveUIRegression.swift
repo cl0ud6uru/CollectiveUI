@@ -165,6 +165,12 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(research.isHittable)
         XCTAssertEqual(research.label, "Research Assistant")
         XCTAssertTrue((research.value as? String)?.contains("Working") == true)
+        if UIApplication.shared.preferredContentSizeCategory.isAccessibilityCategory {
+            let name = research.staticTexts["Research Assistant"]
+            XCTAssertTrue(name.exists)
+            XCTAssertLessThanOrEqual(name.frame.minX - research.frame.minX, 24,
+                                     "Large text needs the full row width below the avatar")
+        }
         capture("bots-directory-light-accessible")
         XCUIDevice.shared.orientation = .landscapeLeft
         settle(1)

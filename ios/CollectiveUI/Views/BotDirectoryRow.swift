@@ -21,8 +21,11 @@ struct BotDirectoryRow: View {
     }
 
     var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
         Button(action: openBotHome) {
-            HStack(alignment: .top, spacing: 16) {
+            layout {
                 BotIdentityView(botId: bot.id, icon: bot.icon, size: 44, activity: activity)
                     .frame(width: 60, height: 60)
                     .background(PortalTheme.surfaceSecondary, in: .rect(cornerRadius: 16))
@@ -41,11 +44,13 @@ struct BotDirectoryRow: View {
                     BotDirectoryStatus(status: bot.status)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: "chevron.forward")
-                    .font(.footnote.bold())
-                    .foregroundStyle(PortalTheme.muted)
-                    .padding(.top, 4)
-                    .accessibilityHidden(true)
+                if !dynamicTypeSize.isAccessibilitySize {
+                    Image(systemName: "chevron.forward")
+                        .font(.footnote.bold())
+                        .foregroundStyle(PortalTheme.muted)
+                        .padding(.top, 4)
+                        .accessibilityHidden(true)
+                }
             }
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
