@@ -1,12 +1,13 @@
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@collective/webauthn-server";
 import { requireSecurityActor } from "@/lib/session";
 import { beginPasskey, finishPasskey, reauthenticatePassword, beginRegistration, finishRegistration, beginTotp, finishTotp, manageSecurity, securitySummary } from "@/lib/auth/security";
-import { securityRequest, securityResponse, securityFailure } from "@/lib/auth/security-request";
+import { securityRequest, securityResponse, securityFailure, directoryUnavailable } from "@/lib/auth/security-request";
+import { LdapUnavailableError } from "@/lib/auth/ldap";
 import { SecurityError } from "@/lib/auth/factors";
 export const runtime = "nodejs";
 export async function GET() {
   try { return securityResponse(await securitySummary(await requireSecurityActor())); }
-  catch { return securityFailure(); }
+  catch (err) { return err instanceof LdapUnavailableError ? directoryUnavailable(err) : securityFailure(); }
 }
 export async function POST(request: Request) {
   try {
@@ -21,5 +22,5 @@ export async function POST(request: Request) {
     if (body.action === "totp-finish") return securityResponse(await finishTotp(actor, body.flow, body.code));
     if (body.action === "manage") return securityResponse(await manageSecurity(actor, body.op, body.proof, body.value));
     throw new SecurityError();
-  } catch { return securityFailure(); }
+  } catch (err) { return err instanceof LdapUnavailableError ? directoryUnavailable(err) : securityFailure(); }
 }

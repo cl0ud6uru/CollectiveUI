@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { assertSecurityOrigin, SECURITY_ERROR, SecurityError } from "./factors";
 import { allowSecurityRequest } from "./throttle";
+import { LdapUnavailableError, logLdapUnavailable } from "./ldap";
 const input = z.object({
   action: z.string().max(40), username: z.string().max(254).default(""), password: z.string().max(512).default(""),
   flow: z.string().max(100).default(""), code: z.string().max(80).default(""), recovery: z.boolean().default(false),
@@ -23,3 +24,8 @@ export function securityResponse(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store", "Pragma": "no-cache" } });
 }
 export function securityFailure() { return securityResponse({ error: SECURITY_ERROR }, 400); }
+/** Fixed public error; only a sanitized operation/code is logged for the operator. */
+export function directoryUnavailable(err: LdapUnavailableError) {
+  logLdapUnavailable(err);
+  return securityResponse({ error: SECURITY_ERROR, code: "directory_unavailable" }, 503);
+}

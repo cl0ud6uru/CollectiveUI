@@ -11,7 +11,7 @@ For a fresh local-account installation, follow [the complete bootstrap walkthrou
 ```bash
 cp .env.example .env    # edit secrets, POSTGRES_PASSWORD, AUTH_URL and sign-in settings
 chmod 600 .env
-docker compose build
+bash scripts/build-images.sh    # checks daemon, Compose v2, Buildx and selected builder first
 docker compose up -d db
 docker compose run --rm worker npm run db:migrate
 # Local-only installations: run the interactive bootstrap below before starting web.
@@ -23,13 +23,38 @@ docker compose up -d web worker
 - Uploaded files are stored on the `uploads` volume. The storage layer (`src/lib/files/storage.ts`) is designed so Azure Blob or S3 can replace it later.
 - Postgres needs the `vector` extension; the `pgvector/pgvector:pg16` image includes it. On a managed database, enable pgvector.
 
+`PORT` in `.env` selects only the published host port (for example `PORT=8080` maps host 8080 to container 3000). Compose pins the web process to `PORT=3000` inside the container. Set `WEB_BIND=127.0.0.1` when a TLS reverse proxy runs on the same host. Validate overrides with `docker compose config --quiet`; plain `docker compose config` includes interpolated secrets, so do not paste its output into logs or support requests. No sign-in method is enabled by the example's empty credentials: explicitly configure local, LDAP or Entra sign-in before first use. The web startup log warns if all providers are disabled.
+
+### Docker build prerequisites
+
+These Linux images require Docker Engine, Compose v2 and a working **Buildx/BuildKit** builder. The Dockerfile uses BuildKit syntax (`COPY --chmod`); the legacy builder is unsupported. A fresh Ubuntu 24.04 installation with only `docker.io` and `docker-compose-v2` can lack Buildx and fail late in the worker build ([issue #33](https://github.com/cl0ud6uru/CollectiveUI/issues/33)).
+
+Use packages from the same source as your existing Engine:
+
+- **Ubuntu repository (`docker.io`):** install `docker.io`, `docker-compose-v2` and [`docker-buildx`](https://packages.ubuntu.com/noble/docker-buildx). For an existing Ubuntu installation with the first two packages, the missing package is `sudo apt install docker-buildx`.
+- **Docker official apt repository:** follow [Docker's Ubuntu installation guide](https://docs.docker.com/engine/install/ubuntu/), which installs `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-compose-plugin` and `docker-buildx-plugin`. Do not mix these with Ubuntu's Engine/plugin packages. Review any package-source migration separately; the project scripts do not install packages or change daemon access.
+
+Run these checks as the same operator, with the same Docker context and environment, that will build the images:
+
+```bash
+docker info
+docker compose version
+docker buildx version
+docker buildx inspect
+bash scripts/docker-build-preflight.sh
+```
+
+The preflight checks daemon access, plugins and the selected builder, and refuses `DOCKER_BUILDKIT=0`. It does not pull images, bootstrap a builder or start services. An inactive `docker-container` builder is allowed: Buildx [boots it during the build](https://docs.docker.com/reference/cli/docker/buildx/inspect/). An operator can separately use `docker buildx inspect --bootstrap` to test that startup; it may create/start the builder container and pull its image. Inspection alone does not verify registry access, disk capacity or a completed image build.
+
+After configuring `.env`, use `bash scripts/build-images.sh` for web and worker, or append service names/Compose build arguments (for example `bash scripts/build-images.sh web worker`). The wrapper validates Compose quietly and selects `DOCKER_BUILDKIT=1`. It does not migrate the database or start the application. For direct target builds, first run the preflight with `--no-compose`, then use `DOCKER_BUILDKIT=1 docker build --target worker -t collectiveui-worker .` and the corresponding `--target web`. The workspace image script also runs preflight and explicitly selects BuildKit. Direct `docker compose build`/`up --build` commands and external deployment wrappers bypass project preflight; run the check there too.
+
 **Upgrading a custom storage setup:** Compose now pins `STORAGE_DIR` to `/data/uploads`; a different value in `.env` alone no longer applies. Before recreating containers, back up the database and uploaded files. To keep your current location, explicitly set `environment.STORAGE_DIR` to the same container path in a Compose override for **both `web` and `worker`**, with the existing storage mounted at that path in both services. Alternatively, stop both services and copy the existing files into the `uploads` volume, preserving their relative paths, or remount the existing storage at `/data/uploads` in both services. Ensure the container's `app` user can read and write that storage. Files are **not migrated automatically**. Check the merged `docker compose config` with your override files before starting, and verify existing logos and attachments after restarting; retain the original files and backups until verified.
 
 ## Updates, migrations and backups
 
 1. Back up Postgres and the uploads storage, and keep the encryption keys and session secrets in a separate secure backup. Record the current application revision and Compose overrides. Test restoring to an isolated installation; a database backup alone does not include attachments or branding logos stored on disk. Private pet imports and catalog sprite bytes are in Postgres and are included in its backup.
 2. Read the release's migration notes, especially [service-bot enforcement](service-bots.md#migration-and-review-behavior) and [pet inheritance](features/bot-companions.md#storage-and-access). Pull the intended revision and build it. Schedule a maintenance window and stop **both web and worker** before applying migrations so old executors cannot run against new policy.
-3. On Compose, run `docker compose run --rm worker npm run db:migrate` against the existing database, then start both services with the new images. On a native installation, load the intended environment explicitly, for example `node --env-file=.env --import tsx src/db/migrate.ts`. Use the normal migration runner; do not reset the schema or edit its journal. Current main includes migrations through **0018_default_coordinator**. That migration leaves the coordinator off and existing specialists opted out; see the [coordinator upgrade contract](features/default-coordinator.md#schema-upgrade-and-async-integration-contract).
+3. On Compose, run `docker compose run --rm worker npm run db:migrate` against the existing database, then start both services with the new images. On a native installation, load the intended environment explicitly, for example `node --env-file=.env --import tsx src/db/migrate.ts`. Use the normal migration runner; do not reset the schema or edit its journal. Current main includes migrations through **0048_official_plan_vm_transfers**; apply the complete migration sequence before running updated web/worker code. Migration **0018_default_coordinator** leaves the coordinator off and existing specialists opted out; see the [coordinator upgrade contract](features/default-coordinator.md#schema-upgrade-and-async-integration-contract).
 4. Check health, sign-in, a direct chat with the worker, existing attachments and logos, bot access and avatar inheritance. Migration 0017 preserves private pet bytes and credits and never publishes them; ambiguous legacy Off preferences become Follow, so tell affected users they can select **Off · original icon** again.
 5. Retain the original backups and storage until verified. Never use `docker compose down -v` as an upgrade step. Coordinate rollback with the schema and policy changes; an older worker does not understand service-bot restrictions and must not execute service bots. Restore a consistent database/files/application set if needed.
 
@@ -44,7 +69,7 @@ This is one installation/organization, not a multi-tenant SaaS boundary. Local a
 3. Build the images and start the database, then migrate before starting web/worker:
 
    ```bash
-   docker compose build
+   bash scripts/build-images.sh
    docker compose up -d db
    docker compose run --rm worker npm run db:migrate
    docker compose run --rm -e LOCAL_AUTH_OPERATOR=bootstrap worker npm run local-account -- bootstrap
@@ -94,12 +119,14 @@ Enter an **existing local administrator's** username/email and a new hidden pass
 
 ### Option B: On-prem AD over LDAPS
 
-- Create a read-only service account. Set `LDAP_URL=ldaps://dc:636`, `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD` and `LDAP_BASE_DN`. Point `LDAP_CA_CERT` at your internal root CA certificate.
+- Create a read-only service account. Set `LDAP_URL=ldaps://dc:636`, `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD` and `LDAP_BASE_DN`. Point `LDAP_CA_CERT` at your internal root CA certificate. With Compose, put the PEM file in `./certs` (mounted at `/etc/portal/certs`) and use the in-container path; [certs/README.md](../certs/README.md) shows how to export the root CA from AD.
+- If the directory can't be reached (connection, TLS, CA file, bind transport or search failure), password/passkey sign-in and account-security checks return `directory_unavailable` (HTTP 503). The web log records a sanitized operation/error code as `[auth] LDAP directory unavailable (...)`; directory-supplied messages and credentials are never logged. Check the named operation, certificate path/chain, service account and directory reachability. Invalid user credentials, inactive accounts and ambiguous matches keep the generic verification error.
 - Users can sign in as `jdoe`, `DOMAIN\jdoe` or `jdoe@corp.com`. Nested groups are resolved with `LDAP_GROUP_MODE=ad`, which uses the `1.2.840.113556.1.4.1941` in-chain match.
 - Search filters are escaped against LDAP injection, and empty passwords (which some servers treat as anonymous binds) are rejected.
 - For passwordless company sign-in, apply migration **0034_ldap_passkeys** and enroll a passkey in Settings → Security. The read-only service account must read `objectGUID`, `userAccountControl`, `msDS-User-Account-Control-Computed`, `accountExpires`, identity and group attributes. Password-only LDAP login is blocked after enrollment; fallback requires company password plus a recovery code. See [directory checks and recovery](security/local-mfa.md#ldap-passkeys-2026-10-06).
 - Map portal groups to group **DNs**. They are compared in lower case, and the admin UI suggests DNs it has already seen at sign-in.
 - In **Admin → Groups**, select **Individual users** to add existing portal accounts directly. Direct membership survives directory synchronization and grants the same connection, bot-creation and admin permissions as mapped directory membership. Removing a direct member does not remove membership inherited through a directory group.
+- With LDAP enabled, **Add LDAP user before first login** previews one exact active username or UPN using the service account, without binding as that person or creating an account. **Save** repeats the lookup and atomically creates/reuses the directory account and adds direct membership. The first LDAP/Entra sign-in with the same normalized UPN reuses that account and preserves the membership. Lookups that fail, become ambiguous/inactive, or lose directory access prevent the save. Existing disabled portal users remain disabled. Local accounts with the same email/UPN remain separate; direct membership does not store a company password or bypass sign-in. A direct member stays assigned until an admin removes them, independently of directory-group synchronization.
 - In the bot editor, **Who can use it → Specific groups or users** supports groups, individual accounts, or both. These grants permit bot use, not bot editing or extra connector access. Service bots must be published again after their audience changes.
 - Apply migration **0035_direct_user_permissions** before starting the updated web/worker; existing group mappings and bot audiences are preserved.
 
