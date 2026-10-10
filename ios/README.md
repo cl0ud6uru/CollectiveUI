@@ -73,7 +73,9 @@ Automatic stream reconnection is bounded. If the server is still working after
 that budget, the header says **Reply still running** and **Reconnect to reply**
 reattaches explicitly. A confirmed Stop retains the stopped turn across navigation.
 Failed attachments block sending until removed, so a message cannot silently omit
-the file. `/new` and `/reset` retain their destination ID when retried across chat
+the file. At accessibility text sizes, the attachment card puts recovery guidance
+below the filename and removal control; the sidebar uses a readable Settings
+footer with the account name available to VoiceOver. `/new` and `/reset` retain their destination ID when retried across chat
 reconstruction or relaunch. After an uncertain `/yolo` toggle, inspect `/yolo status`
 and choose an explicit `/yolo on` or `/yolo off`.
 

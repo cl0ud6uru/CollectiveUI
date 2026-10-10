@@ -152,6 +152,24 @@ final class CollectiveUIRegression: XCTestCase {
         capture("commands-02-result")
     }
 
+    // Also run on the dedicated iPad after simctl ui content_size sets the largest
+    // accessibility size. The guidance and its removal action must fit together.
+    func testAttachmentRecoveryGuidanceAndSettingsStayVisible() {
+        launch("home-bot-atlas", appearance: "light", extra: ["--demo-draft", "Please read the report", "--demo-attachment-scenario", "failed"])
+        let guidance = app.staticTexts["Upload interrupted. Remove the file and attach it again."]
+        XCTAssertTrue(guidance.waitForExistence(timeout: 10))
+        XCTAssertTrue(guidance.isHittable)
+        XCTAssertTrue(app.buttons["Remove report.pdf"].isHittable)
+        XCTAssertLessThan(guidance.frame.maxY, app.textViews["chatComposer"].frame.minY)
+        capture("accessibility-01-attachment-guidance")
+        tap(app.buttons["Remove report.pdf"])
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        if !app.buttons["Settings"].isHittable { tap(app.buttons["Open sidebar"]) }
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Settings"].isHittable)
+        capture("accessibility-02-settings-visible")
+    }
+
     func testAdministratorSettingsNavigateToTheRealWebsiteWithoutOpeningTheNetwork() {
         app.launchArguments = ["--demo", "--demo-screen", "settings", "--demo-appearance", "dark"]
         app.launch()

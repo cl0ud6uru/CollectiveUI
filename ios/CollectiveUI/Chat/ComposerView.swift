@@ -46,6 +46,7 @@ struct ComposerView: View {
                     .padding(.horizontal, 12)
                 }
                 .scrollIndicators(.hidden)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Group {
@@ -368,45 +369,69 @@ private final class FocusableComposerTextView: UITextView {
 
 @MainActor
 struct AttachmentChip: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let attachment: ComposerAttachment
     let onRemove: () -> Void
 
     var body: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        thumbnail
+                        Text(attachment.filename).font(.caption).lineLimit(2)
+                        Spacer(minLength: 0)
+                        removeButton
+                    }
+                    status
+                }
+                .frame(width: 320, alignment: .leading)
+            } else {
+                standardChip
+            }
+        }
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemBackground))
+        )
+    }
+
+    private var standardChip: some View {
         HStack(spacing: 8) {
             thumbnail
             VStack(alignment: .leading, spacing: 3) {
                 Text(attachment.filename)
                     .font(.caption)
                     .lineLimit(1)
-                if let errorText = attachment.errorText {
-                    Text(errorText)
-                        .font(.caption)
-                        .foregroundStyle(PortalTheme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if attachment.isUploading {
-                    ProgressView(value: attachment.progress)
-                        .frame(width: 80)
-                } else {
-                    Text("Ready")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                status
             }
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove " + attachment.filename)
+            removeButton
         }
-        .padding(6)
         .frame(maxWidth: 230)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemBackground))
-        )
+    }
+
+    private var removeButton: some View {
+        Button(action: onRemove) {
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Remove " + attachment.filename)
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if let errorText = attachment.errorText {
+            Text(errorText).font(.caption).foregroundStyle(PortalTheme.danger)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if attachment.isUploading {
+            ProgressView(value: attachment.progress).frame(width: 80)
+        } else {
+            Text("Ready").font(.caption2).foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder

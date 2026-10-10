@@ -4,6 +4,7 @@ import CollectiveKit
 @MainActor
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Binding var showCompose: Bool
     @Binding var showInbox: Bool
     @Binding var showSettings: Bool
@@ -82,21 +83,23 @@ struct SidebarView: View {
 
             Divider().overlay(PortalTheme.border)
             Button { showSettings = true } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "person.crop.circle").font(.title2)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(model.sessionInfo?.user?.name ?? model.shell?.user?.name ?? "Settings").font(.subheadline.weight(.medium)).lineLimit(1)
-                        Text("Account & settings").font(.caption).foregroundStyle(PortalTheme.muted)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        Label("Settings", systemImage: "gearshape")
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        accountFooter
                     }
-                    Spacer()
-                    Image(systemName: "gearshape").font(.subheadline)
                 }
                 .padding(.horizontal, 18)
+                .padding(.vertical, 8)
                 .frame(minHeight: 52)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Settings")
+            .accessibilityValue(model.sessionInfo?.user?.name ?? model.shell?.user?.name ?? "")
         }
         .background(PortalTheme.sidebar)
         .sheet(isPresented: $showBots) { botDirectory }
@@ -125,6 +128,18 @@ struct SidebarView: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("This chat will be permanently deleted.")
+        }
+    }
+
+    private var accountFooter: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "person.crop.circle").font(.title2)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(model.sessionInfo?.user?.name ?? model.shell?.user?.name ?? "Settings").font(.subheadline.weight(.medium)).lineLimit(1)
+                Text("Account & settings").font(.caption).foregroundStyle(PortalTheme.muted)
+            }
+            Spacer()
+            Image(systemName: "gearshape").font(.subheadline)
         }
     }
 
