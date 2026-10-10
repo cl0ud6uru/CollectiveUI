@@ -1,0 +1,1 @@
+CREATE INDEX "official_plan_transfer_unresolved_idx" ON "official_plan_transfers" USING btree ("expected_connection_id","expected_revision") WHERE "official_plan_transfers"."state" in ('importing','needs_attention');

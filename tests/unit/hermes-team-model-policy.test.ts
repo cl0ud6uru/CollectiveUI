@@ -63,7 +63,10 @@ describe("Team Bot model route admission", () => {
     const codex = route();
     const official = { ...codex, integration: "openai_chatgpt_plan_usage" as const, evidence: { ...codex.evidence, integration: "openai_chatgpt_plan_usage" as const } };
     expect(evaluate(authority(), [official])).toMatchObject({ status: "connection_needed", reason: "personal_connection_needed" });
-    expect(evaluate(authority({ personalConnection: { ...authority().personalConnection!, integration: "openai_chatgpt_plan_usage" } }), [official])).toMatchObject({ status: "ready" });
+    const connection = { ...authority().personalConnection!, integration: "openai_chatgpt_plan_usage" as const, workspaceId: 'work' };
+    expect(evaluate(authority({ personalConnection: connection }), [official])).toMatchObject({ status: 'ready' });
+    expect(evaluate(authority({ policy: { mode: 'personal_required', personalRouteId: 'personal', personalWorkspaceId: 'work' }, personalConnection: connection }), [official])).toMatchObject({ status: "ready" });
+    for (const workspaceId of [undefined, 'other']) expect(evaluate(authority({ policy: { mode: 'personal_required', personalRouteId: 'personal', personalWorkspaceId: 'work' }, personalConnection: { ...connection, workspaceId } }), [official])).toMatchObject({ reason: 'personal_workspace_mismatch' });
   });
 
   it("requires the current human's unexpired connection and never selects the admin route in required-personal mode", () => {

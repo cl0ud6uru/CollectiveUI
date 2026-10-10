@@ -337,6 +337,20 @@
       "when": 1791486177143,
       "tag": "0047_subscription_cost_isolation",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1791548076354,
+      "tag": "0048_official_plan_vm_transfers",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1791581530312,
+      "tag": "0049_official_plan_transfer_unresolved_idx",
+      "breakpoints": true
     }
   ]
 }

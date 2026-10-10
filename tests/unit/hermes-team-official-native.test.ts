@@ -94,11 +94,11 @@ beforeEach(async () => {
   await db.insert(schema.bots).values({ id: 'team', ownerId: 'admin', appId: 'company', name: 'Team', visibility: 'groups' });
   await db.insert(schema.botUserAccess).values([{ botId: 'team', userId: 'alice' }, { botId: 'team', userId: 'bob' }]);
   await configureTeam(admin, 'team', { enabled: true, expectedVersion: 0, maintainerIds: ['admin'],
-    modelPolicy: { mode: 'personal_required', personalRouteId: route.id, adminRouteId: 'app:company' } });
+    modelPolicy: { mode: 'personal_required', personalRouteId: route.id, personalWorkspaceId: 'synthetic-work', adminRouteId: 'app:company' } });
   for (const owner of [alice, bob]) {
     const access = `synthetic-${owner.user.id}-official-access`;
     await storeVerifiedOfficialPlanGrant(owner, { clientId: 'synthetic-client', hostId: `synthetic-host-${owner.user.id}`, subject: `synthetic-subject-${owner.user.id}`,
-      access, refresh: `synthetic-${owner.user.id}-refresh` }, {
+      access, refresh: `synthetic-${owner.user.id}-refresh`, provenance: { ownerId: owner.user.id, clientId: 'synthetic-client', subject: `synthetic-subject-${owner.user.id}`, workspaceId: 'synthetic-work', sourceHostId: `source-${owner.user.id}`, destinationHostId: `synthetic-host-${owner.user.id}`, transportId: 'synthetic-transfer', handoffId: 'synthetic-native-fixture', refreshOwner: 'collective_vm', verifiedAt: Date.now(), expiresAt: Date.now() + 86400000 } }, {
       verifyAccessToken: async token => { expect(token).toBe(access); return { issuer: 'https://auth.openai.com', audience: OFFICIAL_PLAN_ORIGIN,
         subject: `synthetic-subject-${owner.user.id}`, clientId: 'synthetic-client', scopes: ['chatgpt.tokens.use.direct', 'resource.invoke'],
         issuedAt: Date.now() - 1000, notBefore: Date.now() - 1000, expiresAt: Date.now() + 3500000 }; },

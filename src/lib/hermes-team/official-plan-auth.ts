@@ -1,17 +1,18 @@
 import { randomBytes,randomUUID } from 'node:crypto';
-import { and,eq,gte,inArray,sql } from 'drizzle-orm';
+import { and,eq,gte,inArray,isNull,sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db,type DbOrTx } from '@/db';
-import { officialPlanAuthAttempts,officialPlanAuthOperations,officialPlanConnections } from '@/db/schema';
+import { officialPlanAuthAttempts,officialPlanAuthOperations,officialPlanConnections,officialPlanTransfers } from '@/db/schema';
 import { decrypt,encrypt,safeEqual,sha256Hex } from '@/lib/crypto';
 import { loadPrincipal,type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { OFFICIAL_PLAN_ORIGIN,OFFICIAL_PLAN_REQUIRED_SCOPES,openOfficialPlanSecret,officialPlanTokenAad,prepareOfficialPlanGrant,persistOfficialPlanGrant,type OfficialPlanConnection,type VerifiedOfficialAccessClaims } from './official-plan';
 import { createOfficialPlanVerifier } from './official-plan-signatures';
+import { OfficialPlanProvenanceSchema } from './official-plan-provenance';
 
 export const OFFICIAL_AUTHORIZE_URL='https://auth.openai.com/api/accounts/authorize';
 export const OFFICIAL_TOKEN_URL='https://auth.openai.com/api/accounts/oauth/token';
-export const OFFICIAL_AUTH_UNAVAILABLE='Official sign-in needs a verified authenticated loopback return transport. It is unavailable in this build.';
+export const OFFICIAL_AUTH_UNAVAILABLE='Official connection setup needs a supported local sign-in and protected VM credential transfer with verified per-user registration custody. It is unavailable in this build.';
 const SCOPES=['openid','profile','email','offline_access',...OFFICIAL_PLAN_REQUIRED_SCOPES].join(' ');
 const random=()=>randomBytes(32).toString('base64url');
 type Attempt=typeof officialPlanAuthAttempts.$inferSelect;
@@ -34,8 +35,23 @@ export function officialLoopbackUri(value:string){
  return uri.href;
 }
 async function principal(p:Principal,q:DbOrTx=db){const fresh=await loadPrincipal(p.user.id,q);if(!fresh || fresh.user.disabled || fresh.user.sessionVersion!==p.user.sessionVersion)throw new HttpError(403,'The account session changed.');return fresh;}
-async function ownerLock(tx:Tx,p:Principal){await tx.execute(sql`select id from users where id = ${p.user.id} for update`);await principal(p,tx);}
-async function selected(p:Principal,q:DbOrTx=db){return (await q.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true))).for('update'))[0];}
+export async function ownerLock(tx:Tx,p:Principal){await tx.execute(sql`select id from users where id = ${p.user.id} for update`);await principal(p,tx);}
+export async function selected(p:Principal,q:DbOrTx=db){return (await q.select().from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true))).for('update'))[0];}
+/** Expired transfers can never complete; retire them so an abandoned handoff stops fencing other account operations. */
+export async function retireExpiredTransfers(p:Principal,q:DbOrTx,now=new Date(Date.now())){
+ // Expired in-flight imports remain uncertain; they are never resumed after restart.
+ await q.update(officialPlanTransfers).set({state:'cancelled',updatedAt:now}).where(and(eq(officialPlanTransfers.userId,p.user.id),eq(officialPlanTransfers.state,'pending'),sql`${officialPlanTransfers.expiresAt} <= ${now}`));
+ await q.update(officialPlanTransfers).set({state:'needs_attention',updatedAt:now}).where(and(eq(officialPlanTransfers.userId,p.user.id),eq(officialPlanTransfers.state,'importing'),sql`${officialPlanTransfers.expiresAt} <= ${now}`));
+}
+export async function retireExpiredAuthAttempts(p:Principal,q:DbOrTx,now=new Date(Date.now())){
+ await q.update(officialPlanAuthAttempts).set({state:'expired',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'pending'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
+ await q.update(officialPlanAuthAttempts).set({state:'needs_attention',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'exchanging'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
+}
+async function fenceTransfer(p:Principal,q:DbOrTx){
+ await retireExpiredTransfers(p,q);
+ const [transfer]=await q.select({id:officialPlanTransfers.id}).from(officialPlanTransfers).where(and(eq(officialPlanTransfers.userId,p.user.id),inArray(officialPlanTransfers.state,['pending','importing'])));
+ if(transfer)throw new HttpError(409,'Complete or cancel the protected credential transfer first.');
+}
 
 /** Bounded fixed-endpoint protocol I/O; no retries, redirects or upstream error/token echo. */
 async function oauthForm(services:OfficialAuthServices,url:string,body:URLSearchParams,empty=false){
@@ -74,8 +90,8 @@ export async function startOfficialPlanAuth(p:Principal,reauth=false,services:Of
  const prepared=await transport.prepare(p,{attemptId:id,returnToken});const redirectUri=officialLoopbackUri(prepared.redirectUri),hostId=z.string().min(1).max(256).parse(prepared.hostId);
  return db.transaction(async tx=>{
   await ownerLock(tx,p);const now=new Date();
-  await tx.update(officialPlanAuthAttempts).set({state:'expired',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'pending'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
-  await tx.update(officialPlanAuthAttempts).set({state:'needs_attention',updatedAt:now}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'exchanging'),sql`${officialPlanAuthAttempts.expiresAt} <= ${now}`));
+  await fenceTransfer(p,tx);
+  await retireExpiredAuthAttempts(p,tx,now);
   const recent=await tx.select({id:officialPlanAuthAttempts.id,state:officialPlanAuthAttempts.state}).from(officialPlanAuthAttempts).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),gte(officialPlanAuthAttempts.createdAt,new Date(now.getTime()-600000))));
   if(recent.length>=5 || recent.some(row=>row.state==='pending'||row.state==='exchanging'))throw new HttpError(409,'Complete or reconcile the existing official sign-in first.');
   const connection=await selected(p,tx);if(reauth && (!connection || connection.hostId!==hostId))throw new HttpError(409,'Reconnect requires the retained registration and its stable loopback host.');
@@ -124,7 +140,8 @@ export async function officialPlanAuthStatus(p:Principal){
  await principal(p);const [connection]=await db.select({status:officialPlanConnections.status,expiresAt:officialPlanConnections.expiresAt,revision:officialPlanConnections.revision,id:officialPlanConnections.id}).from(officialPlanConnections).where(and(eq(officialPlanConnections.userId,p.user.id),eq(officialPlanConnections.selected,true)));
  const operations=connection?await db.select({state:officialPlanAuthOperations.state}).from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.connectionId,connection.id),eq(officialPlanAuthOperations.credentialRevision,connection.revision),inArray(officialPlanAuthOperations.state,['running','needs_attention']))):[];
  const attempts=connection?await db.select({id:officialPlanAuthAttempts.id}).from(officialPlanAuthAttempts).where(and(eq(officialPlanAuthAttempts.expectedConnectionId,connection.id),eq(officialPlanAuthAttempts.expectedRevision,connection.revision),inArray(officialPlanAuthAttempts.state,['exchanging','needs_attention']))):[];
- return {connectAvailable:false,connectReason:OFFICIAL_AUTH_UNAVAILABLE,state:operations.length||attempts.length?'needs_attention':!connection?'not_connected':connection.status!=='active'||connection.expiresAt.getTime()<=Date.now()?'connection_needed':'connected'};
+ const transfers=await db.select({id:officialPlanTransfers.id}).from(officialPlanTransfers).where(and(eq(officialPlanTransfers.userId,p.user.id),connection?and(eq(officialPlanTransfers.expectedConnectionId,connection.id),eq(officialPlanTransfers.expectedRevision,connection.revision)):isNull(officialPlanTransfers.expectedConnectionId),inArray(officialPlanTransfers.state,['importing','needs_attention'])));
+ return {connectAvailable:false,connectReason:OFFICIAL_AUTH_UNAVAILABLE,state:operations.length||attempts.length||transfers.length?'needs_attention':!connection?'not_connected':connection.status!=='active'||connection.expiresAt.getTime()<=Date.now()?'connection_needed':'connected'};
 }
 
 export async function cancelOfficialPlanAuth(p:Principal){return db.transaction(async tx=>{await ownerLock(tx,p);await tx.update(officialPlanAuthAttempts).set({state:'cancelled',updatedAt:new Date()}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),eq(officialPlanAuthAttempts.state,'pending')));return {cancelled:true};});}
@@ -132,13 +149,22 @@ export async function cancelOfficialPlanAuth(p:Principal){return db.transaction(
 /** Rotation/revocation receipts are durable before network I/O, so retries cannot reuse an old refresh token. */
 export async function operateOfficialPlanAuth(p:Principal,kind:'refresh'|'revoke',services:OfficialAuthServices=officialAuthServices()){
  const claimed=await db.transaction(async tx=>{
-  await ownerLock(tx,p);const row=await selected(p,tx);if(!row)throw new HttpError(404,'Official account not found.');
+  await ownerLock(tx,p);if(kind==='refresh')await fenceTransfer(p,tx);
+  if(kind==='revoke'){
+   // Disconnect also fences first-time sign-ins/imports before any selected account exists.
+   await tx.update(officialPlanTransfers).set({state:'cancelled',updatedAt:new Date()}).where(and(eq(officialPlanTransfers.userId,p.user.id),inArray(officialPlanTransfers.state,['pending','importing','needs_attention'])));
+   await tx.update(officialPlanAuthAttempts).set({state:'cancelled',updatedAt:new Date()}).where(and(eq(officialPlanAuthAttempts.userId,p.user.id),inArray(officialPlanAuthAttempts.state,['pending','exchanging','needs_attention'])));
+  }
+  const row=await selected(p,tx);if(!row){if(kind==='revoke')return {already:{disconnected:true as const,remoteRevocationConfirmed:false}};throw new HttpError(404,'Official account not found.');}
   if(kind==='revoke' && row.status==='revoked'){
    const [prior]=await tx.select({state:officialPlanAuthOperations.state}).from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.userId,p.user.id),eq(officialPlanAuthOperations.connectionId,row.id),eq(officialPlanAuthOperations.kind,'revoke'),eq(officialPlanAuthOperations.credentialRevision,row.revision-1)));
    // The cleared envelope is never reopened. Only the exact completed receipt proves remote logout.
    return {already:{disconnected:true as const,remoteRevocationConfirmed:prior?.state==='complete'}};
   }
   if(kind==='refresh' && row.status!=='active')throw new HttpError(409,'Reconnect the official account first.');
+  // Rotation consumes the old refresh token, so an expired transfer approval must reject before provider I/O, not after.
+  const provenance=row.provenance?OfficialPlanProvenanceSchema.parse(row.provenance):null,now=Date.now();
+  if(kind==='refresh' && provenance && (provenance.verifiedAt>now || provenance.expiresAt<=now))throw new HttpError(409,'The approved work registration needs verification. Reconnect before refreshing.');
   const [prior]=await tx.select().from(officialPlanAuthOperations).where(and(eq(officialPlanAuthOperations.connectionId,row.id),eq(officialPlanAuthOperations.credentialRevision,row.revision),eq(officialPlanAuthOperations.kind,kind))).for('update');
   if(prior)throw new HttpError(409,'The official token operation was already claimed. Reconnect if its result is uncertain.');
   const bundle=openOfficialPlanSecret(row);if(kind==='refresh' && !bundle.refresh)throw new HttpError(409,'The official account cannot refresh yet.');
@@ -156,7 +182,7 @@ export async function operateOfficialPlanAuth(p:Principal,kind:'refresh'|'revoke
   const tokens=(await oauthForm(services,OFFICIAL_TOKEN_URL,new URLSearchParams({grant_type:'refresh_token',client_id:claimed.row.clientId,refresh_token:claimed.bundle.refresh!,resource:OFFICIAL_PLAN_ORIGIN})))!;
   if(!tokens.refresh_token)throw new HttpError(409,'The rotating official refresh token is missing.');
   const claims=await verifiedTokens(services,tokens,claimed.row.clientId,{subject:claimed.row.subject},false);
-  const prepared=await prepareOfficialPlanGrant({clientId:claimed.row.clientId,hostId:claimed.row.hostId,subject:claims.subject,access:tokens.access_token,refresh:tokens.refresh_token,idToken:tokens.id_token??claimed.bundle.idToken,earliestRefreshHint:tokens.earliest_refresh_at},{fetch:services.fetch,verifyAccessToken:async()=>claims});
+  const prepared=await prepareOfficialPlanGrant({clientId:claimed.row.clientId,hostId:claimed.row.hostId,subject:claims.subject,access:tokens.access_token,refresh:tokens.refresh_token,idToken:tokens.id_token??claimed.bundle.idToken,earliestRefreshHint:tokens.earliest_refresh_at,provenance:claimed.row.provenance??undefined},{fetch:services.fetch,verifyAccessToken:async()=>claims});
   return await db.transaction(async tx=>{await ownerLock(tx,p);await persistOfficialPlanGrant(p,prepared,tx,{id:claimed.row.id,revision:claimed.row.revision});await tx.update(officialPlanAuthOperations).set({state:'complete',updatedAt:new Date()}).where(eq(officialPlanAuthOperations.id,claimed.operation.id));return {connected:true};});
  }catch{
   await db.update(officialPlanAuthOperations).set({state:'needs_attention',updatedAt:new Date()}).where(and(eq(officialPlanAuthOperations.id,claimed.operation.id),eq(officialPlanAuthOperations.state,'running')));

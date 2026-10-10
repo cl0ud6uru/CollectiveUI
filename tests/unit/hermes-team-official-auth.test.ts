@@ -33,6 +33,10 @@ beforeEach(async()=>{
 afterAll(async()=>{await fixture.client!.close();vi.unstubAllEnvs();});
 
 describe('Dormant exact official loopback OAuth controllers and durable rotating tokens',()=>{
+ it('disconnect fences first-time pending authorization before any account exists',async()=>{
+  const attempt=await begin();expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});
+  await expect(returnOfficialPlanAuth(attempt.attemptId,attempt.authorization,attempt.callback,services)).rejects.toMatchObject({status:409});expect(fetcher).not.toHaveBeenCalled();expect(await db.select().from(schema.officialPlanConnections)).toEqual([]);
+ });
  it('keeps production connect/refresh/return unavailable without a verified return transport, before rows or network',async()=>{
   expect(VERIFIED_OFFICIAL_LOOPBACK_TRANSPORTS).toEqual([]);const dormant={...services,transports:[]};const http=createOfficialPlanAuthHttp(async()=>alice,dormant);
   for(const action of ['connect','reconnect','refresh','disconnect'])expect((await http.POST(request({action}))).status).toBe(409);
@@ -154,7 +158,7 @@ describe('Dormant exact official loopback OAuth controllers and durable rotating
  it('handles concurrent and completed disconnect replay without decrypting the cleared envelope or repeating remote I/O',async()=>{
   await connect();fetcher.mockClear();let reached!:()=>void;let finish!:(value:Response)=>void;const ready=new Promise<void>(resolve=>{reached=resolve;}),deferred=new Promise<Response>(resolve=>{finish=resolve;});
   fetcher.mockImplementation(async()=>{reached();return deferred;});const first=operateOfficialPlanAuth(alice,'revoke',services);await ready;
-  expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});await expect(operateOfficialPlanAuth(bob,'revoke',services)).rejects.toMatchObject({status:404});expect(fetcher).toHaveBeenCalledOnce();
+  expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});expect(await operateOfficialPlanAuth(bob,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:false});expect(fetcher).toHaveBeenCalledOnce();
   finish(new Response(null));expect(await first).toEqual({disconnected:true,remoteRevocationConfirmed:true});expect(await operateOfficialPlanAuth(alice,'revoke',services)).toEqual({disconnected:true,remoteRevocationConfirmed:true});expect(fetcher).toHaveBeenCalledOnce();expect(await db.select().from(schema.officialPlanAuthOperations)).toHaveLength(1);
  });
  it('clears an accepted access-only account without falsely claiming remote logout on disconnect or replay',async()=>{

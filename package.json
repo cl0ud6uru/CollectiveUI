@@ -27,7 +27,8 @@
     "test:integration": "vitest run --project integration",
     "test:sandbox": "SANDBOX_DOCKER=1 vitest run --project sandbox",
     "local-account": "tsx scripts/local-account.ts",
-    "test:hermes-ui": "node tests/browser/remote-hermes-workspace.mjs"
+    "test:hermes-ui": "node tests/browser/remote-hermes-workspace.mjs",
+    "test:official-companion": "vitest run --project unit tests/unit/hermes-team-official-companion.test.ts tests/unit/hermes-team-official-plan.test.ts --maxWorkers=1"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "5.0.94",

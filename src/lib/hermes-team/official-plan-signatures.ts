@@ -1,6 +1,6 @@
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from 'jose';
 import { z } from 'zod';
-import { HttpError } from '@/lib/authz';
+import { HttpError } from '@/lib/http-error';
 import type { VerifiedOfficialAccessClaims } from './official-plan';
 
 const ISSUER = 'https://auth.openai.com' as const;

@@ -10,6 +10,8 @@ export const TeamModelPolicySchema = z.object({
   mode: TeamModelPolicyModeSchema,
   adminRouteId: identifier.optional(),
   personalRouteId: identifier.optional(),
+  /** Optional corporate allowlist; no live provider membership-evidence adapter is registered. */
+  personalWorkspaceId: identifier.optional(),
   requireHardLimits:z.boolean().optional(),
 }).strict();
 export type TeamModelPolicy = z.infer<typeof TeamModelPolicySchema>;
@@ -61,6 +63,7 @@ export type TeamPersonalModelConnection = {
   integration: Exclude<TeamModelIntegration, "admin_inference_gateway">;
   status: "active" | "expired" | "revoked";
   expiresAt: number;
+  workspaceId?: string;
 };
 export type TeamModelAuthority = {
   userId: string;
@@ -95,7 +98,7 @@ export type TeamModelAttribution = {
   connectionId: string | null;
 };
 export type TeamModelDenialReason = "access_revoked" | "identity_mismatch" | "invalid_policy" | "invalid_request"
-  | "personal_not_allowed" | "route_unverified" | "personal_connection_needed" | "personal_connection_expired";
+  | "personal_not_allowed" | "route_unverified" | "personal_connection_needed" | "personal_connection_expired" | "personal_workspace_mismatch";
 export type TeamModelAccess =
   | { status: "ready"; attribution: TeamModelAttribution }
   | { status: "connection_needed" | "blocked"; reason: TeamModelDenialReason; message: string };
@@ -146,6 +149,8 @@ export function evaluateTeamModelAccess(
       return deny("personal_connection_needed", "Connect your own ChatGPT account to use this bot.", "connection_needed");
     if (connection.status !== "active" || !Number.isFinite(connection.expiresAt) || connection.expiresAt <= now)
       return deny("personal_connection_expired", "Reconnect your ChatGPT account. This bot's work is paused.", "connection_needed");
+    if (policy.personalWorkspaceId && (route.integration !== 'openai_chatgpt_plan_usage' || connection.workspaceId !== policy.personalWorkspaceId))
+      return deny("personal_workspace_mismatch", "Connect your own approved account in this bot's work workspace.", "connection_needed");
     connectionId = connection.id;
   }
   return { status: "ready", attribution: {
