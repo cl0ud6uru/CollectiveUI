@@ -391,7 +391,11 @@ final class ChatModel {
     }
 
     private func executeCommand(_ text: String, preservesDraft: Bool = false) async {
-        defer { isExecutingCommand = false; commandTask = nil }
+        defer {
+            isExecutingCommand = false
+            commandTask = nil
+            requestScroll(.content)
+        }
         guard let api = app.api, let target else { return }
         let isFreshCommand = text.range(of: #"^/(?:hermes\s+|portal\s+)?(?:new|reset)$"#,
             options: [.regularExpression, .caseInsensitive]) != nil
@@ -409,10 +413,12 @@ final class ChatModel {
         ]
         if let id = messages.last?.id { body["messageId"] = .string(id) }
         commandError = nil
+        requestScroll(.content)
         do {
             let result = try await api.send("/api/chat/commands", method: "POST", body: .object(body), as: ChatCommandResult.self)
             guard !Task.isCancelled else { return }
             commandResult = result
+            requestScroll(.content)
             commandRevision = max(commandRevision, result.revision ?? 0)
             if let freshAttemptId, commandAttempt?.nextId == freshAttemptId { commandAttempt = nil }
             if !preservesDraft && composerText == originalDraft { composerText = "" }
@@ -432,6 +438,7 @@ final class ChatModel {
                 commandError = command == "/yolo" || command == "/hermes yolo"
                     ? "\(error.localizedDescription) Your draft has been kept. Check /yolo status before choosing /yolo on or /yolo off."
                     : "\(error.localizedDescription) Your draft has been kept."
+                requestScroll(.content)
             }
             await loadCommandCatalog()
         }

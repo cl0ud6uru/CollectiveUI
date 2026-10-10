@@ -173,8 +173,13 @@ final class CollectiveUIRegression: XCTestCase {
         let warning = app.staticTexts["Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing. Your draft has been kept."]
         XCTAssertTrue(warning.waitForExistence(timeout: 10))
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
-        capture("hermes-cancellation-01-reset-kept")
         let check = app.buttons["Check Hermes status"]
+        let fullyVisible = NSPredicate { _, _ in
+            check.exists && check.isEnabled && self.app.scrollViews["chat.transcript"].frame.contains(check.frame)
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
+            "The full status target must fit above the composer with the keyboard visible")
+        capture("hermes-cancellation-01-reset-kept")
         XCTAssertTrue(check.isHittable)
         XCTAssertGreaterThanOrEqual(check.frame.height, 44)
         tap(check)
@@ -183,6 +188,8 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
         XCTAssertFalse(warning.exists)
         XCTAssertTrue(check.exists, "Status inspection stays available while cancellation remains unconfirmed")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
+            "The status target remains fully visible after the result grows")
         XCTAssertTrue(check.isEnabled)
         capture("hermes-cancellation-02-unconfirmed-status")
     }
