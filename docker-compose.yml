@@ -36,6 +36,8 @@ services:
     stop_grace_period: 45s
     volumes:
       - uploads:/data/uploads
+      # Internal CA certificates (e.g. LDAPS): LDAP_CA_CERT=/etc/portal/certs/<file>.pem. See certs/README.md.
+      - ./certs:/etc/portal/certs:ro
     depends_on:
       db: { condition: service_healthy }
 
@@ -46,11 +48,14 @@ services:
     environment:
       DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set a unique POSTGRES_PASSWORD in .env}@db:5432/portal
       STORAGE_DIR: /data/uploads # the uploads volume; see the worker
+      # PORT in .env picks the host port below; env_file would also hand it to Next.js, which must stay on 3000.
+      PORT: "3000"
     ports:
       # WEB_BIND=127.0.0.1 (or one interface's address) when a reverse proxy on this host terminates TLS.
       - "${WEB_BIND:-0.0.0.0}:${PORT:-3000}:3000"
     volumes:
       - uploads:/data/uploads
+      - ./certs:/etc/portal/certs:ro # see the worker
     depends_on:
       db: { condition: service_healthy }
       worker: { condition: service_started } # the worker applies migrations on start

@@ -3,7 +3,8 @@ import type { AuthenticationResponseJSON } from "@collective/webauthn-server";
 import { randomToken } from "@/lib/crypto";
 import { beginPasswordLogin, finishPasswordLogin, beginPasskey, finishPasskey } from "@/lib/auth/security";
 import { bindingCookieName, readBinding, securityConfig, SecurityError } from "@/lib/auth/factors";
-import { securityRequest, securityResponse, securityFailure } from "@/lib/auth/security-request";
+import { LdapUnavailableError } from "@/lib/auth/ldap";
+import { securityRequest, securityResponse, securityFailure, directoryUnavailable } from "@/lib/auth/security-request";
 export const runtime = "nodejs";
 /** Public preauthentication only. No Auth.js session is issued by this handler. */
 export async function POST(request: Request) {
@@ -20,5 +21,5 @@ export async function POST(request: Request) {
     if (body.action === "passkey-begin") return securityResponse(await beginPasskey(binding, undefined, undefined, "ldap"));
     if (body.action === "passkey-finish") return securityResponse(await finishPasskey(body.flow, body.response as AuthenticationResponseJSON, binding, undefined, "ldap"));
     throw new SecurityError();
-  } catch { return securityFailure(); }
+  } catch (err) { return err instanceof LdapUnavailableError ? directoryUnavailable(err) : securityFailure(); }
 }

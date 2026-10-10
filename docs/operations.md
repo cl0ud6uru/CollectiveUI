@@ -94,7 +94,8 @@ Enter an **existing local administrator's** username/email and a new hidden pass
 
 ### Option B: On-prem AD over LDAPS
 
-- Create a read-only service account. Set `LDAP_URL=ldaps://dc:636`, `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD` and `LDAP_BASE_DN`. Point `LDAP_CA_CERT` at your internal root CA certificate.
+- Create a read-only service account. Set `LDAP_URL=ldaps://dc:636`, `LDAP_BIND_DN`, `LDAP_BIND_PASSWORD` and `LDAP_BASE_DN`. Point `LDAP_CA_CERT` at your internal root CA certificate. With Compose, put the PEM file in `./certs` (mounted at `/etc/portal/certs`) and use the in-container path; [certs/README.md](../certs/README.md) shows how to export the root CA from AD.
+- If the directory can't be reached (connection, TLS, CA file or service-account bind failure), sign-in says so instead of reporting a wrong password, and the web log records the cause as `[auth] LDAP directory unavailable (...)`.
 - Users can sign in as `jdoe`, `DOMAIN\jdoe` or `jdoe@corp.com`. Nested groups are resolved with `LDAP_GROUP_MODE=ad`, which uses the `1.2.840.113556.1.4.1941` in-chain match.
 - Search filters are escaped against LDAP injection, and empty passwords (which some servers treat as anonymous binds) are rejected.
 - For passwordless company sign-in, apply migration **0034_ldap_passkeys** and enroll a passkey in Settings → Security. The read-only service account must read `objectGUID`, `userAccountControl`, `msDS-User-Account-Control-Computed`, `accountExpires`, identity and group attributes. Password-only LDAP login is blocked after enrollment; fallback requires company password plus a recovery code. See [directory checks and recovery](security/local-mfa.md#ldap-passkeys-2026-10-06).

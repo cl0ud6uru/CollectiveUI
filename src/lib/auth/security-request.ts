@@ -23,3 +23,9 @@ export function securityResponse(value: unknown, status = 200) {
   return Response.json(value, { status, headers: { "Cache-Control": "no-store", "Pragma": "no-cache" } });
 }
 export function securityFailure() { return securityResponse({ error: SECURITY_ERROR }, 400); }
+/** Not user-specific, so it reveals nothing about the account; the cause is logged for the operator only. */
+export function directoryUnavailable(err: { cause?: unknown }) {
+  const cause = err.cause instanceof Error ? `${err.cause.name}: ${err.cause.message}` : "unknown error";
+  console.warn(`[auth] LDAP directory unavailable (${cause})`);
+  return securityResponse({ error: SECURITY_ERROR, code: "directory_unavailable" }, 503);
+}

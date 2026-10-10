@@ -7,6 +7,6 @@ export type SecurityResult = {
 export async function securityPost(path: string, body: Record<string, unknown>): Promise<SecurityResult> {
   const response = await fetch(path, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "Unable to verify. Start again.");
+  if (!response.ok) throw Object.assign(new Error(result.error ?? "Unable to verify. Start again."), { code: typeof result.code === "string" ? result.code : undefined });
   return result;
 }
