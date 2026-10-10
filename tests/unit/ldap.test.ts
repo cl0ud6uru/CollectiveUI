@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cnFromDn, escapeFilterValue, normalizeUsername, ldapAccountActive, ldapEntryIdentity, ldapConfigFromEnv } from "@/lib/auth/ldap";
+import { authenticateLdap, cnFromDn, escapeFilterValue, normalizeUsername, ldapAccountActive, ldapEntryIdentity, ldapConfigFromEnv, LdapUnavailableError, type LdapConfig } from "@/lib/auth/ldap";
 
 describe("ldap helpers", () => {
   it("escapes filter metacharacters (prevents LDAP injection)", () => {
@@ -44,4 +44,19 @@ it("binds passkeys to a stable GUID/UUID and configured directory rather than a 
   expect(ldapEntryIdentity(entry, { ...memberConfig, url: "ldaps://other.invalid" })).not.toBe(identity);
   expect(ldapEntryIdentity({ dn: entry.dn }, memberConfig)).toBeUndefined();
   expect(ldapEntryIdentity({ dn: entry.dn, objectGUID: Buffer.alloc(16, 4) }, adConfig)).toMatch(/^[a-f0-9]{64}$/);
+});
+
+describe("directory failures", () => {
+  const cfg = (over: Partial<LdapConfig>): LdapConfig => ({ url: "ldap://127.0.0.1:1", bindDn: "cn=svc", bindPassword: "x", baseDn: "dc=x", groupBaseDn: "dc=x",
+    userFilter: "(uid={{username}})", groupMode: "member", rejectUnauthorized: true, timeoutMs: 2000, ...over });
+  it("reports an unreachable directory as unavailable, not as a wrong password", async () => {
+    await expect(authenticateLdap("jdoe", "pw", cfg({}))).rejects.toBeInstanceOf(LdapUnavailableError);
+  });
+  it("reports a missing CA file as unavailable", async () => {
+    await expect(authenticateLdap("jdoe", "pw", cfg({ url: "ldaps://127.0.0.1:1", caCertPath: "/nonexistent/ca.pem" })))
+      .rejects.toBeInstanceOf(LdapUnavailableError);
+  });
+  it("still rejects empty credentials without contacting the directory", async () => {
+    await expect(authenticateLdap("jdoe", "", cfg({}))).resolves.toBeNull();
+  });
 });

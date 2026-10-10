@@ -6,7 +6,7 @@ import { startAuthentication, startRegistration, type PublicKeyCredentialCreatio
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { securityPost, type SecurityResult } from "@/lib/auth/security-client";
+import { securityPost, securityErrorMessage, type SecurityResult } from "@/lib/auth/security-client";
 import type { securitySummary, SecurityOperation } from "@/lib/auth/security";
 
 type Summary = Awaited<ReturnType<typeof securitySummary>>;
@@ -77,19 +77,19 @@ export function SecurityForm({ initial, passwordOnly = false }: { initial: Summa
       stage = "save";
       setPasskeyStatus("Saving your passkey…");
       setResult(await post({ action: "register-finish", flow: start.flow, response }));
-    } catch {
+    } catch (err) {
       setPasskeyProof("");
-      setError(stage === "browser"
+      setError(securityErrorMessage(err, stage === "browser"
         ? "Passkey setup wasn’t completed. If you closed the browser prompt or it timed out, verify your identity again to retry. You can choose this device, a phone or a security key."
         : stage === "begin"
           ? "Could not start passkey setup. Your verification may have expired. Verify your identity again to retry."
-          : "Could not confirm that your passkey was saved. Close this dialog and refresh your passkey list before trying again.");
+          : "Could not confirm that your passkey was saved. Close this dialog and refresh your passkey list before trying again."));
     } finally { setPending(false); setPasskeyProof(""); setPasskeyStatus(""); }
   }
   async function activate(form: FormData) {
     setPending(true); setError("");
     try { setResult(await post({ action: "totp-finish", flow: totp?.flow, code: form.get("code") })); setTotp(undefined); setQr(""); }
-    catch { setError("Verification failed or expired. Start setup again with a fresh code."); setTotp(undefined); setQr(""); }
+    catch (err) { setError(securityErrorMessage(err, "Verification failed or expired. Start setup again with a fresh code.")); setTotp(undefined); setQr(""); }
     finally { setPending(false); }
   }
   if (result?.signOut) return <section className="space-y-4" aria-live="polite">

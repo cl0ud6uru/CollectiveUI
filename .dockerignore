@@ -6,4 +6,6 @@ test-results
 playwright-report
 .env*
 !.env.example
+certs
+docker-compose.override.yml
 *.tsbuildinfo
