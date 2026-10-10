@@ -10,4 +10,6 @@ These captures render the production web sidebar and its controls with synthetic
 
 The supplied portrait is reproduced under its [artwork notice](../../../public/portraits/README.md), outside the application's MIT license.
 
+The after captures use the supplied transparent cutout. The character's outside edges composite onto the sidebar's actual dark/light background, with no painted backing rectangle. The original portrait's embedded background is not supplied by CSS.
+
 Regenerate: `BOT_PORTRAIT_SCREENSHOTS=/tmp/hermes-portrait node tests/browser/bot-sidebar-portrait.mjs`. CI saves the same synthetic after captures as `bot-portrait-screenshots`.
