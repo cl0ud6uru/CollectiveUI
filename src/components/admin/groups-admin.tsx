@@ -6,6 +6,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, X } from "lucide-react";
 import { deleteGroup, saveGroup, type GroupInput } from "@/app/admin/actions";
+import { findLdapUserForGroup } from "@/app/admin/groups/ldap-actions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/input";
@@ -15,13 +16,28 @@ import { Badge, Table, Td } from "./ui";
 type Mapping = GroupInput["mappings"][number];
 type Group = GroupInput & { id: string };
 
-function GroupDialog({ group, known, users, onClose }: { group: Partial<Group> | null; known: Mapping[]; users: UserOption[]; onClose: () => void }) {
+function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Partial<Group> | null; known: Mapping[]; users: UserOption[]; ldapEnabled: boolean; onClose: () => void }) {
   const router = useRouter();
   const [g, setG] = useState<Partial<Group>>(group ?? { mappings: [], isAdmin: false, canCreateBots: true });
   const [src, setSrc] = useState<"entra" | "ldap">("ldap");
   const [ext, setExt] = useState("");
   const [pending, start] = useTransition();
+  const [ldapUsername, setLdapUsername] = useState("");
+  const [ldapMembers, setLdapMembers] = useState<Awaited<ReturnType<typeof findLdapUserForGroup>>[]>([]);
+  const [lookingUp, lookup] = useTransition();
   const mappings = g.mappings ?? [];
+
+  function addLdapUser() {
+    lookup(async () => {
+      try {
+        const member = await findLdapUserForGroup(ldapUsername);
+        setLdapMembers(current => current.some(u => u.upn === member.upn) ? current : [...current, member]);
+        setLdapUsername("");
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "LDAP lookup failed");
+      }
+    });
+  }
 
   function addMapping() {
     const id = ext.trim();
@@ -93,12 +109,26 @@ function GroupDialog({ group, known, users, onClose }: { group: Partial<Group> |
           <Field label="Individual users" hint="These users receive the group’s permissions alongside members of its directory groups.">
             <UserPicker users={users} value={g.memberIds ?? []} onChange={memberIds => setG({ ...g, memberIds })} />
           </Field>
+          {ldapEnabled && <Field label="Add LDAP user before first login" hint="Enter an exact LDAP username or UPN. Permissions are assigned when you save this group.">
+            <div className="flex gap-2">
+              <Input aria-label="LDAP username or UPN" placeholder="jdoe or jdoe@corp.com" value={ldapUsername}
+                disabled={lookingUp || pending} onChange={e => setLdapUsername(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); if (!lookingUp && !pending && ldapUsername.trim()) addLdapUser(); } }} />
+              <Button variant="outline" disabled={lookingUp || pending || !ldapUsername.trim()} onClick={addLdapUser}>
+                {lookingUp ? "Looking up…" : "Add LDAP user"}
+              </Button>
+            </div>
+            {ldapMembers.map(member => <div key={member.upn} className="mt-2 flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+              <span className="min-w-0 flex-1"><span className="block truncate">{member.name}</span><span className="block truncate text-xs text-muted">{member.upn}</span></span>
+              <button aria-label={`Remove ${member.name}`} onClick={() => setLdapMembers(current => current.filter(u => u.upn !== member.upn))} className="text-muted hover:text-danger"><X className="h-4 w-4" /></button>
+            </div>)}
+          </Field>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
             <Button
-              disabled={pending || !g.name}
+              disabled={pending || lookingUp || !g.name}
               onClick={() =>
                 start(async () => {
                   try {
@@ -110,6 +140,7 @@ function GroupDialog({ group, known, users, onClose }: { group: Partial<Group> |
                       canCreateBots: !!g.canCreateBots,
                       mappings,
                       memberIds: g.memberIds ?? [],
+                      ldapUsernames: ldapMembers.map(member => member.username),
                     });
                     toast.success("Group saved");
                     onClose();
@@ -129,7 +160,7 @@ function GroupDialog({ group, known, users, onClose }: { group: Partial<Group> |
   );
 }
 
-export function GroupsAdmin({ groups, known, users }: { groups: Group[]; known: Mapping[]; users: UserOption[] }) {
+export function GroupsAdmin({ groups, known, users, ldapEnabled = false }: { groups: Group[]; known: Mapping[]; users: UserOption[]; ldapEnabled?: boolean }) {
   const router = useRouter();
   const [edit, setEdit] = useState<Partial<Group> | null>(null);
   return (
@@ -178,7 +209,7 @@ export function GroupsAdmin({ groups, known, users }: { groups: Group[]; known: 
           </tr>
         )}
       </Table>
-      <GroupDialog key={edit?.id ?? (edit ? "new" : "none")} group={edit} known={known} users={users} onClose={() => setEdit(null)} />
+      <GroupDialog key={edit?.id ?? (edit ? "new" : "none")} group={edit} known={known} users={users} ldapEnabled={ldapEnabled} onClose={() => setEdit(null)} />
     </div>
   );
 }

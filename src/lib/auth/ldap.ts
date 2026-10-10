@@ -147,6 +147,30 @@ export async function authenticateLdap(
 const identityAttributes = ["dn", "userPrincipalName", "sAMAccountName", "uid", "mail", "displayName", "cn", "memberOf",
   "objectGUID", "entryUUID", "userAccountControl", "msDS-User-Account-Control-Computed", "accountExpires", "pwdAccountLockedTime", "pwdStartTime", "pwdEndTime"];
 
+/** Exact service-account lookup for admins prestaging group membership. No user bind. */
+export async function lookupLdapUser(usernameInput: string, cfg = ldapConfigFromEnv()): Promise<LdapUser | null> {
+  const username = normalizeUsername(usernameInput);
+  if (!username || username.length > 254) return null;
+  const service = newClient(cfg);
+  try {
+    await service.bind(cfg.bindDn, cfg.bindPassword);
+    const { searchEntries } = await service.search(cfg.baseDn, {
+      scope: "sub", filter: cfg.userFilter.replaceAll("{{username}}", escapeFilterValue(username)),
+      sizeLimit: 2, attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"],
+    });
+    if (searchEntries.length !== 1) return null;
+    let entry = searchEntries[0];
+    if (cfg.groupMode === "ad" || hasAdGuid(entry)) {
+      const status = await service.search(entry.dn, { scope: "base", filter: "(objectClass=*)", sizeLimit: 2,
+        attributes: identityAttributes, explicitBufferAttributes: ["objectGUID"] });
+      if (status.searchEntries.length !== 1) return null;
+      entry = status.searchEntries[0];
+    }
+    if (!ldapAccountActive(entry, cfg)) return null;
+    return await resolveEntry(service, entry, username, cfg);
+  } finally { await service.unbind().catch(() => {}); }
+}
+
 function hasAdGuid(entry: Entry) {
   const value = Array.isArray(entry.objectGUID) ? entry.objectGUID[0] : entry.objectGUID;
   return Buffer.isBuffer(value) && value.length === 16;

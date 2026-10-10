@@ -19,7 +19,7 @@ export function UserPicker({ users, value, onChange }: { users: UserOption[]; va
         <input type="checkbox" aria-label={`Select ${u.name} (${u.email ?? u.upn})`} checked={value.includes(u.id)} onChange={e => onChange(e.target.checked ? [...value, u.id] : value.filter(id => id !== u.id))} className="h-4 w-4 shrink-0 accent-[var(--accent)]" />
         <span className="min-w-0 text-sm"><span className="block truncate">{u.name}{u.disabled && " (disabled)"}</span><span className="block truncate text-xs text-muted">{u.email ?? u.upn}</span></span>
       </label>)}
-      {!matches.length && <p className="px-3 py-2 text-sm text-muted">{users.length ? "No matching users." : "Users appear after their first sign-in or when a local account is created."}</p>}
+      {!matches.length && <p className="px-3 py-2 text-sm text-muted">{users.length ? "No matching users." : "Users appear after sign-in or when an account is added."}</p>}
     </div>
     {matches.length > 50 && <p className="text-xs text-muted">Search to narrow the list.</p>}
   </div>;
