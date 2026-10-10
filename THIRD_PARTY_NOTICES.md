@@ -24,7 +24,7 @@ Pet adaptation for CollectiveUI by @cl0ud6uru. Inspired by Hermes Agent from Nou
 
 [Hermes Assimilated](assets/pets/hermes-assimilated/README.md) is separate, unofficial Star Trek Borg-inspired fan artwork, not affiliated with or endorsed by Star Trek's owners. Complete reference/character provenance and third-party licensing permissions have not been established. Its artwork and preview/screenshot reproductions are excluded from the application's MIT license. Attribution does not grant underlying rights. The supplied [source notice](assets/pets/hermes-assimilated/SOURCE-README.txt) is preserved.
 
-The user-supplied [full-body sidebar portrait](public/portraits/README.md) is preserved byte for byte as a separate still image. The same artwork notice and MIT exclusion apply.
+The user-supplied transparent edit of the [full-body sidebar portrait](public/portraits/README.md) is preserved byte for byte as a separate still image. The same artwork notice and MIT exclusion apply.
 
 ## The Queen artwork
 
