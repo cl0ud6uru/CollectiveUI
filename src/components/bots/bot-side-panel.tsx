@@ -7,6 +7,7 @@ import { getBotPanelData } from "@/app/(chat)/bots/actions";
 import type { TargetOption } from "@/components/chat/types";
 import { Tip } from "@/components/ui/tooltip";
 import { BotAvatar } from "@/components/bots/bot-avatar";
+import { BotPortrait } from "@/components/bots/bot-portrait";
 import { BotPetSettings } from "@/components/pets/bot-pet";
 import { RoutineEditor, RunStatusIcon, scheduleText, type RoutineRow, type RunRow } from "./routine-editor";
 import { ShareTemplateButton } from "./share-template";
@@ -46,8 +47,8 @@ export function BotSidePanel({ bot, onClose, panelId, mobile = false }: { bot: T
   const quiet = !!data && !data.activity.length && !data.outputs.length;
 
   return (
-    <aside aria-label={`${bot.name} activity and outputs`} className={`flex h-full shrink-0 flex-col ${mobile ? "w-full" : "w-[300px] border-l border-border bg-bg"}`}>
-      <div className="flex h-14 items-center justify-end gap-1 px-2">
+    <aside aria-label={`${bot.name} activity and outputs`} className={`flex h-full min-h-0 min-w-0 shrink-0 flex-col ${mobile ? "w-full" : "w-[300px] border-l border-border bg-bg"}`}>
+      <div className="flex h-14 shrink-0 items-center justify-end gap-1 px-2">
         {data?.canEdit && (
           <Tip label="Bot settings">
             <Link href={`/bots/${bot.id}/edit`} className="rounded-lg p-2 text-muted hover:bg-hover hover:text-fg" aria-label="Bot settings">
@@ -59,7 +60,7 @@ export function BotSidePanel({ bot, onClose, panelId, mobile = false }: { bot: T
           <PanelRightClose aria-hidden className="h-5 w-5" />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 pb-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
         {/* Who this is, without a card: Grok Bot keeps the panel flat. */}
         <div className="flex items-center gap-3">
           <BotAvatar botId={bot.id} activity={state === "waiting" ? "approval" : state === "working" ? "working" : undefined} value={bot.icon} size={56} state={state === "working" ? "working" : state === "waiting" ? "waiting" : "idle"} className="h-14 w-14" />
@@ -141,15 +142,16 @@ export function BotSidePanel({ bot, onClose, panelId, mobile = false }: { bot: T
         </div>
 
         </>}
-        {data && !data.localEngine && <div className="mt-6 flex gap-2">
-          <UseAsTemplateButton botId={bot.id} className="flex-1 justify-center whitespace-nowrap px-3 py-2 text-xs" />
+        {data && !data.localEngine && <div className="mt-6 flex flex-wrap gap-2">
+          <UseAsTemplateButton botId={bot.id} className="flex-auto justify-center whitespace-nowrap px-3 py-2 text-xs" />
           {data?.canEdit && (
             <ShareTemplateButton
               botId={bot.id}
-              className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full border border-border px-3 py-2 text-xs font-medium hover:bg-hover"
+              className="flex flex-auto items-center justify-center gap-2 whitespace-nowrap rounded-full border border-border px-3 py-2 text-xs font-medium hover:bg-hover"
             />
           )}
         </div>}
+        <BotPortrait botId={bot.id} />
       </div>
       {edit && !data?.serviceMode && !data?.localEngine && (
         <RoutineEditor
