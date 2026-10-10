@@ -170,10 +170,13 @@ final class ChatRecoveryTests: XCTestCase {
 
     func testRepeatedStatusChecksUseOneRequest() async {
         fixture.snapshotStatus = 503
+        fixture.snapshotDelay = 0.3
         let model = chat()
         model.composerText = "Request"
         model.send()
-        await waitUntil { !model.isStreaming && model.needsMessageStatusCheck }
+        // Finish the automatic failed reconciliation before starting the manual
+        // single-flight check. The gate is set before that initial read completes.
+        await waitUntil { !model.isStreaming && model.needsMessageStatusCheck && !model.isCheckingMessageStatus }
         let previousCount = fixture.snapshotCount
         fixture.snapshotStatus = 200
         fixture.snapshotDelay = 0.3

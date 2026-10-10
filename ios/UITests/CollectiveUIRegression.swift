@@ -368,18 +368,23 @@ final class CollectiveUIRegression: XCTestCase {
         capture("visible-return-newline")
     }
 
-    func testSignInLabelContrastsWithItsFillInBothThemes() {
-        for theme in ["dark", "light"] {
-            app.launchArguments = ["--demo", "--demo-screen", "signin", "--demo-appearance", theme]
-            app.launch()
-            let button = app.buttons["Sign in"]
-            XCTAssertTrue(button.waitForExistence(timeout: 10))
-            XCTAssertTrue(button.isHittable)
-            settle(0.5)
-            capture("signin-" + theme)
-            assertContrastingLabel(in: button)
-            app.terminate()
-        }
+    func testSignInLabelContrastsWithItsFillInDarkTheme() {
+        assertSignInContrast(appearance: "dark")
+    }
+
+    func testSignInLabelContrastsWithItsFillInLightTheme() {
+        assertSignInContrast(appearance: "light")
+    }
+
+    private func assertSignInContrast(appearance: String) {
+        app.launchArguments = ["--demo", "--demo-screen", "signin", "--demo-appearance", appearance]
+        app.launch()
+        let button = app.buttons["Sign in"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        XCTAssertTrue(button.isHittable)
+        settle(0.5)
+        capture("signin-" + appearance)
+        assertContrastingLabel(in: button)
     }
 
     private func assertContrastingLabel(in button: XCUIElement) {
