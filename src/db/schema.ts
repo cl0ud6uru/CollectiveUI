@@ -1280,8 +1280,10 @@ export const hermesRunContexts = pgTable("hermes_run_contexts", {
   model: text("model"),
   upstreamRunId: text("upstream_run_id"),
   stopState: text("stop_state").$type<"pending" | "confirmed">(),
+  /** Null on historical rows: missing identity alone never proves non-admission. */
+  admissionState: text("admission_state").$type<"prepared" | "attempted" | "rejected">(),
   provisionId: text("provision_id"),
-});
+}, (t) => [check("hermes_run_contexts_admission_check", sql`${t.admissionState} in ('prepared', 'attempted', 'rejected')`)]);
 
 /** Operator-registered isolation boundary, one per user. Deletion is intentionally restricted. */
 export const hermesConnections = pgTable("hermes_connections", {

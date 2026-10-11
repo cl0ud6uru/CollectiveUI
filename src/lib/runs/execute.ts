@@ -24,6 +24,7 @@ import { decideFinal, finalErrorText } from "./decide";
 import { RunEventWriter } from "./events";
 import { afterRunTransition } from "./hooks";
 import { loadHermesRunContext } from "./hermes-context";
+import { hermesAdmissionRecorder } from "./hermes-admission";
 import { stopHermesConversation } from "./hermes-stop";
 import { runHost } from "./host";
 import { notifyRun } from "./log";
@@ -193,6 +194,7 @@ async function executeSegmentBody(run: AgentRun, holder: string, ac: AbortContro
     handle.teamCandidate=setup.candidate;
     if(setup.candidate?.learningSnapshot){await executeTeamLearningSegment(run,holder,setup.candidate,ac);return;}
     handle.hermes = await loadHermesRunContext(run.id);
+    handle.noteHermesAdmission = setup.candidate ? undefined : hermesAdmissionRecorder(run.id, holder, run.segment, handle.hermes);
     if (run.segment === 0 && setup.app.provider === "hermes" && !setup.candidate) await supersedeWaiting(run, setup.app);
     writer = new RunEventWriter({
       runId: run.id,
