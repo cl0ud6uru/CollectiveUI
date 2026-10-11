@@ -3,7 +3,7 @@ import { VoiceBridge } from "@/lib/voice/bridge";
 import { compactTranscript, orderedFragments, reactionContext, reactionEvidence, reactionIsFresh, reactionUtterances } from "@/lib/voice/policy";
 
 const input = (id: string, text = "Find my notes", start = 0) => ({ type: "session.input_transcript.delta", event_id: id, delta: text, start_ms: start, end_ms: start + 100 });
-const delegate = (id = "d1") => ({ type: "session.delegation.created", event_id: `event-${id}`, offset_ms: 1000, delegation: { id, target: "client" } });
+const delegate = (id = "d1") => ({ type: "session.delegation.created", event_id: `event-${id}`, offset_ms: 100, delegation: { id, target: "client" } });
 let bridge: VoiceBridge;
 const options = () => ({ conversationId: "conversation01", sessionId: "live01", reactions: false,
   send: vi.fn(), changed: vi.fn(), transcript: vi.fn(), reaction: vi.fn(), notice: vi.fn(), approval: vi.fn() });
@@ -14,7 +14,7 @@ describe("voice bridge", () => {
   it("uses the native request transport without falling back to browser credentials", async () => {
     const ambient = vi.fn(); vi.stubGlobal("fetch", ambient);
     const native = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ messageId: null, status: "saved" }));
-    bridge = new VoiceBridge({ ...options(), fetcher: native });
+    bridge = makeBridge({ ...options(), fetcher: native });
     bridge.receive(input("native-fragment"));
     await bridge.finish();
     expect(native).toHaveBeenCalledOnce();
@@ -23,33 +23,33 @@ describe("voice bridge", () => {
   });
 
   it("does not run a bot for partial transcripts; duplicate delegations start one durable request", async () => {
-    const o = options(); bridge = new VoiceBridge(o);
+    const o = options(); bridge = makeBridge(o);
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => Response.json(init?.method === "POST" ? { messageId: "reply01" } : { status: "succeeded", text: "Found your notes." }));
     vi.stubGlobal("fetch", fetch);
     bridge.receive(input("u1")); bridge.receive(input("u1"));
     await vi.advanceTimersByTimeAsync(1000); expect(fetch).not.toHaveBeenCalled();
     bridge.receive(delegate()); bridge.receive(delegate());
-    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(800);
     const posts = fetch.mock.calls.filter(([, init]) => init?.method === "POST");
     expect(posts).toHaveLength(1);
     expect(JSON.parse(posts[0][1]!.body as string).fragments).toHaveLength(1);
-    expect(o.send).toHaveBeenCalledWith(expect.objectContaining({ type: "session.thinking.append", delegation_id: "d1", content: "Found your notes." }));
+    expect(o.send).toHaveBeenCalledWith(expect.objectContaining({ type: "session.commentary.append", delegation_id: "d1", content: "Backend reply (succeeded):\nFound your notes." }));
   });
 
   it("waits for a transcript delivered after its delegation", async () => {
-    bridge = new VoiceBridge(options());
+    bridge = makeBridge(options());
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => Response.json(init?.method === "POST" ? { messageId: "reply01" } : { status: "succeeded", text: "Done" }));
     vi.stubGlobal("fetch", fetch);
     bridge.receive(delegate()); await vi.advanceTimersByTimeAsync(400); expect(fetch).not.toHaveBeenCalled();
-    bridge.receive(input("u1")); await vi.advanceTimersByTimeAsync(250);
+    bridge.receive(input("u1")); await vi.advanceTimersByTimeAsync(800);
     expect(fetch).toHaveBeenCalled();
   });
 
   it("keeps the same batch identity after an unknown outcome and does not start work after End", async () => {
-    const o = options(); bridge = new VoiceBridge(o);
+    const o = options(); bridge = makeBridge(o);
     const fetch = vi.fn().mockRejectedValueOnce(new Error("Network lost")).mockResolvedValue(Response.json({ messageId: null, status: "saved" }));
     vi.stubGlobal("fetch", fetch);
-    bridge.receive(input("u1")); bridge.receive(delegate()); await vi.advanceTimersByTimeAsync(400);
+    bridge.receive(input("u1")); bridge.receive(delegate()); await vi.advanceTimersByTimeAsync(800);
     expect(o.notice).toHaveBeenCalledWith("Network lost");
     await bridge.finish();
     const first = JSON.parse(fetch.mock.calls[0][1].body);
@@ -60,10 +60,10 @@ describe("voice bridge", () => {
   });
 
   it("opens approval cards and never submits an approval on spoken yes", async () => {
-    const o = options(); bridge = new VoiceBridge(o);
+    const o = options(); bridge = makeBridge(o);
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => Response.json(init?.method === "POST" ? { messageId: "reply01" } : { status: "waiting", text: "" }));
     vi.stubGlobal("fetch", fetch);
-    bridge.receive(input("u1")); bridge.receive(delegate()); await vi.advanceTimersByTimeAsync(400);
+    bridge.receive(input("u1")); bridge.receive(delegate()); await vi.advanceTimersByTimeAsync(800);
     bridge.receive(input("u2", "yes", 1100)); await vi.advanceTimersByTimeAsync(1000);
     expect(o.approval).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
@@ -71,7 +71,7 @@ describe("voice bridge", () => {
   });
 
   it("drops stale reaction results while keeping speech independent", async () => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     let resolve!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { resolve = r; })));
     bridge.receive(input("u1")); await vi.advanceTimersByTimeAsync(1);
@@ -82,7 +82,7 @@ describe("voice bridge", () => {
   });
 
   it("reacts to a sad partial story before any assistant output despite many tiny deltas", async () => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     let resolve!: (response: Response) => void;
     const fetch = vi.fn(() => new Promise<Response>(r => { resolve = r; })); vi.stubGlobal("fetch", fetch);
     bridge.receive(input("sad", "My friend died", 0)); await vi.advanceTimersByTimeAsync(1);
@@ -95,7 +95,7 @@ describe("voice bridge", () => {
   });
 
   it("rejects an old story reaction when a different speaker interrupts", async () => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     let resolve!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { resolve = r; })));
     bridge.receive(input("sad", "I lost my friend", 0)); await vi.advanceTimersByTimeAsync(1);
@@ -105,7 +105,7 @@ describe("voice bridge", () => {
   });
 
   it("holds a valid change through the dwell window and does not replay the same pose", async () => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       return Response.json({ revision: body.revision, reaction: body.revision === 1 ? "curious" : "concerned", confidence: 0.9 });
@@ -120,14 +120,14 @@ describe("voice bridge", () => {
   });
 
   it.each([{ reaction: "smile", confidence: 0.2 }, { reaction: "smile", confidence: null }, { reaction: "approve", confidence: 1 }, { reaction: "smile", revision: 999 }])("rejects invalid decisions %j", async override => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ revision: 1, confidence: 0.9, ...override })));
     bridge.receive(input("u1")); await vi.advanceTimersByTimeAsync(1000);
     expect(o.reaction).not.toHaveBeenCalled(); expect(o.approval).not.toHaveBeenCalled();
   });
 
   it("bounds a hung reaction request and processes newer speech without waiting", async () => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     const signals: AbortSignal[] = [];
     const fetch = vi.fn((_url: string, init?: RequestInit) => {
       signals.push(init!.signal!);
@@ -142,7 +142,7 @@ describe("voice bridge", () => {
   });
 
   it("never applies a deferred or in-flight reaction after disposal", async () => {
-    const o = { ...options(), reactions: true }; bridge = new VoiceBridge(o);
+    const o = { ...options(), reactions: true }; bridge = makeBridge(o);
     let resolve!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { resolve = r; })));
     bridge.receive(input("u1")); await vi.advanceTimersByTimeAsync(1); bridge.dispose();
@@ -187,3 +187,9 @@ describe("voice bridge", () => {
 });
 
 const inputFragment = (id: string, text: string, startMs: number) => ({ id, role: "user" as const, text, startMs, endMs: startMs + 1 });
+
+function makeBridge(o: ConstructorParameters<typeof VoiceBridge>[0]) {
+  const instance = new VoiceBridge(o);
+  vi.mocked(o.reaction).mockClear(); // These cases assert decisions after the initial neutral reset.
+  return instance;
+}

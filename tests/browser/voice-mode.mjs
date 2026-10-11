@@ -14,7 +14,7 @@ const postcss = require('postcss'), tailwind = require('@tailwindcss/postcss');
 const dir = await mkdtemp(path.join(tmpdir(), 'collective-voice-'));
 const entry = path.join(dir, 'entry.tsx');
 await writeFile(entry, `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {VoiceControl} from '@/components/chat/voice-control';
-function App(){const [active,setActive]=useState(false);return <main className="h-screen bg-bg p-8 text-fg"><h1>CollectiveUI voice fixture</h1><VoiceControl target={{botId:'bot00000001',conversationId:'chat00000001'}} conversationId="chat00000001" name="Nimbus" onActiveChange={setActive} onConversationChange={()=>{window.changes=(window.changes||0)+1}} chatContext="user: Remember my notes"/><p data-testid="voice-state">{active?'Voice active':'Voice idle'}</p><input aria-label="Message Nimbus" placeholder="Keep typing here" /></main>};createRoot(document.getElementById('root')).render(<App/>);`);
+function App(){const [active,setActive]=useState(false);return <main className="h-screen bg-bg p-8 text-fg"><h1>CollectiveUI voice fixture</h1><VoiceControl target={{botId:'bot00000001',conversationId:'chat00000001'}} conversationId="chat00000001" name="Nimbus" onActiveChange={setActive} onConversationChange={()=>{window.changes=(window.changes||0)+1}} chatContext={[{id:'prior',role:'user',text:'Remember my notes'}]}/><p data-testid="voice-state">{active?'Voice active':'Voice idle'}</p><input aria-label="Message Nimbus" placeholder="Keep typing here" /></main>};createRoot(document.getElementById('root')).render(<App/>);`);
 const bundle = await build({ entryPoints: [entry], outfile: path.join(dir, 'bundle.js'), write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src') } });
 const css = await postcss([tailwind({ base: root })]).process(await readFile(path.join(root, 'src/app/globals.css'), 'utf8'), { from: path.join(root, 'src/app/globals.css') });
 const batches = [];
@@ -26,7 +26,7 @@ const server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : null;
-    if (url.pathname === '/api/voice/session') res.end(JSON.stringify(body ? { session: { id: 'live01' }, transport: { type: 'webrtc', sdp: 'answer' }, context: 'user: Remember my notes', reactions: true, avatarUrl: null } : { supported: true }));
+    if (url.pathname === '/api/voice/session') res.end(JSON.stringify(body ? { session: { id: 'live01' }, transport: { type: 'webrtc', sdp: 'answer' }, history: [{id:'prior',role:'user',text:'Remember my notes'}], reactions: true, avatarUrl: null } : { supported: true }));
     else if (url.pathname === '/api/voice/reaction') res.end(JSON.stringify({ reaction: 'curious', revision: body.revision, latencyMs: 10 }));
     else if (url.pathname === '/api/voice/turn') {
       if (body) { batches.push(body); res.end(JSON.stringify({ messageId: body.delegate ? 'reply0000001' : null, status: body.delegate ? 'queued' : 'saved' })); }
@@ -79,7 +79,7 @@ try {
     emit({ type: 'session.delegation.created', event_id: 'd1', offset_ms: 750, delegation: { id: 'delegate1', target: 'client' } });
   });
   await expect.poll(() => batches.filter(b => b.delegate).length).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.commands.some(c => c.content === 'Your saved note is ready.'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.commands.some(c => c.type === 'session.commentary.append' && c.content === 'Backend reply (succeeded):\nYour saved note is ready.'))).toBe(true);
   await page.getByRole('button', { name: 'Toggle captions' }).click();
   await expect(page.getByLabel('Live captions')).toContainText('Find my notes');
   await page.getByRole('button', { name: 'Mute microphone', exact: true }).click();

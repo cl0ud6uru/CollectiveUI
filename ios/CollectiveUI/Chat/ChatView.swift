@@ -49,10 +49,10 @@ struct ChatView: View {
         .task(id: model.scrollToken) {
             do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
             guard !Task.isCancelled, let voice = model.app.voice, voice.conversationId == model.conversationId else { return }
-            let text = model.messages.suffix(8).map { message in
-                "\(message.role.rawValue): \(message.plainText)"
-            }.joined(separator: "\n")
-            await voice.updateContext(text)
+            let messages = model.messages.suffix(8).map { message in
+                ["id": message.id, "role": message.role.rawValue, "text": message.plainText]
+            }
+            await voice.updateContext(messages)
         }
         .onDisappear {
             model.deactivate()

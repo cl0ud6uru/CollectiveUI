@@ -81,13 +81,14 @@ final class VoiceSessionModel {
     func receive(_ event: [String: Any]) {
         switch event["type"] as? String {
         case "ready":
-            guard !ready else { return }; ready = true
+            guard !ready, !ending else { return }; ready = true
             guard event["secure"] as? Bool == true, event["media"] as? Bool == true else {
                 notice = String(localized: "Voice capture is unavailable on this device."); status = "ended"; return
             }
             Task { await begin() }
         case "status":
-            if let value = event["value"] as? String { status = value }
+            // Native End owns its terminal transition, including capture shutdown and saving.
+            if let value = event["value"] as? String, !ending { status = value }
             if status != "connecting" { deadline?.cancel() }
         case "level":
             if let value = event["value"] as? Double, value.isFinite { inputLevel.value = muted || status != "connected" ? 0 : min(1, max(0, value)) }
@@ -137,10 +138,16 @@ final class VoiceSessionModel {
     func end() async {
         guard !ending else { return }; ending = true; deadline?.cancel()
         status = "ending"; muted = true; inputLevel.value = 0
+        saving = true
+        defer { saving = false }
         // Native capture shutdown also works if the web process has stalled.
         await page.setMicrophoneCaptureState(.none)
         await page.pauseAllMediaPlayback()
-        if ready { _ = try? await page.callJavaScript("return window.voice.end()") }
+        if ready {
+            unsaved = true // Retain retry protection until the engine confirms saving.
+            do { _ = try await page.callJavaScript("return window.voice.end()") }
+            catch { notice = error.localizedDescription }
+        }
         status = "ended"
         refreshChat()
     }
@@ -195,8 +202,8 @@ final class VoiceSessionModel {
         }
     }
 
-    func updateContext(_ text: String) async {
+    func updateContext(_ messages: [[String: String]]) async {
         guard ready, status == "connected" else { return }
-        _ = try? await page.callJavaScript("window.voice.context(text)", arguments: ["text": text])
+        _ = try? await page.callJavaScript("window.voice.context(messages)", arguments: ["messages": messages])
     }
 }

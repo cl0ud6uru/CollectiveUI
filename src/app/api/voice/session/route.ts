@@ -41,10 +41,10 @@ export async function POST(req: Request) {
     const target = await configureVoiceTarget(p, await targetFor(p, targetInput));
     const eligibility = await voiceEligibility(target);
     if (!eligibility.supported) throw new HttpError(403, eligibility.reason);
-    const { context } = await prepareVoiceConversation(p, target, chatId, targetInput.conversationId);
+    const { context, history } = await prepareVoiceConversation(p, target, chatId, targetInput.conversationId);
     const settings = await getSetting("voice");
-    const result = await createVoiceSession(target, sdp);
-    return Response.json({ session: { id: result.sessionId }, transport: { type: "webrtc", sdp: result.sdp }, context,
+    const result = await createVoiceSession(target, sdp, undefined, history);
+    return Response.json({ session: { id: result.sessionId }, transport: { type: "webrtc", sdp: result.sdp }, context, history,
       avatarUrl: settings.avatarUrl, reactions: settings.reactions }, { headers: { "cache-control": "no-store" } });
   } catch (err) { return errorResponse(err); }
 }

@@ -3,6 +3,7 @@ import { VoiceAvatar } from "../../src/components/chat/voice-avatar";
 import { VoiceBridge } from "../../src/lib/voice/bridge";
 import { waitForIceGathering, waitForVoiceEvent, type VoiceTarget } from "../../src/lib/voice/client";
 import { type Reaction } from "../../src/lib/voice/policy";
+import { type VoiceHistoryMessage } from "../../src/lib/voice/history";
 
 declare global {
   interface Window {
@@ -11,7 +12,7 @@ declare global {
       voiceEvents: { postMessage: (event: unknown) => void };
     } };
     voice: { start: typeof start; end: typeof end; mute: typeof mute; retry: typeof retry;
-      visible: (value: boolean) => void; context: (text: string) => void };
+      visible: (value: boolean) => void; context: (messages: VoiceHistoryMessage[]) => void };
   }
 }
 const emit = (type: string, data: Record<string, unknown> = {}) => window.webkit.messageHandlers.voiceEvents.postMessage({ type, ...data });
@@ -61,6 +62,8 @@ function release() {
 async function start(config: { target: VoiceTarget; chatId: string; demo: boolean }) {
   if (active || abort || closing) return;
   if (bridge?.hasUnsaved) { notice("Save your previous speech before starting again."); return; }
+  bridge?.dispose(); bridge = null;
+  reaction = "neutral"; revision++; muted = false; render();
   demo = config.demo; status("connecting");
   if (demo) {
     active = true; status("connected"); render();
@@ -89,8 +92,8 @@ async function start(config: { target: VoiceTarget; chatId: string; demo: boolea
     events.addEventListener("message", message => {
       try {
         const event = JSON.parse(message.data);
-        bridge?.receive(event);
-        if (event.type === "error") { notice(event.error?.message || "Voice connection failed."); void end(); }
+        const handled = bridge?.receive(event);
+        if (event.type === "error" && !handled) { notice(event.error?.message || "Voice connection failed."); void end(); }
         if (event.type === "session.closed" && !closing) { notice("The voice session ended."); void end(); }
       } catch { /* Ignore unrelated data-channel messages. */ }
     });
@@ -101,8 +104,7 @@ async function start(config: { target: VoiceTarget; chatId: string; demo: boolea
     const session = await response.json();
     if (!response.ok) throw new Error(session.error || "Could not start voice.");
     ensureCurrent();
-    bridge?.dispose();
-    bridge = new VoiceBridge({ conversationId: config.chatId, sessionId: session.session.id, reactions: session.reactions,
+    bridge = new VoiceBridge({ conversationId: config.chatId, sessionId: session.session.id, reactions: session.reactions, history: session.history,
       fetcher: nativeFetch,
       send: event => { if (events.readyState === "open") events.send(JSON.stringify(event)); },
       changed: () => emit("changed"),
@@ -114,7 +116,7 @@ async function start(config: { target: VoiceTarget; chatId: string; demo: boolea
     void started.catch(() => {});
     await peer.setRemoteDescription({ type: "answer", sdp: session.transport.sdp });
     await started; ensureCurrent();
-    bridge.context(session.context || ""); active = true; status("connected"); emit("changed"); render();
+    active = true; status("connected"); emit("changed"); render();
     if (session.avatarUrl) {
       // Native bearer stays in URLSession. Only self-contained GLBs are supported on mobile.
       void window.webkit.messageHandlers.voiceAPI.postMessage({ path: `/api/voice/avatar?conversationId=${encodeURIComponent(config.chatId)}`, method: "GET" })

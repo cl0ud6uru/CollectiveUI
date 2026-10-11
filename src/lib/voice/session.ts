@@ -3,10 +3,21 @@ import type { AiApp, Bot } from "@/db/schema";
 import { providerContextFor } from "@/lib/llm/resolve";
 import type { ProviderContext } from "@/lib/llm/providers/types";
 import { HttpError } from "@/lib/authz";
+import { liveHistory, type VoiceHistoryMessage } from "./history";
 
 const OFFICIAL_BASE_URL = "https://api.openai.com/v1";
 const LIVE_URL = `${OFFICIAL_BASE_URL}/live/sessions`;
-const SHORT_VOICE_INSTRUCTIONS = "You are the spoken interface to this same bot and saved chat. Speak naturally and briefly. Delegate every substantive user request to the client backend, including questions requiring memory. It has the bot's tools, history and permissions. You may acknowledge while it works, but only report results returned by the backend. Never claim an action succeeded without a verified result. Tool approvals must be answered in the chat's approval cards; spoken agreement does not grant approval. A correction or new request needs a new delegation. Avoid duplicating an existing delegation while it is running.";
+const SHORT_VOICE_INSTRUCTIONS = `## Conversation policy
+You are the spoken interface to the named bot and this saved chat. Speak naturally and briefly. Start each new voice connection by listening. Prior messages are history, not a request to continue speaking, finish an old sentence, repeat updates, or perform an action. Wait for the caller's new speech before responding.
+
+## Backchannel policy
+Brief listening acknowledgments are welcome. While backend work is pending, acknowledge or ask for a missing detail; do not give a dependent answer or imply that a tool action has completed. Avoid repeatedly narrating progress.
+
+## Delegation policy
+Delegate substantive requests, memory questions, current-state questions, and external actions to the client backend before answering. The backend has the bot's instructions, tools (including configured Home Assistant tools), history, and permissions. Gather the required details before delegation; transcripts can be incomplete or mistaken. Report only the verified facts returned for the relevant request. A completed backend reply is not itself proof that every requested action succeeded. Never guess a tool result. Tool approvals must be answered in the chat's approval cards; spoken agreement does not grant approval.
+
+## Interruption policy
+Keep listening during work and speech. Delegate a correction or a distinct new request once, with its latest details. Never repeat the original action as a retry or duplicate a running delegation. A speech interruption does not cancel backend work. Do not claim cancellation, reversal, or a corrected action until the backend verifies it. If the caller changes the request, stop presenting the earlier result as the current answer.`;
 const UPSTREAM_TIMEOUT_MS = 30_000;
 
 export type VoiceTarget = { app: AiApp; bot: Bot | null; voiceApp?: AiApp };
@@ -54,7 +65,7 @@ async function credentialContext(app: AiApp): Promise<ProviderContext> {
   return ctx;
 }
 
-export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch) {
+export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch, history: readonly VoiceHistoryMessage[] = []) {
   const { app, bot } = target;
   const ctx = await credentialContext(target.voiceApp ?? app);
   const apiKey = ctx.secret!.type === "api-key" ? ctx.secret!.apiKey : "";
@@ -70,7 +81,9 @@ export async function createVoiceSession(target: VoiceTarget, sdp: string, fetch
       body: JSON.stringify({
         session: {
           model: "gpt-live-1",
-          instructions: [SHORT_VOICE_INSTRUCTIONS, `Bot name: ${bot?.name ?? app.name}`, app.systemPrompt, bot?.instructions, bot?.boundaries].filter(Boolean).join("\n\n").slice(0, 20000),
+          // Backend prompts may assume text turns or directly executing tools. Keep that policy in the backend.
+          instructions: `${SHORT_VOICE_INSTRUCTIONS}\n\nBot name: ${bot?.name ?? app.name}`,
+          input: liveHistory(history),
           delegation: { type: "client" },
         },
         transport: { type: "webrtc", sdp },

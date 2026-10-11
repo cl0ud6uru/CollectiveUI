@@ -133,6 +133,7 @@ final class ChatModel {
     @ObservationIgnored private var streamingMessageId: String? = nil
     @ObservationIgnored private var autoResumeBudget: Int = 2
     @ObservationIgnored private var isActive: Bool = false
+    @ObservationIgnored private var voiceStartTask: Task<Void, Never>?
     @ObservationIgnored private var hasLoaded: Bool = false
     @ObservationIgnored private var streamGeneration = UUID()
     @ObservationIgnored private var stopRequestedFor: String?
@@ -293,8 +294,42 @@ final class ChatModel {
     #endif
 
     func startVoice() {
-        if let voice = app.voice { voice.expanded = true; return }
         guard let api = app.api, !isLoading, !isStreaming, !isUnavailable, !isReadOnly, !isGroup, target != nil else { return }
+        guard voiceStartTask == nil else { return }
+        if let voice = app.voice {
+            if voice.conversationId == conversationId && (voice.status == "connecting" || voice.status == "connected") {
+                voice.expanded = true; return
+            }
+            guard !voice.saving, !voice.unsaved, voice.status != "ending" else {
+                alertMessage = String(localized: "Finish saving the previous voice conversation before starting this one.")
+                return
+            }
+            if voice.active {
+                // Starting voice in another chat ends capture and saves the prior session first.
+                voiceStartTask = Task { [weak self] in
+                    await voice.end()
+                    guard let self else { return }
+                    defer { self.voiceStartTask = nil }
+                    guard !Task.isCancelled, self.app.voice?.id == voice.id else { return }
+                    guard !voice.saving, !voice.unsaved else {
+                        self.alertMessage = String(localized: "Your previous speech needs saving. Open its voice screen and retry saving before starting again.")
+                        return
+                    }
+                    voice.dismiss()
+                    guard self.app.voice == nil else { return }
+                    self.startVoiceAfterTransition(api: api)
+                }
+                return
+            }
+            voice.dismiss()
+            guard app.voice == nil else { return }
+        }
+        app.voice = VoiceSessionModel(chat: self, api: api)
+    }
+
+    private func startVoiceAfterTransition(api: APIClient) {
+        guard app.api?.token == api.token, app.api?.baseURL == api.baseURL, app.phase == .main,
+              !isLoading, !isStreaming, !isUnavailable, !isReadOnly, !isGroup, target != nil else { return }
         app.voice = VoiceSessionModel(chat: self, api: api)
     }
 
@@ -312,6 +347,7 @@ final class ChatModel {
 
     func deactivate() {
         isActive = false
+        voiceStartTask?.cancel()
         snapshotRequest = UUID()
         isLoading = false
         commandTask?.cancel()

@@ -642,7 +642,7 @@ export function Chat({
             {voiceTarget && <VoiceControl key={`${target?.kind}:${target?.id}`} target={voiceTarget} conversationId={conversationId} name={target?.name ?? "Assistant"}
               disabled={unavailable || searchPending || (!voiceActive && busy)} onActiveChange={setVoiceActive}
               onConversationChange={() => { void syncVoiceConversation().catch(() => {}); }}
-              chatContext={streamingBusy ? "" : messages.slice(-3).map(m => `${m.role}: ${m.parts.map(p => p.type === "text" ? p.text : "").join("")}`).join("\n").slice(-3000)} />}
+              chatContext={streamingBusy ? [] : messages.slice(-8).map(m => ({ id: m.id, role: m.role, text: m.parts.map(p => p.type === "text" ? p.text : "").join("") }))} />}
             {user.isAdmin && <SpendingHealth />}
             {target?.kind === "bot" && !embedded && <BotChatNavigation botId={target.id} isHome={isBotHome} conversationId={conversationId} onNewHome={() => void executeCommand("/new", [])} />}
             {workspaceAllowed && (

@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.stubEnv("AUTH_URL", "https://portal.example");
   deps.requirePrincipal.mockResolvedValue(principal);
   deps.configureVoiceTarget.mockImplementation(async (_p, target) => target);
-  deps.prepareVoiceConversation.mockResolvedValue({ context: "saved history" });
+  deps.prepareVoiceConversation.mockResolvedValue({ context: "saved history", history: [{ id: "prior-u", role: "user", text: "Find notes" }, { id: "prior-a", role: "assistant", text: "Old answer" }] });
   deps.resolveTurnTarget.mockResolvedValue(target);
   deps.providerContextFor.mockResolvedValue(providerContext);
 });
@@ -53,6 +53,25 @@ afterEach(() => {
 });
 
 describe("voice session API", () => {
+  it("creates distinct listening-first sessions with empty input for new conversations", async () => {
+    deps.prepareVoiceConversation.mockResolvedValue({ context: "", history: [] });
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ session: { id: "vs_first" }, transport: { type: "webrtc", sdp: "answer-1" } }))
+      .mockResolvedValueOnce(Response.json({ session: { id: "vs_second" }, transport: { type: "webrtc", sdp: "answer-2" } }));
+    for (const chatId of ["newchat00001", "newchat00002"]) {
+      const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST",
+        body: JSON.stringify({ chatId, appId: app.id, sdp: "offer" }) }));
+      expect(response.status).toBe(200);
+      expect((await response.json()).history).toEqual([]);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchSpy.mock.calls) {
+      const session = JSON.parse(String(init?.body)).session;
+      expect(session.input).toEqual([]);
+      expect(session.instructions).toContain("Wait for the caller's new speech");
+    }
+    fetchSpy.mockRestore();
+  });
   it("uses an independently authorized OpenAI transport for a Hermes bot", async () => {
     const hermes = { app: { ...app, provider: "hermes" }, bot: { id: "bot0000001", name: "Hermes", instructions: "Use my tools" } };
     deps.resolveTurnTarget.mockResolvedValueOnce(hermes);
@@ -189,7 +208,14 @@ describe("voice session API", () => {
     expect(new Headers(init?.headers).get("OpenAI-Project")).toBe("proj-1");
     expect(init?.redirect).toBe("error");
     const body = JSON.parse(String(init?.body));
-    expect(body.session).toMatchObject({ model: "gpt-live-1", delegation: { type: "client" } });
+    expect(body.session).toMatchObject({ model: "gpt-live-1", delegation: { type: "client" }, input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Find notes" }] },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "Old answer" }] },
+    ] });
+    expect(body.session.instructions).toContain("Start each new voice connection by listening");
+    expect(body.session.instructions).toContain("## Backchannel policy");
+    expect(body.session.instructions).toContain("## Delegation policy");
+    expect(body.session.instructions).not.toContain(app.systemPrompt);
     expect(JSON.stringify(body)).not.toContain("secret-api-key");
     fetchSpy.mockRestore();
   });

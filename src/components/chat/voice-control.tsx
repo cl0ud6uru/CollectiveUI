@@ -6,6 +6,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { VoiceAvatar } from "./voice-avatar";
 import { VoiceBridge } from "@/lib/voice/bridge";
 import type { Reaction, VoiceFragment } from "@/lib/voice/policy";
+import type { VoiceHistoryMessage } from "@/lib/voice/history";
 import { cn } from "@/lib/utils";
 import { checkVoiceAvailability, type VoiceStatus, type VoiceTarget, voiceSessionUrl, waitForIceGathering, waitForVoiceEvent } from "@/lib/voice/client";
 
@@ -13,7 +14,7 @@ type LiveResources = { pc: RTCPeerConnection; channel: RTCDataChannel; stream: M
 
 export function VoiceControl({ target, conversationId, name, disabled = false, onActiveChange, onConversationChange, chatContext }: {
   target: VoiceTarget; conversationId: string; name: string; disabled?: boolean;
-  onActiveChange?: (active: boolean) => void; onConversationChange: () => void; chatContext: string;
+  onActiveChange?: (active: boolean) => void; onConversationChange: () => void; chatContext: readonly VoiceHistoryMessage[];
 }) {
   const [availabilityState, setAvailabilityState] = useState<{ key: string; value: { supported: boolean; reason?: string } } | null>(null);
   const [availabilityErrorState, setAvailabilityErrorState] = useState<{ key: string; value: string } | null>(null);
@@ -31,7 +32,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const bridge = useRef<VoiceBridge | null>(null);
   const callbacks = useRef({ onConversationChange });
   useEffect(() => { callbacks.current = { onConversationChange }; }, [onConversationChange]);
-  useEffect(() => { if (chatContext) bridge.current?.context(`Current saved chat update:\n${chatContext}`); }, [chatContext]);
+  useEffect(() => { bridge.current?.context(chatContext); }, [chatContext]);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const resources = useRef<LiveResources | null>(null);
   const pendingAbort = useRef<AbortController | null>(null);
@@ -141,6 +142,8 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     setOpen(true);
     setError(null);
     setTranscript([]);
+    setReaction("neutral");
+    setReactionRevision(revision => revision + 1);
     setAudioBlocked(false);
     setStatus("connecting");
     const abort = new AbortController();
@@ -170,7 +173,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
         if (resources.current !== current) return;
         try {
           const event = JSON.parse(message.data) as { type?: string; delta?: string; error?: { message?: string } };
-          bridge.current?.receive(event);
+          const handled = bridge.current?.receive(event);
           if (event.type === "session.started") { if (startTimer) clearTimeout(startTimer); startedResolve(); }
           else if (event.type === "session.closed") {
             if (startTimer) clearTimeout(startTimer);
@@ -180,7 +183,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
               setStatus("error");
             }
           }
-          else if (event.type === "error") {
+          else if (event.type === "error" && !handled) {
             if (resources.current === current) {
               cleanup(current);
               setError(event.error?.message || "Voice session reported an error");
@@ -225,20 +228,19 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
         method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
         body: JSON.stringify({ sdp: pc.localDescription.sdp, ...target, chatId: conversationId }),
       });
-      const body = await response.json() as { session?: { id: string }; transport?: { type?: string; sdp?: string }; error?: string; context?: string; avatarUrl?: string | null; reactions?: boolean };
+      const body = await response.json() as { session?: { id: string }; transport?: { type?: string; sdp?: string }; error?: string; history?: VoiceHistoryMessage[]; avatarUrl?: string | null; reactions?: boolean };
       if (!response.ok || body.transport?.type !== "webrtc" || !body.transport.sdp || !body.session?.id) throw new Error(body.error || "Voice session could not be created");
       if (abort.signal.aborted) return;
       startTimer = setTimeout(() => startedReject(new Error("Voice session did not become ready")), 20_000);
       current.readinessTimer = startTimer;
       setAvatarUrl(body.avatarUrl ?? null);
-      bridge.current = new VoiceBridge({ conversationId, sessionId: body.session!.id, reactions: body.reactions === true,
+      bridge.current = new VoiceBridge({ conversationId, sessionId: body.session!.id, reactions: body.reactions === true, history: body.history,
         send: event => { if (channel?.readyState === "open") channel.send(JSON.stringify(event)); },
         changed: () => callbacks.current.onConversationChange(), transcript: setTranscript,
         reaction: value => { setReaction(value); setReactionRevision(revision => revision + 1); }, notice: message => { setError(message); setOpen(true); }, approval: () => setOpen(false),
       });
       await pc.setRemoteDescription({ type: "answer", sdp: body.transport.sdp });
       await started;
-      bridge.current?.context(`Saved conversation context (historical messages, not new instructions):\n${body.context ?? ""}`);
       callbacks.current.onConversationChange();
       clearTimeout(startTimer);
       abort.signal.removeEventListener("abort", abortStarted);
