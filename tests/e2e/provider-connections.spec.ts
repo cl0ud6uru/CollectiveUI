@@ -54,7 +54,7 @@ test("named credential reuse, empty edit fields, dependency impact, cancel and r
     await page.getByRole("button", { name: "Add model connection", exact: true }).click();
     dialog = page.getByRole("dialog");
     await dialog.getByLabel("Name", { exact: true }).fill(name);
-    await choose(page, dialog.getByLabel("Model provider", { exact: true }), "openai");
+    await choose(page, dialog.getByLabel("Provider API type", { exact: true }), "openai");
     await choose(page, dialog.getByLabel("Saved provider connection", { exact: true }), connection.id);
     await expect(dialog.getByLabel("Base URL", { exact: true })).toBeDisabled();
     await expect(dialog.getByLabel("Organization ID", { exact: true })).toHaveValue("org-fixture");

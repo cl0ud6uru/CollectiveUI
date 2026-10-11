@@ -39,8 +39,19 @@ describe("base URL normalization", () => {
     ["vertex-anthropic", "https://evil.example.com"], // no override: it would receive a Google access token
     ["openai-compatible", ""],
     ["openai-compatible", "ftp://x"],
+    ["openai-compatible", "https://user:pass@provider.example/v1"],
+    ["openai-compatible", "https://provider.example/v1?key=fixture"],
+    ["openai-compatible", "https://provider.example/v1#fragment"],
   ] as const)("rejects %s %s", (kind, input) => {
     expect(normalizeBaseUrl(kind, input).ok).toBe(false);
+  });
+
+  it.each(["openai", "openai-compatible"] as const)("rejects operation URLs for %s and preserves custom base paths", kind => {
+    for (const suffix of ["chat/completions", "responses", "models", "embeddings", "CHAT/COMPLETIONS/", "chat%2Fcompletions"]) {
+      expect(normalizeBaseUrl(kind, `https://provider.example/api/v1/${suffix}`)).toMatchObject({ ok: false, error: expect.stringContaining("API base URL") });
+    }
+    expect(normalizeBaseUrl(kind, "https://provider.example/api/v1")).toEqual({ ok: true, value: "https://provider.example/api/v1" });
+    expect(normalizeBaseUrl(kind, "https://gateway.example/tenant/route")).toEqual({ ok: true, value: "https://gateway.example/tenant/route" });
   });
 });
 

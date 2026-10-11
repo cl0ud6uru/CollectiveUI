@@ -103,7 +103,7 @@ test("admin connections separate models/backends and builder choices preserve bo
   await expect(page.getByLabel("Profile model route", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Add model connection", exact: true }).click();
-  await page.getByLabel("Model provider", { exact: true }).click();
+  await page.getByLabel("Provider API type", { exact: true }).click();
   await expect(page.getByRole("option", { name: "Hermes Agent", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape"); await page.keyboard.press("Escape");
   await page.screenshot({ path: `${screenshots}/03-connections.png`, fullPage: true });
