@@ -23,6 +23,46 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 15))
     }
 
+    func testVoiceModeControlsAndChatContinuity() {
+        app.launchArguments = ["--demo", "--demo-open", "demo-research", "--demo-voice", "--demo-reset-drafts"]
+        app.launch()
+        XCTAssertTrue(app.buttons["voice.end"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Preview · mic off"].waitForExistence(timeout: 15))
+        capture("voice-fullscreen")
+        tap(app.buttons["voice.mute"])
+        // Muting awaits the web engine; app idleness does not guarantee that acknowledgment has arrived.
+        XCTAssertTrue(app.buttons["voice.mute"].wait(for: \.label, toEqual: "Unmute microphone", timeout: 5))
+        XCTAssertFalse(app.buttons["voice.captions"].exists)
+        XCTAssertEqual(app.descendants(matching: .any)["voice.inputMeter"].value as? String, "Muted")
+        tap(app.buttons["voice.mute"])
+        XCTAssertTrue(app.buttons["voice.mute"].wait(for: \.label, toEqual: "Mute microphone", timeout: 5))
+        XCTAssertEqual(app.descendants(matching: .any)["voice.inputMeter"].value as? String, "Listening")
+        tap(app.buttons["voice.minimize"])
+        XCTAssertTrue(app.textViews["chatComposer"].isHittable)
+        enterDraft("Continue this same conversation")
+        tap(app.buttons["voice.expand"])
+        XCTAssertEqual(app.buttons["voice.mute"].label, "Mute microphone")
+        capture("voice-resumed")
+        tap(app.buttons["voice.end"])
+        XCTAssertTrue(app.staticTexts["Voice ended"].waitForExistence(timeout: 5))
+        tap(app.buttons["voice.end"])
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Continue this same conversation")
+        capture("voice-back-to-chat")
+    }
+
+    func testVoiceControlsFitLandscapeAndLargeText() {
+        app.launchArguments = ["--demo", "--demo-open", "demo-research", "--demo-voice", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        XCTAssertTrue(app.buttons["voice.end"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["voice.end"].isHittable)
+        capture("voice-large-text")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        settle(2)
+        XCTAssertTrue(app.buttons["voice.end"].isHittable)
+        XCTAssertTrue(app.buttons["voice.minimize"].isHittable)
+        capture("voice-landscape")
+    }
+
     private func tap(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(element.waitForExistence(timeout: 5), file: file, line: line)
         XCTAssertTrue(element.isHittable, "Never tap hidden controls or a hidden keyboard preview", file: file, line: line)
@@ -40,10 +80,70 @@ final class CollectiveUIRegression: XCTestCase {
         add(tree)
     }
 
+    func testGroupLeadHeaderAndMembers() {
+        launch("demo-group", appearance: "light", extra: ["--demo-group-lead"])
+        let members = app.buttons["chat.groupMembers"]
+        XCTAssertTrue(members.waitForExistence(timeout: 10))
+        XCTAssertEqual(members.value as? String, "Lead: Research Assistant")
+        XCTAssertFalse(app.buttons["Bot details"].exists)
+        capture("group-lead-header")
+        tap(members)
+        XCTAssertTrue(app.navigationBars["Group members"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Messages without an @mention go to the lead bot. Use @mentions to address other members."].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Research Assistant")).firstMatch.exists)
+        capture("group-lead-members")
+        tap(app.buttons["Done"])
+        XCTAssertTrue(members.isHittable)
+    }
+
+    func testGroupLeadAtAccessibilityTextSize() {
+        launch("demo-group", appearance: "dark", extra: ["--demo-group-lead", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let members = app.buttons["chat.groupMembers"]
+        XCTAssertTrue(members.waitForExistence(timeout: 10))
+        XCTAssertEqual(members.value as? String, "Lead: Research Assistant")
+        XCTAssertTrue(members.isHittable)
+        XCTAssertLessThanOrEqual(members.frame.maxX, app.frame.maxX)
+        capture("group-lead-accessibility-header")
+        tap(members)
+        XCTAssertTrue(app.navigationBars["Group members"].waitForExistence(timeout: 5))
+        capture("group-lead-accessibility-members")
+    }
+
     private func settle(_ seconds: TimeInterval) {
         let ready = expectation(description: "Allow UI fixture updates")
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { ready.fulfill() }
         wait(for: [ready], timeout: seconds + 3)
+    }
+
+    func testGroupWorkInClosedAndExpandedNavigation() {
+        launch(extra: ["--demo-group-activity"])
+        let researcher = app.buttons["Research Assistant: Working"]
+        XCTAssertTrue(researcher.waitForExistence(timeout: 8))
+        capture("ios-activity-collapsed")
+        tap(researcher)
+        XCTAssertTrue(app.staticTexts["Working…"].waitForExistence(timeout: 5))
+        capture("ios-activity-expanded")
+        tap(app.buttons["Close sidebar"])
+        let atlas = app.buttons["Atlas: Working"]
+        XCTAssertTrue(atlas.waitForExistence(timeout: 15))
+        XCTAssertFalse(researcher.exists, "Completed group speaker must stop showing working")
+        capture("ios-activity-handoff")
+        let completed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: atlas)
+        wait(for: [completed], timeout: 30)
+        capture("ios-activity-completed")
+    }
+
+    func testGroupWorkAtAccessibilityTextSize() {
+        launch(extra: ["--demo-group-activity", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let researcher = app.buttons["Research Assistant: Working"]
+        XCTAssertTrue(researcher.waitForExistence(timeout: 8))
+        XCTAssertTrue(researcher.isHittable)
+        capture("ios-activity-accessibility-collapsed")
+        tap(researcher)
+        XCTAssertTrue(app.buttons["Close sidebar"].waitForExistence(timeout: 5))
+        for _ in 0..<5 where !app.staticTexts["Working…"].exists { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["Working…"].waitForExistence(timeout: 5))
+        capture("ios-activity-accessibility-expanded")
     }
 
     private func visibleLatestFixtureParagraph(in transcript: XCUIElement) -> (label: String, frame: CGRect)? {
@@ -98,6 +198,15 @@ final class CollectiveUIRegression: XCTestCase {
         if !bots.exists || !bots.isHittable { tap(app.buttons["Open sidebar"]) }
         tap(bots)
         XCTAssertTrue(app.searchFields["Search bots"].waitForExistence(timeout: 5))
+    }
+
+    func testSavedReplyQuoteVisible() {
+        launch(extra: ["--demo-reply-quote"])
+        let quote = app.descendants(matching: .any).matching(identifier: "chat.reply.quoted-user").firstMatch
+        XCTAssertTrue(quote.waitForExistence(timeout: 5))
+        XCTAssertTrue(quote.label.contains("Researcher"))
+        XCTAssertTrue(quote.label.contains("small pilot"))
+        capture("ios-saved-reply-quote")
     }
 
     func testBotDirectorySearchDismissalAndHomeNavigation() {

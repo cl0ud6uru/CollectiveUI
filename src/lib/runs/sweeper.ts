@@ -311,6 +311,10 @@ export async function sweepRuns(opts: { startup?: boolean } = {}): Promise<Sweep
     const { reconcileAsyncTasks } = await import("@/lib/delegation/async");
     await reconcileAsyncTasks();
   });
+  await step('reconciling Codex stops', async () => {
+    const { reconcileCodexStops } = await import('@/lib/codex/recovery');
+    await reconcileCodexStops();
+  });
   await step("deleting old events", async () => {
     out.purged = await purgeEvents();
   });

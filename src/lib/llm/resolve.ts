@@ -1,3 +1,4 @@
+import { isCodexApp } from '@/lib/codex/target';
 import { nativeSearchMiddleware, type NativeSearchOptions } from "./native-search";
 import { isTeamRuntimeApp } from '@/lib/agent/team-target';
 import { db, type DbOrTx } from '@/db';
@@ -153,6 +154,7 @@ function usageContext(
  * ledger. OpenAI-compatible apps send exactly the same requests as before the registry existed.
  */
 export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promise<ResolvedModel> {
+  if (isCodexApp(app)) throw new ProviderUnavailableError('Codex requires its native app-server run; provider fallback is disabled.');
   const candidate=opts.run?.teamCandidate;
   if(candidate){
     if(opts.purpose!=='chat' || app.provider!=='hermes' || !opts.botId || !opts.conversationId || candidate.learningSnapshot)

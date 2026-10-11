@@ -12,9 +12,11 @@ import { toast } from "sonner";
 import { ArrowDown, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, SquarePen } from "lucide-react";
 import { grantToolForBot, setConversationLeaf, setMessageFeedback } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
+import { replyAddress, replyContext, type ReplyContext } from "@/lib/chat/reply";
 import { newId } from "@/lib/ids";
 import { NativeSearchControl } from "./native-search-control";
 import type { NativeSearchMode } from "@/lib/native-search-policy";
+import { VoiceControl } from "./voice-control";
 import { Composer, type ComposerHandle, type UploadedFile } from "./composer";
 import { AssistantMessage, hasContent, UserMessage, type BranchInfo } from "./message";
 import { DelegatedApprovals } from "./delegated-approvals";
@@ -24,6 +26,7 @@ import { SpendingHealth } from "./spending-health";
 import { TargetPicker } from "./target-picker";
 import type { TargetOption } from "./types";
 import { BotAvatar, bubbleTint, type BlobState } from "@/components/bots/bot-avatar";
+import { GroupHeader, GroupMembers } from "@/components/chat/group-header";
 import { previewLine } from "@/lib/chat/preview";
 import { cn } from "@/lib/utils";
 import { formatDuration, needsAction, useElapsed } from "./steps";
@@ -112,6 +115,7 @@ export function Chat({
   const workspaceToggleRef = useRef<HTMLButtonElement>(null);
   const workspaceAllowed = useWorkspaceAccess(!embedded && !target?.hermes && !target?.hermesTeam);
   const closeWorkspace = useCallback(() => { setWorkspaceOpen(false); workspaceToggleRef.current?.focus(); }, []);
+  const [voiceActive, setVoiceActive] = useState(false);
   const [started, setStarted] = useState(!isNew);
   const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
   const [searchPending, setSearchPending] = useState(true);
@@ -206,6 +210,8 @@ export function Chat({
   // Messages from other branches (edits / regenerations). useChat only holds the visible path; the
   // full tree is derived from both, so nothing is lost when the visible path changes.
   const [stored, setStored] = useState(() => new Map<string, TreeRow>(initialRows.map((r) => [r.id, r])));
+  const [replyState, setReplyState] = useState<{ conversationId: string; context: ReplyContext } | null>(null);
+  const restoreReply = useCallback((context?: ReplyContext) => setReplyState(context ? { conversationId, context } : null), [conversationId]);
   const [initialPath] = useState(() => pathTo(stored, initialLeafId).map((r) => r.message));
   const [feedback, setFeedback] = useState<Record<string, 1 | -1 | null>>(() =>
     Object.fromEntries(initialRows.map((r) => [r.id, r.feedback])),
@@ -230,6 +236,7 @@ export function Chat({
             body: {
               ...base,
               message: { id: last.id, role: last.role, parts: last.parts },
+              replyTo: last.metadata?.replyTo ? { messageId: last.metadata.replyTo.messageId, speakerIndex: last.metadata.replyTo.speakerIndex } : undefined,
               parentId: messages.length > 1 ? messages[messages.length - 2].id : null,
             },
           };
@@ -276,7 +283,8 @@ export function Chat({
 
   // The server refused the request before saving anything (busy, over the reply limit, …): take the message back into
   // the composer, or show an answer's approval cards again, so what's on screen matches what's stored.
-  const rejectedDraft = useRef<{ messageId: string; text: string } | null>(null);
+  const sentReplyMention = useRef<{ messageId: string; mention: string | null } | null>(null);
+  const rejectedDraft = useRef<{ messageId: string; text: string; reply?: ReplyContext; mention: string | null } | null>(null);
   useEffect(() => {
     if (!error) return;
     let body: { unsavedMessageId?: unknown; retryApprovalMessageId?: unknown } | null = null;
@@ -285,7 +293,7 @@ export function Chat({
     } catch {}
     const last = messages.at(-1);
     if (last?.role === "user" && body?.unsavedMessageId === last.id) {
-      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join("") };
+      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join(""), reply: last.metadata?.replyTo, mention: sentReplyMention.current?.messageId === last.id ? sentReplyMention.current.mention : null };
       setMessages(messages.slice(0, -1));
     } else if (last?.role === "assistant" && body?.retryApprovalMessageId === last.id) {
       const reopened = last.parts.map((p) => {
@@ -302,9 +310,11 @@ export function Chat({
   useEffect(() => {
     const draft = rejectedDraft.current;
     if (!draft || messages.some((m) => m.id === draft.messageId)) return;
-    composerRef.current?.setText(draft.text);
+    const ownedMention = draft.mention && draft.text === draft.mention.trimEnd() ? draft.text : draft.mention;
+    composerRef.current?.setText(draft.text, ownedMention);
+    restoreReply(draft.reply);
     rejectedDraft.current = null;
-  }, [messages]);
+  }, [messages, restoreReply]);
 
   const tree = useMemo(() => {
     const t = new Map(stored);
@@ -325,6 +335,9 @@ export function Chat({
   const keepCurrentBranch = () => setStored(tree);
 
   const streamingBusy = status === "submitted" || status === "streaming";
+  const voiceSyncVersion = useRef(0);
+  const chatStreamingRef = useRef(streamingBusy);
+  useEffect(() => { chatStreamingRef.current = streamingBusy; }, [streamingBusy]);
   const awaitingTasks = hasPendingAsyncTasks(messages.at(-1));
   const busy = streamingBusy || awaitingTasks;
 
@@ -406,6 +419,8 @@ export function Chat({
         if (busy) return;
         const leaf = descendLatest(tree, siblings[to].id);
         setStored(tree);
+        setReplyState(null);
+        composerRef.current?.setReplyMention(null);
         setMessages(pathTo(tree, leaf).map((r) => r.message));
         void setConversationLeaf(conversationId, leaf).catch(() => {});
       };
@@ -428,10 +443,48 @@ export function Chat({
     }
   }
 
+  async function syncVoiceConversation() {
+    begin();
+    if (streamingBusy) return;
+    const version = ++voiceSyncVersion.current;
+    const response = await fetch(`/api/chat/${conversationId}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const snapshot = await response.json() as ConversationSnapshot;
+    // A typed reply may have begun while this snapshot was in flight.
+    if (chatStreamingRef.current || version !== voiceSyncVersion.current) return;
+    const rows = new Map(snapshot.initialRows.map(row => [row.id, row]));
+    setStored(rows);
+    setMessages(pathTo(rows, snapshot.initialLeafId).map(row => row.message));
+    if (snapshot.resume) void resumeStream();
+    upsertConversation(snapshot.summary);
+  }
+
   const targetBody = { nativeSearchMode, appId: target?.kind === "app" ? target.id : undefined, botId: target?.kind === "bot" ? target.id : undefined };
+  const replyTo = replyState?.conversationId === conversationId && messages.some(message => message.id === replyState.context.messageId) ? replyState.context : null;
+  function chooseReply(message: PortalUIMessage, speakerIndex?: number) {
+    const context = replyContext(message, speakerIndex, target?.name ?? "Assistant");
+    if (!context || unavailable || busy || searchPendingRef.current) return;
+    const member = target?.kind === "group" && context.botId ? target.members?.find(member => member.id === context.botId) : undefined;
+    if (target?.kind === "group" && context.botId && !member) {
+      toast.error("This bot is no longer available in this group.");
+      return;
+    }
+    const address = member ? replyAddress(member.id, target!.members ?? []) : null;
+    if (member && !address) {
+      toast.error("This bot needs a unique, non-reserved name before a reply can address it.");
+      return;
+    }
+    setReplyState({ conversationId, context });
+    composerRef.current?.setReplyMention(address);
+  }
+
+  function cancelReply() {
+    setReplyState(null);
+    composerRef.current?.setReplyMention(null);
+  }
 
   // Redirect work in progress: sending while a reply streams stops it, then sends the new instruction.
-  const pendingRef = useRef<{ text: string; files: UploadedFile[] } | null>(null);
+  const pendingRef = useRef<{ text: string; files: UploadedFile[]; reply?: ReplyContext | null; mention: string | null } | null>(null);
   async function executeCommand(text: string, files: UploadedFile[]): Promise<boolean> {
     if (files.length) {
       setCommandOutput({ scope: commandScope, result: { title: "Command not sent", lines: ["Remove attachments before running a command. Your draft and files have been kept."] } });
@@ -467,7 +520,7 @@ export function Chat({
       return false;
     }
   }
-  function send(text: string, files: UploadedFile[]): void | boolean | Promise<boolean> {
+  function send(text: string, files: UploadedFile[], selectedReply = replyTo, ownedMention = composerRef.current?.getReplyMention() ?? null): void | boolean | Promise<boolean> {
     if (searchPendingRef.current) return false;
     if (!target || unavailable) { toast.error("Pick a model or bot first"); return false; }
     const parsed = parseHermesInput(text);
@@ -476,7 +529,7 @@ export function Chat({
     if (input.kind === "command") return executeCommand(text, files);
     if (busy) {
       const stopping = pendingRef.current != null;
-      pendingRef.current = { text, files };
+      pendingRef.current = { text, files, reply: selectedReply, mention: ownedMention };
       // Stop on the server first, so the new message finds the previous reply stopped (or being saved), not running.
       if (!stopping) {
         void requestServerStop()
@@ -489,21 +542,24 @@ export function Chat({
       return;
     }
     begin();
+    const messageId = newId();
+    sentReplyMention.current = { messageId, mention: ownedMention };
     sendMessage(
       {
-        text: input.text || undefined,
-        files: files.map((f) => ({ type: "file" as const, mediaType: f.mediaType, filename: f.filename, url: f.url })),
-        metadata: { createdAt: nowMs() },
+        id: messageId,
+        parts: [...files.map((f) => ({ type: "file" as const, mediaType: f.mediaType, filename: f.filename, url: f.url })), ...(input.text ? [{ type: "text" as const, text: input.text }] : [])],
+        metadata: { createdAt: nowMs(), ...(selectedReply ? { replyTo: selectedReply } : {}) },
       } as Parameters<typeof sendMessage>[0],
       { body: { ...targetBody, literalSlash: input.literal } },
     );
+    setReplyState(null);
   }
 
   useEffect(() => {
     if (!busy && pendingRef.current) {
       const next = pendingRef.current;
       pendingRef.current = null;
-      send(next.text, next.files);
+      send(next.text, next.files, next.reply, next.mention);
     }
   });
 
@@ -511,9 +567,10 @@ export function Chat({
     if (searchPendingRef.current || busy || unavailable) return;
     const original = messages[index];
     const files = original.parts.filter((p) => p.type === "file");
+    cancelReply();
     keepCurrentBranch();
     setMessages(messages.slice(0, index));
-    sendMessage({ parts: [...files, { type: "text", text }], metadata: { createdAt: nowMs() } } as Parameters<typeof sendMessage>[0], {
+    sendMessage({ parts: [...files, { type: "text", text }], metadata: { createdAt: nowMs(), ...(original.metadata?.replyTo ? { replyTo: original.metadata.replyTo } : {}) } } as Parameters<typeof sendMessage>[0], {
       body: targetBody,
     });
   }
@@ -533,19 +590,17 @@ export function Chat({
   // be waiting for approval while this one is idle). A reply that just ended re-reads the server's status if it showed busy.
   const chatStatus = awaitingApproval ? "waiting" : busy ? "working" : null;
   const wasActive = useRef(false);
-  const chatStatusRef = useRef(chatStatus);
   const serverStatus = liveBotId ? serverBots.find((b) => b.id === liveBotId)?.status : null;
   useEffect(() => {
     if (!liveBotId) return;
-    chatStatusRef.current = chatStatus;
     setChatStatus(conversationId, liveBotId, chatStatus);
     if (wasActive.current && !chatStatus && serverStatus) router.refresh();
     wasActive.current = !!chatStatus;
   }, [liveBotId, conversationId, chatStatus, serverStatus, setChatStatus, router]);
-  // Leaving the chat: a pending approval still needs you; a reply still streaming is no longer watched from here.
+  // Durable server runs own approvals after navigation; do not retain a stale waiting override.
   useEffect(() => {
     if (!liveBotId) return;
-    return () => { if (chatStatusRef.current !== "waiting") setChatStatus(conversationId, liveBotId, null); };
+    return () => { setChatStatus(conversationId, liveBotId, null); };
   }, [liveBotId, conversationId, setChatStatus]);
   useEffect(() => {
     if (!liveBotId || !isBotHome || !lastText || !lastMessage) return;
@@ -597,8 +652,8 @@ export function Chat({
     <div className="flex h-full">
       <div ref={paneRef} className="@container/chat-pane flex h-full min-w-0 flex-1 flex-col">
         {/* Header */}
-        <header ref={headerRef} className={cn("shrink-0 gap-2 px-2 md:px-3", centeredBotHeader ? "grid grid-cols-[minmax(0,1fr)_auto] items-start pt-2 pb-3" : "flex h-14 items-center justify-between", overlayHeader && styles.overlay)}>
-          <div className={cn("flex min-w-0 items-center gap-1", centeredBotHeader && "z-10 col-start-1 row-start-1 justify-self-start", styles.controls)}>
+        <header ref={headerRef} className={cn("shrink-0 gap-2 px-2 md:px-3", centeredBotHeader ? "grid grid-cols-[minmax(0,1fr)_auto] items-start pt-2 pb-3" : target?.kind === "group" ? "flex min-h-14 flex-wrap items-center justify-between py-1" : "flex h-14 items-center justify-between", overlayHeader && styles.overlay)}>
+          <div className={cn("flex min-w-0 max-w-full items-center gap-1", centeredBotHeader && "z-10 col-start-1 row-start-1 justify-self-start", styles.controls)}>
             <button onClick={() => setMobileOpen(true)} className="rounded-lg p-2 text-muted hover:bg-hover md:hidden" aria-label="Open sidebar">
               <MenuIcon className="h-5 w-5" />
             </button>
@@ -617,7 +672,11 @@ export function Chat({
               />
             )}
           </div>
-          <div className={cn("flex shrink-0 items-center gap-1", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
+          <div className={cn("flex shrink-0 items-center gap-1", target?.kind === "group" && "ml-auto", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
+            {voiceTarget && <VoiceControl key={`${target?.kind}:${target?.id}`} target={voiceTarget} conversationId={conversationId} name={target?.name ?? "Assistant"} icon={target?.icon}
+              disabled={unavailable || searchPending || (!voiceActive && busy)} onActiveChange={setVoiceActive}
+              onConversationChange={() => { void syncVoiceConversation().catch(() => {}); }}
+              chatContext={streamingBusy ? [] : messages.slice(-8).map(m => ({ id: m.id, role: m.role, text: m.parts.map(p => p.type === "text" ? p.text : "").join("") }))} />}
             {user.isAdmin && <SpendingHealth />}
             {target?.kind === "bot" && !embedded && <BotChatNavigation botId={target.id} isHome={isBotHome} conversationId={conversationId} onNewHome={() => void executeCommand("/new", [])} />}
             {workspaceAllowed && (
@@ -686,9 +745,9 @@ export function Chat({
                     ))}
                   </div>
                   <h1 className="text-2xl font-semibold">{target.name}</h1>
+                  <div className="mt-3 w-full max-w-sm text-left"><GroupMembers members={target.members ?? []} /></div>
                   <p className="mt-2 max-w-lg text-sm text-muted">
-                    Type <span className="font-mono">@</span> to address a bot, or just write — {target.members?.[0]?.name ?? "the lead"} picks
-                    up anything that isn&apos;t addressed. Bots can hand work to each other with @mentions.
+                    Messages without an @mention go to {target.members?.[0]?.name ?? "the lead bot"}. Use @mentions to address other members.
                   </p>
                 </div>
               ) : target?.kind === "bot" ? (
@@ -710,7 +769,7 @@ export function Chat({
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
-                voiceTarget={voiceTarget}
+                voiceActive={voiceActive}
                 busy={busy}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}
@@ -718,6 +777,8 @@ export function Chat({
                 commands={composerCommandList}
                 autoFocus
                 mentions={mentionList}
+                replyTo={replyTo}
+                onCancelReply={cancelReply}
                 tint={tint}
                 placeholder={target ? (target.kind === "app" ? "Ask anything" : `Message ${target.name}`) : "Select a model or browse bots"}
               />
@@ -747,13 +808,14 @@ export function Chat({
                 {messages.map((m, i) => [
                   <TimeDivider key={`t-${m.id}`} at={m.metadata?.createdAt} previous={i > 0 ? messages[i - 1].metadata?.createdAt : undefined} />,
                   m.role === "user" ? (
-                    <UserMessage key={m.id} message={m} branch={branchInfo(m, i)} onEdit={busy || unavailable || searchPending ? undefined : (t) => editMessage(i, t)} variant={variant} tint={tint} />
+                    <UserMessage key={m.id} message={m} branch={branchInfo(m, i)} onEdit={busy || unavailable || searchPending ? undefined : (t) => editMessage(i, t)} onReply={busy || unavailable || searchPending ? undefined : () => chooseReply(m)} variant={variant} tint={tint} />
                   ) : (
                     <AssistantMessage
                       key={m.id}
                       variant={variant}
                       message={m}
                       readOnly={unavailable || searchPending}
+                      onReply={busy || unavailable || searchPending ? undefined : index => chooseReply(m, index)}
                       streaming={busy && i === messages.length - 1}
                       isLast={i === lastAssistantIdx}
                       branch={branchInfo(m, i)}
@@ -769,6 +831,7 @@ export function Chat({
                           ? undefined
                           : () => {
                               if (searchPendingRef.current) return;
+                              cancelReply();
                               keepCurrentBranch();
                               regenerate({ messageId: m.id, body: targetBody });
                             }
@@ -792,7 +855,7 @@ export function Chat({
                         Open settings
                       </Link>
                     )}
-                    <button disabled={unavailable || searchPending} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current) regenerate({ body: targetBody }); }}>
+                    <button disabled={unavailable || searchPending} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current) { cancelReply(); regenerate({ body: targetBody }); } }}>
                       Retry
                     </button>
                   </div>
@@ -821,13 +884,15 @@ export function Chat({
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
-                voiceTarget={voiceTarget}
+                voiceActive={voiceActive}
                 busy={busy}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}
                 hermesCommands={hermesCommands}
                 commands={composerCommandList}
                 mentions={mentionList}
+                replyTo={replyTo}
+                onCancelReply={cancelReply}
                 tint={tint}
                 placeholder={target?.kind === "group" || target?.kind === "bot" ? `Message ${target.name}` : "Ask anything"}
               />
@@ -893,21 +958,6 @@ function TimeDivider({ at, previous }: { at?: number; previous?: number }) {
   return (
     <div suppressHydrationWarning className="pt-1 text-center text-xs text-subtle">
       {day} {time}
-    </div>
-  );
-}
-
-function GroupHeader({ group }: { group: TargetOption }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
-      <div className="flex -space-x-2">
-        {group.members?.slice(0, 4).map((m) => (
-          <span key={m.id} className="rounded-full bg-bg p-px" title={m.name}>
-            <BotAvatar botId={m.id} value={m.icon} size={24} className="h-6 w-6" />
-          </span>
-        ))}
-      </div>
-      <span className="truncate text-lg font-medium">{group.name}</span>
     </div>
   );
 }

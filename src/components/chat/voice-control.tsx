@@ -1,40 +1,81 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioLines, Headphones, Loader2, Mic, MicOff, Square, X } from "lucide-react";
+import { Headphones, Loader2, Mic, MicOff, Square, Minimize2, Captions } from "lucide-react";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { VoiceAvatar } from "./voice-avatar";
+import { VoiceBridge } from "@/lib/voice/bridge";
+import { legacyPlan, type ReactionPlan } from "@/lib/voice/reaction-library";
+import type { Reaction, VoiceFragment } from "@/lib/voice/policy";
+import type { VoiceHistoryMessage } from "@/lib/voice/history";
+import { VoiceAudioDiagnostics } from "@/lib/voice/audio-diagnostics";
+import { VoiceAudioDiagnosticsControls } from "./voice-audio-diagnostics";
+import { VoiceReactionDiagnostics } from "@/lib/voice/reaction-diagnostics";
+import { VoiceReactionDiagnosticsControls } from "./voice-reaction-diagnostics";
 import { cn } from "@/lib/utils";
-import { appendVoiceTranscript, checkVoiceAvailability, type VoiceLine, type VoiceStatus, type VoiceTarget, voiceSessionUrl, waitForIceGathering, waitForVoiceEvent } from "@/lib/voice/client";
+import { useOptionalPets } from "@/components/pets/pet-context";
+import { voicePetIdentity } from "@/lib/voice/avatar-2d";
+import { checkVoiceAvailability, type VoiceStatus, type VoiceTarget, voiceSessionUrl, waitForIceGathering, waitForVoiceEvent } from "@/lib/voice/client";
 
 type LiveResources = { pc: RTCPeerConnection; channel: RTCDataChannel; stream: MediaStream; abort: AbortController; readinessTimer?: ReturnType<typeof setTimeout>; closePromise?: Promise<void> };
 
-export function VoiceControl({ target, disabled = false, onActiveChange }: { target: VoiceTarget; disabled?: boolean; onActiveChange?: (active: boolean) => void }) {
+export function VoiceControl({ target, conversationId, name, icon, disabled = false, onActiveChange, onConversationChange, chatContext }: {
+  target: VoiceTarget; conversationId: string; name: string; icon?: string | null; disabled?: boolean;
+  onActiveChange?: (active: boolean) => void; onConversationChange: () => void; chatContext: readonly VoiceHistoryMessage[];
+}) {
   const [availabilityState, setAvailabilityState] = useState<{ key: string; value: { supported: boolean; reason?: string } } | null>(null);
   const [availabilityErrorState, setAvailabilityErrorState] = useState<{ key: string; value: string } | null>(null);
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<VoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
-  const [transcript, setTranscript] = useState<VoiceLine[]>([]);
+  const [transcript, setTranscript] = useState<VoiceFragment[]>([]);
+  const [reaction, setReaction] = useState<Reaction>("neutral");
+  const [reactionPlan, setReactionPlan] = useState<ReactionPlan>(legacyPlan("neutral"));
+  const [motionRevision, setMotionRevision] = useState(0);
+  const [reactionRequestedAt, setReactionRequestedAt] = useState(0);
+  const [reactionRevision, setReactionRevision] = useState(0);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [captions, setCaptions] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  const bridge = useRef<VoiceBridge | null>(null);
+  const callbacks = useRef({ onConversationChange });
+  useEffect(() => { callbacks.current = { onConversationChange }; }, [onConversationChange]);
+  useEffect(() => { bridge.current?.context(chatContext); }, [chatContext]);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const resources = useRef<LiveResources | null>(null);
   const pendingAbort = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({ peer: () => null, audio: () => null }));
+  const [reactionDiagnostics] = useState(() => new VoiceReactionDiagnostics());
+  const [motionCapture, setMotionCapture] = useState(false);
+  const recordMotion = useCallback((value: Parameters<VoiceReactionDiagnostics["frame"]>[0]) => reactionDiagnostics.frame(value), [reactionDiagnostics]);
+  useEffect(() => () => reactionDiagnostics.dispose(), [reactionDiagnostics]);
+  useEffect(() => {
+    audioDiagnostics.setSources({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current });
+    return () => audioDiagnostics.dispose();
+  }, [audioDiagnostics]);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const bindAudio = useCallback((element: HTMLAudioElement | null) => { audioRef.current = element; setAudioElement(element); }, []);
   const active = status === "connecting" || status === "connected" || status === "ending";
-  const { appId, botId, conversationId } = target;
-  const targetKey = `${appId ?? ""}:${botId ?? ""}:${conversationId ?? ""}`;
+  const { appId, botId, conversationId: targetConversationId } = target;
+  const pets = useOptionalPets();
+  const identity = { botId, icon, pet: voicePetIdentity(botId ? pets?.pets[botId] : undefined) };
+  const targetKey = `${appId ?? ""}:${botId ?? ""}:${targetConversationId ?? ""}`;
   const availability = availabilityState?.key === targetKey ? availabilityState.value : null;
   const availabilityError = availabilityErrorState?.key === targetKey ? availabilityErrorState.value : null;
 
   useEffect(() => {
     const abort = new AbortController();
-    const requestTarget = { appId, botId, conversationId };
+    const requestTarget = { appId, botId, conversationId: targetConversationId };
     checkVoiceAvailability(requestTarget, abort.signal).then((result) => {
       if (!abort.signal.aborted) setAvailabilityState({ key: targetKey, value: result });
     }).catch((cause: unknown) => {
       if (!abort.signal.aborted) setAvailabilityErrorState({ key: targetKey, value: cause instanceof Error ? cause.message : "Voice availability could not be checked" });
     });
     return () => abort.abort();
-  }, [appId, botId, conversationId, targetKey]);
+  }, [appId, botId, targetConversationId, targetKey]);
 
   useEffect(() => {
     onActiveChange?.(active);
@@ -44,16 +85,26 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
   const cleanup = useCallback((expected?: LiveResources) => {
     const current = expected ?? resources.current;
     if (!current) return;
-    if (resources.current === current) resources.current = null;
+    const ownsSession = resources.current === current;
+    if (ownsSession) { reactionDiagnostics.stop(); audioDiagnostics.stop(); resources.current = null; }
     if (current.readinessTimer) clearTimeout(current.readinessTimer);
+    if (current.channel.readyState === "open" && !current.closePromise) {
+      try { current.channel.send(JSON.stringify({ type: "session.close" })); } catch { /* Transport already closed. */ }
+    }
+    const closingBridge = ownsSession ? bridge.current : null;
+    if (closingBridge) {
+      setSaving(true);
+      void closingBridge.finish().catch(cause => { setError(cause instanceof Error ? cause.message : "Speech could not be saved."); setOpen(true); }).finally(() => setSaving(false));
+    }
     current.abort.abort();
     current.stream.getTracks().forEach((track) => track.stop());
     try { current.channel.close(); } catch { /* already closed */ }
     try { current.pc.close(); } catch { /* already closed */ }
+    if (!ownsSession) return;
     if (audioRef.current) audioRef.current.srcObject = null;
     setMuted(false);
     setStatus("idle");
-  }, []);
+  }, [audioDiagnostics, reactionDiagnostics]);
 
   const end = useCallback(async () => {
     const current = resources.current;
@@ -63,6 +114,9 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
       return;
     }
     setStatus("ending");
+    current.stream.getAudioTracks().forEach(track => { track.enabled = false; });
+    audioRef.current?.pause();
+    audioDiagnostics.stop(); reactionDiagnostics.stop();
     if (!current.closePromise) {
       current.closePromise = (async () => {
         const closed = waitForVoiceEvent(current.channel, "session.closed", current.abort.signal, 15_000);
@@ -73,15 +127,21 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
     let confirmed = true;
     try { await current.closePromise; } catch { confirmed = false; }
     cleanup(current);
+    setSaving(true);
+    try { await bridge.current?.finish(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Speech could not be saved. Retry before leaving."); }
+    finally { setSaving(false); }
     if (!confirmed) {
       setError("Voice ended locally; final session usage could not be confirmed.");
       setStatus("error");
     }
-  }, [cleanup, status]);
+  }, [audioDiagnostics, reactionDiagnostics, cleanup, status]);
 
   useEffect(() => () => {
     pendingAbort.current?.abort();
     pendingAbort.current = null;
+    const closingBridge = bridge.current;
+    if (closingBridge) void closingBridge.finish().catch(() => {}).finally(() => closingBridge.dispose());
     const current = resources.current;
     if (current) {
       current.abort.abort();
@@ -97,9 +157,18 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
 
   const start = useCallback(async () => {
     if (!availability?.supported || resources.current || pendingAbort.current) return;
+    if (bridge.current?.hasUnsaved) {
+      setError("Your previous voice transcript still needs saving. Use Retry save before starting again.");
+      return;
+    }
+    bridge.current?.dispose();
+    bridge.current = null;
     setOpen(true);
     setError(null);
     setTranscript([]);
+    setReaction("neutral");
+    setReactionPlan(legacyPlan("neutral")); setMotionRevision(value => value + 1);
+    setReactionRevision(revision => revision + 1);
     setAudioBlocked(false);
     setStatus("connecting");
     const abort = new AbortController();
@@ -126,8 +195,10 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
       abort.signal.addEventListener("abort", abortStarted, { once: true });
       let startTimer: ReturnType<typeof setTimeout> | null = null;
       channel.addEventListener("message", (message: MessageEvent<string>) => {
+        if (resources.current !== current) return;
         try {
           const event = JSON.parse(message.data) as { type?: string; delta?: string; error?: { message?: string } };
+          const handled = bridge.current?.receive(event);
           if (event.type === "session.started") { if (startTimer) clearTimeout(startTimer); startedResolve(); }
           else if (event.type === "session.closed") {
             if (startTimer) clearTimeout(startTimer);
@@ -137,15 +208,14 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
               setStatus("error");
             }
           }
-          else if (event.type === "error") {
+          else if (event.type === "error" && !handled) {
             if (resources.current === current) {
               cleanup(current);
               setError(event.error?.message || "Voice session reported an error");
               setStatus("error");
             }
           }
-          else if (event.type === "session.input_transcript.delta" && event.delta) setTranscript((lines) => appendVoiceTranscript(lines, "you", event.delta!));
-          else if (event.type === "session.output_transcript.delta" && event.delta) setTranscript((lines) => appendVoiceTranscript(lines, "assistant", event.delta!));
+
         } catch { /* Ignore unknown event payloads. */ }
       });
       channel.addEventListener("open", () => { /* Session commands are gated on session.started. */ });
@@ -159,7 +229,7 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
         }
       });
       pc.addEventListener("track", (event) => {
-        if (!audioRef.current) return;
+        if (!audioRef.current || resources.current !== current) return;
         audioRef.current.srcObject = event.streams[0] ?? new MediaStream([event.track]);
         void audioRef.current.play().then(() => setAudioBlocked(false)).catch(() => setAudioBlocked(true));
       });
@@ -181,15 +251,22 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
       if (abort.signal.aborted || !pc.localDescription?.sdp) throw new DOMException("Voice connection cancelled", "AbortError");
       const response = await fetch(voiceSessionUrl(target), {
         method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sdp: pc.localDescription.sdp, ...target }),
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, ...target, chatId: conversationId }),
       });
-      const body = await response.json() as { transport?: { type?: string; sdp?: string }; error?: string };
-      if (!response.ok || body.transport?.type !== "webrtc" || !body.transport.sdp) throw new Error(body.error || "Voice session could not be created");
+      const body = await response.json() as { session?: { id: string }; transport?: { type?: string; sdp?: string }; error?: string; history?: VoiceHistoryMessage[]; avatarUrl?: string | null; reactions?: boolean };
+      if (!response.ok || body.transport?.type !== "webrtc" || !body.transport.sdp || !body.session?.id) throw new Error(body.error || "Voice session could not be created");
       if (abort.signal.aborted) return;
       startTimer = setTimeout(() => startedReject(new Error("Voice session did not become ready")), 20_000);
       current.readinessTimer = startTimer;
+      setAvatarUrl(body.avatarUrl ?? null);
+      bridge.current = new VoiceBridge({ conversationId, sessionId: body.session!.id, reactions: body.reactions === true, history: body.history, reactionDiagnostics,
+        send: event => { if (channel?.readyState === "open") channel.send(JSON.stringify(event)); },
+        changed: () => callbacks.current.onConversationChange(), transcript: setTranscript,
+        reaction: (value, _latency, plan, motion) => { setReactionRequestedAt(performance.now()); setMotionRevision(previous => motion ?? previous + 1); setReactionPlan(plan ?? legacyPlan(value)); setReaction(value); setReactionRevision(revision => revision + 1); }, notice: message => { setError(message); setOpen(true); }, approval: () => setOpen(false),
+      });
       await pc.setRemoteDescription({ type: "answer", sdp: body.transport.sdp });
       await started;
+      callbacks.current.onConversationChange();
       clearTimeout(startTimer);
       abort.signal.removeEventListener("abort", abortStarted);
       if (pendingAbort.current === abort) pendingAbort.current = null;
@@ -204,7 +281,7 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
         setStatus("error");
       }
     }
-  }, [availability?.supported, cleanup, target]);
+  }, [availability?.supported, cleanup, target, conversationId, reactionDiagnostics]);
 
   const toggleMute = () => {
     const current = resources.current;
@@ -214,41 +291,66 @@ export function VoiceControl({ target, disabled = false, onActiveChange }: { tar
     setMuted(nextMuted);
   };
 
-  const canStart = !disabled && availability?.supported === true && status !== "connecting" && status !== "connected" && status !== "ending";
+  const canStart = !saving && !disabled && availability?.supported === true && status !== "connecting" && status !== "connected" && status !== "ending";
   const reason = availabilityError || availability?.reason;
 
   return (
     <div className="relative">
-      <button type="button" onClick={() => setOpen((value) => !value)} aria-label="Voice conversation" aria-expanded={open}
+      <button ref={triggerRef} type="button" onClick={() => setOpen(true)} aria-label={active ? "Expand voice conversation" : "Voice conversation"} aria-expanded={open}
         title={reason || "Start a voice conversation"}
         className={cn("flex h-9 w-9 items-center justify-center rounded-full hover:bg-hover", active && "bg-accent/10 text-accent", !availability?.supported && "text-muted")}
         data-testid="voice-control">
         {status === "connecting" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Headphones className="h-5 w-5" />}
       </button>
-      {open && <section className="absolute bottom-full right-0 z-30 mb-2 w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-border bg-surface p-4 shadow-xl" aria-label="Voice conversation panel">
-        <div className="flex items-start justify-between gap-3">
-          <div><h2 className="flex items-center gap-2 text-sm font-semibold"><AudioLines className="h-4 w-4" /> Voice conversation</h2>
-            <p className="mt-1 text-xs text-muted" role="status">{status === "connecting" ? "Connecting…" : status === "connected" ? "Connected" : status === "ending" ? "Ending session…" : status === "error" ? "Could not connect" : availability?.supported ? "Start a separate, temporary voice session." : "Voice is unavailable for this target."}</p>
+      {active && !open && <button type="button" onClick={() => void end()} className="absolute top-full right-0 z-30 mt-2 whitespace-nowrap rounded-full border border-border bg-surface px-3 py-2 text-xs shadow" aria-label="End voice">End voice</button>}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent hideClose title={<span className="sr-only">Voice with {name}</span>} description="Speak with the same bot. Your conversation is saved in chat."
+          onCloseAutoFocus={event => { event.preventDefault(); triggerRef.current?.focus(); }}
+          className="inset-0 left-0 top-0 h-dvh max-h-none w-screen max-w-none translate-x-0 translate-y-0 overflow-hidden rounded-none bg-[#101822] p-0 text-white [&>p]:sr-only [&>div]:mt-0">
+          <div className="relative flex h-dvh flex-col pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(1.25rem,env(safe-area-inset-top))]">
+            <header className="z-10 flex items-start justify-between px-6 md:px-10">
+              <div><p className="text-lg font-medium">{name}</p><p className="mt-1 text-sm text-white/55" role="status">{saving ? "Saving conversation…" : status === "connecting" ? "Connecting…" : status === "connected" ? muted ? "Microphone muted" : "Listening" : status === "ending" ? "Ending voice…" : "Your conversation, out loud"}</p></div>
+              <button type="button" className="rounded-full p-3 hover:bg-white/10" aria-label="Minimize voice" onClick={() => setOpen(false)}><Minimize2 className="h-5 w-5" /></button>
+            </header>
+            <div className="relative min-h-0 flex-1" style={{ background: "radial-gradient(ellipse at 50% 48%, #38505a55, transparent 65%)" }}>
+              <VoiceAvatar identity={identity} planRequestedAt={reactionRequestedAt} plan={reactionPlan} motionRevision={motionRevision} reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} diagnostics={audioDiagnostics} onMotionMetrics={motionCapture ? recordMotion : undefined} />
+            </div>
+            <div className="z-10 mx-auto max-h-[45dvh] w-full max-w-xl space-y-4 overflow-y-auto px-6 pb-1 text-center">
+              {captions && <div className="max-h-36 overflow-y-auto rounded-2xl bg-white/5 p-4 text-left" aria-label="Live captions">
+                {(["user", "assistant"] as const).map(role => {
+                  const text = transcript.filter(line => line.role === role).slice(-14).map(line => line.text).join("");
+                  return text ? <p key={role} className={cn("text-sm", role === "user" ? "text-white/65" : "mt-2 text-white")}><span className="mr-2 font-medium">{role === "user" ? "You" : name}</span>{text}</p> : null;
+                })}
+              </div>}
+              {reason && <p className="text-sm text-white/60">{reason}</p>}
+              {error && <div role="alert" className="rounded-xl bg-white/10 p-3 text-sm"><p>{error}</p>
+                {transcript.length > 0 && <button className="mt-2 underline" disabled={saving} onClick={() => {
+                  const current = bridge.current; if (!current) return;
+                  setSaving(true); void current.flush().then(() => setError(null)).catch(cause => setError(cause.message)).finally(() => setSaving(false));
+                }}>Retry save</button>}
+              </div>}
+              <div className="flex items-center justify-center gap-4">
+                <button type="button" className="rounded-full bg-white/10 p-4 hover:bg-white/20" aria-label="Toggle captions" aria-pressed={captions} onClick={() => setCaptions(value => !value)}><Captions className="h-5 w-5" /></button>
+                {status === "connected" ? <>
+                  <button type="button" onClick={toggleMute} className={cn("rounded-full p-4", muted ? "bg-white text-black" : "bg-white/10 hover:bg-white/20")} aria-label={muted ? "Unmute microphone" : "Mute microphone"} aria-pressed={muted}>
+                    {muted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+                  </button>
+                  <button type="button" onClick={() => void end()} className="flex items-center gap-2 rounded-full bg-white px-6 py-4 text-sm font-medium text-black"><Square className="h-4 w-4 fill-current" /> End voice</button>
+                </> : <button type="button" onClick={() => status === "connecting" ? void end() : void start()} disabled={!canStart && status !== "connecting"}
+                  className="rounded-full bg-white px-6 py-4 text-sm font-medium text-black disabled:opacity-40">{status === "connecting" ? "Cancel" : status === "ending" ? "Ending…" : "Start voice"}</button>}
+              </div>
+              <p className="text-xs text-white/40">Voice and text share this chat. You can minimize voice to type or review approvals.</p>
+              {targetConversationId
+                ? <a className="block text-xs text-white/60 underline" href={`/voice/reaction-studio?${new URLSearchParams({ conversationId: targetConversationId })}`} target="_blank" rel="noopener noreferrer">Reaction studio</a>
+                : <p className="text-xs text-white/40">Send a message or finish a voice conversation to use the reaction studio.</p>}
+              <VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />
+              <VoiceReactionDiagnosticsControls diagnostics={reactionDiagnostics} active={status === "connected"} onCaptureChange={setMotionCapture} />
+              {audioBlocked && <button className="text-sm underline" onClick={() => void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setError("Tap again to enable audio playback."))}>Enable voice audio</button>}
+            </div>
           </div>
-          <button type="button" className="rounded-full p-1 hover:bg-hover" aria-label="Close voice panel" onClick={() => setOpen(false)}><X className="h-4 w-4" /></button>
-        </div>
-        {reason && <p className="mt-3 rounded-lg bg-hover p-2 text-xs text-muted">{reason}</p>}
-        {error && <p role="alert" className="mt-3 text-xs text-danger">{error}</p>}
-        <div className="mt-4 flex gap-2">
-          {status === "connected" ? <>
-            <button type="button" onClick={toggleMute} className="flex items-center gap-2 rounded-full border border-border px-3 py-2 text-sm hover:bg-hover" aria-label={muted ? "Unmute microphone" : "Mute microphone"}>
-              {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}{muted ? "Unmute" : "Mute"}
-            </button>
-            <button type="button" onClick={() => void end()} className="flex items-center gap-2 rounded-full bg-fg px-3 py-2 text-sm text-bg"><Square className="h-3.5 w-3.5 fill-current" /> End</button>
-          </> : <button type="button" onClick={() => status === "connecting" ? void end() : void start()} disabled={!canStart && status !== "connecting"}
-            className="rounded-full bg-fg px-4 py-2 text-sm text-bg disabled:opacity-40">{status === "connecting" ? "Cancel" : "Start voice"}</button>}
-        </div>
-        {transcript.length > 0 && <div className="mt-4 max-h-44 space-y-2 overflow-y-auto border-t border-border pt-3" aria-label="Temporary voice transcript">
-          {transcript.map((line, index) => <p key={`${index}:${line.role}`} className="text-xs"><span className="font-semibold">{line.role === "you" ? "You" : "Assistant"}: </span>{line.text}</p>)}
-          <p className="text-[11px] text-subtle">This transcript is temporary and is not saved to chat.</p>
-        </div>}
-      </section>}
-      <audio ref={audioRef} autoPlay controls={audioBlocked} className={cn("mt-2 w-full", !audioBlocked && "hidden")} aria-label="Voice response audio" />
+        </DialogContent>
+      </Dialog>
+      <audio ref={bindAudio} autoPlay className="hidden" aria-label="Voice response audio" />
     </div>
   );
 }

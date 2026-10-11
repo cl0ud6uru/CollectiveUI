@@ -54,6 +54,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - run: node ios/scripts/build-voice-engine.mjs --check
       - run: npm run typecheck
       - run: npm run lint
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.
@@ -77,6 +78,12 @@ jobs:
           node tests/browser/first-run-ldap.mjs
           node tests/browser/provider-connections.mjs
           node tests/browser/hermes-team-builder.mjs
+          node tests/browser/codex-harness.mjs
+          node tests/browser/voice-mode.mjs
+          node tests/browser/voice-avatar.mjs
+          npx playwright test --config tests/group-lead.playwright.config.ts
+          npx playwright test --config tests/group-activity.playwright.config.ts
+          npx playwright test --config tests/message-interactions.playwright.config.ts
           node tests/browser/hermes-team-controls.mjs
           node tests/browser/hermes-team-chat-controls.mjs
           node tests/browser/hermes-team-candidate-approvals.mjs
@@ -90,6 +97,23 @@ jobs:
           BOT_RECENT_USE_SCREENSHOT_DIR="$RUNNER_TEMP/bot-recent-use-screenshots" node tests/browser/bot-recent-use.mjs
           SIDEBAR_ROSTER_SCREENSHOT_DIR="$RUNNER_TEMP/sidebar-roster-screenshots" node tests/browser/sidebar-roster-design.mjs
           BOT_PORTRAIT_SCREENSHOTS="$RUNNER_TEMP/bot-portrait-screenshots" node tests/browser/bot-sidebar-portrait.mjs
+      - name: Exercise all sixty layered reactions without credentials or a model asset
+        run: |
+          node scripts/voice-reaction-preview.mjs --port 4318 > "$RUNNER_TEMP/voice-reactions.log" 2>&1 &
+          REACTION_PREVIEW_PID=$!
+          trap 'kill "$REACTION_PREVIEW_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..40}; do
+            if curl --fail --silent http://127.0.0.1:4318/ > /dev/null; then break; fi
+            sleep 0.25
+          done
+          REACTION_PREVIEW_URL=http://127.0.0.1:4318 REACTION_PREVIEW_OUTPUT="$RUNNER_TEMP/reaction-library" node tests/browser/voice-reaction-library.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reaction-library
+          path: |
+            ${{ runner.temp }}/reaction-library
+            ${{ runner.temp }}/voice-reactions.log
       - name: Exercise native Remote Hermes commands and confirmed session controls on desktop and mobile
         run: |
           node tests/browser/remote-hermes-commands.mjs

@@ -4,10 +4,14 @@ on:
   push:
     paths:
       - 'ios/**'
+      - 'src/lib/voice/**'
+      - 'src/components/chat/voice-avatar.tsx'
       - '.github/workflows/ios.yml'
   pull_request:
     paths:
       - 'ios/**'
+      - 'src/lib/voice/**'
+      - 'src/components/chat/voice-avatar.tsx'
       - '.github/workflows/ios.yml'
   workflow_dispatch:
 

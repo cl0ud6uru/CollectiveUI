@@ -92,7 +92,14 @@ export async function loadBuilderData(p: Principal, botId?: string) {
       ...(definition ? { modelRoutes: { adminRouteId: definition.modelPolicy.adminRouteId, personalRouteId: definition.modelPolicy.personalRouteId }, toolPolicy: definition.toolPolicy } : {}),
       maintainerIds: selected.length ? selected.map(m => m.userId) : [p.user.id], expectedVersion: definition?.version ?? 0 };
   }
+  const codexRuntimeStatus = { api: 'No verified API runtime assigned to you.', chatgpt_subscription: 'No authorized subscription runtime assigned to you.' };
+  if (process.env.CODEX_RUNTIME_MANIFEST) {
+    const { callerRuntime } = await import('@/lib/codex/runtime');
+    for (const funding of ['api', 'chatgpt_subscription'] as const)
+      if (await callerRuntime(p.user.id, funding).catch(() => null)) codexRuntimeStatus[funding] = 'Assigned; live account access and entitlement have not been checked.';
+  }
   return {
+    codexRuntimeStatus,
     teamConfig, teamMaintainers, teamModelOptions,
     delegators: botId ? [] : (await listEditableCoordinators(p)).map(b => ({ id: b.id, name: b.name, avatar: b.avatar })),
     petCatalog,
@@ -110,7 +117,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
     groups: groupRows,
     users: await db.select({ id: users.id, name: users.name, email: users.email, upn: users.upn, disabled: users.disabled }).from(users).orderBy(users.name),
     tools,
-    delegates: bots.filter((b) => b.id !== botId && b.executionMode !== "service" && !b.hermesTeam).map((b) => ({ id: b.id, name: b.name, avatar: b.avatar })),
+    delegates: bots.filter((b) => b.id !== botId && b.appId && b.executionMode !== "service" && !b.hermesTeam).map((b) => ({ id: b.id, name: b.name, avatar: b.avatar })),
     knowledge,
   };
 }

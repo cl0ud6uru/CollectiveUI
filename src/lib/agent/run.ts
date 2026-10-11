@@ -1,3 +1,4 @@
+import { isCodexApp } from '@/lib/codex/target';
 import { InvalidToolApprovalSignatureError } from "ai";
 import { convertToModelMessages, createUIMessageStream, isStepCount, streamText, toUIMessageStream, type UIMessageChunk } from "ai";
 import { eq } from "drizzle-orm";
@@ -66,6 +67,7 @@ export type TurnResult = {
  * (src/lib/runs/execute.ts) for every direct chat and routine segment; group chats have their own loop (group.ts).
  */
 export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
+  if (isCodexApp(opts.app)) return (await import('@/lib/codex/run')).runCodexTurn(opts);
   const { principal, conversation, app, bot, history } = opts;
   const toolSettings = await getSetting("tools");
   const background = !!opts.background;

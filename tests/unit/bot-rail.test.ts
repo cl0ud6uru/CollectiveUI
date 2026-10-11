@@ -22,6 +22,14 @@ describe("collapsed bot rail", () => {
     expect(botRailActivity({ ...bots[1], preview: "Working on a new result", lastAt: new Date().toISOString() }, [])).toEqual({ approval: false, attention: false, working: false, unread: false, label: "Idle" });
     expect(botRailActivity(bots[1], [task("running", true, "b2"), { ...task("failed", true), archived: true }]).label).toBe("Idle");
   });
+  it("shows executing overflow bots while preserving saved order, capacity and hidden preferences", () => {
+    const working = bots.map(bot => ({ ...bot, status: ["b0", "b7", "b9"].includes(bot.id) ? "working" as const : null }));
+    const result = railNavigationBots(working, undefined, 3);
+    expect(result.visible.map(bot => bot.id)).toEqual(["b1", "b7", "b9"]);
+    expect(result.all.some(bot => bot.id === "b0")).toBe(false);
+    expect(result.remaining).toBe(6);
+    expect(railNavigationBots(working, "b2", 2).visible.map(bot => bot.id)).toEqual(["b2", "b7"]);
+  });
   it("combines real work, approval, failures and terminal unread state with attention taking precedence", () => {
     expect(botRailActivity({ ...bots[1], status: "working" }, [task("succeeded", true)])).toMatchObject({ working: true, unread: true, label: "Working" });
     expect(botRailActivity(bots[1], [task("waiting"), task("running"), task("failed", true)])).toEqual({ approval: true, attention: true, working: true, unread: true, label: "Needs your approval" });

@@ -1,3 +1,6 @@
+import { codexPolicy } from '@/lib/codex/store';
+import { callerRuntime } from '@/lib/codex/runtime';
+import { codexRuns } from '@/db/schema';
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 import Link from "next/link";
 import { canEditBot, activeServiceGrants, servicePublicationStatus } from "@/lib/bots/service";
@@ -24,6 +27,9 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
   const { id } = await props.params;
   const bot = await getAccessibleBot(p, id);
   const [app] = bot.appId ? await db.select().from(aiApps).where(eq(aiApps.id, bot.appId)) : [];
+  const codex = await codexPolicy(bot.id);
+  const codexStatus = codex ? await callerRuntime(p.user.id, codex.funding).then(() => 'Runtime assigned. Live account access and subscription entitlement have not been tested here.').catch(() => 'Your runtime is not assigned or needs administrator verification. No other account will be used.') : null;
+  const [pendingCodexStop] = codex ? await db.select({ runId: codexRuns.runId }).from(codexRuns).where(and(eq(codexRuns.userId, p.user.id), eq(codexRuns.phase, 'stop_unconfirmed'))).limit(1) : [];
   const docker = !!app && isDockerHermes(app);
   const local = !!app && isLocalHermes(app);
   const canEdit = canEditBot(p, bot);
@@ -73,8 +79,8 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           <Link href={`/bots/${bot.id}/chats`} className="rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover">Chat history</Link>
           {docker && <Link href={`/bots/${bot.id}/settings`} className="rounded-full border border-border px-5 py-2.5 text-sm hover:bg-hover">Hermes settings</Link>}
           <BotPetSettings botId={bot.id} botName={bot.name} botAvatar={bot.avatar} />
-          {!local && !bot.hermesTeam && <UseAsTemplateButton botId={bot.id} />}
-          {canEdit && !local && !bot.hermesTeam && <ShareTemplateButton botId={bot.id} />}
+          {!local && !codex && !bot.hermesTeam && <UseAsTemplateButton botId={bot.id} />}
+          {canEdit && !local && !codex && !bot.hermesTeam && <ShareTemplateButton botId={bot.id} />}
           {canEdit && (
             <Link href={`/bots/${bot.id}/edit`} className="flex items-center gap-2 rounded-full border border-border px-5 py-2.5 text-sm font-medium hover:bg-hover">
               <Pencil className="h-4 w-4" /> Edit
@@ -82,7 +88,13 @@ export default async function BotProfilePage(props: PageProps<"/bots/[id]">) {
           )}
         </div>
       </div>
-      {bot.hermesTeam ? <div className="rounded-xl border border-border p-5 text-sm space-y-2">
+      {codex ? <div className="rounded-xl border border-border p-5 text-sm space-y-2">
+        <h2 className="font-semibold">Codex app-server · text pilot</h2>
+        <p>{codex.model} · {codex.effort} reasoning · {codex.funding === 'api' ? 'Your API-funded runtime' : 'Your authorized ChatGPT subscription runtime'}</p>
+        <p>{codexStatus}</p>
+        {pendingCodexStop && <p role="status">A previous Codex stop is unconfirmed. New Codex work is blocked while recovery checks the assigned runtime.</p>}
+        <p>The bot definition can be shared; credentials and conversations remain caller-owned. Direct text chats and Stop are supported. Tools, files, routines and delegation are unavailable.</p>
+      </div> : bot.hermesTeam ? <div className="rounded-xl border border-border p-5 text-sm space-y-2">
         <h2 className="font-semibold">Hermes Team Bot</h2>
         <p>Open the chat to use your private conversation. Maintainers can switch to Admin mode to share working skills and native memory, then review Publish changes.</p>
         <p>Model access must be verified before replies are available. Native learning stays with each private instance until a maintainer publishes selected resources.</p>

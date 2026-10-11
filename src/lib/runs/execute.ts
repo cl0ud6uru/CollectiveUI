@@ -319,6 +319,8 @@ async function prepareSegment(run: AgentRun,holder:string,admitted:(value:Active
   const team=await prepareTeamWorkerTarget(principal,run,holder);
   if(team)admitted(team.candidate);
   const { bot, app } = team??await resolveTurnTarget(principal, conversation);
+  if ((app.id.startsWith('codex:') || run.appId?.startsWith('codex:')) && app.id !== run.appId)
+    throw new HttpError(409, 'This Codex bot changed after the request was queued. Start a new request.');
   const candidate=team?.candidate;
   if(candidate?.learningSnapshot)return {principal,conversation,bot,app,candidate,history:[] as PortalUIMessage[],continuation:false,delegation:undefined};
   if ((bot?.id ?? null) !== run.botId) throw new HttpError(409, "This chat's bot changed.");

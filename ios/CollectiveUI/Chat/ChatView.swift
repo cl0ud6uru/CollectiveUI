@@ -36,12 +36,23 @@ struct ChatView: View {
         .sheet(isPresented: $showDetails) { details }
         .task {
             await model.activate()
+            #if DEBUG
+            if model.app.isDemoSession && ProcessInfo.processInfo.arguments.contains("--demo-voice") { model.startVoice() }
+            #endif
         }
         .task(id: model.conversationId) {
             while !Task.isCancelled {
                 await model.refreshDelegatedApprovals()
                 do { try await Task.sleep(for: .seconds(2)) } catch { break }
             }
+        }
+        .task(id: model.scrollToken) {
+            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            guard !Task.isCancelled, let voice = model.app.voice, voice.conversationId == model.conversationId else { return }
+            let messages = model.messages.suffix(8).map { message in
+                ["id": message.id, "role": message.role.rawValue, "text": message.plainText]
+            }
+            await voice.updateContext(messages)
         }
         .onDisappear {
             model.deactivate()
@@ -69,7 +80,9 @@ struct ChatView: View {
                 .buttonStyle(.plain).modifier(ChatGlass(cornerRadius: 22))
                 .accessibilityLabel("Open sidebar")
                 .accessibilityActivationPoint(.center)
-                if !model.usesBubbles || compactHeader {
+                if let group = model.target, group.kind == "group" {
+                    GroupChatHeader(group: group)
+                } else if !model.usesBubbles || compactHeader {
                     if model.usesBubbles {
                         BotIdentityView(botId: model.target?.id, icon: model.assistantIcon, size: 32, activity: model.avatarActivity)
                     }
@@ -78,6 +91,13 @@ struct ChatView: View {
                         .accessibilityLabel(model.assistantName + ", " + model.statusLabel)
                 }
                 Spacer(minLength: 4)
+                if !model.isReadOnly && !model.isUnavailable && !model.isGroup {
+                    Button("Start voice", systemImage: "waveform") { model.startVoice() }
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                        .buttonStyle(.plain).modifier(ChatGlass(cornerRadius: 22))
+                        .disabled(model.isLoading || model.isStreaming || model.target == nil)
+                        .accessibilityIdentifier("chat.voice")
+                }
                 if model.target?.kind == "bot" {
                     Menu {
                         Button { showHistory = true } label: { Label("Chat history", systemImage: "clock") }
@@ -91,7 +111,7 @@ struct ChatView: View {
                 }
             }
             .padding(.horizontal, 16)
-            if model.usesBubbles && !compactHeader {
+            if model.usesBubbles && model.target?.kind != "group" && !compactHeader {
                 VStack(spacing: -2) {
                     BotIdentityView(botId: model.target?.id, icon: model.assistantIcon, size: 48, activity: model.avatarActivity)
                         .zIndex(1)
@@ -112,7 +132,7 @@ struct ChatView: View {
                 }
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 76)
+                .padding(.horizontal, 116)
                 .padding(.bottom, 4)
             }
         }

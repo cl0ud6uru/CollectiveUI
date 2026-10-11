@@ -108,6 +108,7 @@ export type SandboxSettings = {
 };
 
 const defaults = {
+  voice: { providerAppId: null, reactions: true, avatarUrl: null } as import("./voice/policy").VoiceSettings,
   officeBot: { botId: null } as { botId: string | null },
   decisions: DECISIONS_DEFAULTS,
   remoteHermes: { enabled: false, allowSessionYolo: false, privateGateways: [] } as RemoteHermesSettings,

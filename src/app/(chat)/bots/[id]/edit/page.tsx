@@ -1,3 +1,4 @@
+import { codexPolicy } from '@/lib/codex/store';
 import { eq } from "drizzle-orm";
 import { BotBuilder } from "@/components/bots/bot-builder";
 import { PageFrame } from "@/components/page-frame";
@@ -37,6 +38,7 @@ export default async function EditBotPage(props: PageProps<"/bots/[id]/edit">) {
             instructions: bot.instructions,
             boundaries: bot.boundaries,
             appId: bot.appId ?? "",
+            codex: await codexPolicy(bot.id),
             visibility: bot.visibility,
             groupIds: access.map((a) => a.groupId),
             userIds: userAccess.map(a => a.userId),

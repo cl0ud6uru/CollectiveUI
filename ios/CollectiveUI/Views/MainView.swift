@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFAudio
 import CollectiveKit
 
 @MainActor
@@ -48,8 +49,19 @@ struct MainView: View {
             }
         }
         .background(PortalTheme.background)
+        .accessibilityHidden(model.voice?.expanded == true)
+        .safeAreaInset(edge: .bottom) {
+            if let voice = model.voice, !voice.expanded { VoiceMiniBar(model: voice) }
+        }
+        .overlay {
+            if let voice = model.voice { VoiceModeView(model: voice).id(voice.id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.didBecomeInactiveNotification)) { _ in
+            Task { await model.voice?.end() }
+        }
         .onChange(of: model.selection) { _, _ in
             if sizeClass != .regular { closeSidebar() }
+            Task { await model.voice?.end() }
         }
         .sheet(isPresented: $showCompose) { NewChatSheet().environment(model) }
         .sheet(isPresented: $showInbox) { InboxView().environment(model) }
@@ -60,8 +72,26 @@ struct MainView: View {
             await applyDemoLaunchOptions()
             #endif
         }
+        .onDisappear {
+            let closingVoice = model.voice
+            Task {
+                await closingVoice?.end()
+                closingVoice?.audioDiagnostics.disconnect()
+                closingVoice?.page.stopLoading()
+                if model.voice?.id == closingVoice?.id { model.voice = nil }
+            }
+        }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await model.refreshBotStatuses()
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.conversationStates.flush() }
+            if phase == .background { Task { await model.voice?.end() } }
             if phase == .active { Task { await model.refreshShell() } }
         }
     }
@@ -77,6 +107,11 @@ struct MainView: View {
         ChatDetailView(route: model.selection, onOpenSidebar: openSidebar, onCompose: { showCompose = true })
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(PortalTheme.background)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if sizeClass == .regular ? columnVisibility == .detailOnly : !sidebarOpen {
+                    BotWorkRail(bots: model.bots, onOpenSidebar: openSidebar)
+                }
+            }
     }
 
     private func openSidebar() {

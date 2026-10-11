@@ -1,3 +1,7 @@
+import { codexPolicy } from '@/lib/codex/store';
+import { codexRuntimeApp } from '@/lib/codex/target';
+import { userMayUseChatGPT } from '@/lib/llm/chatgpt/policy';
+import { getSetting } from '@/lib/settings';
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { aiApps, type AiApp, type Bot } from "@/db/schema";
@@ -29,6 +33,12 @@ export async function resolveTurnTarget(p: Principal, conv: { id?: string; appId
     // Native model/utility/tool routes must be verified before admitting any team work.
     // Never reuse the definition's previous app as a company-provider fallback.
     if (await botUsesNativeLearning(bot.id)) throw new HttpError(409, 'Open this bot’s private Team chat before starting a reply.');
+    const codex = await codexPolicy(bot.id);
+    if (codex) {
+      if (codex.funding === 'chatgpt_subscription' && !userMayUseChatGPT(p, await getSetting('chatgpt')))
+        throw new HttpError(403, 'Your organization has not enabled personal ChatGPT access for you.');
+      return { bot, app: codexRuntimeApp(bot, codex) };
+    }
     if (!bot.appId) throw new HttpError(400, "This bot has no connection configured");
     const [a] = await db.select().from(aiApps).where(eq(aiApps.id, bot.appId));
     if (!a?.enabled) throw new HttpError(400, "This bot's connection is disabled");

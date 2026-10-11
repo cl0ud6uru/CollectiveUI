@@ -6,14 +6,16 @@ import { BUILTIN_TOOLS } from "@/lib/agent/types";
 import { isEligibleEmbeddingApp, isEligibleUtilityApp } from "@/lib/llm/catalog";
 import { requireAdminPage } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
+import { VoiceForm } from "@/components/admin/voice-form";
 import { DecisionsForm } from "@/components/admin/decisions-form";
 import { decisionsCapability } from "@/lib/decisions-policy";
 
 export default async function AdminToolsPage() {
   await requireAdminPage();
-  const [t, decisions, appRows] = await Promise.all([
+  const [t, decisions, voice, appRows] = await Promise.all([
     getSetting("tools"),
     getSetting("decisions"),
+    getSetting("voice"),
     db
       .select({
         id: aiApps.id,
@@ -50,6 +52,7 @@ export default async function AdminToolsPage() {
         utilityApps={utilityApps}
         embeddingApps={embeddingApps}
       />
+      <VoiceForm initial={voice} providers={appRows.filter(decisionsCapability).map(a => ({ id: a.id, name: a.name }))} />
       <DecisionsForm initial={decisions} providers={appRows.filter(decisionsCapability).map(a => ({ id: a.id, name: a.name }))} />
     </div>
   );

@@ -1,0 +1,91 @@
+import { chromium, expect } from '@playwright/test';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import sharp from 'sharp';
+const base = process.env.SPRITE_PREVIEW_URL ?? 'http://127.0.0.1:4321';
+const out = process.env.SPRITE_PREVIEW_OUTPUT;
+if(out) await mkdir(out,{recursive:true});
+const browser = await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? {executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH} : {})});
+const context = await browser.newContext({viewport:{width:1220,height:900},...(out ? {recordVideo:{dir:out,size:{width:1220,height:900}}} : {})});
+const page = await context.newPage(), errors=[], requests=[];
+page.on('pageerror',error=>errors.push(error.message));
+page.on('request',request=>requests.push(new URL(request.url()).pathname));
+await page.route('**/*',route=>new URL(route.request().url()).origin === base ? route.continue() : route.abort());
+await page.addInitScript(() => {
+  window.captureCalls=0; window.nativeCalls=0;
+  if(navigator.mediaDevices) navigator.mediaDevices.getUserMedia=async()=>{window.captureCalls++;throw new Error('No microphone in fixture');};
+  window.webkit={messageHandlers:{voiceEvents:{postMessage:()=>{}},voiceAPI:{postMessage:async()=>{window.nativeCalls++;throw new Error('No backend in fixture');}}}};
+});
+const snapshot=()=>page.evaluate(()=>window.spritePreview.metrics());
+const play=id=>page.evaluate(id=>window.spritePreview.play(id),id);
+const screenshot=async name=>{if(out)await page.screenshot({path:path.join(out,name+'.png')});};
+try {
+  await page.goto(base);
+  await expect.poll(async()=>await page.locator('.voice-avatar-2d-cell img').evaluate(image=>image.naturalWidth)).toBe(1536);
+  await play('warm:small_nod');
+  await expect.poll(async()=>(await snapshot()).pose.row).toBe(3);
+  await screenshot('desktop-hermes-wave');
+  const variants=['hermes','hermes-assimilated','the-queen','nimbus','moss','ember','blob:circle:purple','blob:triangle:orange','blob:egg:pink','blob:hexagon:blue','blob:ghost:teal','blob:drop:yellow','blob:pill:red','🤖'];
+  for(const id of variants) {
+    await page.selectOption('#companion',id);
+    await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-bot-id',`fixture-${id}`);
+    if(['hermes','hermes-assimilated','the-queen','nimbus'].includes(id)) await expect.poll(async()=>page.locator('.voice-avatar-2d-cell img').evaluate(image=>image.naturalWidth)).toBe(1536);
+    await play('curious:tilt_left');
+    await expect.poll(async()=>(await snapshot()).pose.tilt).toBeLessThan(-1);
+    if(['the-queen','nimbus','blob:ghost:teal'].includes(id)) await screenshot('desktop-'+id.replaceAll(':','-'));
+  }
+  await page.selectOption('#companion','hermes');await play('neutral:look_left');
+  await expect.poll(async()=>(await snapshot()).pose.row).toBe(10);
+  await screenshot('desktop-hermes-look-left');
+  await play('neutral:look_right');await expect.poll(async()=>(await snapshot()).pose.row).toBe(9);
+  await page.selectOption('#companion','legacy');
+  await expect.poll(async()=>page.locator('.voice-avatar-2d-cell img').evaluate(image=>image.naturalHeight)).toBe(1872);
+  await play('neutral:look_left');await expect.poll(async()=>(await snapshot()).pose.tilt).toBeLessThan(-0.5);
+  expect((await snapshot()).pose.row).toBe(0);
+  for(const id of ['missing','invalid']) {
+    await page.selectOption('#companion',id);await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-kind','icon');
+    await expect(page.locator('.voice-avatar-2d-body svg')).toHaveCount(1);
+    expect(await page.locator('.voice-avatar-2d-body path').first().getAttribute('fill')).toBe('#14b8a6');
+  }
+  await screenshot('desktop-missing-asset-fallback');
+  await page.selectOption('#companion','blob:ghost:teal');
+  await play('neutral:small_nod');await expect.poll(async()=>(await snapshot()).pose.y).toBeGreaterThan(1);
+  await play('neutral:small_nod');await expect.poll(async()=>(await snapshot()).pose.y).toBeGreaterThan(2);
+  await play('neutral:tilt_right');await expect.poll(async()=>(await snapshot()).pose.tilt).toBeGreaterThan(1);
+  await play('neutral:attentive');await expect.poll(async()=>(await snapshot()).pose.tilt).toBe(0);
+  await page.getByLabel('Mock speaking').check();await expect.poll(async()=>(await snapshot()).speechLevel).toBeGreaterThan(0.2);
+  await screenshot('desktop-icon-speaking');
+  await page.getByLabel('Visible',{exact:true}).uncheck();await expect.poll(async()=>(await snapshot()).moving).toBe(false);
+  const hidden=(await snapshot()).frames;await page.waitForTimeout(250);expect((await snapshot()).frames).toBe(hidden);
+  await page.getByLabel('Visible',{exact:true}).check();
+  await page.getByLabel('Reduce motion',{exact:true}).check();await expect.poll(async()=>(await snapshot()).moving).toBe(false);
+  expect((await snapshot()).pose.scale).toBe(1);
+  await page.getByLabel('Reduce motion',{exact:true}).uncheck();
+  await page.emulateMedia({reducedMotion:'reduce'});await expect.poll(async()=>(await snapshot()).moving).toBe(false);
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await page.selectOption('#companion','still');await expect.poll(async()=>(await snapshot()).moving).toBe(false);
+  await page.selectOption('#companion','nimbus');await page.setViewportSize({width:390,height:844});await play('curious:tilt_right');
+  await expect.poll(async()=>(await snapshot()).pose.tilt).toBeGreaterThan(1);await screenshot('mobile-nimbus-speaking');
+  await page.getByRole('button',{name:'Stop',exact:true}).click();await expect.poll(async()=>(await snapshot()).moving).toBe(false);
+  const stopped=(await snapshot()).frames;await page.waitForTimeout(250);expect((await snapshot()).frames).toBe(stopped);
+  await screenshot('mobile-stopped');
+  // The exact generated native HTML runs its demo path, with real PNG bytes and no native/API requests.
+  await page.goto(base+'/native');await page.waitForFunction(()=>window.voice);
+  const png=await sharp(await readFile(new URL('../../assets/pets/the-queen/v2/spritesheet.png',import.meta.url))).png().toBuffer();
+  const identity={botId:'native-queen',icon:'blob:ghost:teal',pet:{enabled:true,appearance:'catalog',motion:'auto',spriteVersionNumber:2,spriteUrl:'data:image/png;base64,'+png.toString('base64')}};
+  await page.evaluate(identity=>window.voice.start({target:{botId:'mock'},chatId:'mock-chat',demo:true,identity}),identity);
+  await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-kind','sprite');
+  await page.evaluate(()=>window.voice.preview.play('neutral:look_right'));
+  await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-state','look');
+  await page.evaluate(()=>window.voice.preview.speaking(true));await screenshot('native-engine-queen-speaking');
+  await page.evaluate(()=>window.voice.reduceMotion(true));await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-moving','false');
+  await page.evaluate(()=>window.voice.identity({botId:'native-icon',icon:'blob:egg:pink'}));
+  await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-kind','icon');
+  await screenshot('native-engine-icon-reduce-motion');
+  await page.evaluate(()=>window.voice.end());
+  await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-moving','false');
+  const report={variants:variants.length,errors,requests:[...new Set(requests)],captureCalls:await page.evaluate(()=>window.captureCalls),nativeCalls:await page.evaluate(()=>window.nativeCalls)};
+  expect(report.captureCalls).toBe(0);expect(report.nativeCalls).toBe(0);expect(errors).toEqual([]);expect(requests.some(url=>url.startsWith('/api/'))).toBe(false);
+  if(out) await writeFile(path.join(out,'browser-validation.json'),JSON.stringify(report,null,2));
+  console.log(JSON.stringify(report));
+} finally { await context.close();await browser.close(); }

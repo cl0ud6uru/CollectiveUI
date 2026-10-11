@@ -5,7 +5,7 @@ import { PET_FRAMES, PET_GREETING, type PetArtState, type PetView } from "@/lib/
 import "./pets.css";
 
 /** Original CollectiveUI artwork. Imported files never enter this SVG markup. */
-function Seedling({ ember }: { ember: boolean }) {
+export function Seedling({ ember }: { ember: boolean }) {
   return <svg viewBox="0 0 96 104" fill="none" aria-hidden="true" className="pet-seedling">
     <ellipse cx="48" cy="93" rx="25" ry="4" fill="currentColor" opacity=".08" />
     <g className="pet-body">
