@@ -4,7 +4,7 @@ import { providerConnections } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
 import { ProviderUnavailableError } from "./errors";
 import { decrypt, encrypt } from "@/lib/crypto";
-import { CONFIG_SCHEMAS, normalizeBaseUrl, type AnyProviderConfig, type ProviderConnectionView } from "./catalog";
+import { CONFIG_SCHEMAS, normalizeBaseUrl, savedProviderConfig, type AnyProviderConfig, type ProviderConnectionView } from "./catalog";
 
 export const providerConnectionAad = (id: string) => `provider_connections.secret_enc|${id}`;
 export const sealProviderCredential = (id: string, secret: string) => encrypt(secret, providerConnectionAad(id));
@@ -20,17 +20,17 @@ export function providerConnectionView(c: ProviderConnection): ProviderConnectio
 
 /** Endpoints and billing selectors are immutable on a saved connection. Model-specific flags stay on the model. */
 export function connectionConfig(c: ProviderConnection, config: unknown): AnyProviderConfig {
-  const model = CONFIG_SCHEMAS.openai.parse(config);
-  return { ...model, organization: c.organization ?? undefined, project: c.project ?? undefined };
+  return savedProviderConfig(c, config);
 }
 
 /** Do not let a model form send a saved key to a different endpoint or billing destination. */
 export function assertConnectionTarget(c: ProviderConnection, provider: string, baseUrl: string | null | undefined, config: unknown) {
-  if (provider !== c.provider) throw new HttpError(400, "This saved connection is for OpenAI API models only.");
-  const url = normalizeBaseUrl("openai", baseUrl);
-  const parsed = CONFIG_SCHEMAS.openai.safeParse(config);
+  if (provider !== c.provider) throw new HttpError(400, "The API type must match the saved provider connection.");
+  const url = normalizeBaseUrl(c.provider, baseUrl);
+  const parsed = CONFIG_SCHEMAS[c.provider].safeParse(config);
+  const selectors = parsed.success && c.provider === "openai" ? parsed.data as { organization?: string; project?: string } : {};
   if (!url.ok || !parsed.success || url.value !== c.baseUrl ||
-    (parsed.data.organization || null) !== c.organization || (parsed.data.project || null) !== c.project) {
+    (selectors.organization || null) !== c.organization || (selectors.project || null) !== c.project) {
     throw new HttpError(400, "The endpoint, organization and project must match the saved provider connection. Select it again or create a separate connection.");
   }
 }

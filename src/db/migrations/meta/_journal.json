@@ -358,6 +358,13 @@
       "when": 1791676591035,
       "tag": "0050_hermes_admission_state",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1791736417596,
+      "tag": "0051_saved_compatible_provider_connections",
+      "breakpoints": true
     }
   ]
 }
