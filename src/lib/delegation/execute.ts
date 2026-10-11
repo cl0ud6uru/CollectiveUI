@@ -10,6 +10,7 @@ import { loadMessageRows, rowToUIMessage, type PortalUIMessage } from "@/lib/cha
 import { userFacingMessage } from "@/lib/llm";
 import { HttpError } from "@/lib/authz";
 import { loadHermesRunContext } from "@/lib/runs/hermes-context";
+import { hermesAdmissionRecorder } from "@/lib/runs/hermes-admission";
 import { lockUserRuns } from "@/lib/runs/lock";
 import { runHost } from "@/lib/runs/host";
 import { RunEventWriter } from "@/lib/runs/events";
@@ -60,6 +61,7 @@ async function executeInline(task: DelegatedTask, parent: AgentCtx, signal: Abor
         saveResumeState: () => { throw new Error("Delegates cannot pause for approval."); },
         noteProviderRun: s => noteRunResumeState(run.id, host.instanceId, s) };
       handle.hermes = await loadHermesRunContext(run.id);
+      handle.noteHermesAdmission = hermesAdmissionRecorder(run.id, host.instanceId, 0, handle.hermes);
       const rows = await loadMessageRows(run.conversationId);
       const prompt = rows.find(m => m.id === run.parentMessageId && m.role === "user");
       if (!prompt) throw new HttpError(409, "The assignment is no longer available.");

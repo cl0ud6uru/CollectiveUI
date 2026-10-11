@@ -145,7 +145,7 @@ export async function startRun(i: {
       botId: i.bot?.id ?? null,
       background: false,
     });
-    if (hermes) await tx.insert(hermesRunContexts).values({ runId: run.id, ...hermes, provisionId });
+    if (hermes) await tx.insert(hermesRunContexts).values({ runId: run.id, ...hermes, provisionId, admissionState: "prepared" });
     return run;
   });
   await enqueueOrFail(run);

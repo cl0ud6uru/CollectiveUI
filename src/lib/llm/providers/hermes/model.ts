@@ -19,7 +19,7 @@ import type {
   LanguageModelV4StreamResult,
 } from "@ai-sdk/provider";
 import type { RunHandle } from "@/lib/runs/types";
-import { answerApproval, getRun, HermesError, runEvents, startRun, stopRun, type HermesEvent, type HermesRunStatus, type HermesTarget } from "./client";
+import { answerApproval, getRun, HermesError, HermesPreAdmissionError, runEvents, startRun, stopRun, type HermesEvent, type HermesRunStatus, type HermesTarget } from "./client";
 import { EMPTY_USAGE, HermesMapper, parseApprovalId, runIdOfApproval, type Approval } from "./mapper";
 import { dropParkedForAgentRun, EventTap, holdTtlMs, isParked, park, parkedForAgentRun, parkedForSession, unpark, type ParkedRun } from "./runs";
 
@@ -238,16 +238,26 @@ export class HermesLanguageModel implements LanguageModelV4 {
     const attachments = newestNativeAttachments(prompt);
     const input = newestNativeText(prompt);
     if (!input && !attachments.length) throw new HermesError("rejected", 400, "There's no message to send.");
-    const runId = await startRun(target, {
-      input,
-      attachments,
-      sessionId,
-      instructions: target.local ? undefined : systemText(prompt) || undefined,
-      idempotencyKey: this.ctx.run ? `portal-${this.ctx.run.id}` : `portal-${randomUUID()}`,
-      sessionKey,
-      model: this.ctx.requestedModel,
-      // No abort signal: once Hermes has the run its id must come back, so a Stop meanwhile can stop it (consume()).
-    });
+    let runId: string;
+    try {
+      runId = await startRun(target, {
+        input,
+        attachments,
+        sessionId,
+        instructions: target.local ? undefined : systemText(prompt) || undefined,
+        idempotencyKey: this.ctx.run ? `portal-${this.ctx.run.id}` : `portal-${randomUUID()}`,
+        sessionKey,
+        model: this.ctx.requestedModel,
+        beforeAdmission: this.ctx.run?.noteHermesAdmission ? () => this.ctx.run!.noteHermesAdmission!("attempted") : undefined,
+        // No abort signal: once Hermes has the run its id must come back, so a Stop meanwhile can stop it (consume()).
+      });
+    } catch (error) {
+      if (error instanceof HermesPreAdmissionError) {
+        // Preserve the original delivery error even if proof cannot be saved; cleanup then remains fenced.
+        try { await this.ctx.run?.noteHermesAdmission?.("rejected"); } finally { throw error; }
+      }
+      throw error;
+    }
     // Recorded at once, so the run can be stopped if the portal run ends abnormally (e.g. its worker dies).
     try {
       await this.ctx.run?.noteProviderRun?.({ hermes: { runId } });
