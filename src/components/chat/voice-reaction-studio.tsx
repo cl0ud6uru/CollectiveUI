@@ -78,4 +78,3 @@ export function VoiceReactionStudio({ initialModelUrl = "/avatars/preview.glb", 
     </section></div><footer>Face holds independently as gestures settle. Manual preview uses no audio. Live test is explicit, ephemeral and uses the existing authorized connection.</footer>
   </main></div>;
 }
-
