@@ -148,11 +148,14 @@ final class VoiceSessionModel {
         status = "ending"; muted = true; inputLevel.value = 0
         saving = true
         defer { saving = false }
-        // Native capture shutdown also works if the web process has stalled.
-        await page.setMicrophoneCaptureState(.none)
-        await page.pauseAllMediaPlayback()
-        if ready { await audioDiagnostics.stop() }
-        else { audioDiagnostics.disconnect() }
+        // Capture starts only after ready; ending also rejects a late ready event.
+        // An unready engine has no capture to stop and must not await WebKit startup.
+        if ready {
+            // Native capture shutdown also works if the web process has stalled.
+            await page.setMicrophoneCaptureState(.none)
+            await page.pauseAllMediaPlayback()
+            await audioDiagnostics.stop()
+        } else { audioDiagnostics.disconnect() }
         if ready {
             unsaved = true // Retain retry protection until the engine confirms saving.
             do { _ = try await page.callJavaScript("return window.voice.end()") }
