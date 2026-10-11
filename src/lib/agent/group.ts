@@ -30,6 +30,7 @@ import { resolveMentions } from "./mentions";
 import { resolveAttachmentsForModel } from "./prepare";
 import { toolStatus } from "./persist";
 import { buildToolset } from "./toolset";
+import { beginGroupBotWork } from "@/lib/chat/group-bot-work";
 
 /** Max bot replies per user message, so handoffs can't loop forever. */
 export const MAX_GROUP_REPLIES = 6;
@@ -167,8 +168,11 @@ export async function runGroupTurn(opts: {
 
         const toolCallPrefix = `${newId()}:`;
         const ctx = { principal, conversationId: conversation.id, bot, app, depth: 0, background: false, inGroup: true, toolSettings, usage: usageScope, execution, toolCallPrefix, nativeSearchMode: conversation.nativeSearchMode };
-        const toolset = await buildToolset(ctx);
+        let toolset: Awaited<ReturnType<typeof buildToolset>> | undefined;
+        let finishWork: (() => Promise<void>) | undefined;
         try {
+          finishWork = await beginGroupBotWork({ userId: principal.user.id, conversationId: conversation.id, botId: bot.id });
+          toolset = await buildToolset(ctx);
           for (const warning of toolset.warnings) writer.write({ type: "data-notice", data: { message: warning }, transient: true });
           const memories = useMemory
             ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id }).catch(
@@ -271,7 +275,8 @@ export async function runGroupTurn(opts: {
           writer.write({ type: "data-bot-error", data: { botId: bot.id, message } satisfies BotErrorData });
           failedBots.add(bot.id);
         } finally {
-          await toolset.close();
+          try { await toolset?.close(); }
+          finally { await finishWork?.(); }
         }
       }
       writer.write({ type: "finish", messageMetadata: { inputTokens, outputTokens, finishedAt: Date.now() } });

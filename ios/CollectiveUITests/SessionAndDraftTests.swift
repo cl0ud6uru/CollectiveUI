@@ -116,6 +116,62 @@ final class SessionAndDraftTests: XCTestCase {
         XCTAssertEqual(model.phase, .setup)
     }
 
+    private func botStatusModel() throws -> AppModel {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        model.shell = try JSONDecoder().decode(ShellResponse.self, from: Data(#"{"bots":[{"kind":"bot","id":"research","name":"Researcher","status":"waiting"},{"kind":"bot","id":"writer","name":"Writer","status":"working"}]}"#.utf8))
+        return model
+    }
+
+    func testBotSnapshotsReplaceWorkAndClearMissingOrUnauthorizedActivity() async throws {
+        let model = try botStatusModel()
+        FixtureProtocol.handler = { _ in .init(data: Data(#"{"research":"working","writer":null}"#.utf8)) }
+        await model.refreshBotStatuses()
+        XCTAssertEqual(model.shell?.bots.first?.status, "working")
+        XCTAssertNil(model.shell?.bots.last?.status)
+        FixtureProtocol.handler = { _ in .init(data: Data(#"{"writer":"waiting"}"#.utf8)) }
+        await model.refreshBotStatuses()
+        XCTAssertNil(model.shell?.bots.first?.status)
+        XCTAssertEqual(model.shell?.bots.last?.status, "waiting")
+        FixtureProtocol.handler = { _ in .init(status: 401) }
+        await model.refreshBotStatuses()
+        XCTAssertTrue(model.shell?.bots.allSatisfy { $0.status == nil } ?? true)
+    }
+
+    func testLateBotActivityCannotRepopulateAfterServerChange() async throws {
+        let model = try botStatusModel()
+        let requested = expectation(description: "Bot activity request started")
+        FixtureProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/bot-statuses") {
+                requested.fulfill()
+                return .init(data: Data(#"{"research":"working"}"#.utf8), delay: 0.3)
+            }
+            return .init()
+        }
+        let task = Task { await model.refreshBotStatuses() }
+        await fulfillment(of: [requested], timeout: 3)
+        model.changeServer()
+        await task.value
+        XCTAssertNil(model.shell)
+    }
+
+    func testNewShellSupersedesPendingBotActivitySnapshot() async throws {
+        let model = try botStatusModel()
+        let requested = expectation(description: "Older activity request started")
+        FixtureProtocol.handler = { request in
+            if request.url!.path.hasSuffix("/bot-statuses") {
+                requested.fulfill()
+                return .init(data: Data(#"{"research":"working"}"#.utf8), delay: 0.3)
+            }
+            return .init(data: Data(#"{"bots":[{"kind":"bot","id":"research","name":"Researcher","status":null}]}"#.utf8))
+        }
+        let task = Task { await model.refreshBotStatuses() }
+        await fulfillment(of: [requested], timeout: 3)
+        await model.refreshShell()
+        await task.value
+        XCTAssertNil(model.shell?.bots.first?.status)
+    }
+
     func testReconstructedChatRetainsIsolatedDraftAndAttachmentReferences() {
         let model = app()
         let queen = ChatModel(app: model, conversationId: "queen", newChatTarget: nil)

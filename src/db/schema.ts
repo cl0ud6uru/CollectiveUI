@@ -1199,6 +1199,15 @@ export const inboxItems = pgTable(
 export type AgentRunStatus = "queued" | "running" | "waiting" | "waiting_tasks" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
 /** One row per assistant message; an approval pauses it (`waiting`) and the answer requeues its next segment. */
+/** Short-lived leases for the actual speaker in a streamed group reply. Independent rows preserve concurrent work. */
+export const groupBotWork = pgTable("group_bot_work", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, t => [index("group_bot_work_owner_idx").on(t.userId, t.expiresAt), index("group_bot_work_expiry_idx").on(t.expiresAt)]);
+
 export const agentRuns = pgTable(
   "agent_runs",
   {

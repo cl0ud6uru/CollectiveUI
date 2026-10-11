@@ -381,7 +381,6 @@ export async function markInboxRead(id?: string) {
 /** Owner-scoped current work, including receiving bots whose home chat is not open. */
 export async function refreshBotStatuses() {
   const p = await requirePrincipal();
-  const { loadBotRoster } = await import("@/lib/chat/roster");
-  const [bots, roster] = await Promise.all([listAccessibleBots(p), loadBotRoster(p.user.id, [])]);
-  return Object.fromEntries(bots.map(bot => [bot.id, roster.get(bot.id)?.status ?? null]));
+  const { botStatusSnapshot } = await import("@/lib/chat/bot-statuses");
+  return botStatusSnapshot(p);
 }

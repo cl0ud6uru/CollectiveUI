@@ -61,14 +61,14 @@ run("bot roster and workspace preview (real Postgres)", () => {
     const bobHome = await home(bob, [{ role: "user", text: "bob's private question" }]);
     await db.insert(schema.agentRuns).values({ userId: bob.user.id, conversationId: bobHome.id, messageId: `${bobHome.id}-reply`, botId, status: "running" });
 
-    const forAlice = await loadBotRoster(alice.user.id, [{ botId, conversationId: aliceHome.id, updatedAt: aliceHome.updatedAt }]);
+    const forAlice = await loadBotRoster(alice, [{ botId, conversationId: aliceHome.id, updatedAt: aliceHome.updatedAt }]);
     expect(forAlice.get(botId)).toEqual({ preview: "Payments is owned by Dana.", lastAt: aliceHome.updatedAt.toISOString(), status: null });
 
-    const forBob = await loadBotRoster(bob.user.id, [{ botId, conversationId: bobHome.id, updatedAt: bobHome.updatedAt }]);
+    const forBob = await loadBotRoster(bob, [{ botId, conversationId: bobHome.id, updatedAt: bobHome.updatedAt }]);
     expect(forBob.get(botId)).toMatchObject({ preview: "You: bob's private question", status: "working" });
 
     await db.insert(schema.agentRuns).values({ userId: alice.user.id, conversationId: aliceHome.id, messageId: `${aliceHome.id}-ask`, botId, status: "waiting" });
-    expect((await loadBotRoster(alice.user.id, [{ botId, conversationId: aliceHome.id, updatedAt: aliceHome.updatedAt }])).get(botId)?.status).toBe("waiting");
+    expect((await loadBotRoster(alice, [{ botId, conversationId: aliceHome.id, updatedAt: aliceHome.updatedAt }])).get(botId)?.status).toBe("waiting");
   });
 
   it("shows a workspace screen only for workspace bots, with the person's own latest command", async () => {

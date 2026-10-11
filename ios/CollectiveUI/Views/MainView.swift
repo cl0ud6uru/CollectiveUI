@@ -60,6 +60,14 @@ struct MainView: View {
             await applyDemoLaunchOptions()
             #endif
         }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await model.refreshBotStatuses()
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.conversationStates.flush() }
             if phase == .active { Task { await model.refreshShell() } }
@@ -77,6 +85,11 @@ struct MainView: View {
         ChatDetailView(route: model.selection, onOpenSidebar: openSidebar, onCompose: { showCompose = true })
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(PortalTheme.background)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if sizeClass == .regular ? columnVisibility == .detailOnly : !sidebarOpen {
+                    BotWorkRail(bots: model.bots, onOpenSidebar: openSidebar)
+                }
+            }
     }
 
     private func openSidebar() {

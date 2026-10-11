@@ -57,6 +57,11 @@ export function AvatarRail() {
     return () => observer.disconnect();
   }, []);
   const { all, visible, remaining } = railNavigationBots(bots, activeBotId, capacity);
+  const overflowActivity = all.filter(bot => !visible.includes(bot)).map(bot => botRailActivity(bot, conversations));
+  const overflowWaiting = overflowActivity.filter(activity => activity.approval).length;
+  const overflowWorking = overflowActivity.filter(activity => activity.working && !activity.approval).length;
+  const overflowLabel = [`All bots, ${remaining} more`, overflowWorking ? `${overflowWorking} working` : null,
+    overflowWaiting ? `${overflowWaiting} need your approval` : null].filter(Boolean).join(", ");
   const filtered = all.filter(bot => `${bot.name} ${bot.label ?? ""} ${bot.description ?? ""}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const initials = user.name.split(/\s+/).map(s => s[0]).slice(0, 2).join("").toUpperCase();
   const expand = () => {
@@ -87,7 +92,7 @@ export function AvatarRail() {
         </Tooltip.Content></Tooltip.Portal></Tooltip.Root>;
       })}
       {remaining > 0 && <Popover.Root open={overflowOpen} onOpenChange={changeOverflowOpen}>
-        <Tip label={`All bots, ${remaining} more`} side="right"><Popover.Trigger asChild><button type="button" className={cn(control, "h-12 flex-col gap-0.5 data-[state=open]:bg-hover")} aria-label={`All bots, ${remaining} more`}><MoreHorizontal className="h-5 w-5" aria-hidden="true" /><span aria-hidden="true" className="text-[10px]">+{remaining}</span></button></Popover.Trigger></Tip>
+        <Tip label={overflowLabel} side="right"><Popover.Trigger asChild><button type="button" className={cn(control, "h-auto min-h-12 flex-col gap-0.5 data-[state=open]:bg-hover", overflowWorking > 0 && "ring-2 ring-working", overflowWaiting > 0 && "ring-2 ring-warn")} aria-label={overflowLabel}><MoreHorizontal className="h-5 w-5" aria-hidden="true" /><span aria-hidden="true" className="text-[10px]">+{remaining}</span>{overflowWorking > 0 && <span className="text-[9px] text-working">{overflowWorking} working</span>}{overflowWaiting > 0 && <span className="text-[9px] text-warn">{overflowWaiting} approval</span>}</button></Popover.Trigger></Tip>
         <Popover.Portal><Popover.Content side="right" align="end" sideOffset={12} collisionPadding={12} aria-label="All bots" className="z-50 flex max-h-[min(560px,var(--radix-popover-content-available-height))] w-80 max-w-[calc(100vw-6rem)] flex-col rounded-2xl border border-border bg-popover p-3 text-fg shadow-composer outline-none">
           <div className="flex items-center justify-between px-1 pb-3"><h2 className="font-semibold">All bots</h2><span className="rounded-full bg-hover px-2 text-xs text-muted">{all.length}</span></div>
           <label className="flex shrink-0 items-center gap-2 rounded-lg border border-border bg-bg px-3 focus-within:ring-2 focus-within:ring-accent"><Search aria-hidden="true" className="h-4 w-4 text-muted" /><input aria-label="Find a bot" value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a bot…" className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none" /></label>

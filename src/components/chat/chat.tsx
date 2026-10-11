@@ -533,19 +533,17 @@ export function Chat({
   // be waiting for approval while this one is idle). A reply that just ended re-reads the server's status if it showed busy.
   const chatStatus = awaitingApproval ? "waiting" : busy ? "working" : null;
   const wasActive = useRef(false);
-  const chatStatusRef = useRef(chatStatus);
   const serverStatus = liveBotId ? serverBots.find((b) => b.id === liveBotId)?.status : null;
   useEffect(() => {
     if (!liveBotId) return;
-    chatStatusRef.current = chatStatus;
     setChatStatus(conversationId, liveBotId, chatStatus);
     if (wasActive.current && !chatStatus && serverStatus) router.refresh();
     wasActive.current = !!chatStatus;
   }, [liveBotId, conversationId, chatStatus, serverStatus, setChatStatus, router]);
-  // Leaving the chat: a pending approval still needs you; a reply still streaming is no longer watched from here.
+  // Durable server runs own approvals after navigation; do not retain a stale waiting override.
   useEffect(() => {
     if (!liveBotId) return;
-    return () => { if (chatStatusRef.current !== "waiting") setChatStatus(conversationId, liveBotId, null); };
+    return () => { setChatStatus(conversationId, liveBotId, null); };
   }, [liveBotId, conversationId, setChatStatus]);
   useEffect(() => {
     if (!liveBotId || !isBotHome || !lastText || !lastMessage) return;

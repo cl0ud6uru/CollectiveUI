@@ -133,7 +133,8 @@ export function BotSection({ bots, activeBotId, onNavigate }: { bots: TargetOpti
   const hidden = bots.filter((b) => b.hidden);
   // The last moved bot stays mounted past the limit until another move, so its focused row is never removed.
   const [moved, setMoved] = useState<string | null>(null);
-  const visible = visibleNavigationBots(bots, activeBotId, moved);
+  const usual = new Set(visibleNavigationBots(bots, activeBotId, moved));
+  const visible = bots.filter(bot => usual.has(bot) || (!bot.hidden && !!bot.status));
   // Move up/down within pins or equal recency, including bots beyond the sidebar limit.
   const movable = bots.filter(b => !b.hidden);
   const cancelDrag = () => { setDragging(null); setDrop(null); };
