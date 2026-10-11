@@ -200,6 +200,15 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.searchFields["Search bots"].waitForExistence(timeout: 5))
     }
 
+    func testSavedReplyQuoteVisible() {
+        launch(extra: ["--demo-reply-quote"])
+        let quote = app.descendants(matching: .any).matching(identifier: "chat.reply.quoted-user").firstMatch
+        XCTAssertTrue(quote.waitForExistence(timeout: 5))
+        XCTAssertTrue(quote.label.contains("Researcher"))
+        XCTAssertTrue(quote.label.contains("small pilot"))
+        capture("ios-saved-reply-quote")
+    }
+
     func testBotDirectorySearchDismissalAndHomeNavigation() {
         launch()
         enterDraft("Keep this draft while browsing bots")

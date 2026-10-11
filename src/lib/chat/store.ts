@@ -7,6 +7,7 @@ import { conversations, messages, type Message } from "@/db/schema";
 export type MessageMeta = {
   voiceSessionId?: string;
   voiceFingerprint?: string;
+  replyTo?: import("./reply").ReplyContext;
   assignment?: { botId: string; name: string };
   createdAt?: number;
   model?: string;

@@ -23,6 +23,7 @@ import { getSetting } from "@/lib/settings";
 import { parseHermesInput } from "@/lib/chat/hermes-commands";
 import { isTeamRuntimeApp } from '@/lib/agent/team-target';
 import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
+import { resolveReplyReference, resolveStoredReplyReference } from "@/lib/chat/reply-server";
 
 // No maxDuration: direct chats run in the worker and this response only tails the run's event log, which may stay
 // open for as long as the reply takes (self-hosted Node has no route time limit; a proxy must allow long reads).
@@ -43,6 +44,7 @@ const Body = z.object({
   nativeSearchMode: z.enum(["off", "auto"]).nullable().optional(),
   regenerate: z.boolean().optional(),
   literalSlash: z.boolean().optional(),
+  replyTo: z.object({ messageId: z.string().regex(CLIENT_ID_RE), speakerIndex: z.number().int().min(0).max(10000).optional() }).strict().optional(),
   message: z
     .object({
       id: z.string().regex(CLIENT_ID_RE),
@@ -104,6 +106,7 @@ async function groupTurn(req: Request, p: Principal, conv: Conversation, body: B
     if (parentId && !byId.has(parentId)) throw new HttpError(400, "Unknown parent message");
     if (byId.has(body.message.id)) throw new HttpError(409, "Duplicate message id");
     const userMsg = await userMessageOf(body.message);
+    if (body.replyTo) userMsg.metadata!.replyTo = resolveReplyReference(rows, conv.id, parentId, body.replyTo, "Group", new Set(members.map(member => member.bot.id)));
     await insertMessage(conv.id, userMsg, parentId);
     await setCurrentLeaf(conv.id, userMsg.id);
     history = [...pathTo(rows, parentId).map(rowToUIMessage), userMsg];
@@ -172,6 +175,7 @@ export async function POST(req: Request) {
         if (input.literal) userMessage.parts = [...userMessage.parts.filter((part) => part.type !== "text"), { type: "text", text: input.text }];
       }
       const parentId = await resolveParent(conv.id, body.parentId ?? null, rows);
+      if (body.replyTo) userMessage.metadata!.replyTo = await resolveStoredReplyReference(conv.id, parentId, body.replyTo, bot?.name ?? app.name);
       run = await startRun({ principal: p, conversation: conv, bot, app, userMessage, parentId });
     } else if (body.message?.role === "assistant") {
       // Approval answers: only {approved, reason} per approval id are taken from the client.

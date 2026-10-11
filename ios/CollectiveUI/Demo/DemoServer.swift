@@ -90,6 +90,17 @@ final class DemoServer: @unchecked Sendable {
             ]
             leaves[conversationId] = assistantId
         }
+        if ProcessInfo.processInfo.arguments.contains("--demo-reply-quote") {
+            let message = UIMessage(id: "quoted-user", role: .user,
+                parts: [.text(TextPart(text: "Please expand the pilot findings."))],
+                metadata: .object(["replyTo": .object([
+                    "messageId": .string("synthetic-source"), "speakerIndex": .number(0),
+                    "author": .string("Researcher"), "botId": .string("bot-research"),
+                    "excerpt": .string("Research findings: focus on a small pilot before launch.")
+                ])]))
+            rows["demo-research"] = [MessageRow(id: message.id, parentId: nil, message: message)]
+            leaves["demo-research"] = message.id
+        }
         if ProcessInfo.processInfo.arguments.contains("--demo-hermes-cancellation") {
             bots = bots.map { bot in
                 guard bot["id"]?.stringValue == "bot-atlas", case .object(var fields) = bot else { return bot }

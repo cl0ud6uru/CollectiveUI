@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { ArrowDown, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, SquarePen } from "lucide-react";
 import { grantToolForBot, setConversationLeaf, setMessageFeedback } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
+import { replyAddress, replyContext, type ReplyContext } from "@/lib/chat/reply";
 import { newId } from "@/lib/ids";
 import { NativeSearchControl } from "./native-search-control";
 import type { NativeSearchMode } from "@/lib/native-search-policy";
@@ -209,6 +210,8 @@ export function Chat({
   // Messages from other branches (edits / regenerations). useChat only holds the visible path; the
   // full tree is derived from both, so nothing is lost when the visible path changes.
   const [stored, setStored] = useState(() => new Map<string, TreeRow>(initialRows.map((r) => [r.id, r])));
+  const [replyState, setReplyState] = useState<{ conversationId: string; context: ReplyContext } | null>(null);
+  const restoreReply = useCallback((context?: ReplyContext) => setReplyState(context ? { conversationId, context } : null), [conversationId]);
   const [initialPath] = useState(() => pathTo(stored, initialLeafId).map((r) => r.message));
   const [feedback, setFeedback] = useState<Record<string, 1 | -1 | null>>(() =>
     Object.fromEntries(initialRows.map((r) => [r.id, r.feedback])),
@@ -233,6 +236,7 @@ export function Chat({
             body: {
               ...base,
               message: { id: last.id, role: last.role, parts: last.parts },
+              replyTo: last.metadata?.replyTo ? { messageId: last.metadata.replyTo.messageId, speakerIndex: last.metadata.replyTo.speakerIndex } : undefined,
               parentId: messages.length > 1 ? messages[messages.length - 2].id : null,
             },
           };
@@ -279,7 +283,8 @@ export function Chat({
 
   // The server refused the request before saving anything (busy, over the reply limit, …): take the message back into
   // the composer, or show an answer's approval cards again, so what's on screen matches what's stored.
-  const rejectedDraft = useRef<{ messageId: string; text: string } | null>(null);
+  const sentReplyMention = useRef<{ messageId: string; mention: string | null } | null>(null);
+  const rejectedDraft = useRef<{ messageId: string; text: string; reply?: ReplyContext; mention: string | null } | null>(null);
   useEffect(() => {
     if (!error) return;
     let body: { unsavedMessageId?: unknown; retryApprovalMessageId?: unknown } | null = null;
@@ -288,7 +293,7 @@ export function Chat({
     } catch {}
     const last = messages.at(-1);
     if (last?.role === "user" && body?.unsavedMessageId === last.id) {
-      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join("") };
+      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join(""), reply: last.metadata?.replyTo, mention: sentReplyMention.current?.messageId === last.id ? sentReplyMention.current.mention : null };
       setMessages(messages.slice(0, -1));
     } else if (last?.role === "assistant" && body?.retryApprovalMessageId === last.id) {
       const reopened = last.parts.map((p) => {
@@ -305,9 +310,11 @@ export function Chat({
   useEffect(() => {
     const draft = rejectedDraft.current;
     if (!draft || messages.some((m) => m.id === draft.messageId)) return;
-    composerRef.current?.setText(draft.text);
+    const ownedMention = draft.mention && draft.text === draft.mention.trimEnd() ? draft.text : draft.mention;
+    composerRef.current?.setText(draft.text, ownedMention);
+    restoreReply(draft.reply);
     rejectedDraft.current = null;
-  }, [messages]);
+  }, [messages, restoreReply]);
 
   const tree = useMemo(() => {
     const t = new Map(stored);
@@ -412,6 +419,8 @@ export function Chat({
         if (busy) return;
         const leaf = descendLatest(tree, siblings[to].id);
         setStored(tree);
+        setReplyState(null);
+        composerRef.current?.setReplyMention(null);
         setMessages(pathTo(tree, leaf).map((r) => r.message));
         void setConversationLeaf(conversationId, leaf).catch(() => {});
       };
@@ -451,9 +460,31 @@ export function Chat({
   }
 
   const targetBody = { nativeSearchMode, appId: target?.kind === "app" ? target.id : undefined, botId: target?.kind === "bot" ? target.id : undefined };
+  const replyTo = replyState?.conversationId === conversationId && messages.some(message => message.id === replyState.context.messageId) ? replyState.context : null;
+  function chooseReply(message: PortalUIMessage, speakerIndex?: number) {
+    const context = replyContext(message, speakerIndex, target?.name ?? "Assistant");
+    if (!context || unavailable || busy || searchPendingRef.current) return;
+    const member = target?.kind === "group" && context.botId ? target.members?.find(member => member.id === context.botId) : undefined;
+    if (target?.kind === "group" && context.botId && !member) {
+      toast.error("This bot is no longer available in this group.");
+      return;
+    }
+    const address = member ? replyAddress(member.id, target!.members ?? []) : null;
+    if (member && !address) {
+      toast.error("This bot needs a unique, non-reserved name before a reply can address it.");
+      return;
+    }
+    setReplyState({ conversationId, context });
+    composerRef.current?.setReplyMention(address);
+  }
+
+  function cancelReply() {
+    setReplyState(null);
+    composerRef.current?.setReplyMention(null);
+  }
 
   // Redirect work in progress: sending while a reply streams stops it, then sends the new instruction.
-  const pendingRef = useRef<{ text: string; files: UploadedFile[] } | null>(null);
+  const pendingRef = useRef<{ text: string; files: UploadedFile[]; reply?: ReplyContext | null; mention: string | null } | null>(null);
   async function executeCommand(text: string, files: UploadedFile[]): Promise<boolean> {
     if (files.length) {
       setCommandOutput({ scope: commandScope, result: { title: "Command not sent", lines: ["Remove attachments before running a command. Your draft and files have been kept."] } });
@@ -489,7 +520,7 @@ export function Chat({
       return false;
     }
   }
-  function send(text: string, files: UploadedFile[]): void | boolean | Promise<boolean> {
+  function send(text: string, files: UploadedFile[], selectedReply = replyTo, ownedMention = composerRef.current?.getReplyMention() ?? null): void | boolean | Promise<boolean> {
     if (searchPendingRef.current) return false;
     if (!target || unavailable) { toast.error("Pick a model or bot first"); return false; }
     const parsed = parseHermesInput(text);
@@ -498,7 +529,7 @@ export function Chat({
     if (input.kind === "command") return executeCommand(text, files);
     if (busy) {
       const stopping = pendingRef.current != null;
-      pendingRef.current = { text, files };
+      pendingRef.current = { text, files, reply: selectedReply, mention: ownedMention };
       // Stop on the server first, so the new message finds the previous reply stopped (or being saved), not running.
       if (!stopping) {
         void requestServerStop()
@@ -511,21 +542,24 @@ export function Chat({
       return;
     }
     begin();
+    const messageId = newId();
+    sentReplyMention.current = { messageId, mention: ownedMention };
     sendMessage(
       {
-        text: input.text || undefined,
-        files: files.map((f) => ({ type: "file" as const, mediaType: f.mediaType, filename: f.filename, url: f.url })),
-        metadata: { createdAt: nowMs() },
+        id: messageId,
+        parts: [...files.map((f) => ({ type: "file" as const, mediaType: f.mediaType, filename: f.filename, url: f.url })), ...(input.text ? [{ type: "text" as const, text: input.text }] : [])],
+        metadata: { createdAt: nowMs(), ...(selectedReply ? { replyTo: selectedReply } : {}) },
       } as Parameters<typeof sendMessage>[0],
       { body: { ...targetBody, literalSlash: input.literal } },
     );
+    setReplyState(null);
   }
 
   useEffect(() => {
     if (!busy && pendingRef.current) {
       const next = pendingRef.current;
       pendingRef.current = null;
-      send(next.text, next.files);
+      send(next.text, next.files, next.reply, next.mention);
     }
   });
 
@@ -533,9 +567,10 @@ export function Chat({
     if (searchPendingRef.current || busy || unavailable) return;
     const original = messages[index];
     const files = original.parts.filter((p) => p.type === "file");
+    cancelReply();
     keepCurrentBranch();
     setMessages(messages.slice(0, index));
-    sendMessage({ parts: [...files, { type: "text", text }], metadata: { createdAt: nowMs() } } as Parameters<typeof sendMessage>[0], {
+    sendMessage({ parts: [...files, { type: "text", text }], metadata: { createdAt: nowMs(), ...(original.metadata?.replyTo ? { replyTo: original.metadata.replyTo } : {}) } } as Parameters<typeof sendMessage>[0], {
       body: targetBody,
     });
   }
@@ -742,6 +777,8 @@ export function Chat({
                 commands={composerCommandList}
                 autoFocus
                 mentions={mentionList}
+                replyTo={replyTo}
+                onCancelReply={cancelReply}
                 tint={tint}
                 placeholder={target ? (target.kind === "app" ? "Ask anything" : `Message ${target.name}`) : "Select a model or browse bots"}
               />
@@ -771,13 +808,14 @@ export function Chat({
                 {messages.map((m, i) => [
                   <TimeDivider key={`t-${m.id}`} at={m.metadata?.createdAt} previous={i > 0 ? messages[i - 1].metadata?.createdAt : undefined} />,
                   m.role === "user" ? (
-                    <UserMessage key={m.id} message={m} branch={branchInfo(m, i)} onEdit={busy || unavailable || searchPending ? undefined : (t) => editMessage(i, t)} variant={variant} tint={tint} />
+                    <UserMessage key={m.id} message={m} branch={branchInfo(m, i)} onEdit={busy || unavailable || searchPending ? undefined : (t) => editMessage(i, t)} onReply={busy || unavailable || searchPending ? undefined : () => chooseReply(m)} variant={variant} tint={tint} />
                   ) : (
                     <AssistantMessage
                       key={m.id}
                       variant={variant}
                       message={m}
                       readOnly={unavailable || searchPending}
+                      onReply={busy || unavailable || searchPending ? undefined : index => chooseReply(m, index)}
                       streaming={busy && i === messages.length - 1}
                       isLast={i === lastAssistantIdx}
                       branch={branchInfo(m, i)}
@@ -793,6 +831,7 @@ export function Chat({
                           ? undefined
                           : () => {
                               if (searchPendingRef.current) return;
+                              cancelReply();
                               keepCurrentBranch();
                               regenerate({ messageId: m.id, body: targetBody });
                             }
@@ -816,7 +855,7 @@ export function Chat({
                         Open settings
                       </Link>
                     )}
-                    <button disabled={unavailable || searchPending} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current) regenerate({ body: targetBody }); }}>
+                    <button disabled={unavailable || searchPending} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current) { cancelReply(); regenerate({ body: targetBody }); } }}>
                       Retry
                     </button>
                   </div>
@@ -852,6 +891,8 @@ export function Chat({
                 hermesCommands={hermesCommands}
                 commands={composerCommandList}
                 mentions={mentionList}
+                replyTo={replyTo}
+                onCancelReply={cancelReply}
                 tint={tint}
                 placeholder={target?.kind === "group" || target?.kind === "bot" ? `Message ${target.name}` : "Ask anything"}
               />

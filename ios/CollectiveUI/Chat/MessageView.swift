@@ -43,6 +43,20 @@ struct MessageView: View {
         HStack(alignment: .bottom) {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 6) {
+                if let reply = message.metadata?["replyTo"]?.objectValue,
+                   let author = reply["author"]?.stringValue,
+                   let excerpt = reply["excerpt"]?.stringValue {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Replying to \(author)").font(.caption.weight(.medium))
+                        Text(excerpt).font(.footnote).foregroundStyle(PortalTheme.muted)
+                            .textSelection(.enabled)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(PortalTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("chat.reply.\(message.id)")
+                }
                 ForEach(Array(message.files.enumerated()), id: \.offset) { item in
                     FileAttachmentView(file: item.element)
                 }
