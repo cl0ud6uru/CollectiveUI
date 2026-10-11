@@ -351,6 +351,13 @@
       "when": 1791581530312,
       "tag": "0049_official_plan_transfer_unresolved_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791676591035,
+      "tag": "0050_hermes_admission_state",
+      "breakpoints": true
     }
   ]
 }

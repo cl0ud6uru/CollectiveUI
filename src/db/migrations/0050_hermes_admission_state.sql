@@ -1,0 +1,2 @@
+ALTER TABLE "hermes_run_contexts" ADD COLUMN "admission_state" text;--> statement-breakpoint
+ALTER TABLE "hermes_run_contexts" ADD CONSTRAINT "hermes_run_contexts_admission_check" CHECK ("hermes_run_contexts"."admission_state" in ('prepared', 'attempted', 'rejected'));

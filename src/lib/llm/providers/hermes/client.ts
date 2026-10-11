@@ -66,6 +66,15 @@ export class HermesError extends HttpError {
   }
 }
 
+/** Only errors raised before the Runs POST may carry this evidence. */
+export class HermesPreAdmissionError extends HermesError {
+  constructor(error: HermesError) {
+    super(error.code, error.status);
+    this.name = "HermesPreAdmissionError";
+    this.message = error.message;
+  }
+}
+
 const root = (t: HermesTarget) => (t.profile ? `${t.baseUrl}/p/${encodeURIComponent(t.profile)}` : t.baseUrl);
 
 /** Hermes' own error text, trimmed and without anything that looks like a key. */
@@ -130,6 +139,8 @@ export type StartRun = {
   signal?: AbortSignal;
   /** An admin-approved route alias; a request, not a guarantee of the effective runtime. */
   model?: string | null;
+  /** Persist uncertainty before any Runs POST; a failed fence prevents submission. */
+  beforeAdmission?: () => Promise<void>;
 };
 
 export async function startRun(t: HermesTarget, r: StartRun): Promise<string> {
@@ -137,35 +148,41 @@ export async function startRun(t: HermesTarget, r: StartRun): Promise<string> {
   if (r.sessionId) body.session_id = r.sessionId;
   if (r.instructions) body.instructions = r.instructions;
   if (r.model) body.model = r.model;
-  if (r.attachments?.length) {
-    const files = nativeAttachments.parse(r.attachments);
-    if (t.local) body.attachments = files;
-    else {
-      if (!r.sessionId || !r.sessionKey) throw new HermesError("rejected", 400, "Original files require a Hermes conversation. No prompt was sent.");
-      const caps = await json<{ features?: { run_attachments?: { version?: number } } }>(await call(t, "/v1/capabilities", { signal: r.signal }));
-      if (caps.features?.run_attachments?.version !== 1) throw new HermesError("rejected", 400,
-        "This Hermes server does not support original-file delivery yet. Install the remote attachment adapter. No files or prompt were sent.");
-      const ids: string[] = [];
-      // Stage every file sequentially and verify its receipt before admitting any inference.
-      for (const [index, file] of files.entries()) {
-        const data = Buffer.from(file.contentBase64, "base64");
-        const sha256 = createHash("sha256").update(data).digest("hex");
-        const receipt = z.object({ id: z.string().regex(/^[a-f0-9]{32}$/), sha256: z.string(), size: z.number().int(), name: z.string(), media_type: z.string() }).parse(
-          await json(await call(t, "/v1/attachments", {
-            method: "POST", body: new Uint8Array(data), signal: r.signal,
-            headers: { "Content-Type": file.mediaType, "X-Hermes-Filename": encodeURIComponent(file.name),
-              "X-Hermes-Session-Id": r.sessionId, "X-Hermes-Session-Key": r.sessionKey,
-              "Idempotency-Key": `${r.idempotencyKey}:file:${index}` },
-          })),
-        );
-        if (receipt.sha256 !== sha256 || receipt.size !== data.length || receipt.name !== file.name || receipt.media_type !== file.mediaType)
-          throw new HermesError("protocol", 502, "Hermes did not confirm the original attachment bytes. No prompt was sent.");
-        ids.push(receipt.id);
+  try {
+    if (r.attachments?.length) {
+      const files = nativeAttachments.parse(r.attachments);
+      if (t.local) body.attachments = files;
+      else {
+        if (!r.sessionId || !r.sessionKey) throw new HermesError("rejected", 400, "Original files require a Hermes conversation. No prompt was sent.");
+        const caps = await json<{ features?: { run_attachments?: { version?: number } } }>(await call(t, "/v1/capabilities", { signal: r.signal }));
+        if (caps.features?.run_attachments?.version !== 1) throw new HermesError("rejected", 400,
+          "This Hermes server does not support original-file delivery yet. Install the remote attachment adapter. No files or prompt were sent.");
+        const ids: string[] = [];
+        // Stage every file sequentially and verify its receipt before admitting any inference.
+        for (const [index, file] of files.entries()) {
+          const data = Buffer.from(file.contentBase64, "base64");
+          const sha256 = createHash("sha256").update(data).digest("hex");
+          const receipt = z.object({ id: z.string().regex(/^[a-f0-9]{32}$/), sha256: z.string(), size: z.number().int(), name: z.string(), media_type: z.string() }).parse(
+            await json(await call(t, "/v1/attachments", {
+              method: "POST", body: new Uint8Array(data), signal: r.signal,
+              headers: { "Content-Type": file.mediaType, "X-Hermes-Filename": encodeURIComponent(file.name),
+                "X-Hermes-Session-Id": r.sessionId, "X-Hermes-Session-Key": r.sessionKey,
+                "Idempotency-Key": `${r.idempotencyKey}:file:${index}` },
+            })),
+          );
+          if (receipt.sha256 !== sha256 || receipt.size !== data.length || receipt.name !== file.name || receipt.media_type !== file.mediaType)
+            throw new HermesError("protocol", 502, "Hermes did not confirm the original attachment bytes. No prompt was sent.");
+          ids.push(receipt.id);
+        }
+        body.file_ids = ids;
+        if (!r.input.trim()) body.input = "Review the uploaded files.";
       }
-      body.file_ids = ids;
-      if (!r.input.trim()) body.input = "Review the uploaded files.";
     }
+  } catch (error) {
+    if (error instanceof HermesError) throw new HermesPreAdmissionError(error);
+    throw error;
   }
+  await r.beforeAdmission?.();
   const res = await call(t, "/v1/runs", {
     method: "POST",
     body: JSON.stringify(body),
