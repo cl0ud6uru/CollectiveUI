@@ -78,6 +78,12 @@ jobs:
           node tests/browser/first-run-ldap.mjs
           node tests/browser/provider-connections.mjs
           node tests/browser/hermes-team-builder.mjs
+          node tests/browser/codex-harness.mjs
+          node tests/browser/voice-mode.mjs
+          node tests/browser/voice-avatar.mjs
+          npx playwright test --config tests/group-lead.playwright.config.ts
+          npx playwright test --config tests/group-activity.playwright.config.ts
+          npx playwright test --config tests/message-interactions.playwright.config.ts
           node tests/browser/hermes-team-controls.mjs
           node tests/browser/hermes-team-chat-controls.mjs
           node tests/browser/hermes-team-candidate-approvals.mjs

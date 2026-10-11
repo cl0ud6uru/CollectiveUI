@@ -1,5 +1,9 @@
 "use server";
 
+import { CodexPolicySchema, CODEX_DIRECT_ONLY } from '@/lib/codex/config';
+import { codexPolicy } from '@/lib/codex/store';
+import { codexBotConfigs } from '@/db/schema';
+
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -65,6 +69,7 @@ async function localEngine(appId: string | null, q: DbOrTx = db) {
 }
 async function requirePortableEngine(appId: string | null, team = false, q: DbOrTx = db) {
   if (team) throw new HttpError(400, "Team Bots use native resources and direct chats only.");
+  if (!appId) throw new HttpError(400, CODEX_DIRECT_ONLY);
   if (await localEngine(appId, q)) throw new HttpError(400, "Local Hermes supports its owner's direct chats only. Groups, routines and template sharing are unavailable in this pilot.");
 }
 
@@ -75,7 +80,8 @@ const BotInput = z.object({
   description: z.string().max(2000).optional().nullable(),
   instructions: z.string().max(24000).optional().nullable(),
   boundaries: z.string().max(5000).optional().nullable(),
-  appId: z.string().min(1),
+  appId: z.string(),
+  codex: CodexPolicySchema.nullable().optional(),
   visibility: z.enum(["private", "groups", "org"]),
   groupIds: z.array(z.string()).max(100).default([]),
   userIds: z.array(z.string().min(1).max(100)).max(2000).optional(),
@@ -105,6 +111,22 @@ async function assertCanCreate() {
 
 async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>, input: BotInput, botId?: string) {
   if (input.executionMode === "service" && !p.isAdmin) throw new HttpError(403, "Only admins can configure service bots.");
+  if (input.codex) {
+    if (input.appId || input.executionMode === 'service' || input.coordinatorEligible || input.isCoordinator || input.tools.length || input.delegateIds.length || input.delegatorIds?.length)
+      throw new HttpError(400, CODEX_DIRECT_ONLY);
+    if (botId) {
+      const existing = await getEditableBot(p, botId);
+      if (!(await codexPolicy(botId)) || existing.hermesTeam || existing.executionMode === 'service' || existing.isCoordinator || existing.coordinatorEligible)
+        throw new HttpError(400, 'Create a new caller bot for the Codex pilot.');
+    }
+    const userIds = [...new Set(input.userIds ?? [])];
+    if (input.visibility === 'groups' && !input.groupIds.length && !userIds.length) throw new HttpError(400, 'Pick at least one group or user');
+    if (userIds.length && (await db.select({ id: users.id }).from(users).where(inArray(users.id, userIds))).length !== userIds.length)
+      throw new HttpError(400, 'A selected user no longer exists.');
+    return { tools: [], delegates: [], userIds, maxSteps: 1 };
+  }
+  if (botId && input.codex === undefined && await codexPolicy(botId))
+    throw new HttpError(409, 'Refresh the bot editor before changing its Codex engine.');
   const app = await getAccessibleApp(p, input.appId);
   assertApprovedBot(app, botId);
   // Existing managed definitions may use the original admin form's 100/24,000 limits.
@@ -180,7 +202,7 @@ export async function createBot(raw: BotInput) {
         description: input.description,
         instructions: input.instructions,
         boundaries: input.boundaries,
-        appId: input.appId,
+        appId: input.codex ? null : input.appId,
         visibility: input.visibility,
         maxSteps: v.maxSteps,
         starters: input.starters.filter(Boolean),
@@ -196,6 +218,8 @@ export async function createBot(raw: BotInput) {
 }
 
 async function saveRelations(tx: Tx, botId: string, input: BotInput, v: { tools: BotInput["tools"]; delegates: string[]; userIds: string[] }) {
+  if (input.codex) await tx.insert(codexBotConfigs).values({ botId, policy: input.codex }).onConflictDoUpdate({ target: codexBotConfigs.botId, set: { policy: input.codex } });
+  else await tx.delete(codexBotConfigs).where(eq(codexBotConfigs.botId, botId));
   await tx.delete(botTools).where(eq(botTools.botId, botId));
   if (v.tools.length)
     await tx.insert(botTools).values(v.tools.map((t) => ({ botId, toolKey: t.key, approval: t.approval, config: t.config ?? null })));
@@ -222,6 +246,8 @@ export async function updateBot(botId: string, raw: BotInput) {
   let teamChanged = false;
   await db.transaction(async (tx) => {
     const current = await lockEditableBot(p, botId, tx);
+    if (input.codex && (!(await codexPolicy(botId, tx)) || current.hermesTeam || current.appId))
+      throw new HttpError(409, 'Create a new caller bot for the Codex pilot.');
     if (input.executionMode === "service" && !(await loadPrincipal(p.user.id))?.isAdmin)
       throw new HttpError(403, "Only current admins can configure service bots.");
     await guardManagedBotMutation(tx, p, botId, input);
@@ -241,7 +267,7 @@ export async function updateBot(botId: string, raw: BotInput) {
         description: input.description,
         instructions: input.instructions,
         boundaries: input.boundaries,
-        appId: input.appId,
+        appId: input.codex ? null : input.appId,
         visibility: input.visibility,
         maxSteps: v.maxSteps,
         starters: input.starters.filter(Boolean),
