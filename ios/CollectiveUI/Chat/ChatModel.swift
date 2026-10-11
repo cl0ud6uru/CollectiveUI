@@ -78,7 +78,11 @@ final class ChatModel {
     var loadError: String? = nil
     var isStreaming: Bool = false
     var isStopping: Bool = false
-    var inlineError: String? = nil
+    private(set) var hasDetachedReply = false
+    private(set) var inlineError: String? = nil
+    // Status reads recover transport errors, never server failures or confirmed rejections.
+    private enum ErrorRecovery { case status, stopped, none }
+    @ObservationIgnored private var errorRecovery = ErrorRecovery.none
     var alertMessage: String? = nil
 
     var commandResult: ChatCommandResult?
@@ -87,7 +91,10 @@ final class ChatModel {
     var isExecutingCommand = false
     var skills: [ChatSkill] = []
     @ObservationIgnored private var commandRevision = 0
-    @ObservationIgnored private var commandAttempt: (text: String, nextId: String)?
+    private var commandAttempt: PendingCommandAttempt? {
+        get { conversationState.pendingCommand }
+        set { conversationState.pendingCommand = newValue }
+    }
     @ObservationIgnored private var commandTask: Task<Void, Never>?
 
     var commands: [ComposerCommand] {
@@ -105,8 +112,17 @@ final class ChatModel {
         set { conversationState.attachments = newValue }
     }
     var approvalDecisions: [String: ApprovalDecision] = [:]
-    var needsMessageStatusCheck = false
-    @ObservationIgnored private var pendingDraft: (messageId: String, text: String, attachments: [ComposerAttachment])?
+    var needsMessageStatusCheck: Bool {
+        get { conversationState.requiresStatusCheck }
+        set { conversationState.requiresStatusCheck = newValue }
+    }
+    private var pendingDraft: PendingChatSubmission? {
+        get { conversationState.pendingSubmission }
+        set { conversationState.pendingSubmission = newValue }
+    }
+    private(set) var isCheckingMessageStatus = false
+    private var confirmedMissingSubmission = false
+    @ObservationIgnored private var snapshotRequest = UUID()
     @ObservationIgnored private var submittedApproval = false
 
     /// Bumped whenever the view should scroll to the bottom.
@@ -166,14 +182,14 @@ final class ChatModel {
     var avatarActivity: BotActivity {
         if isUnavailable { return .unavailable }
         if messages.contains(where: { !$0.pendingApprovals.isEmpty }) { return .approval }
-        if isStreaming { return .working }
+        if isStreaming || hasDetachedReply { return .working }
         if inlineError != nil { return .attention }
         return .idle
     }
 
     var statusLabel: String {
         switch avatarActivity {
-        case .working: return "Working…"
+        case .working: return hasDetachedReply ? "Reply still running" : "Working…"
         case .approval: return "Waiting for your approval"
         case .attention: return "Needs attention"
         case .unavailable: return "Unavailable"
@@ -192,7 +208,26 @@ final class ChatModel {
     }
 
     var canSend: Bool {
-        return !needsMessageStatusCheck && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && hasComposerContent
+        return !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && !attachments.contains(where: { $0.errorText != nil }) && hasComposerContent
+    }
+
+    var canRegenerate: Bool {
+        !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isStopping && !isExecutingCommand && !isLoading && loadError == nil && !isReadOnly && !isUnavailable
+    }
+
+    /// Inspect Hermes without submitting the composer or bypassing message admission guards.
+    var canCheckHermesStatus: Bool {
+        target?.hermes == true && !isReadOnly && !isUnavailable && !isExecutingCommand && app.api != nil
+    }
+
+    func checkHermesStatus() {
+        guard canCheckHermesStatus else { return }
+        isExecutingCommand = true
+        commandTask = Task { await executeCommand("/status", preservesDraft: true) }
+    }
+
+    var canRetryOriginalMessage: Bool {
+        needsMessageStatusCheck && confirmedMissingSubmission && pendingDraft != nil && !isGroup && !isCheckingMessageStatus && !isStreaming && !isExecutingCommand && !isReadOnly && !isUnavailable
     }
 
     var showsTypingIndicator: Bool {
@@ -217,7 +252,10 @@ final class ChatModel {
 
     func activate() async {
         isActive = true
-        if !hasLoaded {
+        if needsMessageStatusCheck {
+            hasLoaded = true
+            await checkMessageStatus()
+        } else if !hasLoaded {
             hasLoaded = true
             await load(showSpinner: true)
         } else if !isStreaming {
@@ -256,32 +294,63 @@ final class ChatModel {
 
     func deactivate() {
         isActive = false
-        conversationState.flush()
+        snapshotRequest = UUID()
+        isLoading = false
         commandTask?.cancel()
         if isStreaming {
             // The server keeps generating; the reply is resumed when the chat is opened again.
+            streamGeneration = UUID()
             streamTask?.cancel()
+            streamTask = nil
+            isStreaming = false
+            isStopping = false
+            streamingMessageId = nil
         }
+        conversationState.flush()
     }
 
     func load(showSpinner: Bool) async {
-        guard !isNew, let api = app.api else { return }
+        if needsMessageStatusCheck {
+            await checkMessageStatus()
+            return
+        }
+        guard !isNew, !isStreaming, !isCheckingMessageStatus, let api = app.api else { return }
+        let request = UUID()
+        snapshotRequest = request
+        let generation = streamGeneration
+        defer { if snapshotRequest == request { isLoading = false } }
         if showSpinner && messages.isEmpty {
             isLoading = true
         }
         do {
             let snapshot = try await api.snapshot(conversationId: conversationId)
+            guard snapshotRequest == request, streamGeneration == generation, app.api === api, !Task.isCancelled else { return }
             apply(snapshot)
+            recoverInlineError(snapshot)
             if snapshot.resume && !conversationState.preventsResume(in: messages) && isActive && !isStreaming && autoResumeBudget > 0 {
                 autoResumeBudget -= 1
                 resume()
             }
         } catch {
+            guard snapshotRequest == request, streamGeneration == generation, app.api === api, !Task.isCancelled else { return }
             if !error.isUnauthorized && !error.isCancellation && messages.isEmpty {
                 loadError = error.localizedDescription
             }
         }
-        isLoading = false
+    }
+
+    private func showInlineError(_ text: String, recovery: ErrorRecovery = .none) {
+        // A later connection failure must not replace a genuine run failure or rejection.
+        if recovery == .status, inlineError != nil, errorRecovery == .none { return }
+        inlineError = text
+        errorRecovery = recovery
+    }
+
+    private func recoverInlineError(_ snapshot: ConversationSnapshot) {
+        if errorRecovery == .status || (errorRecovery == .stopped && !snapshot.resume) {
+            inlineError = nil
+            errorRecovery = .none
+        }
     }
 
     private func apply(_ snapshot: ConversationSnapshot) {
@@ -303,6 +372,7 @@ final class ChatModel {
         guard !isStreaming else { return }
         let isFirstTranscript = messages.isEmpty
         messages = conversationState.reconcileStoppedReplies(in: snapshot.displayedThread())
+        hasDetachedReply = snapshot.resume && !conversationState.preventsResume(in: messages)
         // Decisions are transient UI state; the server snapshot owns approval status.
         approvalDecisions = [:]
         requestScroll(isFirstTranscript ? .initial : .content)
@@ -320,26 +390,39 @@ final class ChatModel {
         } catch { /* Basic controls remain available if optional discovery fails. */ }
     }
 
-    private func executeCommand(_ text: String) async {
-        defer { isExecutingCommand = false; commandTask = nil }
+    private func executeCommand(_ text: String, preservesDraft: Bool = false) async {
+        defer {
+            isExecutingCommand = false
+            commandTask = nil
+            requestScroll(.content)
+        }
         guard let api = app.api, let target else { return }
-        if commandAttempt?.text != text { commandAttempt = (text, IDGenerator.make()) }
+        let isFreshCommand = text.range(of: #"^/(?:hermes\s+|portal\s+)?(?:new|reset)$"#,
+            options: [.regularExpression, .caseInsensitive]) != nil
+        if isFreshCommand && commandAttempt == nil {
+            commandAttempt = PendingCommandAttempt(text: text, nextId: IDGenerator.make())
+        }
+        let freshAttemptId = isFreshCommand ? commandAttempt?.nextId : nil
+        conversationState.flush()
         let originalDraft = composerText
         var body: [String: JSONValue] = [
             "conversationId": .string(conversationId), "text": .string(text),
             "revision": .number(Double(commandRevision)),
-            "newConversationId": .string(commandAttempt?.nextId ?? IDGenerator.make()),
+            "newConversationId": .string(freshAttemptId ?? IDGenerator.make()),
             target.kind == "bot" ? "botId" : "appId": .string(target.id),
         ]
         if let id = messages.last?.id { body["messageId"] = .string(id) }
         commandError = nil
+        requestScroll(.content)
         do {
             let result = try await api.send("/api/chat/commands", method: "POST", body: .object(body), as: ChatCommandResult.self)
             guard !Task.isCancelled else { return }
             commandResult = result
+            requestScroll(.content)
             commandRevision = max(commandRevision, result.revision ?? 0)
-            commandAttempt = nil
-            if composerText == originalDraft { composerText = "" }
+            if let freshAttemptId, commandAttempt?.nextId == freshAttemptId { commandAttempt = nil }
+            if !preservesDraft && composerText == originalDraft { composerText = "" }
+            conversationState.flush()
             if result.conversationId != nil { isNew = false }
             if let destination = result.destinationConversationId {
                 app.openConversation(destination)
@@ -351,7 +434,11 @@ final class ChatModel {
             await loadCommandCatalog()
         } catch {
             if !error.isCancellation && !error.isUnauthorized {
-                commandError = "\(error.localizedDescription) Your draft has been kept; you can retry."
+                let command = text.lowercased()
+                commandError = command == "/yolo" || command == "/hermes yolo"
+                    ? "\(error.localizedDescription) Your draft has been kept. Check /yolo status before choosing /yolo on or /yolo off."
+                    : "\(error.localizedDescription) Your draft has been kept."
+                requestScroll(.content)
             }
             await loadCommandCatalog()
         }
@@ -404,7 +491,7 @@ final class ChatModel {
             }
         }
 
-        pendingDraft = (message.id, composerText, attachments)
+        pendingDraft = PendingChatSubmission(messageId: message.id, text: composerText, attachments: attachments, body: .object(body))
         messages.append(message)
         composerText = ""
         attachments = []
@@ -422,7 +509,7 @@ final class ChatModel {
 
     /// Re-generates the reply to the user message preceding `assistantMessageId`.
     func regenerate(assistantMessageId: String) {
-        guard !isStreaming, !isReadOnly, !isUnavailable, let api = app.api else { return }
+        guard canRegenerate, let api = app.api else { return }
         guard let index = messages.firstIndex(where: { $0.id == assistantMessageId }) else { return }
         guard let userIndex = messages[..<index].lastIndex(where: { $0.role == .user }) else { return }
         let userMessageId = messages[userIndex].id
@@ -441,33 +528,65 @@ final class ChatModel {
 
     /// Re-attaches to a reply that is still running on the server.
     func resume() {
-        guard !isStreaming, let api = app.api else { return }
-        startStream(api.resumeStream(conversationId: conversationId), reducer: UIMessageStreamReducer(messageId: IDGenerator.make()), existingMessageId: nil)
+        guard !isStreaming, !needsMessageStatusCheck, hasDetachedReply, let api = app.api else { return }
+        startStream(api.resumeStream(conversationId: conversationId), reducer: UIMessageStreamReducer(messageId: IDGenerator.make()), existingMessageId: nil, resuming: true)
+    }
+
+    func retryOriginalMessage() {
+        guard canRetryOriginalMessage, var pending = pendingDraft, let api = app.api else { return }
+        pending.wasRetried = true
+        pendingDraft = pending
+        confirmedMissingSubmission = false
+        inlineError = nil
+        if !messages.contains(where: { $0.id == pending.messageId }),
+           let raw = pending.body["message"], let data = try? JSONEncoder().encode(raw),
+           let message = try? JSONDecoder().decode(UIMessage.self, from: data) {
+            messages.append(message)
+        }
+        startStream(api.streamChat(body: pending.body), reducer: UIMessageStreamReducer(messageId: IDGenerator.make()), existingMessageId: nil)
     }
 
     func stop() {
         guard isStreaming, !isStopping else { return }
         isStopping = true
         let answeredId = answeredUserMessageId()
+        let hadReplyIdentity = streamingMessageId != nil
+        let stopsGroupRequest = isGroup
         stopRequestedFor = answeredId
         let task = streamTask
         let generation = streamGeneration
+        let operation = UUID()
+        conversationState.stopOperation = operation
+        let replyId = streamingMessageId ?? "stopped-" + IDGenerator.make()
         let api = app.api
         let id = conversationId
         Task {
             if let api {
                 do {
-                    try await api.stop(conversationId: id, messageId: answeredId)
-                    guard generation == self.streamGeneration else { return }
-                    if self.isStreaming, let answeredId {
-                        self.markStopped(parentId: answeredId)
+                    let result = try await api.stop(conversationId: id, messageId: answeredId)
+                    guard self.conversationState.stopOperation == operation else { return }
+                    // Group Stop closes its request; direct replies need a real Stop
+                    // outcome and acceptance evidence. Positive conversation-level counts
+                    // can belong to another run while this submission is still admitting.
+                    guard stopsGroupRequest || (result.didRequestStop &&
+                        (hadReplyIdentity || self.pendingDraft?.messageId != answeredId)) else {
+                        throw APIError.invalidResponse
+                    }
+                    self.conversationState.stopOperation = nil
+                    if let answeredId, self.isStreaming || generation != self.streamGeneration {
+                        self.conversationState.markStopped(messageId: replyId, parentId: answeredId)
+                        self.messages = self.conversationState.reconcileStoppedReplies(in: self.messages)
                     }
                     self.isNew = false
                     if self.pendingDraft?.messageId == answeredId { self.pendingDraft = nil }
+                    self.needsMessageStatusCheck = false
+                    self.hasDetachedReply = false
+                    self.conversationState.flush()
                 } catch {
+                    if self.conversationState.stopOperation == operation { self.conversationState.stopOperation = nil }
                     guard generation == self.streamGeneration else { return }
                     if !error.isUnauthorized {
-                        self.inlineError = "Couldn't confirm that the server stopped the reply. Reopen this chat to check its status."
+                        self.showInlineError("Couldn't confirm that the server stopped the reply. Reopen this chat to check its status.", recovery: .stopped)
                     }
                 }
             }
@@ -544,14 +663,22 @@ final class ChatModel {
     private func startStream(
         _ stream: AsyncThrowingStream<UIMessageChunk, Error>,
         reducer initialReducer: UIMessageStreamReducer,
-        existingMessageId: String?
+        existingMessageId: String?,
+        resuming: Bool = false
     ) {
         streamTask?.cancel()
         let generation = UUID()
         streamGeneration = generation
+        if !resuming { conversationState.stopOperation = nil }
+        snapshotRequest = UUID()
+        isLoading = false
+        needsMessageStatusCheck = true
+        confirmedMissingSubmission = false
+        conversationState.flush()
         stopRequestedFor = nil
         isStopping = false
         isStreaming = true
+        hasDetachedReply = false
         app.liveActivities.observe(conversationId: conversationId, replace: true)
         streamingMessageId = existingMessageId
         streamTask = Task { [weak self] in
@@ -567,7 +694,7 @@ final class ChatModel {
                 failure = error
             }
             guard let self, self.streamGeneration == generation else { return }
-            await self.streamDidEnd(error: failure)
+            await self.streamDidEnd(error: failure, generation: generation)
         }
     }
 
@@ -593,7 +720,7 @@ final class ChatModel {
             case .notice(let notice):
                 app.showBanner(notice)
             case .error(let errorText):
-                inlineError = errorText
+                showInlineError(errorText)
             case .started:
                 app.liveActivities.observe(conversationId: conversationId, replace: true)
             case .aborted:
@@ -616,50 +743,93 @@ final class ChatModel {
         messages = conversationState.reconcileStoppedReplies(in: messages)
     }
 
-    private func streamDidEnd(error: Error?) async {
+    private func streamDidEnd(error: Error?, generation: UUID) async {
         isStreaming = false
         streamTask = nil
         streamingMessageId = nil
 
         if let error, !error.isCancellation, !error.isUnauthorized {
-            inlineError = error.localizedDescription
+            showInlineError(error.localizedDescription, recovery: .status)
             if let apiError = error as? APIError,
                case .server(_, _, let unsavedMessageId) = apiError,
-               unsavedMessageId == pendingDraft?.messageId, unsavedMessageId != nil {
+               unsavedMessageId == pendingDraft?.messageId, unsavedMessageId != nil,
+               pendingDraft?.wasRetried == false {
                 restorePendingDraft()
-            } else if pendingDraft != nil || submittedApproval {
-                // A dropped connection does not prove rejection. Read persisted state before retrying.
-                await checkMessageStatus()
+                needsMessageStatusCheck = false
+                showInlineError(error.localizedDescription)
             }
-        } else if error == nil {
-            pendingDraft = nil
-            submittedApproval = false
         }
 
-        if !isNew && !needsMessageStatusCheck { await load(showSpinner: false) }
+        // EOF and cancellation do not prove that admission finished. Keep the immutable
+        // submission until a snapshot confirms it or the original response rejects it.
+        if needsMessageStatusCheck {
+            await checkMessageStatus()
+        } else if !isNew {
+            await load(showSpinner: false)
+        }
+        guard streamGeneration == generation else { return }
         await app.refreshShell()
     }
 
     func checkMessageStatus() async {
-        guard let api = app.api else { return }
+        guard !isCheckingMessageStatus, !isStreaming, let api = app.api else { return }
+        let request = UUID()
+        snapshotRequest = request
+        let generation = streamGeneration
+        let pendingId = pendingDraft?.messageId
+        var needsReplacementSnapshot = false
+        isCheckingMessageStatus = true
         needsMessageStatusCheck = true
+        confirmedMissingSubmission = false
+        defer {
+            isCheckingMessageStatus = false
+            conversationState.flush()
+            if isActive && !isStreaming {
+                if needsReplacementSnapshot {
+                    // Another view may have received a confirmed Stop while this read
+                    // was in flight. Read again rather than leaving the reopened view blank.
+                    Task { await self.checkMessageStatus() }
+                } else if snapshotRequest != request && needsMessageStatusCheck {
+                    Task { await self.checkMessageStatus() }
+                }
+            }
+        }
         do {
             let snapshot = try await api.snapshot(conversationId: conversationId)
-            let pendingId = pendingDraft?.messageId
+            guard snapshotRequest == request, streamGeneration == generation, app.api === api, !Task.isCancelled else { return }
+            guard pendingDraft?.messageId == pendingId else {
+                needsReplacementSnapshot = true
+                return
+            }
             isNew = false
             apply(snapshot)
             if let pendingId, !snapshot.initialRows.contains(where: { $0.id == pendingId }) {
-                restorePendingDraft()
-            } else { pendingDraft = nil }
+                // The original POST may still be admitting. A missing row is not rejection.
+                confirmedMissingSubmission = true
+                showInlineError("The server hasn't confirmed your message yet. Check again, or retry the original message safely.", recovery: .status)
+                return
+            }
+            pendingDraft = nil
             submittedApproval = false
             needsMessageStatusCheck = false
-            if snapshot.resume && !conversationState.preventsResume(in: messages) && isActive { resume() }
+            recoverInlineError(snapshot)
+            if snapshot.resume && !conversationState.preventsResume(in: messages) && isActive && autoResumeBudget > 0 {
+                autoResumeBudget -= 1
+                resume()
+            }
         } catch {
-            if isNew, (error as? APIError)?.statusCode == 404, pendingDraft != nil {
-                restorePendingDraft()
-                needsMessageStatusCheck = false
+            guard snapshotRequest == request, streamGeneration == generation, app.api === api, !Task.isCancelled else { return }
+            guard pendingDraft?.messageId == pendingId else {
+                needsReplacementSnapshot = true
+                return
+            }
+            if (error as? APIError)?.statusCode == 404, pendingDraft != nil {
+                confirmedMissingSubmission = true
+                showInlineError("The server hasn't confirmed your message yet. Check again, or retry the original message safely.", recovery: .status)
+            } else if !error.isUnauthorized && !error.isCancellation {
+                showInlineError("Couldn't confirm the message status. Check again before sending another message.", recovery: .status)
             } else {
-                inlineError = "Couldn't confirm the message status. Check again before sending another message."
+                return
             }
         }
     }
@@ -671,6 +841,7 @@ final class ChatModel {
         composerText = composerText.isEmpty ? pending.text : pending.text + "\n\n" + composerText
         attachments = pending.attachments + attachments
         pendingDraft = nil
+        conversationState.flush()
     }
 
     private func answeredUserMessageId() -> String? {
