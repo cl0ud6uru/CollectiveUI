@@ -26,6 +26,21 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("listening reactions through Decisions", () => {
+  it("inspects real low-confidence choices only when explicitly requested, without raw prompts or provider fields", async () => {
+    deps.decision.mockResolvedValue({ status: "ok", secret: "PRIVATE_PROVIDER_FIELD", answers: [
+      { type: "choice", name: "face", choice: "sympathetic", confidence: 0.4, probabilities: [{ value: "PRIVATE_RAW_DATA" }] },
+      { type: "choice", name: "motion", choice: "keep_current", confidence: 0.9 },
+      { type: "choice", name: "intensity", choice: "natural", confidence: 0.8 },
+      { type: "choice", name: "pace", choice: "linger", confidence: 0.8 },
+    ] });
+    const request = (inspection?: true) => new Request("https://portal.example/api/voice/reaction", { method: "POST", headers: { origin: "https://portal.example" }, body: JSON.stringify({ conversationId: "conversation01", context: "PRIVATE_STORY", revision: 1, libraryVersion: 1, ...(inspection ? { inspection } : {}) }) });
+    const plain = await (await POST(request())).json(); expect(plain.decision).toBeUndefined();
+    const inspected = await (await POST(request(true))).json();
+    expect(inspected.reaction).toBe("keep_current");
+    expect(inspected.decision.answers[0]).toEqual({ name: "face", choice: "sympathetic", confidence: 0.4 });
+    expect(JSON.stringify(inspected)).not.toMatch(/PRIVATE_/);
+  });
+
   it("uses real adapter questions for independent rich controls while retaining the provider deadline", async () => {
     deps.decision.mockResolvedValue({ status: "ok", answers: [
       { type: "choice", name: "face", choice: "sympathetic", confidence: 0.95 },

@@ -4,12 +4,17 @@ import { voiceHistory, type VoiceHistoryMessage } from "./history";
 import { isPulse, legacyPlan, legacyReaction, reactionPlanSchema, reactionPreserveSchema, resolveReactionPlan, type ReactionPlan } from "./reaction-library";
 import type { VoiceReactionDiagnostics } from "./reaction-diagnostics";
 
+import { decisionInspectionSchema, type DecisionInspection, type ReactionDecisionView } from "./reaction-inspection";
+import type { ReactionMetricReason } from "./reaction-diagnostics";
+
 type LiveEvent = { type?: string; event_id?: string; client_event_id?: string; delta?: string; start_ms?: number; end_ms?: number; offset_ms?: number; delegation?: { id?: string; target?: string } };
 type Options = {
   fetcher?: typeof fetch;
   conversationId: string; sessionId: string; reactions: boolean;
   history?: readonly VoiceHistoryMessage[];
   reactionDiagnostics?: VoiceReactionDiagnostics;
+  reactionOnly?: boolean;
+  onReactionDecision?: (view: ReactionDecisionView) => void;
   send: (event: Record<string, unknown>) => void;
   changed: () => void; transcript: (fragments: VoiceFragment[]) => void;
   reaction: (reaction: Reaction, latencyMs: number, plan?: ReactionPlan, motionRevision?: number) => void;
@@ -65,6 +70,7 @@ export class VoiceBridge {
 
   receive(event: LiveEvent) {
     if (this.stopped) return;
+    if (this.options.reactionOnly && event.type !== "session.input_transcript.delta") return;
     if (event.client_event_id && this.appends.has(event.client_event_id) && (event.type?.endsWith(".appended") || event.type === "error")) {
       this.appends.delete(event.client_event_id);
       if (event.type === "error") this.options.notice("A voice update could not be delivered. Check the saved chat for the verified result.");
@@ -76,7 +82,7 @@ export class VoiceBridge {
       if (!event.delta || !Number.isFinite(event.start_ms) || !Number.isFinite(event.end_ms) || event.start_ms! < 0 || event.end_ms! < event.start_ms!) return;
       const fragment: VoiceFragment = { id: event.event_id ?? newId(), role: event.type === "session.input_transcript.delta" ? "user" : "assistant",
         text: event.delta, startMs: event.start_ms!, endMs: event.end_ms! };
-      this.pending.push(fragment);
+      if (!this.options.reactionOnly) this.pending.push(fragment);
       if (fragment.role === "user") {
         this.userRevision++; this.lastUserArrival = Date.now();
         if ((this.pendingResult || this.savedBatch?.delegate) && !this.redirected) {
@@ -88,7 +94,7 @@ export class VoiceBridge {
       this.revision++;
       this.options.transcript(orderedFragments(this.history));
       this.scheduleReaction();
-      this.pump();
+      if (!this.options.reactionOnly) this.pump();
     } else if (event.type === "session.delegation.created" && event.delegation?.target === "client" && event.delegation.id && !this.delegations.has(event.delegation.id)) {
       this.delegations.add(event.delegation.id);
       if (!Number.isFinite(event.offset_ms) || event.offset_ms! < 0) {
@@ -240,7 +246,14 @@ export class VoiceBridge {
     const controller = new AbortController();
     this.reactionAbort = controller;
     const started = Date.now();
-    this.options.reactionDiagnostics?.record("request", 0);
+    let decision: DecisionInspection | undefined;
+    let timedOut = false;
+    let motionDropReason: "cooldown" | undefined;
+    const record = (reason: ReactionMetricReason, latencyMs = Date.now() - started) => {
+      this.options.reactionDiagnostics?.record(reason, latencyMs);
+      if (!this.stopped) try { this.options.onReactionDecision?.({ revision, reason, latencyMs, ...(decision ? { decision } : {}), ...(motionDropReason ? { motionDropReason } : {}) }); } catch { /* Inspection cannot interrupt voice. */ }
+    };
+    record("request", 0);
     this.lastReactionAt = started;
     // Bound the entire client request, including a native bridge that may ignore abort delivery.
     let deadline: ReturnType<typeof setTimeout> | undefined;
@@ -248,25 +261,34 @@ export class VoiceBridge {
       const body = await Promise.race([
         (async () => {
           const res = await (this.options.fetcher ?? fetch)("/api/voice/reaction", { method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
-            body: JSON.stringify({ conversationId: this.options.conversationId, context: reactionContext(this.history, this.gesture), revision, libraryVersion: 1, currentPlan: this.gesturePlan }) });
+            body: JSON.stringify({ conversationId: this.options.conversationId, context: reactionContext(this.history, this.gesture), revision, libraryVersion: 1, currentPlan: this.gesturePlan, ...(this.options.onReactionDecision ? { inspection: true } : {}) }) });
           return res.ok ? await res.json() : null;
         })(),
-        new Promise<null>(resolve => { deadline = setTimeout(() => { controller.abort(); this.options.reactionDiagnostics?.record("timeout", 1400); resolve(null); }, 1400); }),
+        new Promise<null>(resolve => { deadline = setTimeout(() => { controller.abort(); timedOut = true; record("timeout", 1400); resolve(null); }, 1400); }),
       ]);
-      if (!body || this.stopped) return;
-      if (body.revision !== revision || !REACTIONS.includes(body.reaction)) { this.options.reactionDiagnostics?.record("invalid", Date.now() - started); return; }
-      if (!reactionIsFresh(evidence, reactionEvidence(this.history), Date.now() - started)) { this.options.reactionDiagnostics?.record("stale", Date.now() - started); return; }
-      if (body.reaction !== "keep_current" && body.confidence !== undefined && (!Number.isFinite(body.confidence) || body.confidence < REACTION_CONFIDENCE)) { this.options.reactionDiagnostics?.record("confidence", Date.now() - started); return; }
+      if (this.stopped) return;
+      if (!body) { if (!timedOut) record("unavailable"); return; }
+      const inspected = decisionInspectionSchema.safeParse(body.decision);
+      if (inspected.success) decision = inspected.data;
+      if (decision && decision.status !== "ok") { record(decision.status); return; }
+      if (body.reaction === "keep_current" && decision?.answers.some(a => (a.name === "face" || a.name === "motion") && a.choice !== "keep_current") &&
+          decision.answers.filter(a => a.name === "face" || a.name === "motion").every(a => a.choice === "keep_current" || a.confidence < REACTION_CONFIDENCE)) {
+        record("confidence"); return;
+      }
+      if (body.revision !== revision || !REACTIONS.includes(body.reaction)) { record("invalid", Date.now() - started); return; }
+      if (!reactionIsFresh(evidence, reactionEvidence(this.history), Date.now() - started)) { record("stale", Date.now() - started); return; }
+      if (body.reaction !== "keep_current" && body.confidence !== undefined && (!Number.isFinite(body.confidence) || body.confidence < REACTION_CONFIDENCE)) { record("confidence", Date.now() - started); return; }
       const parsedPlan = body.plan === undefined ? null : reactionPlanSchema.safeParse(body.plan);
-      if (parsedPlan && !parsedPlan.success) { this.options.reactionDiagnostics?.record("invalid", Date.now() - started); return; }
+      if (parsedPlan && !parsedPlan.success) { record("invalid", Date.now() - started); return; }
       const parsedPreserve = reactionPreserveSchema.safeParse(body.preserve ?? { face: false, motion: false });
-      if (!parsedPreserve.success) { this.options.reactionDiagnostics?.record("invalid", Date.now() - started); return; }
+      if (!parsedPreserve.success) { record("invalid", Date.now() - started); return; }
       const preserve = parsedPreserve.data;
       const candidate = parsedPlan?.success ? parsedPlan.data : undefined;
       let plan = candidate ? resolveReactionPlan(candidate, this.gesturePlan, preserve) : undefined;
       let pulse = plan ? !preserve.motion && isPulse(plan.gesture) && body.replay === true : body.reaction === "nod";
       if (pulse && Date.now() - this.lastPulseAt < this.pulseCooldownMs) {
-        this.options.reactionDiagnostics?.record("cooldown", Date.now() - started);
+        motionDropReason = "cooldown";
+        record("cooldown", Date.now() - started);
         if (!plan) return;
         // A motion cooldown must never suppress a fresh face after new conversational meaning.
         plan = { ...plan, gesture: this.gesturePlan.gesture, tempo: this.gesturePlan.tempo, durationMs: this.gesturePlan.durationMs };
@@ -276,19 +298,21 @@ export class VoiceBridge {
       const repeat = pulse && Date.now() - this.lastPulseAt >= this.pulseCooldownMs;
       if (this.reactionDwell) clearTimeout(this.reactionDwell);
       this.reactionDwell = null;
-      if (body.reaction === "keep_current" || (same && !repeat)) { this.options.reactionDiagnostics?.record("unchanged", Date.now() - started); return; }
+      if (body.reaction === "keep_current" || (same && !repeat)) { record("unchanged", Date.now() - started); return; }
       const apply = () => {
-        if (this.stopped || !reactionIsFresh(evidence, reactionEvidence(this.history), Date.now() - started)) return;
+        if (this.stopped) return;
+        if (!reactionIsFresh(evidence, reactionEvidence(this.history), Date.now() - started)) { record("stale"); return; }
         // A prior deferred reaction may have applied while this request was in flight.
         // Rebase preserved channels at application time, not against the stale request snapshot.
         if (candidate) plan = resolveReactionPlan(candidate, this.gesturePlan, preserve);
         pulse = plan ? !preserve.motion && isPulse(plan.gesture) && body.replay === true : body.reaction === "nod";
         if (pulse && Date.now() - this.lastPulseAt < this.pulseCooldownMs) {
-          if (!plan) return;
+          motionDropReason = "cooldown";
+          if (!plan) { record("cooldown"); return; }
           plan = { ...plan, gesture: this.gesturePlan.gesture, tempo: this.gesturePlan.tempo, durationMs: this.gesturePlan.durationMs }; pulse = false;
         }
         this.gesture = plan ? legacyReaction(plan.face) : body.reaction; this.gestureAt = Date.now();
-        this.options.reactionDiagnostics?.record("accepted", Date.now() - started);
+        record("accepted", Date.now() - started);
         if (pulse) { this.lastPulseAt = Date.now(); this.pulseCooldownMs = plan ? Math.max(3000, plan.durationMs / plan.tempo + 350) : 3000; }
         if (plan) {
           if (plan.gesture !== this.gesturePlan.gesture || pulse) this.motionRevision++;
@@ -297,9 +321,9 @@ export class VoiceBridge {
         else { this.gesturePlan = legacyPlan(this.gesture); this.options.reaction(this.gesture, Date.now() - started); }
       };
       const dwell = 900 - (Date.now() - this.gestureAt);
-      if (dwell > 0) { this.options.reactionDiagnostics?.record("deferred", dwell); this.reactionDwell = setTimeout(() => { this.reactionDwell = null; apply(); }, dwell); }
+      if (dwell > 0) { record("deferred"); this.reactionDwell = setTimeout(() => { this.reactionDwell = null; apply(); }, dwell); }
       else apply();
-    } catch { /* Reactions never block conversation. */ }
+    } catch { if (!timedOut) record("unavailable"); /* Reactions never block conversation. */ }
     finally { clearTimeout(deadline); this.reactionAbort = null; if (revision !== this.revision) this.scheduleReaction(); }
   }
 
@@ -333,6 +357,7 @@ export class VoiceBridge {
 
   finish() {
     if (this.finishing) return this.finishing;
+    if (this.options.reactionOnly) { this.dispose(); this.finishing = Promise.resolve(); return this.finishing; }
     this.stopped = true; this.queue = [];
     this.options.reactionDiagnostics?.stop();
     if (this.timer) clearTimeout(this.timer);
@@ -344,6 +369,7 @@ export class VoiceBridge {
 
   dispose() {
     this.disposed = true; this.stopped = true; this.queue = [];
+    if (this.options.reactionOnly) { this.history = []; this.pending = []; this.seen.clear(); this.contextMessages.clear(); }
     this.options.reactionDiagnostics?.stop();
     if (this.timer) clearTimeout(this.timer);
     if (this.reactionDwell) clearTimeout(this.reactionDwell);

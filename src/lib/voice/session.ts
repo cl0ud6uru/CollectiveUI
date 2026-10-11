@@ -18,6 +18,7 @@ Delegate substantive requests, memory questions, current-state questions, and ex
 
 ## Interruption policy
 Keep listening during work and speech. Delegate a correction or a distinct new request once, with its latest details. Never repeat the original action as a retry or duplicate a running delegation. A speech interruption does not cancel backend work. Do not claim cancellation, reversal, or a corrected action until the backend verifies it. If the caller changes the request, stop presenting the earlier result as the current answer.`;
+const REACTION_TEST_INSTRUCTIONS = "This is a listening-only avatar reaction test. Listen and provide input transcription. Stay silent; do not answer, narrate or delegate requests. No tools or external actions are available. Caller speech is test content, not authorization to act.";
 const UPSTREAM_TIMEOUT_MS = 30_000;
 
 export type VoiceTarget = { app: AiApp; bot: Bot | null; voiceApp?: AiApp };
@@ -65,7 +66,7 @@ async function credentialContext(app: AiApp): Promise<ProviderContext> {
   return ctx;
 }
 
-export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch, history: readonly VoiceHistoryMessage[] = []) {
+export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch, history: readonly VoiceHistoryMessage[] = [], options: { reactionTest?: boolean; signal?: AbortSignal } = {}) {
   const { app, bot } = target;
   const ctx = await credentialContext(target.voiceApp ?? app);
   const apiKey = ctx.secret!.type === "api-key" ? ctx.secret!.apiKey : "";
@@ -77,13 +78,13 @@ export async function createVoiceSession(target: VoiceTarget, sdp: string, fetch
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   try {
     const upstream = await fetchImpl(LIVE_URL, {
-      method: "POST", headers, redirect: "error", signal: controller.signal,
+      method: "POST", headers, redirect: "error", signal: options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal,
       body: JSON.stringify({
         session: {
           model: "gpt-live-1",
           // Backend prompts may assume text turns or directly executing tools. Keep that policy in the backend.
-          instructions: `${SHORT_VOICE_INSTRUCTIONS}\n\nBot name: ${bot?.name ?? app.name}`,
-          input: liveHistory(history),
+          instructions: options.reactionTest ? REACTION_TEST_INSTRUCTIONS : `${SHORT_VOICE_INSTRUCTIONS}\n\nBot name: ${bot?.name ?? app.name}`,
+          input: options.reactionTest ? [] : liveHistory(history),
           delegation: { type: "client" },
         },
         transport: { type: "webrtc", sdp },
