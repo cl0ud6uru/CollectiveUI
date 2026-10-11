@@ -12,6 +12,7 @@ import { hermesTargetKey } from "@/lib/llm/providers/hermes/scope";
 import { hermesTargetFor } from "@/lib/llm/resolve";
 import { afterRunTransition } from "./hooks";
 import { loadHermesRunContext } from "./hermes-context";
+import { confirmHermesNonAdmission } from "./hermes-admission";
 import { lockUserRuns } from "./lock";
 import { notifyRun } from "./log";
 import { closeOpenParts } from "./replay";
@@ -29,6 +30,7 @@ export async function reconcileHermesStop(run: Pick<AgentRun, "id" | "appId" | "
   if (context.stopState === "confirmed") return "Hermes reply ended.";
   if (requestStop) await db.update(hermesRunContexts).set({ stopState: "pending" }).where(eq(hermesRunContexts.runId, run.id));
   if (!context.upstreamRunId) {
+    if (await confirmHermesNonAdmission(run.id)) return "Request rejected before Hermes started.";
     if (run.status === "cancelled" && !run.startedAt && run.segment === 0) {
       await db.update(hermesRunContexts).set({ stopState: "confirmed" }).where(eq(hermesRunContexts.runId, run.id));
       return "Cancelled before Hermes started.";

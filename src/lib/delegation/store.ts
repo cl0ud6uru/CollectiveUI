@@ -180,7 +180,7 @@ export async function admitDelegation(ctx: AgentCtx, receiverId: string, prompt:
     await tx.insert(agentRuns).values({ id: runId, userId, conversationId, messageId: newId(), parentMessageId: promptId, botId: receiverId, appId: app.id,
       ...(mode === "async" ? { background: true, executionMode: "async_delegate" as const, status: "queued" as const }
         : { background: ctx.background, executionMode: "inline_delegate" as const, status: "running" as const, holder, heartbeatAt: sql`now()`, startedAt: sql`now()` }) });
-    if (hermes) await tx.insert(hermesRunContexts).values({ runId, ...hermes });
+    if (hermes) await tx.insert(hermesRunContexts).values({ runId, ...hermes, admissionState: "prepared" });
     const [task] = await tx.insert(delegatedTasks).values({ id, userId, originConversationId: origin.id, originMessageId: messageId, originToolCallId: toolCallId,
       parentRunId: ctx.usage!.runId ?? null, parentTaskId: parentTask?.id ?? null, rootTaskId: parentTask?.rootTaskId ?? id, rootMessageId,
       assignerBotId: source, receiverBotId: receiverId, assignerName: ctx.bot!.name, receiverName: receiver.name,

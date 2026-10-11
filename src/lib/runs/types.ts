@@ -77,6 +77,8 @@ export type RunHandle = {
   saveResumeState(state: ResumeState): void;
   /** A provider calls this as soon as it starts a run of its own, so the run can be stopped if this one ends abnormally. */
   noteProviderRun?(state: ResumeState): void | Promise<void>;
+  /** Awaited before the Runs POST or after a definite local rejection; never inferred from a missing run ID. */
+  noteHermesAdmission?(state: "attempted" | "rejected"): Promise<void>;
 };
 
 /** Why a run's segment was aborted. */
