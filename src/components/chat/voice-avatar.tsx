@@ -5,12 +5,20 @@ import type { Reaction } from "@/lib/voice/policy";
 import type { VoiceAudioDiagnostics } from "@/lib/voice/audio-diagnostics";
 import type { ReactionPlan } from "@/lib/voice/reaction-library";
 import type { AvatarLayerSnapshot } from "@/lib/voice/avatar-layers";
+import type { VoiceAvatarIdentity } from "@/lib/voice/avatar-2d";
+import { VoiceAvatar2D, type Avatar2DMetrics } from "./voice-avatar-2d";
 
 export type VoiceAvatarProps = { reaction: Reaction; reactionRevision: number; audio: HTMLAudioElement | null; modelUrl: string | null; active: boolean; visible: boolean; diagnostics?: VoiceAudioDiagnostics;
-  reduceMotion?: boolean; plan?: ReactionPlan; motionRevision?: number; planRequestedAt?: number; onMotionMetrics?: (snapshot: AvatarLayerSnapshot) => void };
+  reduceMotion?: boolean; plan?: ReactionPlan; motionRevision?: number; planRequestedAt?: number; onMotionMetrics?: (snapshot: AvatarLayerSnapshot) => void;
+  identity?: VoiceAvatarIdentity | null; speaking?: boolean; on2DMetrics?: (snapshot: Avatar2DMetrics) => void };
 
 /** Optional body clips and facial morphs are discovered at load; voice never waits for the rig. */
 export function VoiceAvatar(props: VoiceAvatarProps) {
+  if (!props.modelUrl && props.identity) return <VoiceAvatar2D key={`${props.identity.botId ?? ""}:${props.identity.icon ?? ""}:${props.identity.pet?.appearance ?? ""}`} {...props} />;
+  return <VoiceAvatar3D {...props} />;
+}
+
+function VoiceAvatar3D(props: VoiceAvatarProps) {
   const host = useRef<HTMLDivElement>(null);
   const live = useRef(props);
   const wake = useRef<(() => void) | null>(null);

@@ -639,7 +639,7 @@ export function Chat({
             )}
           </div>
           <div className={cn("flex shrink-0 items-center gap-1", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
-            {voiceTarget && <VoiceControl key={`${target?.kind}:${target?.id}`} target={voiceTarget} conversationId={conversationId} name={target?.name ?? "Assistant"}
+            {voiceTarget && <VoiceControl key={`${target?.kind}:${target?.id}`} target={voiceTarget} conversationId={conversationId} name={target?.name ?? "Assistant"} icon={target?.icon}
               disabled={unavailable || searchPending || (!voiceActive && busy)} onActiveChange={setVoiceActive}
               onConversationChange={() => { void syncVoiceConversation().catch(() => {}); }}
               chatContext={streamingBusy ? [] : messages.slice(-8).map(m => ({ id: m.id, role: m.role, text: m.parts.map(p => p.type === "text" ? p.text : "").join("") }))} />}

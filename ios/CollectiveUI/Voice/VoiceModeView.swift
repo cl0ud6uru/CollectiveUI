@@ -5,6 +5,7 @@ import WebKit
 struct VoiceModeView: View {
     @Bindable var model: VoiceSessionModel
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .title3) private var controlSize: CGFloat = 56
     @ScaledMetric(relativeTo: .body) private var headerControlSize: CGFloat = 48
     @State private var stageHeight: CGFloat = 0
@@ -65,6 +66,8 @@ struct VoiceModeView: View {
         .allowsHitTesting(model.expanded)
         .accessibilityHidden(!model.expanded)
         .task { await model.load() }
+        .task(id: model.avatarIdentityKey) { await model.refreshAvatar(); await model.setReducedMotion(reduceMotion) }
+        .task(id: reduceMotion) { await model.setReducedMotion(reduceMotion) }
         .task(id: model.expanded) {
             await model.setVisible()
             if model.expanded { headerFocused = true }

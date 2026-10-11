@@ -14,7 +14,7 @@ const postcss = require('postcss'), tailwind = require('@tailwindcss/postcss');
 const dir = await mkdtemp(path.join(tmpdir(), 'collective-voice-'));
 const entry = path.join(dir, 'entry.tsx');
 await writeFile(entry, `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {VoiceControl} from '@/components/chat/voice-control';
-function App(){const [active,setActive]=useState(false);return <main className="h-screen bg-bg p-8 text-fg"><h1>CollectiveUI voice fixture</h1><VoiceControl target={{botId:'bot00000001',conversationId:'chat00000001'}} conversationId="chat00000001" name="Nimbus" onActiveChange={setActive} onConversationChange={()=>{window.changes=(window.changes||0)+1}} chatContext={[{id:'prior',role:'user',text:'Remember my notes'}]}/><p data-testid="voice-state">{active?'Voice active':'Voice idle'}</p><input aria-label="Message Nimbus" placeholder="Keep typing here" /></main>};createRoot(document.getElementById('root')).render(<App/>);`);
+function App(){const [active,setActive]=useState(false);return <main className="h-screen bg-bg p-8 text-fg"><h1>CollectiveUI voice fixture</h1><VoiceControl target={{botId:'bot00000001',conversationId:'chat00000001'}} conversationId="chat00000001" name="Nimbus" icon="blob:ghost:teal" onActiveChange={setActive} onConversationChange={()=>{window.changes=(window.changes||0)+1}} chatContext={[{id:'prior',role:'user',text:'Remember my notes'}]}/><p data-testid="voice-state">{active?'Voice active':'Voice idle'}</p><input aria-label="Message Nimbus" placeholder="Keep typing here" /></main>};createRoot(document.getElementById('root')).render(<App/>);`);
 const bundle = await build({ entryPoints: [entry], outfile: path.join(dir, 'bundle.js'), write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src') } });
 const css = await postcss([tailwind({ base: root })]).process(await readFile(path.join(root, 'src/app/globals.css'), 'utf8'), { from: path.join(root, 'src/app/globals.css') });
 const batches = [];
@@ -22,7 +22,7 @@ let sessionCount = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
-  if (url.pathname === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.css); return; }
+  if (url.pathname === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.css + bundle.outputFiles.filter(file => file.path.endsWith('.css')).map(file => file.text).join('\n')); return; }
   if (url.pathname.startsWith('/api/')) {
     res.setHeader('Content-Type', 'application/json');
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -109,7 +109,8 @@ try {
   expect(await page.evaluate(() => window.trackStopped)).toBe(false);
   await page.getByLabel('Message Nimbus').fill('A typed follow-up');
   await page.getByRole('button', { name: 'Expand voice conversation' }).click();
-  await expect(page.locator('canvas')).toBeVisible();
+  await expect(page.locator('.voice-avatar-2d')).toHaveAttribute('data-bot-id', 'bot00000001');
+  await expect(page.locator('.voice-avatar-2d-body svg')).toBeVisible();
   const screenshots = process.env.VOICE_SCREENSHOT_DIR;
   if (screenshots) { await mkdir(screenshots, { recursive: true }); await page.screenshot({ path: path.join(screenshots, 'voice-desktop.png') }); }
   await page.setViewportSize({ width: 390, height: 844 });
@@ -131,7 +132,7 @@ try {
   await page.getByRole('button', { name: 'End voice', exact: true }).click();
   await expect(page.getByTestId('voice-state')).toHaveText('Voice idle');
   expect(errors).toEqual([]);
-  console.log('Voice browser checks passed: desktop/mobile fullscreen, 3D canvas, streaming captions, verified result speech, opt-in diagnostics and redacted export, mute, minimize/typing, end/save, capture stop, and repeated fresh connection without duplicate delegation.');
+  console.log('Voice browser checks passed: desktop/mobile fullscreen, original bot icon, streaming captions, verified result speech, opt-in diagnostics and redacted export, mute, minimize/typing, end/save, capture stop, and repeated fresh connection without duplicate delegation.');
 } finally {
   await browser?.close(); await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true });
 }
