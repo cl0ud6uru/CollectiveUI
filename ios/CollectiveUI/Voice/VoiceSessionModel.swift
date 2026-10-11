@@ -30,6 +30,8 @@ final class VoiceSessionModel {
     @ObservationIgnored private var ending = false
     @ObservationIgnored private var deadline: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var avatarTask: Task<Void, Never>?
+    @ObservationIgnored private var avatarGeneration = 0
 
     init(chat: ChatModel, api: APIClient) {
         self.chat = chat; self.app = chat.app; self.api = api
@@ -122,7 +124,7 @@ final class VoiceSessionModel {
             }
         }
         do {
-            _ = try await page.callJavaScript("return window.voice.start(config)", arguments: ["config": ["target": target, "chatId": conversationId, "demo": demo]])
+            _ = try await page.callJavaScript("return window.voice.start(config)", arguments: ["config": ["target": target, "chatId": conversationId, "demo": demo, "identity": avatarMetadata]])
         } catch { notice = error.localizedDescription; await end() }
     }
 
@@ -142,6 +144,7 @@ final class VoiceSessionModel {
 
     func end() async {
         guard !ending else { return }; ending = true; deadline?.cancel()
+        avatarTask?.cancel(); avatarGeneration += 1
         status = "ending"; muted = true; inputLevel.value = 0
         saving = true
         defer { saving = false }
@@ -168,11 +171,45 @@ final class VoiceSessionModel {
 
     func dismiss() {
         guard !active, !saving, !unsaved else { expanded = false; return }
-        deadline?.cancel(); refreshTask?.cancel(); audioDiagnostics.disconnect(); page.stopLoading()
+        deadline?.cancel(); refreshTask?.cancel(); avatarTask?.cancel(); avatarGeneration += 1; audioDiagnostics.disconnect(); page.stopLoading()
         if app?.voice?.id == id { app?.voice = nil }
     }
 
     private var authenticated: Bool { app?.api?.token == api.token && app?.api?.baseURL == api.baseURL && app?.phase == .main }
+
+    private var avatarBotId: String? { chat?.target?.kind == "bot" ? chat?.target?.id : nil }
+    private var avatarPet: PetAppearance? { avatarBotId.flatMap { app?.shell?.pets[$0] } }
+    private var avatarMetadata: [String: Any] {
+        VoiceAvatarIdentity.metadata(botId: avatarBotId, icon: chat?.assistantIcon, pet: avatarPet)
+    }
+    var avatarIdentityKey: String {
+        [String(ready), status == "connected" ? "connected" : "inactive", avatarBotId ?? "", chat?.assistantIcon ?? "",
+         avatarPet?.avatarPath(for: avatarBotId ?? "") ?? "", avatarPet?.appearance ?? "", avatarPet?.motion ?? ""].joined(separator: "|")
+    }
+
+    func refreshAvatar() async {
+        guard ready, status == "connected", !ending, authenticated else { return }
+        avatarTask?.cancel(); avatarGeneration += 1
+        let generation = avatarGeneration, identity = avatarMetadata, botId = avatarBotId, pet = avatarPet
+        avatarTask = Task { [weak self] in
+            guard let self, !Task.isCancelled, self.authenticated, !self.ending, generation == self.avatarGeneration else { return }
+            _ = try? await self.page.callJavaScript("window.voice.identity(value)", arguments: ["value": identity])
+            guard !Task.isCancelled, generation == self.avatarGeneration, let botId,
+                  let path = pet?.avatarPath(for: botId), let version = pet?.spriteVersionNumber else { return }
+            do {
+                let data = try await self.api.loadData(from: path)
+                guard !Task.isCancelled, self.authenticated, !self.ending, generation == self.avatarGeneration else { return }
+                let atlas = try VoiceAvatarIdentity.addingAtlas(data, to: identity, version: version)
+                _ = try await self.page.callJavaScript("window.voice.identity(value)", arguments: ["value": atlas])
+            } catch { /* The existing bot icon remains visible when its atlas is unavailable. */ }
+        }
+        await avatarTask?.value
+    }
+
+    func setReducedMotion(_ value: Bool) async {
+        guard ready else { return }
+        _ = try? await page.callJavaScript("window.voice.reduceMotion(value)", arguments: ["value": value])
+    }
 
     func request(_ request: [String: Any]) async throws -> [String: Any] {
         guard authenticated, !demo, let path = request["path"] as? String, let method = request["method"] as? String else { throw APIError.unauthorized }

@@ -13,12 +13,14 @@ import { VoiceAudioDiagnosticsControls } from "./voice-audio-diagnostics";
 import { VoiceReactionDiagnostics } from "@/lib/voice/reaction-diagnostics";
 import { VoiceReactionDiagnosticsControls } from "./voice-reaction-diagnostics";
 import { cn } from "@/lib/utils";
+import { useOptionalPets } from "@/components/pets/pet-context";
+import { voicePetIdentity } from "@/lib/voice/avatar-2d";
 import { checkVoiceAvailability, type VoiceStatus, type VoiceTarget, voiceSessionUrl, waitForIceGathering, waitForVoiceEvent } from "@/lib/voice/client";
 
 type LiveResources = { pc: RTCPeerConnection; channel: RTCDataChannel; stream: MediaStream; abort: AbortController; readinessTimer?: ReturnType<typeof setTimeout>; closePromise?: Promise<void> };
 
-export function VoiceControl({ target, conversationId, name, disabled = false, onActiveChange, onConversationChange, chatContext }: {
-  target: VoiceTarget; conversationId: string; name: string; disabled?: boolean;
+export function VoiceControl({ target, conversationId, name, icon, disabled = false, onActiveChange, onConversationChange, chatContext }: {
+  target: VoiceTarget; conversationId: string; name: string; icon?: string | null; disabled?: boolean;
   onActiveChange?: (active: boolean) => void; onConversationChange: () => void; chatContext: readonly VoiceHistoryMessage[];
 }) {
   const [availabilityState, setAvailabilityState] = useState<{ key: string; value: { supported: boolean; reason?: string } } | null>(null);
@@ -58,6 +60,8 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const bindAudio = useCallback((element: HTMLAudioElement | null) => { audioRef.current = element; setAudioElement(element); }, []);
   const active = status === "connecting" || status === "connected" || status === "ending";
   const { appId, botId, conversationId: targetConversationId } = target;
+  const pets = useOptionalPets();
+  const identity = { botId, icon, pet: voicePetIdentity(botId ? pets?.pets[botId] : undefined) };
   const targetKey = `${appId ?? ""}:${botId ?? ""}:${targetConversationId ?? ""}`;
   const availability = availabilityState?.key === targetKey ? availabilityState.value : null;
   const availabilityError = availabilityErrorState?.key === targetKey ? availabilityErrorState.value : null;
@@ -309,7 +313,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
               <button type="button" className="rounded-full p-3 hover:bg-white/10" aria-label="Minimize voice" onClick={() => setOpen(false)}><Minimize2 className="h-5 w-5" /></button>
             </header>
             <div className="relative min-h-0 flex-1" style={{ background: "radial-gradient(ellipse at 50% 48%, #38505a55, transparent 65%)" }}>
-              <VoiceAvatar planRequestedAt={reactionRequestedAt} plan={reactionPlan} motionRevision={motionRevision} reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} diagnostics={audioDiagnostics} onMotionMetrics={motionCapture ? recordMotion : undefined} />
+              <VoiceAvatar identity={identity} planRequestedAt={reactionRequestedAt} plan={reactionPlan} motionRevision={motionRevision} reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} diagnostics={audioDiagnostics} onMotionMetrics={motionCapture ? recordMotion : undefined} />
             </div>
             <div className="z-10 mx-auto max-h-[45dvh] w-full max-w-xl space-y-4 overflow-y-auto px-6 pb-1 text-center">
               {captions && <div className="max-h-36 overflow-y-auto rounded-2xl bg-white/5 p-4 text-left" aria-label="Live captions">
