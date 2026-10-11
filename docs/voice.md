@@ -35,6 +35,8 @@ All rig capabilities are optional and discovered once when the GLB loads. Body m
 
 Names ignore case (morph names also ignore separators); facial morphs use a neutral weight of zero and a range of 0–1. The renderer blends modest expression weights, releases them on `neutral`, and keeps an expression during a nod. Missing morphs remain absent: a head tilt is listening motion, not a frown. The Borg asset contract is `browInnerUp`, `mouthFrown`, and `mouthSmile`; its fused textured eyes and lips do not imply jaw or blink support. No model asset is included by the reaction implementation.
 
+A named `head` bone inside the model bounds enables a closer view. Full-body rigs retain that framing. For a head-heavy skinned bust, neutral vertices predominantly weighted to the head define its focus and visible extent; the camera fits that extent in both axes, including depth and a motion margin, and updates on canvas resize. These bounds are measured once at load. Unknown rigs retain their full-model view.
+
 ## Conversation and reactions
 
 - WebRTC carries GPT-Live audio. The browser consumes `session.input_transcript.delta` and `session.output_transcript.delta`, preserving speaker and session timestamps. Transcript arrival alone never starts a bot tool request.

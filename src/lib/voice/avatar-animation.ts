@@ -1,19 +1,66 @@
-import { AnimationMixer, AnimationUtils, LoopOnce, LoopRepeat, MathUtils, Vector3, type AnimationAction, type AnimationClip, type Box3, type Mesh, type Object3D } from "three";
+import { AnimationMixer, AnimationUtils, Box3, LoopOnce, LoopRepeat, MathUtils, Vector3, type AnimationAction, type AnimationClip, type Mesh, type Object3D, type SkinnedMesh } from "three";
 import type { Reaction } from "./policy";
 
 type Binding = { weights: number[]; index: number; value: number; smile: number; concerned: number; curious: number; mouth: boolean; blink: boolean };
 const normalized = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, "");
 
-/** A named head bone gives a reliable bust focus; unknown models keep their full bounds. */
-export function avatarFraming(root: Object3D, bounds: Box3): { target: Vector3; distance: number } | null {
+export type AvatarFraming = { target: Vector3; distance: number; fitBounds?: Box3 };
+
+/** Neutral head bounds are measured once, independently of reaction poses and camera resizing. */
+function headBounds(root: Object3D, head: Object3D): Box3 {
+  const bones = new Set<Object3D>();
+  head.traverse(object => { if (object.type === "Bone") bones.add(object); });
+  const bounds = new Box3(), vertex = new Vector3();
+  // Attached skins need updateMatrixWorld's bind inverse update after model normalization.
+  root.updateMatrixWorld(true);
+  root.traverse(object => {
+    const mesh = object as SkinnedMesh;
+    if (!mesh.isSkinnedMesh) return;
+    const { position, skinIndex, skinWeight } = mesh.geometry.attributes;
+    if (!position || !skinIndex || !skinWeight || skinIndex.itemSize !== 4 || skinWeight.itemSize !== 4) return;
+    const count = Math.min(position.count, skinIndex.count, skinWeight.count);
+    for (let i = 0; i < count; i++) {
+      const weight = (bones.has(mesh.skeleton.bones[skinIndex.getX(i)]) ? skinWeight.getX(i) : 0)
+        + (bones.has(mesh.skeleton.bones[skinIndex.getY(i)]) ? skinWeight.getY(i) : 0)
+        + (bones.has(mesh.skeleton.bones[skinIndex.getZ(i)]) ? skinWeight.getZ(i) : 0)
+        + (bones.has(mesh.skeleton.bones[skinIndex.getW(i)]) ? skinWeight.getW(i) : 0);
+      if (weight < 0.5) continue;
+      mesh.getVertexPosition(i, vertex).applyMatrix4(mesh.matrixWorld);
+      if (Number.isFinite(vertex.x) && Number.isFinite(vertex.y) && Number.isFinite(vertex.z)) bounds.expandByPoint(vertex);
+    }
+  });
+  return bounds;
+}
+
+/** Full-body rigs retain their close head focus; head-heavy busts fit their actual head geometry. */
+export function avatarFraming(root: Object3D, bounds: Box3): AvatarFraming | null {
   let head: Object3D | undefined;
   root.traverse(object => { if (object.type === "Bone" && normalized(object.name) === "head") head = object; });
   if (!head || bounds.isEmpty()) return null;
   const target = head.getWorldPosition(new Vector3());
   if (!bounds.containsPoint(target)) return null;
   const height = bounds.max.y - bounds.min.y;
+  const faceBounds = headBounds(root, head);
+  const bust = !faceBounds.isEmpty() && faceBounds.max.y - faceBounds.min.y > height * 0.55;
+  if (bust) faceBounds.getCenter(target);
   target.y += height * 0.02;
-  return { target, distance: Math.max(1, height * 0.55) };
+  return { target, distance: Math.max(1, height * 0.55), ...(bust ? { fitBounds: faceBounds } : {}) };
+}
+
+/** Fit the bust head in both axes, including depth, with room for modest expressions and motion. */
+export function avatarFramingDistance(framing: AvatarFraming, aspect: number, fov: number): number {
+  if (!framing.fitBounds) return framing.distance;
+  const vertical = Math.tan(MathUtils.degToRad(fov > 0 && fov < 180 ? fov : 35) / 2);
+  const horizontal = vertical * (Number.isFinite(aspect) && aspect > 0 ? aspect : 1);
+  let distance = framing.distance;
+  for (const x of [framing.fitBounds.min.x, framing.fitBounds.max.x]) {
+    for (const y of [framing.fitBounds.min.y, framing.fitBounds.max.y]) {
+      for (const z of [framing.fitBounds.min.z, framing.fitBounds.max.z]) {
+        distance = Math.max(distance, z - framing.target.z + 1.12 * Math.max(Math.abs(x - framing.target.x) / horizontal, Math.abs(y - framing.target.y) / vertical));
+      }
+    }
+  }
+  return distance;
 }
 
 /** Cache supported channels once. Never invent a facial expression from a whole-model rotation. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AnimationClip, Bone, Box3, Group, Mesh, NumberKeyframeTrack, Vector3 } from "three";
-import { AvatarFace, AvatarMotion, avatarFraming } from "@/lib/voice/avatar-animation";
+import { AnimationClip, Bone, Box3, BufferGeometry, Float32BufferAttribute, Group, Mesh, NumberKeyframeTrack, Skeleton, SkinnedMesh, Uint16BufferAttribute, Vector3 } from "three";
+import { AvatarFace, AvatarMotion, avatarFraming, avatarFramingDistance } from "@/lib/voice/avatar-animation";
 
 const step = (callback: () => void, seconds = 1) => { for (let i = 0; i < seconds * 60; i++) callback(); };
 function faceFixture(names = ["browInnerUp", "mouthFrown", "mouthSmile"]) {
@@ -11,6 +11,19 @@ function faceFixture(names = ["browInnerUp", "mouthFrown", "mouthSmile"]) {
 }
 const clip = (name: string, value: number, duration = 1) => new AnimationClip(name, duration, [new NumberKeyframeTrack(".rotation[x]", [0, duration], [0, value])]);
 
+function framingRig(headMin: Vector3, headMax: Vector3, pivot: number) {
+  const root = new Group(), geometry = new BufferGeometry();
+  const points = [-0.9, -1.2, -0.4, 0.9, 1.2, 0.4];
+  for (const x of [headMin.x, headMax.x]) for (const y of [headMin.y, headMax.y]) for (const z of [headMin.z, headMax.z]) points.push(x, y, z);
+  geometry.setAttribute("position", new Float32BufferAttribute(points, 3));
+  geometry.setAttribute("skinIndex", new Uint16BufferAttribute(points.flatMap((_, i) => i % 3 === 0 ? [i < 6 ? 0 : 1, 0, 0, 0] : []), 4));
+  geometry.setAttribute("skinWeight", new Float32BufferAttribute(points.flatMap((_, i) => i % 3 === 0 ? [1, 0, 0, 0] : []), 4));
+  const mesh = new SkinnedMesh(geometry), base = new Bone(), head = new Bone();
+  head.name = "head"; head.position.y = pivot; base.add(head); mesh.add(base); root.add(mesh);
+  root.updateMatrixWorld(true); mesh.bind(new Skeleton([base, head]));
+  return { root, mesh, bounds: new Box3().setFromObject(root) };
+}
+
 describe("capability-aware voice avatar", () => {
   it("frames a known head rig for visible reactions and retains full-model framing for unknown rigs", () => {
     const root = new Group(); const head = new Bone(); head.name = "Head"; head.position.y = 0.9; root.add(head);
@@ -19,6 +32,33 @@ describe("capability-aware voice avatar", () => {
     expect(framing.target.y).toBeCloseTo(0.948); expect(framing.distance).toBeCloseTo(1.32);
     expect(avatarFraming(new Group(), bounds)).toBeNull();
     head.position.y = 8; expect(avatarFraming(root, bounds)).toBeNull();
+  });
+
+  it("fits a head-heavy bust on square and portrait canvases without moving its anatomical bone", () => {
+    const { root, bounds } = framingRig(new Vector3(-0.8, -0.25, -0.3), new Vector3(0.8, 1.2, 0.4), -0.3);
+    const framing = avatarFraming(root, bounds)!;
+    expect(framing.fitBounds).toBeDefined(); expect(framing.target.y).toBeCloseTo(0.523);
+    let squareDistance = 0;
+    for (const aspect of [1, 390 / 650]) {
+      const distance = avatarFramingDistance(framing, aspect, 35);
+      if (aspect === 1) squareDistance = distance;
+      else expect(distance).toBeGreaterThan(squareDistance);
+      const vertical = Math.tan(35 * Math.PI / 360);
+      for (const x of [-0.8, 0.8]) for (const y of [-0.25, 1.2]) for (const z of [-0.3, 0.4]) {
+        const depth = framing.target.z + distance - z;
+        expect(Math.abs(x - framing.target.x) / (depth * vertical * aspect)).toBeLessThan(0.9);
+        expect(Math.abs(y - framing.target.y) / (depth * vertical)).toBeLessThan(0.9);
+      }
+    }
+  });
+
+  it("retains full-body framing with real skin weights and handles absent head geometry", () => {
+    const { root, mesh, bounds } = framingRig(new Vector3(-0.25, 0.66, -0.27), new Vector3(0.27, 1.2, 0.19), 0.81);
+    const framing = avatarFraming(root, bounds)!;
+    expect(framing.fitBounds).toBeUndefined(); expect(framing.target.y).toBeCloseTo(0.858);
+    expect(avatarFramingDistance(framing, 390 / 650, 35)).toBeCloseTo(1.32);
+    mesh.geometry.deleteAttribute("skinWeight");
+    expect(avatarFraming(root, bounds)!.fitBounds).toBeUndefined();
   });
 
   it("begins a real concerned facial deformation smoothly and holds it during a long story", () => {

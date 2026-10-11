@@ -19,7 +19,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
     let cancelled = false;
     void (async () => {
       const THREE = await import("three");
-      const { AvatarFace, AvatarMotion, avatarFraming } = await import("@/lib/voice/avatar-animation");
+      const { AvatarFace, AvatarMotion, avatarFraming, avatarFramingDistance } = await import("@/lib/voice/avatar-animation");
       if (cancelled) return;
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
@@ -53,6 +53,12 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
       let motion: InstanceType<typeof AvatarMotion> | null = null;
       let lastGesture = "";
       let gestureTime = 0;
+      let framing: ReturnType<typeof avatarFraming> = null;
+      const frameCamera = () => {
+        if (!framing) return;
+        camera.position.copy(framing.target).add(new THREE.Vector3(0, 0, avatarFramingDistance(framing, camera.aspect, camera.fov)));
+        camera.lookAt(framing.target);
+      };
       const disposeObject = (object: import("three").Object3D) => object.traverse(child => {
         const mesh = child as import("three").Mesh;
         mesh.geometry?.dispose();
@@ -65,7 +71,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
       const resize = new ResizeObserver(() => {
         const width = element.clientWidth, height = element.clientHeight;
         if (!width || !height) return;
-        renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix();
+        renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); frameCamera();
       });
       resize.observe(element);
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -157,11 +163,8 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
           model.scale.multiplyScalar(scale); model.position.sub(center.multiplyScalar(scale));
           for (const object of placeholder) { root.remove(object); disposeObject(object); }
           root.add(model);
-          const framing = avatarFraming(model, new THREE.Box3().setFromObject(model));
-          if (framing) {
-            camera.position.copy(framing.target).add(new THREE.Vector3(0, 0, framing.distance));
-            camera.lookAt(framing.target);
-          }
+          framing = avatarFraming(model, new THREE.Box3().setFromObject(model));
+          frameCamera();
           face = new AvatarFace(model); motion = new AvatarMotion(model, gltf.animations);
           setError("");
         } catch { if (!cancelled) setError("Avatar model unavailable. Using the placeholder."); }
