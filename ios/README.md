@@ -1,6 +1,6 @@
 # CollectiveUI for iOS
 
-A native SwiftUI client for a CollectiveUI server. It runs on iPhone and iPad (iOS 17+). You can chat with model connections and bots, approve tool actions, read the inbox and search your history.
+A native SwiftUI client for a CollectiveUI server. It runs on iPhone and iPad (iOS 27+). You can chat with model connections and bots, approve tool actions, read the inbox and search your history.
 
 ```
 ios/
@@ -16,8 +16,8 @@ ios/
 
 ## Requirements
 
-- Xcode 16 or newer (the project uses `objectVersion = 77` with synchronized folders)
-- iOS 17 or newer on a device or simulator
+- Xcode 27 or newer (the project uses `objectVersion = 77` with synchronized folders)
+- iOS 27 or newer on a device or simulator
 - A CollectiveUI server that has the mobile API turned on (see below)
 
 ## Enable mobile sign-in on the server
@@ -45,7 +45,7 @@ swift test --package-path ios/CollectiveKit
 # App unit tests use fixture transport and in-memory credentials. The host launches with --demo.
 # The optional QA bundle ID keeps a developer's installed app separate.
 xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
   QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa CODE_SIGNING_ALLOWED=NO test
 
 # Simulator build without signing
@@ -53,7 +53,48 @@ xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-The `iOS` GitHub Actions workflow (`.github/workflows/ios.yml`) runs both commands on macOS for every change under `ios/`.
+The `iOS` GitHub Actions workflow (`.github/workflows/ios.yml`) uses the `xcode-27` runner and an iOS 27 simulator for changes under `ios/`.
+
+## Recover an interrupted reply
+
+An interrupted connection does not mean the server rejected the message. The app
+keeps the original request, attachments and message identity in its protected,
+session-scoped draft store. It checks the server before enabling another send or
+regeneration, including after switching chats, backgrounding or relaunching.
+
+**Check message status** reconciles the transcript. A recovered connection clears
+its obsolete error and attention header; genuine server run errors remain visible.
+If a direct-chat message is still unconfirmed, **Retry original message** reuses the
+exact saved request and message ID without consuming a newer composer draft. The
+server's message primary key prevents this retry from admitting a second turn.
+Group conversations require status confirmation instead of offering that retry.
+
+Automatic stream reconnection is bounded. If the server is still working after
+that budget, the header says **Reply still running** and **Reconnect to reply**
+reattaches explicitly. A confirmed Stop retains the stopped turn across navigation.
+If Stop finds no run, returns an invalid outcome, or precedes the first server reply
+identity, the app retains the original submission and checks its status before
+another send. Conversation-level cancellation counts alone cannot prove that a
+slow original request finished admission. Group Stop continues to close its request.
+Failed attachments block sending until removed, so a message cannot silently omit
+the file. At accessibility text sizes, the attachment card puts recovery guidance
+below the filename and removal control; the sidebar uses a readable Settings
+footer with the account name available to VoiceOver. `/new` and `/reset` retain their destination ID when retried across chat
+reconstruction or relaunch. After an uncertain `/yolo` toggle, inspect `/yolo status`
+and choose an explicit `/yolo on` or `/yolo off`.
+
+**Check Hermes status** runs only `/status` and keeps the current composer draft,
+attachments and any unconfirmed submission. It remains available after a command
+error or status result, including when ordinary message sending is guarded.
+An unconfirmed server cancellation remains unconfirmed; this inspection does not
+reset the conversation or authorize another reply. Follow the server's reported
+recovery instruction before retrying `/new` or `/reset`.
+
+`CollectiveUITests/ChatRecoveryTests.swift` uses synthetic transport failures,
+delayed snapshots, clean EOF and immutable requests. The standalone UI regressions
+exercise `--demo-stream-scenario recovery|uncertain` and
+`--demo-attachment-scenario failed` only in the Debug demo session. These fixtures
+never call a model or modify a production chat.
 
 ## Run on a device (bundle ID and team)
 
@@ -208,6 +249,7 @@ Launch arguments (Xcode: **Product → Scheme → Edit Scheme → Run → Argume
 | `--demo-sidebar-collapsed` | On iPad, show only the chat column |
 | `--demo-stream-scenario long` | Stream 600 deterministic offline lines over about 120 seconds for scroll regressions; Stop ends the fixture early |
 | `--demo-stream-scenario delayed` | Wait six seconds before visible output for immediate Stop regressions |
+| `--demo-hermes-cancellation` | Show a historical unsupported-file rejection and a synthetic unconfirmed cancellation; `/reset` is rejected and `/status` inspects without submitting the retained draft |
 | `--demo-reset-drafts` | Clear only the fixture session's saved drafts and local stopped-reply markers on launch; omit when checking relaunch persistence |
 
 Example:

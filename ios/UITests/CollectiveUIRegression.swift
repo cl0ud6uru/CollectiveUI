@@ -46,22 +46,29 @@ final class CollectiveUIRegression: XCTestCase {
         wait(for: [ready], timeout: seconds + 3)
     }
 
-    private func hasVisibleLatestFixtureParagraph(in transcript: XCUIElement) -> Bool {
-        let viewport = transcript.frame
-        let latest = transcript.staticTexts.matching(NSPredicate(format:
-            "identifier == %@ AND label BEGINSWITH %@", "chat.latestReplyParagraph", "QA line ")).element
-        guard latest.waitForExistence(timeout: 5) else { return false }
+    private func visibleLatestFixtureParagraph(in transcript: XCUIElement) -> (label: String, frame: CGRect)? {
         let deadline = Date().addingTimeInterval(5)
         repeat {
-            // Resolve the current tail and its frame together; a separate count can
-            // already be overtaken by incoming paragraphs before its frame resolves.
-            let frame = latest.frame
-            if frame.height > 0 && frame.minY > viewport.minY + 100 && frame.maxY < viewport.maxY {
-                return true
+            // Read the viewport, current tail identity, and its frame atomically.
+            // Separate live element queries can resolve different render passes
+            // while a new paragraph arrives every 0.2 seconds on slower simulators.
+            if let snapshot = try? transcript.snapshot() {
+                var pending: [any XCUIElementSnapshot] = [snapshot]
+                while let node = pending.popLast() {
+                    if node.elementType == .staticText,
+                       node.identifier == "chat.latestReplyParagraph",
+                       node.label.hasPrefix("QA line "), node.frame.height > 0,
+                       // Text accessibility bounds can exceed the drawn glyphs.
+                       // Require a meaningful visible portion of the newest text.
+                       snapshot.frame.intersection(node.frame).height >= min(44, node.frame.height) {
+                        return (node.label, node.frame)
+                    }
+                    pending.append(contentsOf: node.children)
+                }
             }
             settle(0.2)
         } while Date() < deadline
-        return false
+        return nil
     }
 
     private func enterDraft(_ text: String) {
@@ -84,6 +91,125 @@ final class CollectiveUIRegression: XCTestCase {
         capture("sidebar-" + conversationId)
         tap(row)
         XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+    }
+
+    func testStatusRecoveryClearsTheErrorAndAttentionHeader() {
+        launch("home-bot-atlas", extra: ["--demo-stream-scenario", "recovery"])
+        enterDraft("Recover the offline Hermes fixture")
+        tap(app.buttons["Send"])
+        let check = app.buttons["Check message status"]
+        XCTAssertTrue(check.waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Needs attention") == true)
+        app.textViews["chatComposer"].typeText("Next draft remains separate")
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        capture("recovery-01-unconfirmed-error")
+        tap(check)
+        XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
+        XCTAssertFalse(check.exists)
+        XCTAssertFalse(app.staticTexts["Couldn't confirm the message status. Check again before sending another message."].exists)
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Next draft remains separate")
+        capture("recovery-02-ready")
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
+        capture("recovery-03-foreground")
+    }
+
+    func testUnconfirmedMessageHasSafeOriginalRetry() {
+        launch("home-bot-atlas", extra: ["--demo-stream-scenario", "uncertain"])
+        enterDraft("Immutable original message")
+        tap(app.buttons["Send"])
+        let retry = app.buttons["Retry original message"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        capture("retry-01-confirmation-pending")
+        tap(retry)
+        XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
+        XCTAssertFalse(retry.exists)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Immutable original message").count, 1)
+        capture("retry-02-saved-once")
+    }
+
+    func testFailedAttachmentRequiresRemovalBeforeSend() {
+        launch("home-bot-atlas", extra: ["--demo-draft", "Please read the report", "--demo-attachment-scenario", "failed"])
+        let remove = app.buttons["Remove report.pdf"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Send"].isEnabled)
+        XCTAssertGreaterThanOrEqual(remove.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(remove.frame.height, 44)
+        capture("attachment-01-failed-and-retained")
+        tap(remove)
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Please read the report")
+        capture("attachment-02-removed-draft-kept")
+    }
+
+    func testCommandPickerAddsToDraftAndControlRunsOffline() {
+        launch("home-bot-atlas", extra: ["--demo-commands"])
+        let command = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "/new")).firstMatch
+        XCTAssertTrue(command.waitForExistence(timeout: 10))
+        capture("commands-01-picker")
+        tap(command)
+        XCTAssertTrue((app.textViews["chatComposer"].value as? String)?.hasPrefix("/new") == true)
+        XCTAssertFalse(app.staticTexts["Offline demo command"].exists)
+        tap(app.buttons["Send"])
+        XCTAssertTrue(app.staticTexts["Offline demo command"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "")
+        capture("commands-02-result")
+    }
+
+    func testUnconfirmedHermesCancellationStatusPreservesResetDraft() {
+        launch("home-bot-atlas", extra: ["--demo-hermes-cancellation"])
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No files or prompt were sent")).firstMatch.exists)
+        enterDraft("/reset")
+        // Typing the initial slash opens the native command popover. Dismiss
+        // that modal before interacting with the composer behind it.
+        tap(app.buttons["Close commands"])
+        let send = app.buttons["Send"]
+        capture("hermes-cancellation-00-reset-draft")
+        XCTAssertTrue(send.isEnabled)
+        tap(send)
+        let warning = app.staticTexts["Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing. Your draft has been kept."]
+        XCTAssertTrue(warning.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
+        let check = app.buttons["Check Hermes status"]
+        let fullyVisible = NSPredicate { _, _ in
+            check.exists && check.isEnabled && self.app.scrollViews["chat.transcript"].frame.contains(check.frame)
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
+            "The full status target must fit above the composer with the keyboard visible")
+        capture("hermes-cancellation-01-reset-kept")
+        XCTAssertTrue(check.isHittable)
+        XCTAssertGreaterThanOrEqual(check.frame.height, 44)
+        tap(check)
+        XCTAssertTrue(app.staticTexts["Portal reply: failed (stop requested)."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles."].exists)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
+        XCTAssertFalse(warning.exists)
+        XCTAssertTrue(check.exists, "Status inspection stays available while cancellation remains unconfirmed")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
+            "The status target remains fully visible after the result grows")
+        XCTAssertTrue(check.isEnabled)
+        capture("hermes-cancellation-02-unconfirmed-status")
+    }
+
+    // Also run on the dedicated iPad after simctl ui content_size sets the largest
+    // accessibility size. The guidance and its removal action must fit together.
+    func testAttachmentRecoveryGuidanceAndSettingsStayVisible() {
+        launch("home-bot-atlas", appearance: "light", extra: ["--demo-draft", "Please read the report", "--demo-attachment-scenario", "failed"])
+        let guidance = app.staticTexts["Upload interrupted. Remove the file and attach it again."]
+        XCTAssertTrue(guidance.waitForExistence(timeout: 10))
+        XCTAssertTrue(guidance.isHittable)
+        XCTAssertTrue(app.buttons["Remove report.pdf"].isHittable)
+        XCTAssertLessThan(guidance.frame.maxY, app.textViews["chatComposer"].frame.minY)
+        capture("accessibility-01-attachment-guidance")
+        tap(app.buttons["Remove report.pdf"])
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        if !app.buttons["Settings"].isHittable { tap(app.buttons["Open sidebar"]) }
+        XCTAssertTrue(app.buttons["Settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Settings"].isHittable)
+        capture("accessibility-02-settings-visible")
     }
 
     func testAdministratorSettingsNavigateToTheRealWebsiteWithoutOpeningTheNetwork() {
@@ -168,7 +294,8 @@ final class CollectiveUIRegression: XCTestCase {
         settle(4)
         let transcript = app.scrollViews["chat.transcript"]
         let paragraphs = transcript.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "QA line "))
-        XCTAssertTrue(hasVisibleLatestFixtureParagraph(in: transcript), "The growing reply must render before the reader scrolls")
+        XCTAssertNotNil(visibleLatestFixtureParagraph(in: transcript), "The growing reply must render before the reader scrolls")
+        XCTAssertFalse(app.buttons["Check message status"].exists, "An attached live stream must not offer an unavailable recovery action")
         // The transcript extends behind the sticky header; start in visible message content.
         let dragStart = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let dragEnd = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
@@ -205,8 +332,16 @@ final class CollectiveUIRegression: XCTestCase {
         capture("stream-scrolled-away-after-updates")
         tap(app.buttons["Scroll to latest message"])
         settle(1)
+        capture("stream-after-jump")
         XCTAssertFalse(app.buttons["Scroll to latest message"].exists)
-        XCTAssertTrue(hasVisibleLatestFixtureParagraph(in: transcript), "Jumping to the latest reply must not leave a blank transcript")
+        let jumpedTail = visibleLatestFixtureParagraph(in: transcript)
+        XCTAssertNotNil(jumpedTail, "Jumping to the latest reply must not leave a blank transcript")
+        settle(2)
+        let followedTail = visibleLatestFixtureParagraph(in: transcript)
+        XCTAssertNotNil(followedTail, "The latest reply must stay visible as more paragraphs arrive after Jump")
+        XCTAssertNotEqual(jumpedTail?.label, followedTail?.label, "Jump must resume following incoming paragraphs")
+        XCTAssertTrue(app.buttons["Stop"].exists, "The reply must remain attached while following incoming paragraphs")
+        XCTAssertFalse(app.buttons["Check message status"].exists)
         tap(app.buttons["Stop"])
         capture("stream-after-jump-and-stop")
     }
@@ -268,18 +403,23 @@ final class CollectiveUIRegression: XCTestCase {
         capture("visible-return-newline")
     }
 
-    func testSignInLabelContrastsWithItsFillInBothThemes() {
-        for theme in ["dark", "light"] {
-            app.launchArguments = ["--demo", "--demo-screen", "signin", "--demo-appearance", theme]
-            app.launch()
-            let button = app.buttons["Sign in"]
-            XCTAssertTrue(button.waitForExistence(timeout: 10))
-            XCTAssertTrue(button.isHittable)
-            settle(0.5)
-            capture("signin-" + theme)
-            assertContrastingLabel(in: button)
-            app.terminate()
-        }
+    func testSignInLabelContrastsWithItsFillInDarkTheme() {
+        assertSignInContrast(appearance: "dark")
+    }
+
+    func testSignInLabelContrastsWithItsFillInLightTheme() {
+        assertSignInContrast(appearance: "light")
+    }
+
+    private func assertSignInContrast(appearance: String) {
+        app.launchArguments = ["--demo", "--demo-screen", "signin", "--demo-appearance", appearance]
+        app.launch()
+        let button = app.buttons["Sign in"]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        XCTAssertTrue(button.isHittable)
+        settle(0.5)
+        capture("signin-" + appearance)
+        assertContrastingLabel(in: button)
     }
 
     private func assertContrastingLabel(in button: XCUIElement) {

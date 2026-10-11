@@ -24,7 +24,7 @@ data = json.load(sys.stdin)["devices"]
 def version(runtime):
     match = re.search(r"iOS-(\d+)-(\d+)(?:-(\d+))?", runtime)
     return tuple(int(x or 0) for x in match.groups()) if match else (0, 0, 0)
-runtimes = sorted((r for r in data if ".iOS-" in r), key=version, reverse=True)
+runtimes = sorted((r for r in data if ".iOS-" in r and version(r)[0] >= 27), key=version, reverse=True)
 devices = [d for r in runtimes for d in data[r] if d.get("isAvailable", True)]
 for d in devices:
     if d["name"] == preferred:
@@ -67,8 +67,8 @@ run() {
   "$@" || { echo "::error::Scenario failed: $*"; exit 1; }
 }
 
-IPHONE="$(pick_device "iPhone 16 Pro" "iPhone" || true)"
-IPAD="$(pick_device "iPad Pro 13-inch (M4)" "iPad" || true)"
+IPHONE="$(pick_device "iPhone 18 Pro" "iPhone" || true)"
+IPAD="$(pick_device "iPad Pro 13-inch (M5)" "iPad" || true)"
 log "iPhone: ${IPHONE:-none}  iPad: ${IPAD:-none}"
 
 if [ -n "$IPHONE" ]; then

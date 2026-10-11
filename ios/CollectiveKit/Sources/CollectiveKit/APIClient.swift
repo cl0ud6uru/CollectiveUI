@@ -5,6 +5,15 @@ public enum BotChatKind: String, Sendable {
     case side
 }
 
+public struct ChatStopResult: Decodable, Sendable {
+    public let cancelled: Int
+    public let signalled: Int
+
+    public var didRequestStop: Bool {
+        cancelled >= 0 && signalled >= 0 && (cancelled > 0 || signalled > 0)
+    }
+}
+
 /// HTTP client for the CollectiveUI mobile API.
 ///
 /// Immutable: create a new client when the server or token changes.
@@ -235,13 +244,14 @@ public final class APIClient: @unchecked Sendable {
         return try await get("/api/chat/\(APIClient.pathComponent(conversationId))", as: ConversationSnapshot.self)
     }
 
-    public func stop(conversationId: String, messageId: String?) async throws {
+    @discardableResult
+    public func stop(conversationId: String, messageId: String?) async throws -> ChatStopResult {
         var object: [String: JSONValue] = [:]
         if let messageId {
             object["messageId"] = .string(messageId)
         }
         let path = "/api/chat/\(APIClient.pathComponent(conversationId))/stop"
-        try await sendIgnoringResponse(path, method: "POST", body: .object(object))
+        return try await send(path, method: "POST", body: .object(object), as: ChatStopResult.self)
     }
 
     /// Sends a chat request (new message, regenerate or approval answer) and streams the reply.

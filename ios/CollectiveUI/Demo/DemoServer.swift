@@ -28,6 +28,8 @@ final class DemoServer: @unchecked Sendable {
     private var petAtlases: [String: Data] = [:]
     private var counter = 0
     private var regressionStreams: [String: UIMessageStreamReducer] = [:]
+    private var recoveryStatusFailures: Set<String> = []
+    private var uncertainAttempts: Set<String> = []
 
     private init() {
         let now = Date()
@@ -72,6 +74,19 @@ final class DemoServer: @unchecked Sendable {
             ]
             leaves[conversationId] = assistantId
         }
+        if ProcessInfo.processInfo.arguments.contains("--demo-hermes-cancellation") {
+            bots = bots.map { bot in
+                guard bot["id"]?.stringValue == "bot-atlas", case .object(var fields) = bot else { return bot }
+                fields["hermes"] = .bool(true)
+                return .object(fields)
+            }
+            let user = UIMessage(id: "historical-user", role: .user, parts: [.text(TextPart(text: "Please inspect this file"))])
+            let reply = UIMessage(id: "historical-reply", role: .assistant, parts: [.text(TextPart(text:
+                "Hermes refused the request. This Hermes server does not support original-file delivery yet. No files or prompt were sent.", state: "done"))])
+            rows["home-bot-atlas"] = [MessageRow(id: user.id, parentId: nil, message: user),
+                MessageRow(id: reply.id, parentId: user.id, message: reply)]
+            leaves["home-bot-atlas"] = reply.id
+        }
     }
 
     /// Called once on the main actor with the rendered chart image.
@@ -100,6 +115,15 @@ final class DemoServer: @unchecked Sendable {
         if path == "/api/chat/commands" {
             if method == "GET" { return json(.object(["commands": .array([]), "revision": .number(0)])) }
             let command = DemoServer.jsonBody(body)?["text"]?.stringValue ?? ""
+            if ProcessInfo.processInfo.arguments.contains("--demo-hermes-cancellation") {
+                if command == "/status" {
+                    return json(.object(["title": "Chat status", "lines": .array([
+                        "Portal reply: failed (stop requested).",
+                        "Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles.",
+                    ])]))
+                }
+                return failure("Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing.", status: 409)
+            }
             return json(.object([
                 "title": .string("Offline demo command"),
                 "lines": .array([.string("Selected: " + command), .string("This is a local fixture; no server command was run.")]),
@@ -195,11 +219,13 @@ final class DemoServer: @unchecked Sendable {
             return noContent()
         }
         if method == "POST", let captures = DemoServer.match(parts, ["api", "chat", "*", "stop"]) {
+            var signalled = 0
             if var reducer = regressionStreams.removeValue(forKey: captures[0]) {
+                signalled = 1
                 reducer.apply(.abort(reason: nil))
                 updateRegressionRow(captures[0], message: reducer.message)
             }
-            return json(.object([:]))
+            return json(.object(["cancelled": .number(0), "signalled": .number(Double(signalled))]))
         }
         return failure("Not available in demo mode", status: 404)
     }
@@ -305,6 +331,9 @@ final class DemoServer: @unchecked Sendable {
     }
 
     private func snapshot(_ conversationId: String) -> DemoResponse {
+        if recoveryStatusFailures.remove(conversationId) != nil {
+            return failure("Offline fixture status unavailable", status: 503)
+        }
         if summary(for: conversationId) == nil {
             if conversationId.hasPrefix("home-") {
                 ensureHome(conversationId)
@@ -369,7 +398,21 @@ final class DemoServer: @unchecked Sendable {
             )
         }
         let parentId = body["parentId"]?.stringValue
+        let scenario = DemoMode.value(after: "--demo-stream-scenario")
+        if scenario == "uncertain", uncertainAttempts.insert(conversationId).inserted {
+            return failure("Offline fixture connection interrupted", status: 502)
+        }
+        if rows[conversationId]?.contains(where: { $0.id == message.id }) == true {
+            return failure("Duplicate message id", status: 409)
+        }
         appendRow(conversationId, MessageRow(id: message.id, parentId: parentId, createdAt: DemoServer.nowMillis(), message: message))
+        if scenario == "recovery" || scenario == "uncertain" {
+            let reply = UIMessage(id: "offline-recovered-reply", role: .assistant,
+                parts: [.text(TextPart(text: "Recovered offline reply. Your message was saved once.", state: "done"))])
+            appendRow(conversationId, MessageRow(id: reply.id, parentId: message.id, message: reply))
+            if scenario == "recovery" { recoveryStatusFailures.insert(conversationId) }
+            return failure("Offline fixture connection interrupted", status: 502)
+        }
         return streamAnswer(conversationId: conversationId, parentId: message.id, question: question, newTitle: newTitle)
     }
 

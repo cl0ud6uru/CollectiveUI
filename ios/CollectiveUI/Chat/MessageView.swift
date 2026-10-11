@@ -36,9 +36,7 @@ struct MessageView: View {
     private var canRegenerate: Bool {
         return message.role == .assistant
             && message.id == model.lastAssistantMessageId
-            && !model.isStreaming
-            && !model.isReadOnly
-            && !model.isUnavailable
+            && model.canRegenerate
     }
 
     private var userBubble: some View {
