@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Reaction } from "@/lib/voice/policy";
+import type { VoiceAudioDiagnostics } from "@/lib/voice/audio-diagnostics";
 
-export type VoiceAvatarProps = { reaction: Reaction; reactionRevision: number; audio: HTMLAudioElement | null; modelUrl: string | null; active: boolean; visible: boolean };
+export type VoiceAvatarProps = { reaction: Reaction; reactionRevision: number; audio: HTMLAudioElement | null; modelUrl: string | null; active: boolean; visible: boolean; diagnostics?: VoiceAudioDiagnostics };
 
 /** Optional body clips and facial morphs are discovered at load; voice never waits for the rig. */
 export function VoiceAvatar(props: VoiceAvatarProps) {
@@ -90,6 +91,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
         frame = requestAnimationFrame(animate);
         if (now - renderedAt < 1000 / 30) return;
         renderedAt = now;
+        const diagnosticStart = current.diagnostics?.enabled ? performance.now() : null;
         const elapsed = (now - previous) / 1000;
         const dt = Math.min(elapsed, 0.05); previous = now;
         const stream = current.audio?.srcObject;
@@ -98,6 +100,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
           try {
             if (sourceStream) {
               audioContext ??= new AudioContext();
+              current.diagnostics?.setContext("output", audioContext);
               analyser ??= audioContext.createAnalyser(); analyser.fftSize = 512;
               source = audioContext.createMediaStreamSource(sourceStream); source.connect(analyser);
               void audioContext.resume().catch(() => {});
@@ -129,6 +132,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
           face?.update(current.reaction, level, blink, dt, reduced.matches, current.active);
         }
         renderer.render(scene, camera);
+        if (diagnosticStart !== null) current.diagnostics?.recordFrame(elapsed * 1000, performance.now() - diagnosticStart);
       };
       const resume = () => {
         if (!frame && !cancelled && live.current.visible && !document.hidden) { previous = performance.now(); frame = requestAnimationFrame(animate); }
@@ -137,6 +141,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
       document.addEventListener("visibilitychange", resume);
       resume();
       dispose = () => {
+        live.current.diagnostics?.releaseContext("output", audioContext);
         cancelAnimationFrame(frame); resize.disconnect(); source?.disconnect(); void audioContext?.close();
         document.removeEventListener("visibilitychange", resume); wake.current = null;
         motion?.dispose();
@@ -145,6 +150,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
       if (props.modelUrl) {
         try {
           const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+          const loadTiming = live.current.diagnostics?.beginTiming() ?? null;
           const manager = new THREE.LoadingManager();
           manager.setURLModifier(url => {
             if (url.startsWith("blob:") || url.startsWith("data:")) return url;
@@ -153,6 +159,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
             return resolved.href;
           });
           const gltf = await new GLTFLoader(manager).loadAsync(props.modelUrl);
+          live.current.diagnostics?.endTiming("avatar-load", loadTiming);
           if (cancelled) { disposeObject(gltf.scene); return; }
           model = gltf.scene;
           const box = new THREE.Box3().setFromObject(model);
