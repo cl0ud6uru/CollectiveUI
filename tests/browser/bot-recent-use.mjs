@@ -105,8 +105,11 @@ try {
   await expectOrder(expanded, ['p2','p1','a','b','c','d','e']);
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expectOrder(expanded, ['p2','p1','b','a','c','d','e']);
+  const beforeExpandedActivity = structuredClone(snapshot('alice'));
   await page.getByRole('button', { name: 'Background activity', exact: true }).click();
-  await expectOrder(expanded, ['p2','p1','b','a','c','d','e']);
+  await expectOrder(expanded, ['p2','p1','b','a','c','d','e','f']);
+  await expect(page.locator('[data-navigation-bot="f"]')).toContainText('Working');
+  expect(snapshot('alice')).toEqual(beforeExpandedActivity); // Visibility never changes saved recency.
   await page.reload(); await expectOrder(expanded, ['p2','p1','b','a','c','d','e']);
   // Real keyboard menu moves pins and appends/unpins a never-used bot.
   await page.getByRole('button', { name: 'Reorder Planning', exact: true }).click();
@@ -127,8 +130,11 @@ try {
   await page.locator('[data-rail-bot="a"]').click();
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expectOrder(rail, ['p1','p2','a','b','c','d']);
+  const beforeRailActivity = structuredClone(snapshot('alice'));
   await page.getByRole('button', { name: 'Background activity', exact: true }).click();
-  await expectOrder(rail, ['p1','p2','a','b','c','d']);
+  await expectOrder(rail, ['p1','p2','a','b','c','f']);
+  await expect(page.locator('[data-rail-bot="f"]')).toHaveAttribute('aria-label', /New bot, Working/);
+  expect(snapshot('alice')).toEqual(beforeRailActivity);
   if (screenshotDir) await page.screenshot({path:path.join(screenshotDir,'collapsed.png')});
   await page.reload(); await expectOrder(rail, ['p1','p2','a','b','c','d']);
   await page.getByRole('button', { name: /All bots, \d+ more/ }).click();
