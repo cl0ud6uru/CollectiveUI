@@ -1,6 +1,6 @@
 import type { AvatarLayerSnapshot } from "./avatar-layers";
-export type ReactionMetricReason = "request" | "accepted" | "stale" | "invalid" | "confidence" | "unchanged" | "timeout" | "unavailable" | "deferred" | "cooldown";
-const REASONS: readonly ReactionMetricReason[] = ["request", "accepted", "stale", "invalid", "confidence", "unchanged", "timeout", "unavailable", "deferred", "cooldown"];
+export type ReactionMetricReason = "request" | "accepted" | "stale" | "invalid" | "confidence" | "unchanged" | "timeout" | "unavailable" | "deferred" | "cooldown" | "disabled" | "rate_limited" | "refusal";
+const REASONS: readonly ReactionMetricReason[] = ["request", "accepted", "stale", "invalid", "confidence", "unchanged", "timeout", "unavailable", "deferred", "cooldown", "disabled", "rate_limited", "refusal"];
 const ms = (value: number) => Number.isFinite(value) ? Math.round(Math.min(60000, Math.max(0, value))) : 0;
 /** Opt-in bounded numeric/enum-only capture. No transcript, raw provider response or session identity. */
 export class VoiceReactionDiagnostics {

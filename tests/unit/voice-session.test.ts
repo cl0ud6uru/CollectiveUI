@@ -53,6 +53,21 @@ afterEach(() => {
 });
 
 describe("voice session API", () => {
+  it("creates listening-only reaction tests without loading or saving chat history", async () => {
+    deps.getOwnedConversation.mockResolvedValueOnce({ source: "chat", isGroup: false, appId: app.id, botId: null });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "test_voice" }, transport: { type: "webrtc", sdp: "answer" } }));
+    const response = await POST(new Request("https://portal.example/api/voice/session", { method: "POST", headers: { origin: "https://portal.example" }, body: JSON.stringify({ conversationId: "chat00000001", chatId: "chat00000001", sdp: "offer", reactionTest: true }) }));
+    expect(response.status).toBe(200);
+    expect(deps.prepareVoiceConversation).not.toHaveBeenCalled();
+    expect(await response.json()).toMatchObject({ context: "", history: [] });
+    const upstream = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
+    expect(upstream.session.input).toEqual([]);
+    expect(upstream.session.instructions).toContain("listening-only avatar reaction test");
+    expect(upstream.session.instructions).toContain("No tools or external actions");
+    expect(upstream.session.instructions).not.toContain("saved chat");
+    fetchSpy.mockRestore();
+  });
+
   it("creates distinct listening-first sessions with empty input for new conversations", async () => {
     deps.prepareVoiceConversation.mockResolvedValue({ context: "", history: [] });
     const fetchSpy = vi.spyOn(globalThis, "fetch")
