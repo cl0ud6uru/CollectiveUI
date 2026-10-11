@@ -13,6 +13,17 @@ function fixture(maxSamples = 180) {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("local voice audio diagnostics", () => {
+  it("installs deferred source getters without reading or enabling them, and stops replaced capture", async () => {
+    const diagnostics = new VoiceAudioDiagnostics({ peer: () => null, audio: () => null });
+    const peer = vi.fn(() => ({ getStats: async () => stats([inbound()]) }));
+    const audio = vi.fn(() => ({ paused: false, readyState: 4 }));
+    diagnostics.setSources({ peer, audio });
+    expect(peer).not.toHaveBeenCalled(); expect(audio).not.toHaveBeenCalled(); expect(diagnostics.enabled).toBe(false);
+    diagnostics.start(false); expect((await diagnostics.sample())?.stats).toBe("available");
+    diagnostics.setSources({ peer: () => null, audio: () => null });
+    expect(diagnostics.enabled).toBe(false); expect(await diagnostics.sample()).toBeNull();
+    diagnostics.start(false); expect((await diagnostics.sample())?.stats).toBe("no-peer"); diagnostics.dispose();
+  });
   it("is opt-in and never reads stats while disabled; stopping removes automatic work", async () => {
     vi.useFakeTimers(); const { diagnostics, getStats } = fixture();
     expect(await diagnostics.sample()).toBeNull(); expect(getStats).not.toHaveBeenCalled();

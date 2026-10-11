@@ -88,10 +88,13 @@ Import `VoiceAudioDiagnostics` and `VoiceAudioDiagnosticsControls`. After the re
 
 ```tsx
 const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({
-  peer: () => resources.current?.pc ?? null,
-  audio: () => audioRef.current,
+  peer: () => null,
+  audio: () => null,
 }));
-useEffect(() => () => audioDiagnostics.dispose(), [audioDiagnostics]);
+useEffect(() => {
+  audioDiagnostics.setSources({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current });
+  return () => audioDiagnostics.dispose();
+}, [audioDiagnostics]);
 ```
 
 Pass `diagnostics={audioDiagnostics}` to VoiceAvatar. Place `<VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />` in the voice dialog's scrollable content. This is the only web start control. In `end()`, stop diagnostics after the existing immediate microphone mute and playback pause. Stop it in current-session cleanup, including failures and aborted startup. Avoid letting a stale resource's cleanup stop a newer session's capture. Include the collector in changed hook dependency lists.

@@ -39,8 +39,11 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const resources = useRef<LiveResources | null>(null);
   const pendingAbort = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current }));
-  useEffect(() => () => audioDiagnostics.dispose(), [audioDiagnostics]);
+  const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({ peer: () => null, audio: () => null }));
+  useEffect(() => {
+    audioDiagnostics.setSources({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current });
+    return () => audioDiagnostics.dispose();
+  }, [audioDiagnostics]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const bindAudio = useCallback((element: HTMLAudioElement | null) => { audioRef.current = element; setAudioElement(element); }, []);
   const active = status === "connecting" || status === "connected" || status === "ending";

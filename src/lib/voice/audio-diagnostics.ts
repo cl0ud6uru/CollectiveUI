@@ -63,6 +63,10 @@ export class VoiceAudioDiagnostics {
     this.now = options.now ?? (() => performance.now());
     this.maxSamples = Math.max(1, Math.min(180, Math.floor(options.maxSamples ?? 180) || 180));
   }
+  /** Install ref-backed getters after render; configuration never reads a source or starts capture. */
+  setSources(sources: Pick<Options, "peer" | "audio">) {
+    this.stop(); this.options.peer = sources.peer; this.options.audio = sources.audio;
+  }
   get enabled() { return this.recording; }
   get count() { return this.samples.length; }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
