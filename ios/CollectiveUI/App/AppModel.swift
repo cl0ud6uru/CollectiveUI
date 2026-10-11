@@ -35,6 +35,7 @@ final class AppModel {
 
     var shell: ShellResponse? = nil
     var shellError: String? = nil
+    private var botStatusRequest = 0
     var sessionInfo: SessionInfo? = nil
     private(set) var settingsAccess = SettingsSessionAccess()
     var selection: ChatRoute? = nil
@@ -329,6 +330,7 @@ final class AppModel {
         do {
             let fresh = try await api.shell()
             guard settingsAccess.generation == generation else { return }
+            botStatusRequest += 1
             shell = fresh
             shellError = nil
             liveActivities.restore()
@@ -338,6 +340,29 @@ final class AppModel {
                 return
             }
             shellError = error.localizedDescription
+        }
+    }
+
+    /// Complete server snapshots keep background/group work visible without reopening a conversation.
+    func refreshBotStatuses() async {
+        guard let api, token != nil, shell != nil else { return }
+        let generation = settingsAccess.generation
+        botStatusRequest += 1
+        let request = botStatusRequest
+        do {
+            let statuses = try await api.botStatuses()
+            guard settingsAccess.generation == generation, request == botStatusRequest else { return }
+            guard var current = shell else { return }
+            for index in current.bots.indices { current.bots[index].status = statuses[current.bots[index].id] ?? nil }
+            shell = current
+        } catch {
+            guard settingsAccess.generation == generation, request == botStatusRequest else { return }
+            if error.isUnauthorized {
+                guard var current = shell else { return }
+                for index in current.bots.indices { current.bots[index].status = nil }
+                shell = current
+            }
+            // Focus/reconnect and the next foreground poll recover transient failures.
         }
     }
 

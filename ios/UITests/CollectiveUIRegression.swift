@@ -115,6 +115,37 @@ final class CollectiveUIRegression: XCTestCase {
         wait(for: [ready], timeout: seconds + 3)
     }
 
+    func testGroupWorkInClosedAndExpandedNavigation() {
+        launch(extra: ["--demo-group-activity"])
+        let researcher = app.buttons["Research Assistant: Working"]
+        XCTAssertTrue(researcher.waitForExistence(timeout: 8))
+        capture("ios-activity-collapsed")
+        tap(researcher)
+        XCTAssertTrue(app.staticTexts["Working…"].waitForExistence(timeout: 5))
+        capture("ios-activity-expanded")
+        tap(app.buttons["Close sidebar"])
+        let atlas = app.buttons["Atlas: Working"]
+        XCTAssertTrue(atlas.waitForExistence(timeout: 15))
+        XCTAssertFalse(researcher.exists, "Completed group speaker must stop showing working")
+        capture("ios-activity-handoff")
+        let completed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: atlas)
+        wait(for: [completed], timeout: 30)
+        capture("ios-activity-completed")
+    }
+
+    func testGroupWorkAtAccessibilityTextSize() {
+        launch(extra: ["--demo-group-activity", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let researcher = app.buttons["Research Assistant: Working"]
+        XCTAssertTrue(researcher.waitForExistence(timeout: 8))
+        XCTAssertTrue(researcher.isHittable)
+        capture("ios-activity-accessibility-collapsed")
+        tap(researcher)
+        XCTAssertTrue(app.buttons["Close sidebar"].waitForExistence(timeout: 5))
+        for _ in 0..<5 where !app.staticTexts["Working…"].exists { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["Working…"].waitForExistence(timeout: 5))
+        capture("ios-activity-accessibility-expanded")
+    }
+
     private func visibleLatestFixtureParagraph(in transcript: XCUIElement) -> (label: String, frame: CGRect)? {
         let deadline = Date().addingTimeInterval(5)
         repeat {

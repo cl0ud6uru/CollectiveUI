@@ -30,6 +30,7 @@ final class DemoServer: @unchecked Sendable {
     private var regressionStreams: [String: UIMessageStreamReducer] = [:]
     private var recoveryStatusFailures: Set<String> = []
     private var uncertainAttempts: Set<String> = []
+    private var activityPolls = 0
 
     private init() {
         let now = Date()
@@ -41,6 +42,13 @@ final class DemoServer: @unchecked Sendable {
         brandingJSON = DemoServer.parseFixture(DemoFixtures.branding, now: now)
         apps = DemoServer.parseFixture(DemoFixtures.apps, now: now).arrayValue ?? []
         bots = DemoServer.parseFixture(DemoFixtures.bots, now: now).arrayValue ?? []
+        if ProcessInfo.processInfo.arguments.contains("--demo-group-activity") {
+            bots = bots.map { bot in
+                guard case .object(var fields) = bot else { return bot }
+                fields["status"] = .null
+                return .object(fields)
+            }
+        }
         conversations = DemoServer.parseFixture(DemoFixtures.conversations, now: now).arrayValue ?? []
         if ProcessInfo.processInfo.arguments.contains("--demo-group-lead") {
             conversations.insert(.object([
@@ -164,6 +172,21 @@ final class DemoServer: @unchecked Sendable {
                 "deviceName": .string("Jordan's iPhone"),
                 "expiresAt": .string(DemoServer.iso(Date().addingTimeInterval(89 * 86_400))),
             ]))
+        }
+        if method == "GET", DemoServer.match(parts, ["api", "mobile", "v1", "bot-statuses"]) != nil {
+            activityPolls += 1
+            if ProcessInfo.processInfo.arguments.contains("--demo-group-activity") {
+                // Offline group speaker handoff, then completion; no provider or real server is contacted.
+                let activeID = activityPolls < 6 ? "bot-research" : activityPolls < 16 ? "bot-atlas" : nil
+                return json(.object(Dictionary(uniqueKeysWithValues: bots.compactMap { bot in
+                    guard let id = bot["id"]?.stringValue else { return nil }
+                    return (id, id == activeID ? JSONValue.string("working") : JSONValue.null)
+                })))
+            }
+            return json(.object(Dictionary(uniqueKeysWithValues: bots.compactMap { bot in
+                guard let id = bot["id"]?.stringValue else { return nil }
+                return (id, bot["status"] ?? .null)
+            })))
         }
         if method == "GET", DemoServer.match(parts, ["api", "mobile", "v1", "shell"]) != nil {
             return shell()

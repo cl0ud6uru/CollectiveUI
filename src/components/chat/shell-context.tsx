@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { changeBotNavigation, type BotNavigationChange } from "@/lib/bots/navigation";
 import type { Branding, ConversationSummary, CurrentUser, FolderSummary, TargetOption } from "./types";
 import { mergeRecentTasks } from "@/lib/chat/recent-task-state";
+import { watchBotWork } from "@/lib/chat/watch-bot-work";
 
 type ShellState = {
   user: CurrentUser;
@@ -126,22 +127,11 @@ export function ShellProvider({
       } finally { navigationLocked.current = false; }
     });
   }, [optimisticNavigation, router]);
-  const [workStatuses, setWorkStatuses] = useState<Record<string, RosterStatus | null> | null>(null);
+  const [workState, setWorkState] = useState<{ source: TargetOption[]; userId: string; snapshot: Record<string, RosterStatus | null> | null }>({ source: initial.bots, userId: initial.user.id, snapshot: null });
+  const workStatuses = workState.source === initial.bots && workState.userId === initial.user.id ? workState.snapshot : null;
   useEffect(() => {
-    let alive = true, pending = false;
-    const refresh = async () => {
-      if (document.hidden || pending) return;
-      pending = true;
-      try { const { refreshBotStatuses } = await import("@/app/(chat)/actions"); const statuses = await refreshBotStatuses(); if (alive) setWorkStatuses(statuses); }
-      catch { /* Keep the last confirmed status until the next successful refresh. */ }
-      finally { pending = false; }
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 10_000);
-    window.addEventListener("focus", refresh);
-    window.addEventListener("bot-work-changed", refresh);
-    return () => { alive = false; clearInterval(timer); window.removeEventListener("focus", refresh); window.removeEventListener("bot-work-changed", refresh); };
-  }, [initial.bots]);
+    return watchBotWork(snapshot => setWorkState({ source: initial.bots, userId: initial.user.id, snapshot }));
+  }, [initial.bots, initial.user.id]);
   const [conversations, setConversations] = useState(initial.conversations);
   useEffect(() => {
     const controller = new AbortController();
@@ -218,7 +208,9 @@ export function ShellProvider({
     const chats = Object.values(live.chats);
     if (!workStatuses && !Object.keys(live.byBot).length && !chats.length) return navigationBots;
     return navigationBots.map((b) => {
-      const status = mostUrgent([workStatuses ? workStatuses[b.id] : b.status, ...chats.filter((c) => c.botId === b.id).map((c) => c.status)]);
+      const accessible = !workStatuses || Object.hasOwn(workStatuses, b.id);
+      const local = chats.filter(c => c.botId === b.id && (c.status !== "waiting" || !workStatuses || workStatuses[b.id] === "waiting"));
+      const status = accessible ? mostUrgent([workStatuses ? workStatuses[b.id] : b.status, ...local.map(c => c.status)]) : null;
       return { ...b, ...live.byBot[b.id], status };
     });
   }, [initial.bots, navigationBots, botLive, workStatuses]);

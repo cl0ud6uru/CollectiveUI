@@ -51,7 +51,7 @@ export async function loadShell(p: Principal) {
   const prefByBot = new Map(prefs.map((x) => [x.botId, x]));
   const homes = new Map<string, { botId: string; conversationId: string; updatedAt: Date }>();
   for (const c of convs) if (c.isBotHome && c.botId && !homes.has(c.botId)) homes.set(c.botId, { botId: c.botId, conversationId: c.id, updatedAt: c.updatedAt });
-  const roster = await loadBotRoster(p.user.id, [...homes.values()]);
+  const roster = await loadBotRoster(p, [...homes.values()], bots.map(bot => bot.id));
   const groupIds = convs.flatMap((c) => c.isGroup ? [c.id] : []);
   const members = new Map<string, string[]>();
   if (groupIds.length) {

@@ -193,6 +193,10 @@ public final class APIClient: @unchecked Sendable {
         return try await get("/api/mobile/v1/shell", as: ShellResponse.self)
     }
 
+    public func botStatuses() async throws -> [String: String?] {
+        try await get("/api/mobile/v1/bot-statuses", as: [String: String?].self)
+    }
+
     public func openBotChat(botId: String, kind: BotChatKind) async throws -> String {
         let path = "/api/mobile/v1/bots/\(APIClient.pathComponent(botId))/chat"
         let body: JSONValue = .object(["kind": .string(kind.rawValue)])
