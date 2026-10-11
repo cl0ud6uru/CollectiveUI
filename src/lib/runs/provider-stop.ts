@@ -15,6 +15,10 @@ import { reconcileHermesStop } from "./hermes-stop";
 
 export async function stopProviderRun(run: Pick<AgentRun, "id" | "appId" | "resumeState">): Promise<void> {
   try {
+    if (run.appId?.startsWith('codex:')) {
+      const { stopCodexRun } = await import('@/lib/codex/recovery');
+      if (await stopCodexRun(run.id)) return;
+    }
     const [team]=await db.select({id:hermesTeamCandidateContexts.id}).from(hermesTeamCandidateContexts).where(eq(hermesTeamCandidateContexts.runId,run.id));
     if(team){const {retireStoredTeamCandidateRun,settleTeamCandidateRun}=await import('@/lib/hermes-team/candidate-startup');await retireStoredTeamCandidateRun(run.id);await settleTeamCandidateRun(run.id,false);dropParkedForAgentRun(run.id);return;}
     if (await loadHermesRunContext(run.id)) {

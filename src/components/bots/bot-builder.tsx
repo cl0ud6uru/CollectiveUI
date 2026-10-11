@@ -32,6 +32,7 @@ import { ServiceGrantEditor } from "./service-grant-editor";
 import type { ServiceGrantInput } from "@/lib/bots/service-policy";
 import { HermesTeamPolicy, type HermesTeamPolicyValue, type HermesTeamModelOption } from "./hermes-team-policy";
 
+import { CodexHarnessSettings } from "./codex-harness-settings";
 import { WORKSPACE_PERMISSIONS } from "@/lib/bots/tool-config";
 
 type Option = { id: string; name: string };
@@ -168,6 +169,7 @@ export function BotBuilder({
   serviceGrants = [],
   petCatalog = [],
   personalHermesAvailable = false,
+  codexRuntimeStatus,
   teamConfig,
   teamMaintainers = [],
   teamModelOptions = [],
@@ -189,6 +191,7 @@ export function BotBuilder({
   serviceGrants?: ServiceGrantInput[];
   petCatalog?: CatalogPet[];
   personalHermesAvailable?: boolean;
+  codexRuntimeStatus?: { api: string; chatgpt_subscription: string };
   /** Offered only by the server when this bot supports Team Bot configuration. */
   teamConfig?: HermesTeamPolicyValue;
   teamMaintainers?: { id: string; name: string; disabled?: boolean }[];
@@ -208,8 +211,8 @@ export function BotBuilder({
   const [uploading, setUploading] = useState(false);
   const set = <K extends keyof BotInput>(k: K, v: BotInput[K]) => setForm((f) => ({ ...f, [k]: v }));
   const app = apps.find((a) => a.id === form.appId);
-  const [engineChoice, setEngineChoice] = useState<"native" | "hermes">(() => apps.find((a) => a.id === initial.appId)?.agentServer ? "hermes" : "native");
-  const engine = form.appId === "personal-hermes" ? "hermes" : app ? (app.agentServer ? "hermes" : "native") : engineChoice;
+  const [engineChoice, setEngineChoice] = useState<"native" | "hermes" | "codex">(() => initial.codex ? "codex" : apps.find((a) => a.id === initial.appId)?.agentServer ? "hermes" : "native");
+  const engine = form.codex ? "codex" : form.appId === "personal-hermes" ? "hermes" : app ? (app.agentServer ? "hermes" : "native") : engineChoice;
   const connections = apps.filter((a) => !!a.agentServer === (engine === "hermes"));
   const personalNew = !botId && form.appId === "personal-hermes";
   const docker = personalNew || apps.find(a => a.id === initial.appId)?.docker === true;
@@ -413,9 +416,11 @@ export function BotBuilder({
               </Field>
 
               </>}
-              <Field label="Bot engine" hint="Native bots use CollectiveUI tools with a selected model. Hermes runs the bot with its own tools, memory and model routing.">
+              <Field label="Bot engine" hint="Choose the engine that executes this bot. Codex uses each caller’s assigned app-server and credentials.">
                 <Select disabled={(managed && !personalNew) || service} aria-label="Bot engine" value={engine} onChange={(e) => {
-                  const next = e.target.value as "native" | "hermes";
+                  const next = e.target.value as "native" | "hermes" | "codex";
+                  set("codex", next === "codex" ? { funding: "api", model: "", effort: "medium" } : null);
+                  if (next === "codex") { set("tools", []); set("delegateIds", []); set("executionMode", "caller"); }
                   setEngineChoice(next);
                   // Changing engines requires an explicit connection choice before saving.
                   set("appId", "");
@@ -424,10 +429,11 @@ export function BotBuilder({
                   if (!botId) set("delegatorIds", []);
                 }}>
                   <option value="native">Native · CollectiveUI</option>
+                  <option value="codex" disabled={!!botId && !initial.codex}>Codex · app-server (text pilot){botId && !initial.codex ? " · create a new bot" : ""}</option>
                   <option value="hermes">{local ? "Local Hermes" : "Hermes"}</option>
                 </Select>
               </Field>
-              <div className="grid gap-4 sm:grid-cols-2">
+              {engine === "codex" && form.codex ? <CodexHarnessSettings value={form.codex} onChange={value => set("codex", value)} status={codexRuntimeStatus}/> : <div className="grid gap-4 sm:grid-cols-2">
                 <Field label={engine === "hermes" ? "Agent backend connection" : "Model connection"}
                   hint={local ? "This bot uses the explicitly selected local profile and its paired model. Changes to native configuration belong in Hermes." : engine === "hermes" ? "Choose the Hermes profile this bot should use. The backend controls its models; /model uses only approved routes." : "Each connection selects a model or deployment from a provider."}>
                   <Select disabled={managed && !personalNew} aria-label={engine === "hermes" ? "Agent backend connection" : "Model connection"} value={form.appId} onChange={(e) => {
@@ -452,7 +458,7 @@ export function BotBuilder({
                 {engine === "native" && <Field label="Max steps per run">
                   <Input aria-label="Max steps per run" type="number" min={1} max={50} value={form.maxSteps} onChange={(e) => set("maxSteps", Number(e.target.value))} />
                 </Field>}
-              </div>
+              </div>}
 
               <Field label="Who can use it">
                 <Select disabled={local || personalNew} aria-label="Who can use it" value={form.visibility} onChange={(e) => set("visibility", e.target.value as BotInput["visibility"])}>
@@ -500,7 +506,7 @@ export function BotBuilder({
                   </Select>
                 </Field>
               )}
-              {engine === "hermes" ? (
+              {engine === "codex" ? null : engine === "hermes" ? (
                 <div className="rounded-xl border border-border bg-surface-2/40 px-3 py-2.5 text-sm text-muted">
                   {local ? "Tools, memory, skills and persona live in the selected native profile. CollectiveUI does not add or replace its standing instructions. Native flagged commands ask for approval in this chat." : "Tools, memory, skills and persona live in Hermes for this bot. The instructions above are added on top of the Hermes profile’s own; flagged commands ask for approval in the chat."}
                 </div>
@@ -643,7 +649,7 @@ export function BotBuilder({
           )}
 
           <div className="sticky bottom-0 mt-6 flex items-center gap-2 border-t border-border bg-bg py-3">
-            <Button onClick={save} disabled={pending || !form.name.trim() || !form.appId}>
+            <Button onClick={save} disabled={pending || !form.name.trim() || (form.codex ? !form.codex.model.trim() : !form.appId)}>
               {pending && <Loader2 className="h-4 w-4 animate-spin" />} {botId ? service ? "Save draft" : "Update" : "Create"}
             </Button>
             {botId && (

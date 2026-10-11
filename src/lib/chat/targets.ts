@@ -1,3 +1,4 @@
+import { isCodexApp } from '@/lib/codex/target';
 import type { TargetOption } from "@/components/chat/types";
 import { userBotPrefs, type AiApp, type Bot } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
@@ -94,8 +95,9 @@ export async function resolveTargetOption(
     if (bot) {
       const resolved = await resolveTurnTarget(p, { botId: bot.id, appId: null }).catch(() => null);
       const hermes = resolved?.app.provider === "hermes";
-      const available = hermes ? [] : await skillsForBot(bot.id, bot.ownerId);
-      if (!hermes && bot.executionMode !== "service" && await learningIsEnabled(p)) available.push(...await learnedSkillsForBot(bot.id, p.user.id));
+      const codex = resolved && isCodexApp(resolved.app);
+      const available = hermes || codex ? [] : await skillsForBot(bot.id, bot.ownerId);
+      if (!hermes && !codex && bot.executionMode !== "service" && await learningIsEnabled(p)) available.push(...await learnedSkillsForBot(bot.id, p.user.id));
       const skills = available.map((s) => ({ slug: s.slug, name: s.name, description: s.description }));
       return { target: botOption(bot, hermes), skills };
     }

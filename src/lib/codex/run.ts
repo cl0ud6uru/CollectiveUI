@@ -1,0 +1,109 @@
+import { HttpError } from '@/lib/authz';
+import 'server-only';
+import type { UIMessageChunk } from 'ai';
+import type { TurnOptions, TurnResult } from '@/lib/agent/run';
+import type { PortalUIMessage } from '@/lib/chat/store';
+import { CODEX_DIRECT_ONLY, CodexPolicySchema } from './config';
+import { CodexClient } from './client';
+import { callerRuntime } from './runtime';
+import { executeCodexSession } from './session';
+import { checkpointCodexRun, reserveCodexRun } from './store';
+import { runtimeBinding, assertRuntimeOwner } from './runtime';
+import { loadPrincipal } from '@/lib/auth/groups';
+import { resolveTurnTarget } from '@/lib/agent/target';
+import { mapUsage, recordUsage } from '@/lib/llm/usage';
+import { accountRejection, userMayUseChatGPT } from '@/lib/llm/chatgpt/policy';
+import { getSetting } from '@/lib/settings';
+
+export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
+  if (!opts.bot || !opts.run?.holder || !opts.persist || !opts.responseMessageId || opts.continuation || opts.background || opts.delegation ||
+    opts.conversation.userId !== opts.principal.user.id || opts.bot.executionMode !== 'caller' || opts.run.segment !== 0)
+    throw new HttpError(409, CODEX_DIRECT_ONLY);
+  if (opts.history.some(m => m.parts.some(p => p.type === 'file' || p.type.startsWith('tool-') || p.type === 'dynamic-tool')))
+    throw new HttpError(409, CODEX_DIRECT_ONLY);
+  const raw = opts.app.providerConfig ?? {};
+  const policy = CodexPolicySchema.parse({ funding: raw.funding, model: raw.model, effort: raw.effort });
+  const transcript = JSON.stringify(opts.history.map(m => ({ role: m.role, text: m.parts.filter(p => p.type === 'text').map(p => p.text).join('\n') })));
+  if (transcript.length > 200000) throw new HttpError(409, 'This chat is too long for the Codex pilot. Start a new chat.');
+  const runtime = await callerRuntime(opts.principal.user.id, policy.funding);
+  assertRuntimeOwner(runtime, opts.principal.user);
+  await reserveCodexRun(opts.run, runtime);
+  const cancelled = new AbortController();
+  const signal = AbortSignal.any([opts.abortSignal ?? AbortSignal.timeout(30 * 60 * 1000), cancelled.signal]);
+  const source = policy.funding === 'api' ? 'codex_api' as const : 'chatgpt_plan' as const;
+  const responseMessage: PortalUIMessage = { id: opts.responseMessageId, role: 'assistant', parts: [] };
+  let resolveDone!: (v: Awaited<TurnResult['done']>) => void;
+  const done: TurnResult['done'] = new Promise(resolve => { resolveDone = resolve; });
+  let closed = false;
+  const stream = new ReadableStream<UIMessageChunk>({ start(controller) {
+    const emit = (chunk: UIMessageChunk) => { if (!closed) controller.enqueue(chunk); };
+    // The durable worker owns this stream; browser disconnection only stops its event-log tail.
+    void (async () => {
+      let client: CodexClient | undefined, error: string | undefined;
+      let tokens = mapUsage(undefined), dispatched = false;
+      const abortTransport = () => client?.close();
+      signal.addEventListener('abort', abortTransport, { once: true });
+      const text = new Map<string, { type: 'text'; text: string; state: 'streaming' | 'done' }>();
+      emit({ type: 'start', messageId: responseMessage.id });
+      try {
+        signal.throwIfAborted();
+        client = await CodexClient.connect(runtime);
+        await executeCodexSession(client, runtime, policy,
+          `Conversation transcript (JSON). Respond to the last user message.\n${transcript}`,
+          [opts.bot!.instructions, opts.bot!.boundaries, 'This is a text-only CollectiveUI session. Do not invoke tools or request approvals.'].filter(Boolean).join('\n\n'), {
+            authorizeAccount: async identity => {
+              if (identity?.type === 'chatgpt') {
+                const settings = await getSetting('chatgpt');
+                const reason = accountRejection({ accountId: runtime.expectedWorkspaceId!, planType: identity.planType }, settings);
+                if (!userMayUseChatGPT(opts.principal, settings) || reason) throw new HttpError(403, reason ?? 'Personal ChatGPT access is unavailable.');
+              }
+            },
+            checkpoint: async values => {
+              if (values.phase === 'dispatching') {
+                const fresh = await loadPrincipal(opts.principal.user.id);
+                if (!fresh || fresh.user.sessionVersion !== opts.principal.user.sessionVersion ||
+                  (await resolveTurnTarget(fresh, opts.conversation)).app.id !== opts.app.id ||
+                  runtimeBinding(await callerRuntime(fresh.user.id, policy.funding)) !== runtimeBinding(runtime))
+                  throw new HttpError(409, 'Your Codex access or runtime binding changed before dispatch.');
+                assertRuntimeOwner(runtime, fresh.user);
+              }
+              await checkpointCodexRun(opts.run!, runtime.ownerId, values);
+              if (values.phase === 'dispatching') dispatched = true;
+            },
+            usage: u => { tokens = mapUsage({ inputTokens: { total: u.inputTokens, cacheRead: u.cachedInputTokens }, outputTokens: { total: u.outputTokens, reasoning: u.reasoningOutputTokens } }); },
+            text: (id, delta) => {
+              let part = text.get(id);
+              if (!part) { part = { type: 'text', text: '', state: 'streaming' }; text.set(id, part); responseMessage.parts.push(part); emit({ type: 'text-start', id }); }
+              part.text += delta; emit({ type: 'text-delta', id, delta });
+            },
+          }, signal);
+      } catch (err) {
+        error = signal.aborted ? 'Codex was stopped.' : err instanceof Error && !err.name.startsWith('Zod') ? err.message : 'The Codex runtime returned an unsupported response.';
+        // Upstream errors are already replaced at the transport boundary. Never include endpoints or tokens.
+        client?.close(); client = undefined;
+        // The executor and sweeper reconcile this durable attempt after closing the stream.
+        // Do not hold the UI's cancellation deadline hostage to an unreachable upstream.
+
+      } finally {
+        signal.removeEventListener('abort', abortTransport);
+        client?.close();
+        for (const [id, part] of text) { part.state = 'done'; emit({ type: 'text-end', id }); }
+        if (error) emit({ type: 'error', errorText: error });
+        if (dispatched) await recordUsage({ purpose: 'chat', billingSource: source, providerKind: opts.app.provider,
+          model: policy.model, appId: opts.app.id, userId: runtime.ownerId, conversationId: opts.conversation.id,
+          botId: opts.bot!.id, credentialId: runtime.id, billingRoute: `codex:${policy.funding}`,
+          scope: { pending: [], runId: opts.run!.id, messageId: responseMessage.id } }, tokens);
+        try {
+          await opts.persist!({ conversationId: opts.conversation.id, userId: opts.principal.user.id, botId: opts.bot!.id,
+            runId: opts.run!.id, responseMessage, isContinuation: false, parentId: opts.history.at(-1)?.id ?? null,
+            extra: { model: policy.model, inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, billingSource: source, providerKind: opts.app.provider, appId: opts.app.id },
+            // No company-funded memory/title side-call for caller-owned Codex execution.
+            background: true }, { error });
+        } catch { error = 'The Codex response could not be saved.'; }
+        emit({ type: 'finish', finishReason: error ? 'error' : 'stop' }); if (!closed) controller.close(); closed = true;
+        resolveDone({ responseMessage, pendingApproval: false, error });
+      }
+    })();
+  }, cancel() { closed = true; cancelled.abort(); } });
+  return { stream, done, billing: { source } };
+}

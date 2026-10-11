@@ -1266,6 +1266,24 @@ export const agentRuns = pgTable(
 );
 
 /** Preferences never change the shared Hermes profile. Admission snapshots them under the user's run lock. */
+export const codexBotConfigs = pgTable('codex_bot_configs', {
+  botId: text('bot_id').primaryKey().references(() => bots.id, { onDelete: 'cascade' }),
+  policy: jsonb('policy').$type<import('@/lib/codex/config').CodexPolicy>().notNull(),
+});
+
+/** Retained independently of chat deletion until upstream termination is confirmed. Never contains secrets. */
+export const codexRuns = pgTable('codex_runs', {
+  runId: text('run_id').primaryKey(), userId: text('user_id').notNull(),
+  runtimeId: text('runtime_id').notNull(), binding: text('binding').notNull(),
+  funding: text('funding').$type<'api' | 'chatgpt_subscription'>().notNull(),
+  threadId: text('thread_id'), turnId: text('turn_id'),
+  phase: text('phase').$type<'reserved' | 'ready' | 'dispatching' | 'running' | 'terminal' | 'stop_unconfirmed'>().notNull(),
+  updatedAt: updatedAt(),
+}, t => [index('codex_runs_recovery_idx').on(t.phase, t.updatedAt), index('codex_runs_owner_idx').on(t.userId),
+  uniqueIndex('codex_runs_owner_active_idx').on(t.userId).where(sql`${t.phase} <> 'terminal'`),
+  check('codex_runs_funding_check', sql`${t.funding} in ('api', 'chatgpt_subscription')`),
+  check('codex_runs_phase_check', sql`${t.phase} in ('reserved', 'ready', 'dispatching', 'running', 'terminal', 'stop_unconfirmed')`)]);
+
 export const hermesChatSettings = pgTable("hermes_chat_settings", {
   conversationId: text("conversation_id").primaryKey().references(() => conversations.id, { onDelete: "cascade" }),
   targetKey: text("target_key").notNull(),

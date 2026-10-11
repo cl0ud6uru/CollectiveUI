@@ -7,7 +7,7 @@
 export const PROVIDER_KINDS = ["openai-compatible", "openai", "azure", "anthropic", "bedrock", "vertex-anthropic", "chatgpt", "hermes"] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
-/** "runtime" apps (Codex / Claude Code in a sandbox) arrive in a later phase. */
+/** Runtime targets execute an agent harness rather than a LanguageModel provider. */
 export const APP_KINDS = ["model", "runtime"] as const;
 export type AppKind = (typeof APP_KINDS)[number];
 
@@ -23,7 +23,7 @@ export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
  * Who pays for a call. "org" = company credentials; "chatgpt_plan" = the user's own ChatGPT plan (Codex limits);
  * "hermes" = whatever model access the Hermes server is configured with (its own keys or subscription).
  */
-export const BILLING_SOURCES = ["org", "chatgpt_plan", "hermes"] as const;
+export const BILLING_SOURCES = ["org", "chatgpt_plan", "hermes", "codex_api"] as const;
 export type BillingSource = (typeof BILLING_SOURCES)[number];
 
 /** Services a user can connect their own account for. */
