@@ -1,5 +1,5 @@
 import { newId } from "@/lib/ids";
-import { compactTranscript, orderedFragments, reactionContext, REACTIONS, type Reaction, type VoiceFragment } from "./policy";
+import { compactTranscript, orderedFragments, reactionContext, reactionEvidence, reactionIsFresh, REACTION_CONFIDENCE, REACTIONS, type Reaction, type VoiceFragment } from "./policy";
 
 type LiveEvent = { type?: string; event_id?: string; delta?: string; start_ms?: number; end_ms?: number; offset_ms?: number; delegation?: { id?: string; target?: string } };
 type Options = {
@@ -27,6 +27,7 @@ export class VoiceBridge {
   get hasUnsaved() { return !!this.savedBatch || this.pending.length > 0; }
   private timer: ReturnType<typeof setTimeout> | null = null;
   private reactionAbort: AbortController | null = null;
+  private reactionDwell: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private disposed = false;
   private revision = 0;
@@ -146,19 +147,39 @@ export class VoiceBridge {
 
   private async decideReaction() {
     const revision = this.revision;
+    const evidence = reactionEvidence(this.history);
+    if (this.stopped || !evidence) return;
     const controller = new AbortController();
     this.reactionAbort = controller;
-    this.lastReactionAt = Date.now();
+    const started = Date.now();
+    this.lastReactionAt = started;
+    // Bound the entire client request, including a native bridge that may ignore abort delivery.
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      const res = await (this.options.fetcher ?? fetch)("/api/voice/reaction", { method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify({ conversationId: this.options.conversationId, context: reactionContext(this.history, this.gesture), revision }) });
-      const body = await res.json();
-      if (!res.ok || this.stopped || body.revision !== revision || Date.now() - this.lastReactionAt > 1400 || revision < this.revision - 4) return;
-      if (!REACTIONS.includes(body.reaction) || body.reaction === "keep_current" || Date.now() - this.gestureAt < 900) return;
-      this.gesture = body.reaction; this.gestureAt = Date.now();
-      this.options.reaction(this.gesture, Date.now() - this.lastReactionAt);
+      const body = await Promise.race([
+        (async () => {
+          const res = await (this.options.fetcher ?? fetch)("/api/voice/reaction", { method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
+            body: JSON.stringify({ conversationId: this.options.conversationId, context: reactionContext(this.history, this.gesture), revision }) });
+          return res.ok ? await res.json() : null;
+        })(),
+        new Promise<null>(resolve => { deadline = setTimeout(() => { controller.abort(); resolve(null); }, 1400); }),
+      ]);
+      if (!body || this.stopped || body.revision !== revision || !REACTIONS.includes(body.reaction) ||
+          !reactionIsFresh(evidence, reactionEvidence(this.history), Date.now() - started) ||
+          (body.reaction !== "keep_current" && body.confidence !== undefined && (!Number.isFinite(body.confidence) || body.confidence < REACTION_CONFIDENCE))) return;
+      if (this.reactionDwell) clearTimeout(this.reactionDwell);
+      this.reactionDwell = null;
+      if (body.reaction === "keep_current" || body.reaction === this.gesture) return;
+      const apply = () => {
+        if (this.stopped || !reactionIsFresh(evidence, reactionEvidence(this.history), Date.now() - started) || body.reaction === this.gesture) return;
+        this.gesture = body.reaction; this.gestureAt = Date.now();
+        this.options.reaction(this.gesture, Date.now() - started);
+      };
+      const dwell = 900 - (Date.now() - this.gestureAt);
+      if (dwell > 0) this.reactionDwell = setTimeout(() => { this.reactionDwell = null; apply(); }, dwell);
+      else apply();
     } catch { /* Reactions never block conversation. */ }
-    finally { this.reactionAbort = null; if (revision !== this.revision) this.scheduleReaction(); }
+    finally { clearTimeout(deadline); this.reactionAbort = null; if (revision !== this.revision) this.scheduleReaction(); }
   }
 
   async flush() {
@@ -190,6 +211,7 @@ export class VoiceBridge {
     if (this.finishing) return this.finishing;
     this.stopped = true; this.queue = [];
     if (this.timer) clearTimeout(this.timer);
+    if (this.reactionDwell) clearTimeout(this.reactionDwell);
     this.reactionAbort?.abort(); this.wake?.();
     this.finishing = (async () => { await this.task; await this.flush(); })();
     return this.finishing;
@@ -198,6 +220,7 @@ export class VoiceBridge {
   dispose() {
     this.disposed = true; this.stopped = true; this.queue = [];
     if (this.timer) clearTimeout(this.timer);
+    if (this.reactionDwell) clearTimeout(this.reactionDwell);
     this.reactionAbort?.abort(); this.wake?.();
   }
 }
