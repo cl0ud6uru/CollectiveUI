@@ -37,6 +37,8 @@ Names ignore case (morph names also ignore separators); facial morphs use a neut
 
 A named `head` bone inside the model bounds enables a closer view. Full-body rigs retain that framing. For a head-heavy skinned bust, neutral vertices predominantly weighted to the head define its focus and visible extent; the camera fits that extent in both axes, including depth and a motion margin, and updates on canvas resize. These bounds are measured once at load. Unknown rigs retain their full-model view.
 
+See [session/task lifecycle](voice-lifecycle.md) for fresh/resumed calls, transcript settling, corrections, and verified result delivery. [Local audio diagnostics](voice-audio-diagnostics.md) describes opt-in capture for the next device round.
+
 ## Conversation and reactions
 
 - WebRTC carries GPT-Live audio. The browser consumes `session.input_transcript.delta` and `session.output_transcript.delta`, preserving speaker and session timestamps. Transcript arrival alone never starts a bot tool request.

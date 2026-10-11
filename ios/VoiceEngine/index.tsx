@@ -4,6 +4,7 @@ import { VoiceBridge } from "../../src/lib/voice/bridge";
 import { waitForIceGathering, waitForVoiceEvent, type VoiceTarget } from "../../src/lib/voice/client";
 import { type Reaction } from "../../src/lib/voice/policy";
 import { type VoiceHistoryMessage } from "../../src/lib/voice/history";
+import { VoiceAudioDiagnostics } from "../../src/lib/voice/audio-diagnostics";
 
 declare global {
   interface Window {
@@ -12,7 +13,9 @@ declare global {
       voiceEvents: { postMessage: (event: unknown) => void };
     } };
     voice: { start: typeof start; end: typeof end; mute: typeof mute; retry: typeof retry;
-      visible: (value: boolean) => void; context: (messages: VoiceHistoryMessage[]) => void };
+      visible: (value: boolean) => void; context: (messages: VoiceHistoryMessage[]) => void;
+      diagnostics: { start: () => boolean; sample: () => ReturnType<VoiceAudioDiagnostics["sample"]>;
+        stop: () => boolean; clear: () => boolean; report: () => ReturnType<VoiceAudioDiagnostics["report"]> } };
   }
 }
 const emit = (type: string, data: Record<string, unknown> = {}) => window.webkit.messageHandlers.voiceEvents.postMessage({ type, ...data });
@@ -34,9 +37,11 @@ let pc: RTCPeerConnection | null = null, channel: RTCDataChannel | null = null, 
 let abort: AbortController | null = null, bridge: VoiceBridge | null = null;
 let closing: Promise<void> | null = null, active = false, demo = false;
 let inputAudio: AudioContext | null = null, inputTimer: ReturnType<typeof setInterval> | null = null, muted = false;
+const audioDiagnostics = new VoiceAudioDiagnostics({ peer: () => pc, audio: () => audio });
 function monitorInput(captured: MediaStream) {
   try {
     inputAudio = new AudioContext();
+    audioDiagnostics.setContext("input", inputAudio);
     const analyser = inputAudio.createAnalyser(); analyser.fftSize = 512;
     inputAudio.createMediaStreamSource(captured).connect(analyser);
     const samples = new Float32Array(512);
@@ -48,10 +53,11 @@ function monitorInput(captured: MediaStream) {
     }, 100);
   } catch { /* The meter must never interrupt audio capture. */ }
 }
-function render() { root.render(<VoiceAvatar reaction={reaction} reactionRevision={revision} modelUrl={modelUrl} audio={audio} active={active} visible={visible} />); }
+function render() { root.render(<VoiceAvatar reaction={reaction} reactionRevision={revision} modelUrl={modelUrl} audio={audio} active={active} visible={visible} diagnostics={audioDiagnostics} />); }
 function status(value: string) { emit("status", { value }); }
 function notice(error: unknown) { emit("notice", { message: error instanceof Error ? error.message : String(error) }); }
 function release() {
+  audioDiagnostics.stop(); audioDiagnostics.setContext("input", null);
   if (inputTimer) clearInterval(inputTimer); inputTimer = null;
   void inputAudio?.close(); inputAudio = null; emit("level", { value: 0 });
   abort?.abort(); abort = null;
@@ -118,13 +124,17 @@ async function start(config: { target: VoiceTarget; chatId: string; demo: boolea
     await started; ensureCurrent();
     active = true; status("connected"); emit("changed"); render();
     if (session.avatarUrl) {
+      const fetchTiming = audioDiagnostics.beginTiming();
       // Native bearer stays in URLSession. Only self-contained GLBs are supported on mobile.
       void window.webkit.messageHandlers.voiceAPI.postMessage({ path: `/api/voice/avatar?conversationId=${encodeURIComponent(config.chatId)}`, method: "GET" })
         .then(result => {
           if (current.signal.aborted || result.status !== 200) return;
+          audioDiagnostics.endTiming("avatar-fetch", fetchTiming);
+          const decodeTiming = audioDiagnostics.beginTiming();
           const bytes = Uint8Array.from(atob(String(result.body)), character => character.charCodeAt(0));
           if (modelUrl) URL.revokeObjectURL(modelUrl);
-          modelUrl = URL.createObjectURL(new Blob([bytes], { type: "model/gltf-binary" })); render();
+          modelUrl = URL.createObjectURL(new Blob([bytes], { type: "model/gltf-binary" }));
+          audioDiagnostics.endTiming("avatar-decode", decodeTiming); render();
         }).catch(() => notice("Your custom avatar is unavailable. Using the default avatar."));
     }
   } catch (error) {
@@ -140,6 +150,7 @@ function end() {
   status("ending"); mute(true); audio.pause();
   // Stop physical capture immediately, including while the close acknowledgement is pending.
   stream?.getTracks().forEach(track => track.stop());
+  audioDiagnostics.stop();
   closing = (async () => {
     try {
       if (channel?.readyState === "open" && active && abort) {
@@ -160,5 +171,7 @@ async function retry() {
   catch (error) { notice(error); }
   finally { emit("saving", { value: false }); }
 }
-window.voice = { start, end, mute, retry, context: text => bridge?.context(text), visible: value => { visible = value; render(); } };
+window.voice = { start, end, mute, retry, context: messages => bridge?.context(messages), visible: value => { visible = value; render(); },
+  diagnostics: { start: () => audioDiagnostics.start(false), sample: () => audioDiagnostics.sample(),
+    stop: () => audioDiagnostics.stop(), clear: () => audioDiagnostics.clear(), report: () => audioDiagnostics.report() } };
 render(); emit("ready", { secure: window.isSecureContext, media: !!navigator.mediaDevices?.getUserMedia });

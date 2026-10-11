@@ -24,9 +24,9 @@ The report contains numeric metrics and fixed enum labels only. It excludes raw 
 
 A useful comparison keeps speaker volume and the ongoing reply constant: mute/unmute the microphone, then expand/minimize. Rising discard/concealment with clicks suggests reception/decode timing trouble, but does not by itself prove the network caused it. A repeatable expanded/minimized difference with stable reception metrics supports further renderer investigation. A separately controlled analysis-context comparison would be needed to isolate Web Audio interaction. No such comparison or physical-device reproduction has been performed by this change.
 
-## Integration hooks (reserved files owned by the integration task)
+## Session integration
 
-This commit adds new diagnostic files and optional VoiceAvatar instrumentation. It deliberately leaves the following session/startup files and generated HTML to the integration owner. Keep a single collector instance per voice surface; never start it from the voice start path.
+The shared web/native session code connects these hooks to one collector per voice surface. Capture starts only from the diagnostic controls; it never starts from the voice start path. The snippets document the integration contract.
 
 ### `ios/VoiceEngine/index.tsx`
 
@@ -96,7 +96,7 @@ useEffect(() => () => audioDiagnostics.dispose(), [audioDiagnostics]);
 
 Pass `diagnostics={audioDiagnostics}` to VoiceAvatar. Place `<VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />` in the voice dialog's scrollable content. This is the only web start control. In `end()`, stop diagnostics after the existing immediate microphone mute and playback pause. Stop it in current-session cleanup, including failures and aborted startup. Avoid letting a stale resource's cleanup stop a newer session's capture. Include the collector in changed hook dependency lists.
 
-Finally regenerate `ios/CollectiveUI/Voice/Resources/voice-engine.html` once from the combined sources with `node ios/scripts/build-voice-engine.mjs`, then run its `--check`. This diagnostic commit intentionally does not regenerate the shared resource.
+Finally regenerate `ios/CollectiveUI/Voice/Resources/voice-engine.html` once from the combined sources with `node ios/scripts/build-voice-engine.mjs`, then run its `--check`. The checked-in resource includes the combined lifecycle and diagnostics sources.
 
 ## Offline verification
 
@@ -118,4 +118,4 @@ xcrun swiftc -module-cache-path /tmp/collectiveui-audio-swift-module-cache \
 /tmp/collectiveui-audio-diagnostic-lifecycle-fixture
 ```
 
-The native store fixture executes the production allowlist. The lifecycle fixture executes the production controller/store with only the platform route reader stubbed. Neither opens an audio device, app, microphone, or provider connection. The unsigned simulator build verifies the actual AVAudioSession reader and SwiftUI export view compile. Integrated control/bridge wiring and actual iPhone playback still require separate verification.
+The native store fixture executes the production allowlist. The lifecycle fixture executes the production controller/store with only the platform route reader stubbed. Neither opens an audio device, app, microphone, or provider connection. The unsigned simulator build verifies the actual AVAudioSession reader and SwiftUI export view compile. Integrated web control/bridge wiring is exercised by `tests/browser/voice-mode.mjs` with mocked media and synthetic stats. Actual iPhone playback still requires the next authorized device round.

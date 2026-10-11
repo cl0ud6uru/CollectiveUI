@@ -18,6 +18,7 @@ function App(){const [active,setActive]=useState(false);return <main className="
 const bundle = await build({ entryPoints: [entry], outfile: path.join(dir, 'bundle.js'), write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src') } });
 const css = await postcss([tailwind({ base: root })]).process(await readFile(path.join(root, 'src/app/globals.css'), 'utf8'), { from: path.join(root, 'src/app/globals.css') });
 const batches = [];
+let sessionCount = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
@@ -26,7 +27,7 @@ const server = createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : null;
-    if (url.pathname === '/api/voice/session') res.end(JSON.stringify(body ? { session: { id: 'live01' }, transport: { type: 'webrtc', sdp: 'answer' }, history: [{id:'prior',role:'user',text:'Remember my notes'}], reactions: true, avatarUrl: null } : { supported: true }));
+    if (url.pathname === '/api/voice/session') res.end(JSON.stringify(body ? { session: { id: `live${++sessionCount}` }, transport: { type: 'webrtc', sdp: 'answer' }, history: [{id:'prior',role:'user',text:'Remember my notes'}], reactions: true, avatarUrl: null } : { supported: true }));
     else if (url.pathname === '/api/voice/reaction') res.end(JSON.stringify({ reaction: 'curious', revision: body.revision, latencyMs: 10 }));
     else if (url.pathname === '/api/voice/turn') {
       if (body) { batches.push(body); res.end(JSON.stringify({ messageId: body.delegate ? 'reply0000001' : null, status: body.delegate ? 'queued' : 'saved' })); }
@@ -60,6 +61,10 @@ try {
       async createOffer() { return { type: 'offer', sdp: 'offer' }; }
       async setLocalDescription(description) { this.localDescription = description; }
       async setRemoteDescription() { setTimeout(() => window.voiceChannel.emit({ type: 'session.started' }), 10); }
+      async getStats() {
+        window.diagnosticReads = (window.diagnosticReads || 0) + 1;
+        return new Map([['private-id', { id: 'PRIVATE-STREAM-ID', type: 'inbound-rtp', kind: 'audio', packetsReceived: window.diagnosticReads * 100, packetsLost: 0, jitter: .002, address: 'PRIVATE-ADDRESS' }]]);
+      }
       close() { this.connectionState = 'closed'; this.dispatchEvent(new Event('connectionstatechange')); }
     }
     window.RTCPeerConnection = Peer;
@@ -80,6 +85,19 @@ try {
   });
   await expect.poll(() => batches.filter(b => b.delegate).length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.commands.some(c => c.type === 'session.commentary.append' && c.content === 'Backend reply (succeeded):\nYour saved note is ready.'))).toBe(true);
+  expect(await page.evaluate(() => window.diagnosticReads || 0)).toBe(0);
+  await page.getByText('Audio diagnostics', { exact: true }).click();
+  await page.getByRole('button', { name: 'Capture locally', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.diagnosticReads || 0)).toBeGreaterThan(0);
+  const downloaded = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export JSON', exact: true }).click();
+  const download = await downloaded;
+  const reportText = await readFile(await download.path(), 'utf8');
+  const report = JSON.parse(reportText);
+  expect(report.samples.length).toBeGreaterThan(0);
+  expect(reportText).not.toContain('PRIVATE-STREAM-ID'); expect(reportText).not.toContain('PRIVATE-ADDRESS');
+  expect(reportText).not.toContain('Find my notes'); expect(reportText).not.toContain('Remember my notes');
+  await page.getByText('Audio diagnostics', { exact: true }).click();
   await page.getByRole('button', { name: 'Toggle captions' }).click();
   await expect(page.getByLabel('Live captions')).toContainText('Find my notes');
   await page.getByRole('button', { name: 'Mute microphone', exact: true }).click();
@@ -103,8 +121,17 @@ try {
   await expect(page.getByRole('button', { name: 'Start voice', exact: true })).toBeEnabled();
   await expect.poll(() => batches.some(b => !b.delegate && b.fragments.some(f => f.text === 'Your note is ready.'))).toBe(true);
   expect(await page.evaluate(() => window.trackStopped)).toBe(true);
+  const readsAfterEnd = await page.evaluate(() => window.diagnosticReads);
+  await page.waitForTimeout(1100);
+  expect(await page.evaluate(() => window.diagnosticReads)).toBe(readsAfterEnd);
+  await page.getByRole('button', { name: 'Start voice', exact: true }).click();
+  await expect(page.getByTestId('voice-state')).toHaveText('Voice active');
+  expect(sessionCount).toBe(2);
+  expect(batches.filter(batch => batch.delegate)).toHaveLength(1);
+  await page.getByRole('button', { name: 'End voice', exact: true }).click();
+  await expect(page.getByTestId('voice-state')).toHaveText('Voice idle');
   expect(errors).toEqual([]);
-  console.log('Voice browser checks passed: desktop/mobile fullscreen, 3D canvas, streaming captions, bot delegation, mute, minimize/typing, end and transcript save.');
+  console.log('Voice browser checks passed: desktop/mobile fullscreen, 3D canvas, streaming captions, verified result speech, opt-in diagnostics and redacted export, mute, minimize/typing, end/save, capture stop, and repeated fresh connection without duplicate delegation.');
 } finally {
   await browser?.close(); await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true });
 }

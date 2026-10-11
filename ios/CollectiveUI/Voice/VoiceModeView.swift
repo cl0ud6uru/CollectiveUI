@@ -38,6 +38,7 @@ struct VoiceModeView: View {
                                     .buttonStyle(.bordered).disabled(model.saving)
                                     .accessibilityIdentifier("voice.retry")
                             }
+                            VoiceAudioDiagnosticsView(diagnostics: model.audioDiagnostics, active: model.status == "connected")
                         }
                         .frame(minHeight: max(0, stageHeight - 24))
                         .padding(.horizontal, 24).padding(.top, 24)

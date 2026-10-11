@@ -16,6 +16,7 @@ final class VoiceSessionModel {
     private(set) var muted = false
     private(set) var status = "connecting"
     let inputLevel = VoiceInputLevel()
+    let audioDiagnostics = VoiceAudioDiagnostics()
     private(set) var saving = false
     private(set) var unsaved = false
     var notice: String?
@@ -50,6 +51,10 @@ final class VoiceSessionModel {
         }
         page = WebPage(configuration: config, navigationDecider: VoiceNavigationPolicy())
         handler.model = self
+        audioDiagnostics.connect { [weak self] operation in
+            guard let self else { return nil }
+            return try await self.page.callJavaScript("return await window.voice.diagnostics[operation]()", arguments: ["operation": operation])
+        }
     }
 
     var active: Bool { status == "connecting" || status == "connected" || status == "ending" }
@@ -143,6 +148,8 @@ final class VoiceSessionModel {
         // Native capture shutdown also works if the web process has stalled.
         await page.setMicrophoneCaptureState(.none)
         await page.pauseAllMediaPlayback()
+        if ready { await audioDiagnostics.stop() }
+        else { audioDiagnostics.disconnect() }
         if ready {
             unsaved = true // Retain retry protection until the engine confirms saving.
             do { _ = try await page.callJavaScript("return window.voice.end()") }
@@ -161,7 +168,7 @@ final class VoiceSessionModel {
 
     func dismiss() {
         guard !active, !saving, !unsaved else { expanded = false; return }
-        deadline?.cancel(); refreshTask?.cancel(); page.stopLoading()
+        deadline?.cancel(); refreshTask?.cancel(); audioDiagnostics.disconnect(); page.stopLoading()
         if app?.voice?.id == id { app?.voice = nil }
     }
 

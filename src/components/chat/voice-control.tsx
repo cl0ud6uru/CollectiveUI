@@ -7,6 +7,8 @@ import { VoiceAvatar } from "./voice-avatar";
 import { VoiceBridge } from "@/lib/voice/bridge";
 import type { Reaction, VoiceFragment } from "@/lib/voice/policy";
 import type { VoiceHistoryMessage } from "@/lib/voice/history";
+import { VoiceAudioDiagnostics } from "@/lib/voice/audio-diagnostics";
+import { VoiceAudioDiagnosticsControls } from "./voice-audio-diagnostics";
 import { cn } from "@/lib/utils";
 import { checkVoiceAvailability, type VoiceStatus, type VoiceTarget, voiceSessionUrl, waitForIceGathering, waitForVoiceEvent } from "@/lib/voice/client";
 
@@ -37,6 +39,8 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const resources = useRef<LiveResources | null>(null);
   const pendingAbort = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current }));
+  useEffect(() => () => audioDiagnostics.dispose(), [audioDiagnostics]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const bindAudio = useCallback((element: HTMLAudioElement | null) => { audioRef.current = element; setAudioElement(element); }, []);
   const active = status === "connecting" || status === "connected" || status === "ending";
@@ -64,12 +68,13 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const cleanup = useCallback((expected?: LiveResources) => {
     const current = expected ?? resources.current;
     if (!current) return;
-    if (resources.current === current) resources.current = null;
+    const ownsSession = resources.current === current;
+    if (ownsSession) { audioDiagnostics.stop(); resources.current = null; }
     if (current.readinessTimer) clearTimeout(current.readinessTimer);
     if (current.channel.readyState === "open" && !current.closePromise) {
       try { current.channel.send(JSON.stringify({ type: "session.close" })); } catch { /* Transport already closed. */ }
     }
-    const closingBridge = bridge.current;
+    const closingBridge = ownsSession ? bridge.current : null;
     if (closingBridge) {
       setSaving(true);
       void closingBridge.finish().catch(cause => { setError(cause instanceof Error ? cause.message : "Speech could not be saved."); setOpen(true); }).finally(() => setSaving(false));
@@ -78,10 +83,11 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     current.stream.getTracks().forEach((track) => track.stop());
     try { current.channel.close(); } catch { /* already closed */ }
     try { current.pc.close(); } catch { /* already closed */ }
+    if (!ownsSession) return;
     if (audioRef.current) audioRef.current.srcObject = null;
     setMuted(false);
     setStatus("idle");
-  }, []);
+  }, [audioDiagnostics]);
 
   const end = useCallback(async () => {
     const current = resources.current;
@@ -93,6 +99,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     setStatus("ending");
     current.stream.getAudioTracks().forEach(track => { track.enabled = false; });
     audioRef.current?.pause();
+    audioDiagnostics.stop();
     if (!current.closePromise) {
       current.closePromise = (async () => {
         const closed = waitForVoiceEvent(current.channel, "session.closed", current.abort.signal, 15_000);
@@ -111,7 +118,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
       setError("Voice ended locally; final session usage could not be confirmed.");
       setStatus("error");
     }
-  }, [cleanup, status]);
+  }, [audioDiagnostics, cleanup, status]);
 
   useEffect(() => () => {
     pendingAbort.current?.abort();
@@ -288,9 +295,9 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
               <button type="button" className="rounded-full p-3 hover:bg-white/10" aria-label="Minimize voice" onClick={() => setOpen(false)}><Minimize2 className="h-5 w-5" /></button>
             </header>
             <div className="relative min-h-0 flex-1" style={{ background: "radial-gradient(ellipse at 50% 48%, #38505a55, transparent 65%)" }}>
-              <VoiceAvatar reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} />
+              <VoiceAvatar reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} diagnostics={audioDiagnostics} />
             </div>
-            <div className="z-10 mx-auto w-full max-w-xl space-y-4 px-6 text-center">
+            <div className="z-10 mx-auto max-h-[45dvh] w-full max-w-xl space-y-4 overflow-y-auto px-6 pb-1 text-center">
               {captions && <div className="max-h-36 overflow-y-auto rounded-2xl bg-white/5 p-4 text-left" aria-label="Live captions">
                 {(["user", "assistant"] as const).map(role => {
                   const text = transcript.filter(line => line.role === role).slice(-14).map(line => line.text).join("");
@@ -315,6 +322,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
                   className="rounded-full bg-white px-6 py-4 text-sm font-medium text-black disabled:opacity-40">{status === "connecting" ? "Cancel" : status === "ending" ? "Ending…" : "Start voice"}</button>}
               </div>
               <p className="text-xs text-white/40">Voice and text share this chat. You can minimize voice to type or review approvals.</p>
+              <VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />
               {audioBlocked && <button className="text-sm underline" onClick={() => void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setError("Tap again to enable audio playback."))}>Enable voice audio</button>}
             </div>
           </div>

@@ -76,6 +76,8 @@ struct MainView: View {
             let closingVoice = model.voice
             Task {
                 await closingVoice?.end()
+                closingVoice?.audioDiagnostics.disconnect()
+                closingVoice?.page.stopLoading()
                 if model.voice?.id == closingVoice?.id { model.voice = nil }
             }
         }
