@@ -101,6 +101,7 @@ struct ComposerView: View {
             #endif
         }
         .onDisappear { dictation.stop() }
+        .onChange(of: app.voice?.id) { dictation.stop() }
         .onChange(of: scenePhase) { _, phase in if phase == .background { dictation.stop() } }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in dictation.stop() }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItems, maxSelectionCount: 6, matching: .images)
@@ -172,6 +173,7 @@ struct ComposerView: View {
         .foregroundStyle(dictation.isListening ? PortalTheme.danger : PortalTheme.ink)
         .disabled(model.isExecutingCommand)
         .accessibilityLabel(dictation.isListening ? "Stop dictation" : "Dictate message")
+        .disabled(app.voice?.active == true)
     }
 
     private var sendButton: some View {

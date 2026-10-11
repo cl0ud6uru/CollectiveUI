@@ -6,10 +6,10 @@ import { HttpError } from "@/lib/authz";
 
 const OFFICIAL_BASE_URL = "https://api.openai.com/v1";
 const LIVE_URL = `${OFFICIAL_BASE_URL}/live/sessions`;
-const SHORT_VOICE_INSTRUCTIONS = "Speak naturally and briefly. This is a voice conversation. You cannot call tools or take actions; explain that clearly if asked.";
+const SHORT_VOICE_INSTRUCTIONS = "You are the spoken interface to this same bot and saved chat. Speak naturally and briefly. Delegate every substantive user request to the client backend, including questions requiring memory. It has the bot's tools, history and permissions. You may acknowledge while it works, but only report results returned by the backend. Never claim an action succeeded without a verified result. Tool approvals must be answered in the chat's approval cards; spoken agreement does not grant approval. A correction or new request needs a new delegation. Avoid duplicating an existing delegation while it is running.";
 const UPSTREAM_TIMEOUT_MS = 30_000;
 
-export type VoiceTarget = { app: AiApp; bot: Bot | null };
+export type VoiceTarget = { app: AiApp; bot: Bot | null; voiceApp?: AiApp };
 
 function isOfficialUrl(value: string | null): boolean {
   if (!value) return true; // OpenAI provider default.
@@ -23,7 +23,8 @@ function isOfficialUrl(value: string | null): boolean {
 
 export type VoiceEligibility = { supported: true } | { supported: false; reason: string };
 
-export async function voiceEligibility({ app }: VoiceTarget): Promise<VoiceEligibility> {
+export async function voiceEligibility(target: VoiceTarget): Promise<VoiceEligibility> {
+  const app = target.voiceApp ?? target.app;
   if (app.provider !== "openai" || app.credentialMode !== "org") {
     return { supported: false, reason: "Voice requires an OpenAI API connection with company credentials." };
   }
@@ -43,20 +44,6 @@ export async function voiceEligibility({ app }: VoiceTarget): Promise<VoiceEligi
   }
 }
 
-function delegationInstructions(app: AiApp, bot: Bot | null): string {
-  const customInstructions = [
-    app.systemPrompt?.trim(),
-    bot?.instructions?.trim(),
-    bot?.boundaries?.trim() ? `Boundaries: ${bot.boundaries.trim()}` : undefined,
-  ].filter((x): x is string => !!x).join("\n\n").slice(0, 18_000);
-  const sections = [
-    customInstructions,
-    "You are a text model supporting a separate live voice conversation. You receive the voice transcript and should answer it directly.",
-    "This voice session has no tools connected. Do not claim to browse, execute actions, or call the app's tools.",
-  ].filter(Boolean);
-  return sections.join("\n\n");
-}
-
 async function credentialContext(app: AiApp): Promise<ProviderContext> {
   if (app.provider !== "openai" || app.credentialMode !== "org") throw new HttpError(403, "Voice requires an OpenAI API connection with company credentials.");
   if (!app.model.trim()) throw new HttpError(400, "Choose a Responses API model for the voice assistant.");
@@ -69,7 +56,7 @@ async function credentialContext(app: AiApp): Promise<ProviderContext> {
 
 export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch) {
   const { app, bot } = target;
-  const ctx = await credentialContext(app);
+  const ctx = await credentialContext(target.voiceApp ?? app);
   const apiKey = ctx.secret!.type === "api-key" ? ctx.secret!.apiKey : "";
   const headers = new Headers({ authorization: `Bearer ${apiKey}`, "content-type": "application/json" });
   const config = ctx.config as { organization?: string; project?: string };
@@ -83,8 +70,8 @@ export async function createVoiceSession(target: VoiceTarget, sdp: string, fetch
       body: JSON.stringify({
         session: {
           model: "gpt-live-1",
-          instructions: SHORT_VOICE_INSTRUCTIONS,
-          delegation: { type: "responses", responses: { model: app.model, instructions: delegationInstructions(app, bot), tools: [], tool_choice: "none" } },
+          instructions: [SHORT_VOICE_INSTRUCTIONS, `Bot name: ${bot?.name ?? app.name}`, app.systemPrompt, bot?.instructions, bot?.boundaries].filter(Boolean).join("\n\n").slice(0, 20000),
+          delegation: { type: "client" },
         },
         transport: { type: "webrtc", sdp },
       }),

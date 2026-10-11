@@ -43,3 +43,8 @@ export async function allowSecurityRequest(headers: Headers) {
   return consume(`security:source:${clientAddress(headers)}`, 60, 300);
 }
 export function allowFactorAttempt(userId: string) { return consume(`security:factor:${userId}`, 5, 300); }
+
+/** Voice budgets are separate from sign-in throttles, shared across web replicas. */
+export function allowVoiceRequest(userId: string, kind: "session" | "reaction") {
+  return consume(`voice:${kind}:${userId}`, kind === "session" ? 6 : 150, 60);
+}

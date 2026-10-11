@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AVFAudio
 import CollectiveKit
 
 @MainActor
@@ -48,8 +49,19 @@ struct MainView: View {
             }
         }
         .background(PortalTheme.background)
+        .accessibilityHidden(model.voice?.expanded == true)
+        .safeAreaInset(edge: .bottom) {
+            if let voice = model.voice, !voice.expanded { VoiceMiniBar(model: voice) }
+        }
+        .overlay {
+            if let voice = model.voice { VoiceModeView(model: voice).id(voice.id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.didBecomeInactiveNotification)) { _ in
+            Task { await model.voice?.end() }
+        }
         .onChange(of: model.selection) { _, _ in
             if sizeClass != .regular { closeSidebar() }
+            Task { await model.voice?.end() }
         }
         .sheet(isPresented: $showCompose) { NewChatSheet().environment(model) }
         .sheet(isPresented: $showInbox) { InboxView().environment(model) }
@@ -60,8 +72,16 @@ struct MainView: View {
             await applyDemoLaunchOptions()
             #endif
         }
+        .onDisappear {
+            let closingVoice = model.voice
+            Task {
+                await closingVoice?.end()
+                if model.voice?.id == closingVoice?.id { model.voice = nil }
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { model.conversationStates.flush() }
+            if phase == .background { Task { await model.voice?.end() } }
             if phase == .active { Task { await model.refreshShell() } }
         }
     }

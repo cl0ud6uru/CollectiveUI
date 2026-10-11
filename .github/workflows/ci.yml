@@ -54,6 +54,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - run: node ios/scripts/build-voice-engine.mjs --check
       - run: npm run typecheck
       - run: npm run lint
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.

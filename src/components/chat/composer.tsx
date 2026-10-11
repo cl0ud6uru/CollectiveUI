@@ -9,8 +9,6 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from "@/component
 import { cn } from "@/lib/utils";
 import { HERMES_COMMANDS, routeProvider, type HermesModelRoute } from "@/lib/chat/hermes-commands";
 import { insertCommandIntoDraft, type ComposerCommand } from "@/lib/chat/composer-commands";
-import { VoiceControl } from "./voice-control";
-import type { VoiceTarget } from "@/lib/voice/client";
 
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
@@ -52,9 +50,9 @@ export const Composer = forwardRef<
     autoFocus?: boolean;
     /** Send button colour (a bot chat uses the bot's colour, like ChatGPT dots). */
     tint?: { bg: string; fg: string };
-    voiceTarget?: VoiceTarget;
+    voiceActive?: boolean;
   }
->(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint, voiceTarget }, ref) {
+>(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint, voiceActive = false }, ref) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -113,8 +111,8 @@ export const Composer = forwardRef<
   // Dictation (Web Speech API, where the browser supports it).
   const canDictate = useSyncExternalStore(noopSubscribe, () => !!speechCtor(), () => false);
   const [listening, setListening] = useState(false);
-  const [voiceActive, setVoiceActive] = useState(false);
   const recRef = useRef<SpeechRecognitionLike | null>(null);
+  useEffect(() => { if (voiceActive) recRef.current?.stop(); }, [voiceActive]);
   const toggleDictation = useCallback(() => {
     if (voiceActive) return;
     if (recRef.current) {
@@ -449,7 +447,6 @@ export const Composer = forwardRef<
                 </button>
               </Tip>
             )}
-            {voiceTarget && !listening && <VoiceControl key={`${voiceTarget.appId ?? ""}:${voiceTarget.botId ?? ""}:${voiceTarget.conversationId ?? ""}`} target={voiceTarget} disabled={disabled} onActiveChange={setVoiceActive} />}
             {busy && !hasContent ? (
               <button onClick={onStop} className="flex h-9 w-9 items-center justify-center rounded-full bg-fg text-bg" aria-label="Stop generating">
                 <Square className="h-3.5 w-3.5 fill-current" />

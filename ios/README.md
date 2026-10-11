@@ -306,3 +306,24 @@ Background push is disabled by default and requires separately approved Apple pr
 verification. See [Live Activity operation and validation](../docs/operations/live-activities.md) for prerequisites,
 configuration, supported cases and offline previews. No Apple account capability or push entitlement is enabled
 by this implementation.
+
+## Fullscreen voice (iOS 27)
+
+Tap the waveform in a chat header to talk to that same bot. The fullscreen view uses native SwiftUI controls, the shared 3D GLB avatar, and a microphone activity waveform. Transcripts stay in the saved chat; they are not shown on the voice screen. Minimize to type or answer approval cards without changing conversations. Ending voice stops microphone capture immediately. Backgrounding, changing chats, signing out, or an audio interruption ends capture as well.
+
+The administrator configures **Bots & tools → Voice & avatar** on the server. The same company OpenAI transport supports native and Hermes bots; existing iOS restrictions on group, delegated, and Hermes Team chats remain. Device tokens call only `/api/mobile/v1/voice/*`; neither device tokens nor OpenAI keys enter the embedded engine. iOS uses SwiftUI `WebView` / `WebPage` for the bundled WebRTC and GLB engine, with no new third-party native SDK.
+
+For custom avatars, export a **self-contained GLB** with embedded textures (maximum 25 MB). External GLB texture URLs are blocked in the iOS engine. The web animation names and mouth morph contract also apply on iOS; see `../docs/voice.md`.
+
+After changing the shared voice bridge, avatar, or `ios/VoiceEngine/index.tsx`, regenerate and commit the offline resource:
+
+```sh
+node ios/scripts/build-voice-engine.mjs
+node ios/scripts/build-voice-engine.mjs --check
+```
+
+The generated HTML contains the existing React and Three.js runtime and license notices; it makes no CDN requests. Launch the QA app with `--demo --demo-open demo-research --demo-voice` for an offline preview. Its waveform is simulated, clearly labeled, and never opens the microphone or a paid session. The UI regressions cover minimize/type/restore/end, mute, and large text/landscape. Live audio routing, interruption behavior, and provider latency still need a physical-device check with your configured server.
+
+If final speech cannot save, the view keeps **Retry save** available. Keep the app open and retry before leaving; force-quitting can lose unsaved final speech. Live tool work admitted before End continues in the saved chat.
+
+Visual QA and screenshot comparisons are recorded in the repository-root `design-qa.md`; final captures are under `docs/screenshots/ios-voice/`. CI uses the `xcode-27` runner with Xcode 27.0 and checks that the bundled voice engine matches its sources.

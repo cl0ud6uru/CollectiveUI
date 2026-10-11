@@ -5,6 +5,8 @@ import { jsonbSafe } from "@/lib/jsonb";
 import { conversations, messages, type Message } from "@/db/schema";
 
 export type MessageMeta = {
+  voiceSessionId?: string;
+  voiceFingerprint?: string;
   assignment?: { botId: string; name: string };
   createdAt?: number;
   model?: string;

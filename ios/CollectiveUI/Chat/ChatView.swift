@@ -36,12 +36,23 @@ struct ChatView: View {
         .sheet(isPresented: $showDetails) { details }
         .task {
             await model.activate()
+            #if DEBUG
+            if model.app.isDemoSession && ProcessInfo.processInfo.arguments.contains("--demo-voice") { model.startVoice() }
+            #endif
         }
         .task(id: model.conversationId) {
             while !Task.isCancelled {
                 await model.refreshDelegatedApprovals()
                 do { try await Task.sleep(for: .seconds(2)) } catch { break }
             }
+        }
+        .task(id: model.scrollToken) {
+            do { try await Task.sleep(for: .milliseconds(600)) } catch { return }
+            guard !Task.isCancelled, let voice = model.app.voice, voice.conversationId == model.conversationId else { return }
+            let text = model.messages.suffix(8).map { message in
+                "\(message.role.rawValue): \(message.plainText)"
+            }.joined(separator: "\n")
+            await voice.updateContext(text)
         }
         .onDisappear {
             model.deactivate()
@@ -78,6 +89,13 @@ struct ChatView: View {
                         .accessibilityLabel(model.assistantName + ", " + model.statusLabel)
                 }
                 Spacer(minLength: 4)
+                if !model.isReadOnly && !model.isUnavailable && !model.isGroup {
+                    Button("Start voice", systemImage: "waveform") { model.startVoice() }
+                        .labelStyle(.iconOnly).frame(width: 44, height: 44)
+                        .buttonStyle(.plain).modifier(ChatGlass(cornerRadius: 22))
+                        .disabled(model.isLoading || model.isStreaming || model.target == nil)
+                        .accessibilityIdentifier("chat.voice")
+                }
                 if model.target?.kind == "bot" {
                     Menu {
                         Button { showHistory = true } label: { Label("Chat history", systemImage: "clock") }
@@ -112,7 +130,7 @@ struct ChatView: View {
                 }
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 76)
+                .padding(.horizontal, 116)
                 .padding(.bottom, 4)
             }
         }

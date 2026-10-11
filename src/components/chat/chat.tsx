@@ -15,6 +15,7 @@ import type { PortalUIMessage } from "@/lib/chat/store";
 import { newId } from "@/lib/ids";
 import { NativeSearchControl } from "./native-search-control";
 import type { NativeSearchMode } from "@/lib/native-search-policy";
+import { VoiceControl } from "./voice-control";
 import { Composer, type ComposerHandle, type UploadedFile } from "./composer";
 import { AssistantMessage, hasContent, UserMessage, type BranchInfo } from "./message";
 import { DelegatedApprovals } from "./delegated-approvals";
@@ -112,6 +113,7 @@ export function Chat({
   const workspaceToggleRef = useRef<HTMLButtonElement>(null);
   const workspaceAllowed = useWorkspaceAccess(!embedded && !target?.hermes && !target?.hermesTeam);
   const closeWorkspace = useCallback(() => { setWorkspaceOpen(false); workspaceToggleRef.current?.focus(); }, []);
+  const [voiceActive, setVoiceActive] = useState(false);
   const [started, setStarted] = useState(!isNew);
   const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
   const [searchPending, setSearchPending] = useState(true);
@@ -325,6 +327,9 @@ export function Chat({
   const keepCurrentBranch = () => setStored(tree);
 
   const streamingBusy = status === "submitted" || status === "streaming";
+  const voiceSyncVersion = useRef(0);
+  const chatStreamingRef = useRef(streamingBusy);
+  useEffect(() => { chatStreamingRef.current = streamingBusy; }, [streamingBusy]);
   const awaitingTasks = hasPendingAsyncTasks(messages.at(-1));
   const busy = streamingBusy || awaitingTasks;
 
@@ -426,6 +431,22 @@ export function Chat({
         updatedAt: new Date().toISOString(),
       });
     }
+  }
+
+  async function syncVoiceConversation() {
+    begin();
+    if (streamingBusy) return;
+    const version = ++voiceSyncVersion.current;
+    const response = await fetch(`/api/chat/${conversationId}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const snapshot = await response.json() as ConversationSnapshot;
+    // A typed reply may have begun while this snapshot was in flight.
+    if (chatStreamingRef.current || version !== voiceSyncVersion.current) return;
+    const rows = new Map(snapshot.initialRows.map(row => [row.id, row]));
+    setStored(rows);
+    setMessages(pathTo(rows, snapshot.initialLeafId).map(row => row.message));
+    if (snapshot.resume) void resumeStream();
+    upsertConversation(snapshot.summary);
   }
 
   const targetBody = { nativeSearchMode, appId: target?.kind === "app" ? target.id : undefined, botId: target?.kind === "bot" ? target.id : undefined };
@@ -618,6 +639,10 @@ export function Chat({
             )}
           </div>
           <div className={cn("flex shrink-0 items-center gap-1", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
+            {voiceTarget && <VoiceControl key={`${target?.kind}:${target?.id}`} target={voiceTarget} conversationId={conversationId} name={target?.name ?? "Assistant"}
+              disabled={unavailable || searchPending || (!voiceActive && busy)} onActiveChange={setVoiceActive}
+              onConversationChange={() => { void syncVoiceConversation().catch(() => {}); }}
+              chatContext={streamingBusy ? "" : messages.slice(-3).map(m => `${m.role}: ${m.parts.map(p => p.type === "text" ? p.text : "").join("")}`).join("\n").slice(-3000)} />}
             {user.isAdmin && <SpendingHealth />}
             {target?.kind === "bot" && !embedded && <BotChatNavigation botId={target.id} isHome={isBotHome} conversationId={conversationId} onNewHome={() => void executeCommand("/new", [])} />}
             {workspaceAllowed && (
@@ -710,7 +735,7 @@ export function Chat({
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
-                voiceTarget={voiceTarget}
+                voiceActive={voiceActive}
                 busy={busy}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}
@@ -821,7 +846,7 @@ export function Chat({
                 ref={composerRef}
                 onSend={send}
                 onStop={stopReply}
-                voiceTarget={voiceTarget}
+                voiceActive={voiceActive}
                 busy={busy}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}

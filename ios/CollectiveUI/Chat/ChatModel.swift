@@ -292,6 +292,24 @@ final class ChatModel {
     }
     #endif
 
+    func startVoice() {
+        if let voice = app.voice { voice.expanded = true; return }
+        guard let api = app.api, !isLoading, !isStreaming, !isUnavailable, !isReadOnly, !isGroup, target != nil else { return }
+        app.voice = VoiceSessionModel(chat: self, api: api)
+    }
+
+    func refreshAfterVoice() async {
+        guard !isStreaming, let api = app.api else { return }
+        let generation = streamGeneration
+        do {
+            let snapshot = try await api.snapshot(conversationId: conversationId)
+            guard generation == streamGeneration, !isStreaming else { return }
+            isNew = false
+            apply(snapshot)
+            if snapshot.resume && isActive && !conversationState.preventsResume(in: messages) { resume() }
+        } catch { /* Voice retains its own save/retry notice. */ }
+    }
+
     func deactivate() {
         isActive = false
         snapshotRequest = UUID()

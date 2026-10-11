@@ -81,6 +81,8 @@ export async function startRun(i: {
   app: AiApp;
   userMessage?: PortalUIMessage;
   parentId: string | null;
+  /** Server-generated stable reply identity for an idempotent voice delegation. */
+  replyId?: string;
 }): Promise<AgentRun> {
   if (i.conversation.source === "delegation") throw new HttpError(409, "Delegated tasks are read-only. Start a separate chat to follow up.");
   if (i.app.provider === "hermes" && (!i.bot || i.conversation.botId !== i.bot.id)) throw new HttpError(400, HERMES_BOT_ONLY_MESSAGE);
@@ -107,9 +109,13 @@ export async function startRun(i: {
     // Conversion, audience/policy changes and member choice use the same bot-before-user lock order.
     if (i.conversation.botId) await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, i.conversation.botId)).for('share');
     await lockUserRuns(tx, userId);
+    if (i.replyId) {
+      const [current] = await tx.select({ leaf: conversations.currentLeafId }).from(conversations).where(eq(conversations.id, conversationId));
+      if (!current || current.leaf !== i.parentId) throw new HttpError(409, "The chat changed before this voice request could start. Your speech was saved; send the request again.");
+    }
     // Lock personal preferences before conversation writes, matching home/side-chat user-before-conversation
     // locking. The record commits only if message/run admission below succeeds; every denial rolls it back.
-    if (i.userMessage?.role === "user" && i.bot?.id === i.conversation.botId)
+    if ((i.userMessage?.role === "user" || i.replyId) && i.bot?.id === i.conversation.botId)
       await recordBotSendTx(tx, i.principal, i.conversation);
     let app = i.app;
     const currentTeam = await teamUsesNativeLearning(conversationId, tx);
@@ -139,7 +145,7 @@ export async function startRun(i: {
     const run = await insertRunTx(tx, {
       userId,
       conversationId,
-      messageId: newId(),
+      messageId: i.replyId ?? newId(),
       parentMessageId: i.userMessage?.id ?? i.parentId,
       appId: app.id,
       botId: i.bot?.id ?? null,

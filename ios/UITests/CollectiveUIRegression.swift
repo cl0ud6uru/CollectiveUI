@@ -23,6 +23,41 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 15))
     }
 
+    func testVoiceModeControlsAndChatContinuity() {
+        app.launchArguments = ["--demo", "--demo-open", "demo-research", "--demo-voice", "--demo-reset-drafts"]
+        app.launch()
+        XCTAssertTrue(app.buttons["voice.end"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Preview · mic off"].waitForExistence(timeout: 15))
+        capture("voice-fullscreen")
+        tap(app.buttons["voice.mute"])
+        XCTAssertEqual(app.buttons["voice.mute"].label, "Unmute microphone")
+        XCTAssertFalse(app.buttons["voice.captions"].exists)
+        XCTAssertEqual(app.descendants(matching: .any)["voice.inputMeter"].value as? String, "Muted")
+        tap(app.buttons["voice.minimize"])
+        XCTAssertTrue(app.textViews["chatComposer"].isHittable)
+        enterDraft("Continue this same conversation")
+        tap(app.buttons["voice.expand"])
+        capture("voice-resumed")
+        tap(app.buttons["voice.end"])
+        XCTAssertTrue(app.staticTexts["Voice ended"].waitForExistence(timeout: 5))
+        tap(app.buttons["voice.end"])
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Continue this same conversation")
+        capture("voice-back-to-chat")
+    }
+
+    func testVoiceControlsFitLandscapeAndLargeText() {
+        app.launchArguments = ["--demo", "--demo-open", "demo-research", "--demo-voice", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        XCTAssertTrue(app.buttons["voice.end"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["voice.end"].isHittable)
+        capture("voice-large-text")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        settle(2)
+        XCTAssertTrue(app.buttons["voice.end"].isHittable)
+        XCTAssertTrue(app.buttons["voice.minimize"].isHittable)
+        capture("voice-landscape")
+    }
+
     private func tap(_ element: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(element.waitForExistence(timeout: 5), file: file, line: line)
         XCTAssertTrue(element.isHittable, "Never tap hidden controls or a hidden keyboard preview", file: file, line: line)

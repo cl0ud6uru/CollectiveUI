@@ -31,6 +31,8 @@ final class AppModel {
     private(set) var token: String? = nil
     private(set) var api: APIClient? = nil
 
+    var voice: VoiceSessionModel?
+
     var shell: ShellResponse? = nil
     var shellError: String? = nil
     var sessionInfo: SessionInfo? = nil
