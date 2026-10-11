@@ -80,6 +80,35 @@ final class CollectiveUIRegression: XCTestCase {
         add(tree)
     }
 
+    func testGroupLeadHeaderAndMembers() {
+        launch("demo-group", appearance: "light", extra: ["--demo-group-lead"])
+        let members = app.buttons["chat.groupMembers"]
+        XCTAssertTrue(members.waitForExistence(timeout: 10))
+        XCTAssertEqual(members.value as? String, "Lead: Research Assistant")
+        XCTAssertFalse(app.buttons["Bot details"].exists)
+        capture("group-lead-header")
+        tap(members)
+        XCTAssertTrue(app.navigationBars["Group members"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Messages without an @mention go to the lead bot. Use @mentions to address other members."].exists)
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Research Assistant")).firstMatch.exists)
+        capture("group-lead-members")
+        tap(app.buttons["Done"])
+        XCTAssertTrue(members.isHittable)
+    }
+
+    func testGroupLeadAtAccessibilityTextSize() {
+        launch("demo-group", appearance: "dark", extra: ["--demo-group-lead", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+        let members = app.buttons["chat.groupMembers"]
+        XCTAssertTrue(members.waitForExistence(timeout: 10))
+        XCTAssertEqual(members.value as? String, "Lead: Research Assistant")
+        XCTAssertTrue(members.isHittable)
+        XCTAssertLessThanOrEqual(members.frame.maxX, app.frame.maxX)
+        capture("group-lead-accessibility-header")
+        tap(members)
+        XCTAssertTrue(app.navigationBars["Group members"].waitForExistence(timeout: 5))
+        capture("group-lead-accessibility-members")
+    }
+
     private func settle(_ seconds: TimeInterval) {
         let ready = expectation(description: "Allow UI fixture updates")
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { ready.fulfill() }

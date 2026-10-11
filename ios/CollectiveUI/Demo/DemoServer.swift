@@ -42,6 +42,14 @@ final class DemoServer: @unchecked Sendable {
         apps = DemoServer.parseFixture(DemoFixtures.apps, now: now).arrayValue ?? []
         bots = DemoServer.parseFixture(DemoFixtures.bots, now: now).arrayValue ?? []
         conversations = DemoServer.parseFixture(DemoFixtures.conversations, now: now).arrayValue ?? []
+        if ProcessInfo.processInfo.arguments.contains("--demo-group-lead") {
+            conversations.insert(.object([
+                "id": .string("demo-group"), "title": .string("Launch planning"),
+                "source": .string("chat"), "isGroup": .bool(true),
+                "memberBotIds": .array([.string("bot-research"), .string("bot-release"), .string("bot-analyst")]),
+                "updatedAt": .string(DemoServer.iso(now)),
+            ]), at: 0)
+        }
         inbox = DemoServer.parseFixture(DemoFixtures.inbox, now: now).arrayValue ?? []
 
         let threads = DemoServer.parseFixture(DemoFixtures.threads, now: now).objectValue ?? [:]
@@ -577,6 +585,15 @@ final class DemoServer: @unchecked Sendable {
     }
 
     private func target(for summary: JSONValue) -> JSONValue {
+        if summary["isGroup"]?.boolValue == true {
+            let members = (summary["memberBotIds"]?.arrayValue ?? []).compactMap { id in
+                bots.first { $0["id"]?.stringValue == id.stringValue }
+            }
+            return .object([
+                "kind": .string("group"), "id": summary["id"] ?? .null,
+                "name": summary["title"] ?? .string("Group chat"), "members": .array(members),
+            ])
+        }
         if let botId = summary["botId"]?.stringValue, let bot = bots.first(where: { $0["id"]?.stringValue == botId }) {
             return bot
         }

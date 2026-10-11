@@ -25,6 +25,7 @@ import { SpendingHealth } from "./spending-health";
 import { TargetPicker } from "./target-picker";
 import type { TargetOption } from "./types";
 import { BotAvatar, bubbleTint, type BlobState } from "@/components/bots/bot-avatar";
+import { GroupHeader, GroupMembers } from "@/components/chat/group-header";
 import { previewLine } from "@/lib/chat/preview";
 import { cn } from "@/lib/utils";
 import { formatDuration, needsAction, useElapsed } from "./steps";
@@ -618,8 +619,8 @@ export function Chat({
     <div className="flex h-full">
       <div ref={paneRef} className="@container/chat-pane flex h-full min-w-0 flex-1 flex-col">
         {/* Header */}
-        <header ref={headerRef} className={cn("shrink-0 gap-2 px-2 md:px-3", centeredBotHeader ? "grid grid-cols-[minmax(0,1fr)_auto] items-start pt-2 pb-3" : "flex h-14 items-center justify-between", overlayHeader && styles.overlay)}>
-          <div className={cn("flex min-w-0 items-center gap-1", centeredBotHeader && "z-10 col-start-1 row-start-1 justify-self-start", styles.controls)}>
+        <header ref={headerRef} className={cn("shrink-0 gap-2 px-2 md:px-3", centeredBotHeader ? "grid grid-cols-[minmax(0,1fr)_auto] items-start pt-2 pb-3" : target?.kind === "group" ? "flex min-h-14 flex-wrap items-center justify-between py-1" : "flex h-14 items-center justify-between", overlayHeader && styles.overlay)}>
+          <div className={cn("flex min-w-0 max-w-full items-center gap-1", centeredBotHeader && "z-10 col-start-1 row-start-1 justify-self-start", styles.controls)}>
             <button onClick={() => setMobileOpen(true)} className="rounded-lg p-2 text-muted hover:bg-hover md:hidden" aria-label="Open sidebar">
               <MenuIcon className="h-5 w-5" />
             </button>
@@ -638,7 +639,7 @@ export function Chat({
               />
             )}
           </div>
-          <div className={cn("flex shrink-0 items-center gap-1", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
+          <div className={cn("flex shrink-0 items-center gap-1", target?.kind === "group" && "ml-auto", centeredBotHeader && "z-10 col-start-2 row-start-1 justify-self-end", styles.controls)}>
             {voiceTarget && <VoiceControl key={`${target?.kind}:${target?.id}`} target={voiceTarget} conversationId={conversationId} name={target?.name ?? "Assistant"}
               disabled={unavailable || searchPending || (!voiceActive && busy)} onActiveChange={setVoiceActive}
               onConversationChange={() => { void syncVoiceConversation().catch(() => {}); }}
@@ -711,9 +712,9 @@ export function Chat({
                     ))}
                   </div>
                   <h1 className="text-2xl font-semibold">{target.name}</h1>
+                  <div className="mt-3 w-full max-w-sm text-left"><GroupMembers members={target.members ?? []} /></div>
                   <p className="mt-2 max-w-lg text-sm text-muted">
-                    Type <span className="font-mono">@</span> to address a bot, or just write — {target.members?.[0]?.name ?? "the lead"} picks
-                    up anything that isn&apos;t addressed. Bots can hand work to each other with @mentions.
+                    Messages without an @mention go to {target.members?.[0]?.name ?? "the lead bot"}. Use @mentions to address other members.
                   </p>
                 </div>
               ) : target?.kind === "bot" ? (
@@ -918,21 +919,6 @@ function TimeDivider({ at, previous }: { at?: number; previous?: number }) {
   return (
     <div suppressHydrationWarning className="pt-1 text-center text-xs text-subtle">
       {day} {time}
-    </div>
-  );
-}
-
-function GroupHeader({ group }: { group: TargetOption }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
-      <div className="flex -space-x-2">
-        {group.members?.slice(0, 4).map((m) => (
-          <span key={m.id} className="rounded-full bg-bg p-px" title={m.name}>
-            <BotAvatar botId={m.id} value={m.icon} size={24} className="h-6 w-6" />
-          </span>
-        ))}
-      </div>
-      <span className="truncate text-lg font-medium">{group.name}</span>
     </div>
   );
 }
