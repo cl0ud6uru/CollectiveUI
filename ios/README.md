@@ -72,6 +72,10 @@ Group conversations require status confirmation instead of offering that retry.
 Automatic stream reconnection is bounded. If the server is still working after
 that budget, the header says **Reply still running** and **Reconnect to reply**
 reattaches explicitly. A confirmed Stop retains the stopped turn across navigation.
+If Stop finds no run, returns an invalid outcome, or precedes the first server reply
+identity, the app retains the original submission and checks its status before
+another send. Conversation-level cancellation counts alone cannot prove that a
+slow original request finished admission. Group Stop continues to close its request.
 Failed attachments block sending until removed, so a message cannot silently omit
 the file. At accessibility text sizes, the attachment card puts recovery guidance
 below the filename and removal control; the sidebar uses a readable Settings

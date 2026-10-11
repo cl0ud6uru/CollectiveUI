@@ -219,11 +219,13 @@ final class DemoServer: @unchecked Sendable {
             return noContent()
         }
         if method == "POST", let captures = DemoServer.match(parts, ["api", "chat", "*", "stop"]) {
+            var signalled = 0
             if var reducer = regressionStreams.removeValue(forKey: captures[0]) {
+                signalled = 1
                 reducer.apply(.abort(reason: nil))
                 updateRegressionRow(captures[0], message: reducer.message)
             }
-            return json(.object([:]))
+            return json(.object(["cancelled": .number(0), "signalled": .number(Double(signalled))]))
         }
         return failure("Not available in demo mode", status: 404)
     }

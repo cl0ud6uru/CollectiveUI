@@ -550,6 +550,8 @@ final class ChatModel {
         guard isStreaming, !isStopping else { return }
         isStopping = true
         let answeredId = answeredUserMessageId()
+        let hadReplyIdentity = streamingMessageId != nil
+        let stopsGroupRequest = isGroup
         stopRequestedFor = answeredId
         let task = streamTask
         let generation = streamGeneration
@@ -561,8 +563,15 @@ final class ChatModel {
         Task {
             if let api {
                 do {
-                    try await api.stop(conversationId: id, messageId: answeredId)
+                    let result = try await api.stop(conversationId: id, messageId: answeredId)
                     guard self.conversationState.stopOperation == operation else { return }
+                    // Group Stop closes its request; direct replies need a real Stop
+                    // outcome and acceptance evidence. Positive conversation-level counts
+                    // can belong to another run while this submission is still admitting.
+                    guard stopsGroupRequest || (result.didRequestStop &&
+                        (hadReplyIdentity || self.pendingDraft?.messageId != answeredId)) else {
+                        throw APIError.invalidResponse
+                    }
                     self.conversationState.stopOperation = nil
                     if let answeredId, self.isStreaming || generation != self.streamGeneration {
                         self.conversationState.markStopped(messageId: replyId, parentId: answeredId)

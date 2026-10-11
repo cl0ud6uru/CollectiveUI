@@ -142,6 +142,145 @@ final class ChatRecoveryTests: XCTestCase {
         XCTAssertEqual(fixture.postCount, 1)
     }
 
+    func testNoOpStopBeforeAdmissionRetainsIdentityUntilLaterSnapshot() async {
+        await assertUnconfirmedStop(Data(#"{"cancelled":0,"signalled":0}"#.utf8), retry: false)
+    }
+
+    func testPositiveStopBeforeReplyIdentityStillRequiresAdmissionEvidence() async {
+        // A conversation-level Stop can signal another run while this POST still admits.
+        await assertUnconfirmedStop(Data(#"{"cancelled":0,"signalled":1}"#.utf8), retry: true)
+    }
+
+    func testMalformedStopResponseCannotConfirmCancellation() async {
+        await assertUnconfirmedStop(Data(#"{"ok":true}"#.utf8), retry: false)
+    }
+
+    func testDelayedNoOpStopAfterReopeningKeepsUnknownSubmissionGuarded() async {
+        await assertUnconfirmedStop(Data(#"{"cancelled":0,"signalled":0}"#.utf8), retry: true, detachBeforeAck: true)
+    }
+
+    func testNoOpStopAfterReplyIdentityDoesNotPersistFalseStopMarker() async {
+        fixture.holdAcceptedStream = true
+        fixture.runningReply = true
+        fixture.stopResponse = Data(#"{"cancelled":0,"signalled":0}"#.utf8)
+        let model = chat()
+        model.composerText = "Accepted but still running"
+        model.send()
+        await waitUntil { model.messages.last?.id == "reply-a" }
+        model.stop()
+        await waitUntil { fixture.stopCount == 1 && fixture.snapshotCount > 0 && !model.isStreaming && !model.isStopping && !model.isCheckingMessageStatus }
+        XCTAssertTrue(model.conversationState.stoppedReplies.isEmpty)
+        XCTAssertTrue(model.needsMessageStatusCheck)
+        XCTAssertNotNil(model.conversationState.pendingSubmission)
+        XCTAssertFalse(model.canSend)
+        XCTAssertFalse(model.canRegenerate)
+        // Reads inherited from the canceled stream cannot apply; an explicit read
+        // supplies the positive acceptance evidence without a false Stop marker.
+        await model.checkMessageStatus()
+        XCTAssertTrue(model.hasDetachedReply)
+        XCTAssertFalse(model.canSend)
+        XCTAssertFalse(model.canRegenerate)
+        XCTAssertNil(model.conversationState.pendingSubmission, "The snapshot positively confirmed the original message")
+        XCTAssertEqual(fixture.postCount, 1)
+    }
+
+    func testGroupStopStillClosesRequestWithZeroRunCounts() async {
+        fixture.group = true
+        fixture.holdStream = true
+        fixture.stopResponse = Data(#"{"cancelled":0,"signalled":0}"#.utf8)
+        let model = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+        await model.activate()
+        XCTAssertTrue(model.isGroup)
+        model.composerText = "Group request"
+        model.send()
+        await waitUntil { fixture.postCount == 1 }
+        model.stop()
+        await waitUntil { fixture.stopCount == 1 && !model.isStreaming && !model.isStopping && model.conversationState.pendingSubmission == nil }
+        XCTAssertFalse(model.needsMessageStatusCheck)
+        XCTAssertNil(model.conversationState.pendingSubmission)
+        XCTAssertNil(model.inlineError)
+        model.composerText = "Next group request"
+        XCTAssertTrue(model.canSend)
+        model.deactivate()
+    }
+
+    private func assertUnconfirmedStop(_ response: Data, retry: Bool, detachBeforeAck: Bool = false) async {
+        fixture.holdStream = true
+        fixture.omitPendingMessage = true
+        fixture.stopResponse = response
+        fixture.stopGate = detachBeforeAck ? FixtureDeliveryGate() : nil
+        fixture.snapshotDelay = 0.05
+        let model = chat()
+        model.composerText = "Original request before admission"
+        model.send()
+        await waitUntil { fixture.postCount == 1 }
+        let original = model.conversationState.pendingSubmission
+        XCTAssertNotNil(original)
+        model.composerText = "Newer composer draft"
+        model.stop()
+        var reopenedBeforeAck: ChatModel?
+        if detachBeforeAck {
+            model.deactivate()
+            let early = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+            reopenedBeforeAck = early
+            await early.activate()
+            XCTAssertNotNil(early.conversationState.stopOperation, "Stop acknowledgement is still pending")
+            XCTAssertEqual(early.conversationState.pendingSubmission?.body, original?.body)
+            fixture.stopGate?.release()
+        }
+        await waitUntil { fixture.stopCount == 1 && fixture.snapshotCount > 0 && model.conversationState.stopOperation == nil && !model.isStreaming && !model.isStopping && !model.isCheckingMessageStatus }
+        if let early = reopenedBeforeAck {
+            XCTAssertTrue(early.needsMessageStatusCheck)
+            XCTAssertFalse(early.canSend)
+            XCTAssertFalse(early.canRegenerate)
+            XCTAssertTrue(early.conversationState.stoppedReplies.isEmpty)
+            XCTAssertEqual(early.conversationState.pendingSubmission?.body, original?.body)
+            XCTAssertEqual(early.composerText, "Newer composer draft")
+            XCTAssertEqual(early.inlineError, "The server hasn't confirmed your message yet. Check again, or retry the original message safely.")
+            early.deactivate()
+        }
+        XCTAssertEqual(model.conversationState.pendingSubmission?.messageId, original?.messageId)
+        XCTAssertEqual(model.conversationState.pendingSubmission?.body, original?.body)
+        XCTAssertTrue(model.needsMessageStatusCheck)
+        XCTAssertFalse(model.canSend)
+        XCTAssertFalse(model.canRegenerate)
+        XCTAssertTrue(model.conversationState.stoppedReplies.isEmpty)
+        XCTAssertEqual(model.composerText, "Newer composer draft")
+        model.send()
+        XCTAssertEqual(fixture.postCount, 1)
+
+        model.deactivate()
+        let reopened = ChatModel(app: app, conversationId: "chat-a", newChatTarget: nil)
+        await reopened.activate()
+        XCTAssertEqual(reopened.conversationState.pendingSubmission?.messageId, original?.messageId)
+        XCTAssertTrue(reopened.needsMessageStatusCheck)
+        XCTAssertFalse(reopened.canSend)
+        XCTAssertFalse(reopened.canRegenerate)
+        XCTAssertTrue(reopened.conversationState.stoppedReplies.isEmpty)
+
+        fixture.holdStream = false
+        fixture.omitPendingMessage = false
+        if retry {
+            XCTAssertTrue(reopened.canRetryOriginalMessage)
+            reopened.retryOriginalMessage()
+            await waitUntil { !reopened.isStreaming && !reopened.needsMessageStatusCheck }
+            XCTAssertEqual(fixture.postCount, 2)
+            XCTAssertEqual(fixture.bodies.last, original?.body)
+            XCTAssertEqual(Set(fixture.messageIDs).count, 1)
+        } else {
+            await reopened.checkMessageStatus()
+            XCTAssertEqual(fixture.postCount, 1)
+        }
+        XCTAssertFalse(reopened.needsMessageStatusCheck)
+        XCTAssertNil(reopened.conversationState.pendingSubmission)
+        XCTAssertTrue(reopened.conversationState.stoppedReplies.isEmpty)
+        XCTAssertEqual(reopened.messages.last?.plainText, "Recovered reply")
+        XCTAssertEqual(reopened.composerText, "Newer composer draft")
+        XCTAssertTrue(reopened.canSend)
+        XCTAssertTrue(reopened.canRegenerate)
+        reopened.deactivate()
+    }
+
     func testPendingRequestAndGateSurviveDiskRelaunch() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -341,8 +480,13 @@ private final class RecoveryFixture: @unchecked Sendable {
     var serverFailure = false
     var omitPendingMessage = false
     var holdStream = false
+    var holdAcceptedStream = false
     var emptyEOF = false
     var runningReply = false
+    var group = false
+    var stopResponse = Data(#"{"cancelled":0,"signalled":1}"#.utf8)
+    var stopGate: FixtureDeliveryGate?
+    private(set) var stopCount = 0
     private(set) var resumeCount = 0
     private(set) var commandBodies: [JSONValue] = []
     private(set) var bodies: [JSONValue] = []
@@ -354,6 +498,10 @@ private final class RecoveryFixture: @unchecked Sendable {
     private var user: UIMessage?
 
     func response(_ request: URLRequest) -> FixtureProtocol.Reply {
+        if request.url?.path == "/api/chat/chat-a/stop" {
+            stopCount += 1
+            return .init(data: stopResponse, deliveryGate: stopGate)
+        }
         if request.url?.path == "/api/chat/commands", request.httpMethod == "POST" {
             if let body = FixtureProtocol.body(request) {
                 commandBodies.append(body)
@@ -386,12 +534,13 @@ private final class RecoveryFixture: @unchecked Sendable {
             if emptyEOF || holdStream {
                 return .init(contentType: "text/event-stream", data: Data(), finish: !holdStream)
             }
-            if partialFailure || serverFailure {
+            if partialFailure || serverFailure || holdAcceptedStream {
                 var chunks = [#"{"type":"start","messageId":"reply-a"}"#, #"{"type":"text-start","id":"t"}"#,
                     #"{"type":"text-delta","id":"t","delta":"Partial reply"}"#]
                 if serverFailure { chunks += [#"{"type":"error","errorText":"Hermes run failed"}"#, #"{"type":"finish","finishReason":"error"}"#] }
                 let sse = chunks.map { "data: " + $0 + "\n\n" }.joined() + (serverFailure ? "data: [DONE]\n\n" : "")
-                return .init(contentType: "text/event-stream", data: Data(sse.utf8), error: partialFailure ? URLError(.networkConnectionLost) : nil, errorDelay: 0.1)
+                return .init(contentType: "text/event-stream", data: Data(sse.utf8), finish: !holdAcceptedStream,
+                    error: partialFailure ? URLError(.networkConnectionLost) : nil, errorDelay: 0.1)
             }
             return .init(status: 502, data: Data(#"{"error":"Connection interrupted"}"#.utf8))
         }
@@ -410,6 +559,7 @@ private final class RecoveryFixture: @unchecked Sendable {
                         parts: [.text(TextPart(text: "Recovered reply", state: "done"))]).toJSON()])]
             }
             let snapshot: JSONValue = .object(["conversationId": "chat-a", "target": .object(["kind": "bot", "id": "hermes", "name": "Hermes", "hermes": .bool(unconfirmedCancellation)]),
+                "summary": .object(["id": "chat-a", "title": "Fixture chat", "isGroup": .bool(group)]),
                 "initialRows": .array(rows), "initialLeafId": rows.isEmpty ? .null : "reply-a", "resume": .bool(runningReply)])
             return .init(status: snapshotStatus, data: try! JSONEncoder().encode(snapshot), delay: snapshotDelay)
         }
