@@ -93,6 +93,95 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
     }
 
+    private func openBotDirectory() {
+        let bots = app.buttons["Bots"]
+        if !bots.exists || !bots.isHittable { tap(app.buttons["Open sidebar"]) }
+        tap(bots)
+        XCTAssertTrue(app.searchFields["Search bots"].waitForExistence(timeout: 5))
+    }
+
+    func testBotDirectorySearchDismissalAndHomeNavigation() {
+        launch()
+        enterDraft("Keep this draft while browsing bots")
+        openBotDirectory()
+        let atlas = app.buttons["botDirectory.bot-atlas"]
+        XCTAssertTrue(atlas.waitForExistence(timeout: 5))
+        XCTAssertTrue((atlas.value as? String)?.contains("Pinned") == true)
+        XCTAssertTrue((app.buttons["botDirectory.bot-research"].value as? String)?.contains("Working") == true)
+        capture("bots-directory-dark")
+        let search = app.searchFields["Search bots"]
+        tap(search)
+        search.typeText("Helpdesk")
+        let helpdesk = app.buttons["botDirectory.bot-helpdesk"]
+        XCTAssertTrue(helpdesk.waitForExistence(timeout: 5))
+        XCTAssertTrue((helpdesk.value as? String)?.contains("Needs your approval") == true)
+        XCTAssertFalse(atlas.exists)
+        capture("bots-directory-search")
+        search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 8) + "unmatched-fixture-bot")
+        XCTAssertFalse(helpdesk.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No Results")).firstMatch.waitForExistence(timeout: 5))
+        capture("bots-directory-empty-search")
+        tap(app.buttons["Close"])
+        tap(app.buttons["Done"])
+        let closeSidebar = app.buttons["Close sidebar"]
+        if closeSidebar.exists && closeSidebar.isHittable { tap(closeSidebar) }
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Keep this draft while browsing bots")
+        openBotDirectory()
+        tap(app.buttons["botDirectory.bot-atlas"])
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Atlas") == true)
+        XCTAssertFalse(app.searchFields["Search bots"].exists)
+        capture("bots-directory-open-home")
+    }
+
+    func testBotDirectoryOffersExistingSideChatAction() {
+        launch()
+        openBotDirectory()
+        let atlas = app.buttons["botDirectory.bot-atlas"]
+        XCTAssertTrue(atlas.waitForExistence(timeout: 5))
+        atlas.press(forDuration: 1)
+        tap(app.buttons["New side chat"])
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Atlas") == true)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "")
+        capture("bots-directory-new-side-chat")
+    }
+
+    func testBotDirectoryLightLayoutKeepsRowsReadableAndTappable() {
+        launch(appearance: "light")
+        openBotDirectory()
+        let directory = app.collectionViews.firstMatch
+        let atlas = app.buttons["botDirectory.bot-atlas"]
+        XCTAssertTrue(atlas.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(atlas.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(atlas.frame.minX, app.frame.minX)
+        XCTAssertLessThanOrEqual(atlas.frame.maxX, app.frame.maxX)
+        let research = app.buttons["botDirectory.bot-research"]
+        for _ in 0..<6 {
+            if research.exists && research.isHittable { break }
+            directory.swipeUp()
+        }
+        XCTAssertTrue(research.isHittable)
+        XCTAssertEqual(research.label, "Research Assistant")
+        XCTAssertTrue((research.value as? String)?.contains("Working") == true)
+        if UIApplication.shared.preferredContentSizeCategory.isAccessibilityCategory {
+            let name = research.staticTexts["Research Assistant"]
+            XCTAssertTrue(name.exists)
+            XCTAssertLessThanOrEqual(name.frame.minX - research.frame.minX, 24,
+                                     "Large text needs the full row width below the avatar")
+        }
+        capture("bots-directory-light-accessible")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        settle(1)
+        XCTAssertTrue(app.buttons["Done"].isHittable)
+        XCTAssertTrue(app.searchFields["Search bots"].exists)
+        capture("bots-directory-landscape")
+        XCUIDevice.shared.orientation = .portrait
+        tap(app.buttons["Done"])
+        XCTAssertFalse(app.searchFields["Search bots"].exists)
+    }
+
     func testStatusRecoveryClearsTheErrorAndAttentionHeader() {
         launch("home-bot-atlas", extra: ["--demo-stream-scenario", "recovery"])
         enterDraft("Recover the offline Hermes fixture")

@@ -205,18 +205,17 @@ struct SidebarView: View {
     }
 
     private var botDirectory: some View {
-        NavigationStack {
-            List(model.bots) { bot in
-                Button {
-                    model.selection = .bot(botId: bot.id, kind: "home", nonce: "home")
-                    showBots = false
-                    onClose()
-                } label: { BotRow(bot: bot) }.buttonStyle(.plain)
-            }
-            .listStyle(.plain).scrollContentBackground(.hidden).background(PortalTheme.background)
-            .navigationTitle("Bots").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showBots = false } } }
+        BotDirectoryView(bots: model.bots) { bot in
+            openDirectoryBot(bot, kind: "home")
+        } newSideChat: { bot in
+            openDirectoryBot(bot, kind: "side")
         }
+    }
+
+    private func openDirectoryBot(_ bot: TargetOption, kind: String) {
+        model.selection = .bot(botId: bot.id, kind: kind, nonce: kind == "home" ? "home" : UUID().uuidString)
+        showBots = false
+        onClose()
     }
 
     @ViewBuilder
