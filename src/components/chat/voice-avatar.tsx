@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Reaction } from "@/lib/voice/policy";
 import type { VoiceAudioDiagnostics } from "@/lib/voice/audio-diagnostics";
+import type { ReactionPlan } from "@/lib/voice/reaction-library";
+import type { AvatarLayerSnapshot } from "@/lib/voice/avatar-layers";
 
-export type VoiceAvatarProps = { reaction: Reaction; reactionRevision: number; audio: HTMLAudioElement | null; modelUrl: string | null; active: boolean; visible: boolean; diagnostics?: VoiceAudioDiagnostics };
+export type VoiceAvatarProps = { reaction: Reaction; reactionRevision: number; audio: HTMLAudioElement | null; modelUrl: string | null; active: boolean; visible: boolean; diagnostics?: VoiceAudioDiagnostics;
+  reduceMotion?: boolean; plan?: ReactionPlan; motionRevision?: number; planRequestedAt?: number; onMotionMetrics?: (snapshot: AvatarLayerSnapshot) => void };
 
 /** Optional body clips and facial morphs are discovered at load; voice never waits for the rig. */
 export function VoiceAvatar(props: VoiceAvatarProps) {
@@ -21,6 +24,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
     void (async () => {
       const THREE = await import("three");
       const { AvatarFace, AvatarMotion, avatarFraming, avatarFramingDistance } = await import("@/lib/voice/avatar-animation");
+      const { AvatarLayers } = await import("@/lib/voice/avatar-layers");
       if (cancelled) return;
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
@@ -36,22 +40,27 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
       const key = new THREE.DirectionalLight(0xffffff, 2.8); key.position.set(3, 4, 5); scene.add(key);
       const rim = new THREE.DirectionalLight(0x86dcff, 1.7); rim.position.set(-3, 1, -1); scene.add(rim);
       const root = new THREE.Group(); scene.add(root);
+      const placeholderChest = new THREE.Bone(); placeholderChest.name = "chest";
+      const placeholderHead = new THREE.Bone(); placeholderHead.name = "head";
+      root.add(placeholderChest); placeholderChest.add(placeholderHead);
       const material = new THREE.MeshStandardMaterial({ color: 0xb7d7eb, roughness: 0.3, metalness: 0.15 });
       const head = new THREE.Mesh(new THREE.SphereGeometry(0.8, 48, 32), material);
-      head.scale.set(1, 1.1, 0.85); root.add(head);
+      head.scale.set(1, 1.1, 0.85); placeholderHead.add(head);
       const dark = new THREE.MeshStandardMaterial({ color: 0x183045, roughness: 0.45 });
       const eyes = [-0.26, 0.26].map(x => {
         const eye = new THREE.Mesh(new THREE.SphereGeometry(0.072, 20, 12), dark);
-        eye.position.set(x, 0.11, 0.65); root.add(eye); return eye;
+        eye.position.set(x, 0.11, 0.65); placeholderHead.add(eye); return eye;
       });
       const mouth = new THREE.Mesh(new THREE.SphereGeometry(0.13, 24, 16), dark);
-      mouth.position.set(0, -0.23, 0.66); mouth.scale.set(1, 0.18, 0.2); root.add(mouth);
+      mouth.position.set(0, -0.23, 0.66); mouth.scale.set(1, 0.18, 0.2); placeholderHead.add(mouth);
       const torso = new THREE.Mesh(new THREE.SphereGeometry(0.57, 32, 24), material);
-      torso.position.y = -1.0; torso.scale.set(1.05, 0.5, 0.7); root.add(torso);
+      torso.position.y = -1.0; torso.scale.set(1.05, 0.5, 0.7); placeholderChest.add(torso);
       const placeholder = [...root.children];
       let model: import("three").Object3D | null = null;
       let face: InstanceType<typeof AvatarFace> | null = null;
       let motion: InstanceType<typeof AvatarMotion> | null = null;
+      let layers: InstanceType<typeof AvatarLayers> | null = new AvatarLayers(root, []);
+      let metricsAt = 0;
       let lastGesture = "";
       let gestureTime = 0;
       let framing: ReturnType<typeof avatarFraming> = null;
@@ -91,7 +100,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
         frame = requestAnimationFrame(animate);
         if (now - renderedAt < 1000 / 30) return;
         renderedAt = now;
-        const diagnosticStart = current.diagnostics?.enabled ? performance.now() : null;
+        const diagnosticStart = current.diagnostics?.enabled || current.onMotionMetrics ? performance.now() : null;
         const elapsed = (now - previous) / 1000;
         const dt = Math.min(elapsed, 0.05); previous = now;
         const stream = current.audio?.srcObject;
@@ -116,23 +125,30 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
         if (lastGesture !== `${current.reaction}:${current.reactionRevision}`) {
           lastGesture = `${current.reaction}:${current.reactionRevision}`; gestureTime = t;
         }
-        const moving = current.active && !reduced.matches;
-        const nod = moving && !motion?.hasClip("nod") && current.reaction === "nod" && t - gestureTime < 1.2 ? Math.sin((t - gestureTime) * 10) * 0.12 : 0;
+        const motionReduced = reduced.matches || current.reduceMotion === true;
+        const moving = current.active && !motionReduced;
+        const nod = moving && !current.plan && !motion?.hasClip("nod") && current.reaction === "nod" && t - gestureTime < 1.2 ? Math.sin((t - gestureTime) * 10) * 0.12 : 0;
         root.rotation.x = THREE.MathUtils.damp(root.rotation.x, nod, 12, dt);
-        root.rotation.z = THREE.MathUtils.damp(root.rotation.z, moving && !motion?.hasClip("curious") && current.reaction === "curious" ? 0.12 : 0, 5, dt);
-        root.position.y = moving && !motion?.hasClip("idle") ? Math.sin(t * 1.5) * 0.018 : 0;
+        root.rotation.z = THREE.MathUtils.damp(root.rotation.z, moving && !current.plan && !motion?.hasClip("curious") && current.reaction === "curious" ? 0.12 : 0, 5, dt);
+        root.position.y = moving && !current.plan && !motion?.hasClip("idle") ? Math.sin(t * 1.5) * 0.018 : 0;
         const blink = t % 4.7 > 4.55 ? 1 : 0;
+        if (current.plan) layers?.update(current.plan, current.reaction, current.reactionRevision, elapsed, motionReduced, current.active, level, current.planRequestedAt, current.motionRevision);
         if (!model) {
           mouth.scale.y = THREE.MathUtils.damp(mouth.scale.y, 0.16 + level * 2, 18, dt);
           mouth.scale.x = THREE.MathUtils.damp(mouth.scale.x, current.active && current.reaction === "smile" ? 1.4 : 1, 7, dt);
           for (const eye of eyes) eye.scale.y = THREE.MathUtils.damp(eye.scale.y, moving && blink ? 0.12 : 1, 35, dt);
         } else {
           // Clips follow elapsed time even on a slow rig/device; damping keeps its bounded step.
-          motion?.update(current.reaction, current.reactionRevision, elapsed, reduced.matches, current.active);
-          face?.update(current.reaction, level, blink, dt, reduced.matches, current.active);
+          if (!current.plan) {
+            motion?.update(current.reaction, current.reactionRevision, elapsed, motionReduced, current.active);
+            face?.update(current.reaction, level, blink, dt, motionReduced, current.active);
+          }
         }
         renderer.render(scene, camera);
         if (diagnosticStart !== null) current.diagnostics?.recordFrame(elapsed * 1000, performance.now() - diagnosticStart);
+        if (layers && current.onMotionMetrics && now - metricsAt >= 500) {
+          metricsAt = now; current.onMotionMetrics(layers.snapshot(diagnosticStart === null ? 0 : performance.now() - diagnosticStart));
+        }
       };
       const resume = () => {
         if (!frame && !cancelled && live.current.visible && !document.hidden) { previous = performance.now(); frame = requestAnimationFrame(animate); }
@@ -145,6 +161,7 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
         cancelAnimationFrame(frame); resize.disconnect(); source?.disconnect(); void audioContext?.close();
         document.removeEventListener("visibilitychange", resume); wake.current = null;
         motion?.dispose();
+        layers?.dispose();
         disposeObject(scene); renderer.dispose(); renderer.domElement.remove();
       };
       if (props.modelUrl) {
@@ -168,11 +185,13 @@ export function VoiceAvatar(props: VoiceAvatarProps) {
           const center = box.getCenter(new THREE.Vector3());
           const scale = 2.4 / Math.max(size.x, size.y, size.z, 0.01);
           model.scale.multiplyScalar(scale); model.position.sub(center.multiplyScalar(scale));
+          layers?.dispose();
           for (const object of placeholder) { root.remove(object); disposeObject(object); }
           root.add(model);
           framing = avatarFraming(model, new THREE.Box3().setFromObject(model));
           frameCamera();
           face = new AvatarFace(model); motion = new AvatarMotion(model, gltf.animations);
+          layers = new AvatarLayers(model, gltf.animations);
           setError("");
         } catch { if (!cancelled) setError("Avatar model unavailable. Using the placeholder."); }
       }

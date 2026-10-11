@@ -2,9 +2,11 @@ import { createRoot } from "react-dom/client";
 import { VoiceAvatar } from "../../src/components/chat/voice-avatar";
 import { VoiceBridge } from "../../src/lib/voice/bridge";
 import { waitForIceGathering, waitForVoiceEvent, type VoiceTarget } from "../../src/lib/voice/client";
+import { legacyPlan, legacyReaction, REACTION_LIBRARY, type ReactionPlan } from "../../src/lib/voice/reaction-library";
 import { type Reaction } from "../../src/lib/voice/policy";
 import { type VoiceHistoryMessage } from "../../src/lib/voice/history";
 import { VoiceAudioDiagnostics } from "../../src/lib/voice/audio-diagnostics";
+import { VoiceReactionDiagnostics } from "../../src/lib/voice/reaction-diagnostics";
 
 declare global {
   interface Window {
@@ -13,6 +15,8 @@ declare global {
       voiceEvents: { postMessage: (event: unknown) => void };
     } };
     voice: { start: typeof start; end: typeof end; mute: typeof mute; retry: typeof retry;
+      reactions: { start: () => boolean; stop: () => boolean; report: () => ReturnType<VoiceReactionDiagnostics["report"]> };
+      preview: { load: (base64: string) => boolean; play: (id: string) => boolean };
       visible: (value: boolean) => void; context: (messages: VoiceHistoryMessage[]) => void;
       diagnostics: { start: () => boolean; sample: () => ReturnType<VoiceAudioDiagnostics["sample"]>;
         stop: () => boolean; clear: () => boolean; report: () => ReturnType<VoiceAudioDiagnostics["report"]> } };
@@ -32,12 +36,16 @@ const audio = document.createElement("audio");
 audio.autoplay = true;
 audio.setAttribute("playsinline", "");
 document.body.append(audio);
+let reactionPlan: ReactionPlan = legacyPlan("neutral");
+let motionRevision = 0, reactionRequestedAt = 0;
 let reaction: Reaction = "neutral", revision = 0, modelUrl: string | null = null, visible = true;
 let pc: RTCPeerConnection | null = null, channel: RTCDataChannel | null = null, stream: MediaStream | null = null;
 let abort: AbortController | null = null, bridge: VoiceBridge | null = null;
 let closing: Promise<void> | null = null, active = false, demo = false;
 let inputAudio: AudioContext | null = null, inputTimer: ReturnType<typeof setInterval> | null = null, muted = false;
 const audioDiagnostics = new VoiceAudioDiagnostics({ peer: () => pc, audio: () => audio });
+const reactionDiagnostics = new VoiceReactionDiagnostics();
+const recordMotion = (value: Parameters<VoiceReactionDiagnostics["frame"]>[0]) => reactionDiagnostics.frame(value);
 function monitorInput(captured: MediaStream) {
   try {
     inputAudio = new AudioContext();
@@ -53,10 +61,11 @@ function monitorInput(captured: MediaStream) {
     }, 100);
   } catch { /* The meter must never interrupt audio capture. */ }
 }
-function render() { root.render(<VoiceAvatar reaction={reaction} reactionRevision={revision} modelUrl={modelUrl} audio={audio} active={active} visible={visible} diagnostics={audioDiagnostics} />); }
+function render() { root.render(<VoiceAvatar planRequestedAt={reactionRequestedAt} plan={reactionPlan} motionRevision={motionRevision} reaction={reaction} reactionRevision={revision} modelUrl={modelUrl} audio={audio} active={active} visible={visible} diagnostics={audioDiagnostics} onMotionMetrics={reactionDiagnostics.enabled ? recordMotion : undefined} />); }
 function status(value: string) { emit("status", { value }); }
 function notice(error: unknown) { emit("notice", { message: error instanceof Error ? error.message : String(error) }); }
 function release() {
+  reactionDiagnostics.stop();
   audioDiagnostics.stop(); audioDiagnostics.setContext("input", null);
   if (inputTimer) clearInterval(inputTimer); inputTimer = null;
   void inputAudio?.close(); inputAudio = null; emit("level", { value: 0 });
@@ -69,7 +78,7 @@ async function start(config: { target: VoiceTarget; chatId: string; demo: boolea
   if (active || abort || closing) return;
   if (bridge?.hasUnsaved) { notice("Save your previous speech before starting again."); return; }
   bridge?.dispose(); bridge = null;
-  reaction = "neutral"; revision++; muted = false; render();
+  reactionPlan = legacyPlan("neutral"); reaction = "neutral"; revision++; muted = false; render();
   demo = config.demo; status("connecting");
   if (demo) {
     active = true; status("connected"); render();
@@ -110,12 +119,12 @@ async function start(config: { target: VoiceTarget; chatId: string; demo: boolea
     const session = await response.json();
     if (!response.ok) throw new Error(session.error || "Could not start voice.");
     ensureCurrent();
-    bridge = new VoiceBridge({ conversationId: config.chatId, sessionId: session.session.id, reactions: session.reactions, history: session.history,
+    bridge = new VoiceBridge({ conversationId: config.chatId, sessionId: session.session.id, reactions: session.reactions, history: session.history, reactionDiagnostics,
       fetcher: nativeFetch,
       send: event => { if (events.readyState === "open") events.send(JSON.stringify(event)); },
       changed: () => emit("changed"),
       transcript: () => {}, // Speech remains in the bridge and saved chat, not on the voice screen.
-      reaction: value => { reaction = value; revision++; render(); }, notice,
+      reaction: (value, _latency, plan, motion) => { reactionRequestedAt = performance.now(); motionRevision = motion ?? motionRevision + 1; reactionPlan = plan ?? legacyPlan(value); reaction = value; revision++; render(); }, notice,
       approval: () => emit("approval"),
     });
     const started = waitForVoiceEvent(events, "session.started", current.signal, 20000);
@@ -151,6 +160,7 @@ function end() {
   // Stop physical capture immediately, including while the close acknowledgement is pending.
   stream?.getTracks().forEach(track => track.stop());
   audioDiagnostics.stop();
+  reactionDiagnostics.stop();
   closing = (async () => {
     try {
       if (channel?.readyState === "open" && active && abort) {
@@ -172,6 +182,22 @@ async function retry() {
   finally { emit("saving", { value: false }); }
 }
 window.voice = { start, end, mute, retry, context: messages => bridge?.context(messages), visible: value => { visible = value; render(); },
+  // Offline QA only; never accepts a model or reaction command in a live session.
+  preview: { load: base64 => {
+    if (!demo || !active || typeof base64 !== "string" || base64.length > 46000000) return false;
+    try {
+      const decoded = atob(base64); const bytes = new Uint8Array(decoded.length);
+      for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+      if (bytes.length < 12 || new DataView(bytes.buffer).getUint32(0, true) !== 0x46546c67) return false;
+      if (modelUrl?.startsWith("blob:")) URL.revokeObjectURL(modelUrl);
+      modelUrl = URL.createObjectURL(new Blob([bytes], { type: "model/gltf-binary" })); render(); return true;
+    } catch { return false; }
+  }, play: id => {
+    if (!demo || !active) return false;
+    const preset = REACTION_LIBRARY.find(p => p.id === id); if (!preset) return false;
+    reactionRequestedAt = performance.now(); reactionPlan = preset.plan; reaction = legacyReaction(preset.plan.face); revision++; motionRevision++; render(); return true;
+  } },
+  reactions: { start: () => { reactionDiagnostics.start(); render(); return true; }, stop: () => { reactionDiagnostics.stop(); render(); return true; }, report: () => reactionDiagnostics.report() },
   diagnostics: { start: () => audioDiagnostics.start(false), sample: () => audioDiagnostics.sample(),
     stop: () => audioDiagnostics.stop(), clear: () => audioDiagnostics.clear(), report: () => audioDiagnostics.report() } };
 render(); emit("ready", { secure: window.isSecureContext, media: !!navigator.mediaDevices?.getUserMedia });

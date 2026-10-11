@@ -5,10 +5,13 @@ import { Headphones, Loader2, Mic, MicOff, Square, Minimize2, Captions } from "l
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { VoiceAvatar } from "./voice-avatar";
 import { VoiceBridge } from "@/lib/voice/bridge";
+import { legacyPlan, type ReactionPlan } from "@/lib/voice/reaction-library";
 import type { Reaction, VoiceFragment } from "@/lib/voice/policy";
 import type { VoiceHistoryMessage } from "@/lib/voice/history";
 import { VoiceAudioDiagnostics } from "@/lib/voice/audio-diagnostics";
 import { VoiceAudioDiagnosticsControls } from "./voice-audio-diagnostics";
+import { VoiceReactionDiagnostics } from "@/lib/voice/reaction-diagnostics";
+import { VoiceReactionDiagnosticsControls } from "./voice-reaction-diagnostics";
 import { cn } from "@/lib/utils";
 import { checkVoiceAvailability, type VoiceStatus, type VoiceTarget, voiceSessionUrl, waitForIceGathering, waitForVoiceEvent } from "@/lib/voice/client";
 
@@ -26,6 +29,9 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const [muted, setMuted] = useState(false);
   const [transcript, setTranscript] = useState<VoiceFragment[]>([]);
   const [reaction, setReaction] = useState<Reaction>("neutral");
+  const [reactionPlan, setReactionPlan] = useState<ReactionPlan>(legacyPlan("neutral"));
+  const [motionRevision, setMotionRevision] = useState(0);
+  const [reactionRequestedAt, setReactionRequestedAt] = useState(0);
   const [reactionRevision, setReactionRevision] = useState(0);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [captions, setCaptions] = useState(false);
@@ -40,6 +46,10 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
   const pendingAbort = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({ peer: () => null, audio: () => null }));
+  const [reactionDiagnostics] = useState(() => new VoiceReactionDiagnostics());
+  const [motionCapture, setMotionCapture] = useState(false);
+  const recordMotion = useCallback((value: Parameters<VoiceReactionDiagnostics["frame"]>[0]) => reactionDiagnostics.frame(value), [reactionDiagnostics]);
+  useEffect(() => () => reactionDiagnostics.dispose(), [reactionDiagnostics]);
   useEffect(() => {
     audioDiagnostics.setSources({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current });
     return () => audioDiagnostics.dispose();
@@ -72,7 +82,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     const current = expected ?? resources.current;
     if (!current) return;
     const ownsSession = resources.current === current;
-    if (ownsSession) { audioDiagnostics.stop(); resources.current = null; }
+    if (ownsSession) { reactionDiagnostics.stop(); audioDiagnostics.stop(); resources.current = null; }
     if (current.readinessTimer) clearTimeout(current.readinessTimer);
     if (current.channel.readyState === "open" && !current.closePromise) {
       try { current.channel.send(JSON.stringify({ type: "session.close" })); } catch { /* Transport already closed. */ }
@@ -90,7 +100,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     if (audioRef.current) audioRef.current.srcObject = null;
     setMuted(false);
     setStatus("idle");
-  }, [audioDiagnostics]);
+  }, [audioDiagnostics, reactionDiagnostics]);
 
   const end = useCallback(async () => {
     const current = resources.current;
@@ -102,7 +112,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     setStatus("ending");
     current.stream.getAudioTracks().forEach(track => { track.enabled = false; });
     audioRef.current?.pause();
-    audioDiagnostics.stop();
+    audioDiagnostics.stop(); reactionDiagnostics.stop();
     if (!current.closePromise) {
       current.closePromise = (async () => {
         const closed = waitForVoiceEvent(current.channel, "session.closed", current.abort.signal, 15_000);
@@ -121,7 +131,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
       setError("Voice ended locally; final session usage could not be confirmed.");
       setStatus("error");
     }
-  }, [audioDiagnostics, cleanup, status]);
+  }, [audioDiagnostics, reactionDiagnostics, cleanup, status]);
 
   useEffect(() => () => {
     pendingAbort.current?.abort();
@@ -153,6 +163,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
     setError(null);
     setTranscript([]);
     setReaction("neutral");
+    setReactionPlan(legacyPlan("neutral")); setMotionRevision(value => value + 1);
     setReactionRevision(revision => revision + 1);
     setAudioBlocked(false);
     setStatus("connecting");
@@ -244,10 +255,10 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
       startTimer = setTimeout(() => startedReject(new Error("Voice session did not become ready")), 20_000);
       current.readinessTimer = startTimer;
       setAvatarUrl(body.avatarUrl ?? null);
-      bridge.current = new VoiceBridge({ conversationId, sessionId: body.session!.id, reactions: body.reactions === true, history: body.history,
+      bridge.current = new VoiceBridge({ conversationId, sessionId: body.session!.id, reactions: body.reactions === true, history: body.history, reactionDiagnostics,
         send: event => { if (channel?.readyState === "open") channel.send(JSON.stringify(event)); },
         changed: () => callbacks.current.onConversationChange(), transcript: setTranscript,
-        reaction: value => { setReaction(value); setReactionRevision(revision => revision + 1); }, notice: message => { setError(message); setOpen(true); }, approval: () => setOpen(false),
+        reaction: (value, _latency, plan, motion) => { setReactionRequestedAt(performance.now()); setMotionRevision(previous => motion ?? previous + 1); setReactionPlan(plan ?? legacyPlan(value)); setReaction(value); setReactionRevision(revision => revision + 1); }, notice: message => { setError(message); setOpen(true); }, approval: () => setOpen(false),
       });
       await pc.setRemoteDescription({ type: "answer", sdp: body.transport.sdp });
       await started;
@@ -266,7 +277,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
         setStatus("error");
       }
     }
-  }, [availability?.supported, cleanup, target, conversationId]);
+  }, [availability?.supported, cleanup, target, conversationId, reactionDiagnostics]);
 
   const toggleMute = () => {
     const current = resources.current;
@@ -298,7 +309,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
               <button type="button" className="rounded-full p-3 hover:bg-white/10" aria-label="Minimize voice" onClick={() => setOpen(false)}><Minimize2 className="h-5 w-5" /></button>
             </header>
             <div className="relative min-h-0 flex-1" style={{ background: "radial-gradient(ellipse at 50% 48%, #38505a55, transparent 65%)" }}>
-              <VoiceAvatar reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} diagnostics={audioDiagnostics} />
+              <VoiceAvatar planRequestedAt={reactionRequestedAt} plan={reactionPlan} motionRevision={motionRevision} reaction={reaction} reactionRevision={reactionRevision} audio={audioElement} modelUrl={avatarUrl} active={status === "connected"} visible={open} diagnostics={audioDiagnostics} onMotionMetrics={motionCapture ? recordMotion : undefined} />
             </div>
             <div className="z-10 mx-auto max-h-[45dvh] w-full max-w-xl space-y-4 overflow-y-auto px-6 pb-1 text-center">
               {captions && <div className="max-h-36 overflow-y-auto rounded-2xl bg-white/5 p-4 text-left" aria-label="Live captions">
@@ -326,6 +337,7 @@ export function VoiceControl({ target, conversationId, name, disabled = false, o
               </div>
               <p className="text-xs text-white/40">Voice and text share this chat. You can minimize voice to type or review approvals.</p>
               <VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />
+              <VoiceReactionDiagnosticsControls diagnostics={reactionDiagnostics} active={status === "connected"} onCaptureChange={setMotionCapture} />
               {audioBlocked && <button className="text-sm underline" onClick={() => void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setError("Tap again to enable audio playback."))}>Enable voice audio</button>}
             </div>
           </div>
