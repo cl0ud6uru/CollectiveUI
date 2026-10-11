@@ -2,6 +2,31 @@ import XCTest
 import CollectiveKit
 @testable import CollectiveUI
 
+final class FixtureDeliveryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var released = false
+    private var callbacks: [() -> Void] = []
+
+    func enqueue(_ callback: @escaping () -> Void) {
+        let deliverNow = lock.withLock {
+            if released { return true }
+            callbacks.append(callback)
+            return false
+        }
+        if deliverNow { callback() }
+    }
+
+    func release() {
+        let pending = lock.withLock {
+            released = true
+            let pending = callbacks
+            callbacks.removeAll()
+            return pending
+        }
+        pending.forEach { $0() }
+    }
+}
+
 /// All requests use this in-memory transport; no test opens a browser, contacts a server,
 /// or stores synthetic credentials in the device Keychain.
 final class FixtureProtocol: URLProtocol {
@@ -13,6 +38,7 @@ final class FixtureProtocol: URLProtocol {
         var delay: TimeInterval = 0
         var error: Error?
         var errorDelay: TimeInterval = 0
+        var deliveryGate: FixtureDeliveryGate?
     }
     static var handler: (URLRequest) -> Reply = { _ in Reply() }
 
@@ -25,7 +51,9 @@ final class FixtureProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let reply = Self.handler(request)
-        if reply.delay > 0 {
+        if let gate = reply.deliveryGate {
+            gate.enqueue { self.deliver(reply) }
+        } else if reply.delay > 0 {
             DispatchQueue.global().asyncAfter(deadline: .now() + reply.delay) { self.deliver(reply) }
         } else { deliver(reply) }
     }
@@ -93,7 +121,10 @@ private final class ChatFixture: @unchecked Sendable {
                 + (scenario == .normal ? "data: [DONE]\n\n" : "")
             return .init(contentType: "text/event-stream", data: Data(sse.utf8), finish: scenario == .normal)
         }
-        if path.hasSuffix("/stop") { didStop = true; return .init(status: stopStatus, delay: stopDelay) }
+        if path.hasSuffix("/stop") {
+            didStop = true
+            return .init(status: stopStatus, data: Data(#"{"cancelled":0,"signalled":1}"#.utf8), delay: stopDelay)
+        }
         if path == "/api/chat/chat-a" {
             snapshotCount += 1
             var rows: [JSONValue] = []
