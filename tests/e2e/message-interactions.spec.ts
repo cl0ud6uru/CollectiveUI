@@ -5,6 +5,8 @@ const input=(page:Page)=>page.getByRole('combobox',{name:'Message'});
 async function requests(page:Page){return(await page.request.get('/fixture/requests')).json();}
 test.beforeAll(async()=>{await mkdir(screens,{recursive:true});});
 test.beforeEach(async({page})=>{
+  page.on('pageerror',error=>console.error('[message fixture page error]',error.stack??error.message));
+  page.on('console',message=>{if(message.type()==='error')console.error('[message fixture console]',message.text());});
   await page.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort());
   await page.request.get('/fixture/reset'); await page.goto('/');await expect(input(page)).toBeEnabled();
 });
