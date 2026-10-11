@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
+import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ArrowUp, AtSign, FileText, Loader2, Mic, Paperclip, Plus, Sparkles, Square, X } from "lucide-react";
 import { BotAvatar } from "@/components/bots/bot-avatar";
@@ -11,11 +11,12 @@ import { HERMES_COMMANDS, routeProvider, type HermesModelRoute } from "@/lib/cha
 import { insertCommandIntoDraft, type ComposerCommand } from "@/lib/chat/composer-commands";
 import { VoiceControl } from "./voice-control";
 import type { VoiceTarget } from "@/lib/voice/client";
+import type { ReplyContext } from "@/lib/chat/reply";
 
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
 
-export type ComposerHandle = { focus: () => void; setText: (t: string) => void; appendText: (t: string) => void; submit: (text?: string) => Promise<void> };
+export type ComposerHandle = { focus: () => void; setText: (t: string, ownedReplyMention?: string | null) => void; appendText: (t: string) => void; setReplyMention: (prefix: string | null) => void; getReplyMention: () => string | null; submit: (text?: string) => Promise<void> };
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -53,8 +54,10 @@ export const Composer = forwardRef<
     /** Send button colour (a bot chat uses the bot's colour, like ChatGPT dots). */
     tint?: { bg: string; fg: string };
     voiceTarget?: VoiceTarget;
+    replyTo?: ReplyContext | null;
+    onCancelReply?: () => void;
   }
->(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint, voiceTarget }, ref) {
+>(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint, voiceTarget, replyTo, onCancelReply }, ref) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -64,18 +67,33 @@ export const Composer = forwardRef<
   const [submitting, setSubmitting] = useState(false);
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const mentionMenuId = useId();
   const commandButtonRef = useRef<HTMLButtonElement>(null);
   const commandChosen = useRef(false);
+  const replyMention = useRef<string | null>(null);
 
   useImperativeHandle(ref, () => ({
     submit,
     focus: () => taRef.current?.focus(),
-    setText: (t: string) => {
+    setText: (t: string, ownedReplyMention?: string | null) => {
+      replyMention.current = ownedReplyMention ?? null;
       setText(t);
       requestAnimationFrame(() => taRef.current?.focus());
     },
     appendText: (t: string) => {
       setText(current => `${current}${current && !/\s$/.test(current) ? " " : ""}${t}`);
+      requestAnimationFrame(() => taRef.current?.focus());
+    },
+    getReplyMention: () => replyMention.current,
+    setReplyMention: (next: string | null) => {
+      const previous = replyMention.current;
+      const draft = previous && text.startsWith(previous) ? text.slice(previous.length) : text;
+      const inserted = next && !draft.startsWith(next) ? next : null;
+      setText(inserted ? inserted + draft : draft);
+      replyMention.current = inserted;
+      setMentionDismissed(true);
       requestAnimationFrame(() => taRef.current?.focus());
     },
   }));
@@ -160,6 +178,7 @@ export const Composer = forwardRef<
     try {
       const accepted = await onSend(messageText, files.flatMap((f) => (f.uploaded ? [f.uploaded] : [])));
       if (accepted !== false) {
+        replyMention.current = null;
         setText((current) => current === draft ? "" : current);
         setFiles((current) => current.filter((f) => !sentKeys.has(f.key)));
       }
@@ -210,14 +229,19 @@ export const Composer = forwardRef<
     setMenuDismissed(false);
   }
   const commandGroups = (["Commands", "Skills"] as const).map((group) => ({ group, items: (commands ?? []).filter((c) => c.group === group) })).filter((g) => g.items.length);
-  const mentionMatch = mentions.length ? /(^|\s)@([^@\n]{0,40})$/.exec(text) : null;
+  const mentionMatch = mentions.length && !mentionDismissed ? /(^|\s)@([^@\n]{0,40})$/.exec(text) : null;
   const mentionQuery = mentionMatch?.[2].toLowerCase();
   const mentionOptions =
     mentionQuery !== undefined
       ? [...mentions, { name: "everyone", icon: null, label: "All bots in this group" }].filter((m) => m.name.toLowerCase().startsWith(mentionQuery))
       : [];
+  const selectedMention = Math.min(mentionIndex, Math.max(0, mentionOptions.length - 1));
+  useEffect(() => {
+    if (mentionOptions.length) document.getElementById(`${mentionMenuId}-${selectedMention}`)?.scrollIntoView({ block: "nearest" });
+  }, [mentionMenuId, selectedMention, mentionOptions.length]);
   function insertMention(name: string) {
     setText((t) => t.replace(/@([^@\n]{0,40})$/, `@${name} `));
+    setMentionIndex(0); setMentionDismissed(true);
     taRef.current?.focus();
   }
 
@@ -256,18 +280,22 @@ export const Composer = forwardRef<
       )}
       {mentionOptions.length > 0 && (
         <div className="absolute bottom-full left-0 right-0 mb-2 rounded-2xl border border-border bg-popover p-1.5 shadow-lg">
-          <div className="px-2.5 py-1 text-xs text-subtle">Mention a bot</div>
-          {mentionOptions.map((m) => (
+          <div className="px-2.5 py-1 text-xs text-subtle">Mention a bot · ↑↓ choose · Tab complete · Esc close</div>
+          <div id={mentionMenuId} role="listbox" aria-label="Group bots" className="max-h-[min(20rem,45dvh)] overflow-y-auto">
+          {mentionOptions.map((m, i) => (
             <button
               key={m.name}
+              id={`${mentionMenuId}-${i}`} role="option" aria-selected={i === selectedMention}
+              type="button" onMouseDown={event => event.preventDefault()}
               onClick={() => insertMention(m.name)}
-              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm hover:bg-hover"
+              className={cn("flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm hover:bg-hover", i === selectedMention && "bg-hover")}
             >
               {m.name === "everyone" ? <AtSign className="h-5 w-5 text-muted" /> : <BotAvatar botId={"id" in m ? m.id : undefined} value={m.icon} className="h-5 w-5" />}
               <span className="font-medium">@{m.name}</span>
               {m.label && <span className="text-xs text-muted">{m.label}</span>}
             </button>
           ))}
+          </div>
         </div>
       )}
       {skillMatches.length > 0 && (
@@ -327,12 +355,16 @@ export const Composer = forwardRef<
             ))}
           </div>
         )}
+        {replyTo && <div role="status" className="mx-3 mb-1 flex min-w-0 items-start gap-2 border-l-2 border-accent pl-3 text-sm">
+          <div className="min-w-0 flex-1"><p className="font-medium">Replying to {replyTo.author}</p><p className="line-clamp-2 whitespace-pre-wrap break-words text-muted">{replyTo.excerpt}</p></div>
+          <button type="button" onClick={onCancelReply} aria-label="Cancel reply" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg hover:bg-hover"><X className="h-4 w-4" /></button>
+        </div>}
         <textarea
           ref={taRef}
           rows={1}
           value={text}
           disabled={disabled}
-          onChange={(e) => { setText(e.target.value); setMenuIndex(0); setMenuDismissed(false); }}
+          onChange={(e) => { setText(e.target.value); setMenuIndex(0); setMenuDismissed(false); setMentionIndex(0); setMentionDismissed(false); }}
           onPaste={(e) => {
             const pasted = Array.from(e.clipboardData.files);
             if (pasted.length) {
@@ -342,6 +374,13 @@ export const Composer = forwardRef<
           }}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return;
+            if (mentionOptions.length && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+              if (e.key === "Escape") { e.preventDefault(); setMentionDismissed(true); return; }
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault(); setMentionIndex((selectedMention + (e.key === "ArrowDown" ? 1 : -1) + mentionOptions.length) % mentionOptions.length); return;
+              }
+              if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); insertMention(mentionOptions[selectedMention].name); return; }
+            }
             if (commandMatches.length && !e.shiftKey) {
               if (e.key === "Escape") { e.preventDefault(); setMenuDismissed(true); return; }
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -366,11 +405,11 @@ export const Composer = forwardRef<
           placeholder={placeholder}
           className="block max-h-60 w-full resize-none bg-transparent px-3 py-2 text-base outline-none placeholder:text-subtle"
           aria-label="Message"
-          role={hermesCommands ? "combobox" : undefined}
-          aria-autocomplete={hermesCommands ? "list" : undefined}
-          aria-expanded={hermesCommands ? commandMatches.length > 0 : undefined}
-          aria-controls={commandMatches.length ? "hermes-command-options" : undefined}
-          aria-activedescendant={commandMatches.length ? `hermes-command-${selectedIndex}` : undefined}
+          role={hermesCommands || mentions.length ? "combobox" : undefined}
+          aria-autocomplete={hermesCommands || mentions.length ? "list" : undefined}
+          aria-expanded={hermesCommands || mentions.length ? !!(commandMatches.length || mentionOptions.length) : undefined}
+          aria-controls={mentionOptions.length ? mentionMenuId : commandMatches.length ? "hermes-command-options" : undefined}
+          aria-activedescendant={mentionOptions.length ? `${mentionMenuId}-${selectedMention}` : commandMatches.length ? `hermes-command-${selectedIndex}` : undefined}
         />
         <div className="flex items-center justify-between px-1 pt-1">
           <div className="flex items-center gap-0.5">

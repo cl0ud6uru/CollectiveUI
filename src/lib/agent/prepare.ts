@@ -5,6 +5,7 @@ import type { PortalUIMessage } from "@/lib/chat/store";
 import { HttpError } from "@/lib/authz";
 import { isImage } from "@/lib/files/extract";
 import { storage } from "@/lib/files/storage";
+import { replyModelText } from "@/lib/chat/reply";
 
 const FILE_URL_RE = /^\/api\/files\/([A-Za-z0-9]+)$/;
 
@@ -46,6 +47,7 @@ export async function resolveAttachmentsForModel(
   const out: PortalUIMessage[] = [];
   for (const m of history) {
     const parts: PortalUIMessage["parts"] = [];
+    if (m.role === "user" && m.metadata?.replyTo) parts.push({ type: "text", text: replyModelText(m.metadata.replyTo) });
     for (const p of m.parts) {
       if (p.type !== "file") {
         parts.push(p);

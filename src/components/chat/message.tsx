@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { isToolUIPart } from "ai";
-import { ChevronLeft, ChevronRight, FileText, Pencil, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileText, Pencil, RefreshCw, Reply, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -11,6 +11,8 @@ import { BotAvatar } from "@/components/bots/bot-avatar";
 import { CopyButton, Markdown } from "./markdown";
 import { needsAction, StepsGroup } from "./steps";
 import { ToolPartView } from "./tool-part";
+import { ReplyQuote } from "./reply-quote";
+import { replyContext } from "@/lib/chat/reply";
 
 export type BranchInfo = { index: number; total: number; onPrev: () => void; onNext: () => void };
 
@@ -72,6 +74,7 @@ export function UserMessage({
   message,
   branch,
   onEdit,
+  onReply,
   readOnly,
   variant = "plain",
   tint,
@@ -79,6 +82,7 @@ export function UserMessage({
   message: PortalUIMessage;
   branch?: BranchInfo;
   onEdit?: (text: string) => void;
+  onReply?: () => void;
   readOnly?: boolean;
   variant?: MessageVariant;
   tint?: BubbleTint;
@@ -120,6 +124,7 @@ export function UserMessage({
 
   return (
     <div className="group flex flex-col items-end gap-1">
+      {message.metadata?.replyTo && <ReplyQuote reply={message.metadata.replyTo} />}
       {files.length > 0 && (
         <div className="flex flex-wrap justify-end gap-2">
           {files.map((f, i) => (
@@ -140,7 +145,8 @@ export function UserMessage({
             {text}
           </div>
         ))}
-      <div className="flex items-center gap-1 text-muted opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="flex items-center gap-1 text-muted sm:opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        {!readOnly && onReply && replyContext(message) && <button type="button" onClick={onReply} aria-label="Reply to your message" className="flex h-11 w-11 items-center justify-center rounded-lg hover:bg-hover"><Reply className="h-4 w-4" /></button>}
         <Tip label="Copy">
           <span>
             <CopyButton text={text} label="" className="rounded-lg p-1.5 hover:bg-hover" />
@@ -194,10 +200,10 @@ function toBlocks(parts: { part: Part; index: number }[]): Block[] {
 }
 
 /** Group replies: each bot's turn starts with a speaker marker; split the parts into runs per speaker. */
-function toRuns(parts: Part[]): { speaker: Speaker | null; parts: { part: Part; index: number }[] }[] {
-  const runs: { speaker: Speaker | null; parts: { part: Part; index: number }[] }[] = [{ speaker: null, parts: [] }];
+function toRuns(parts: Part[]): { speaker: Speaker | null; speakerIndex?: number; parts: { part: Part; index: number }[] }[] {
+  const runs: { speaker: Speaker | null; speakerIndex?: number; parts: { part: Part; index: number }[] }[] = [{ speaker: null, parts: [] }];
   parts.forEach((part, index) => {
-    if (part.type === "data-speaker") runs.push({ speaker: part.data as Speaker, parts: [] });
+    if (part.type === "data-speaker") runs.push({ speaker: part.data as Speaker, speakerIndex: index, parts: [] });
     else runs[runs.length - 1].parts.push({ part, index });
   });
   return runs.filter((r) => r.speaker || r.parts.length);
@@ -213,6 +219,7 @@ export function AssistantMessage({
   readOnly,
   onRegenerate,
   onFeedback,
+  onReply,
   onApprove,
   onDeny,
   onAlwaysAllow,
@@ -230,6 +237,7 @@ export function AssistantMessage({
   readOnly?: boolean;
   onRegenerate?: () => void;
   onFeedback?: (v: 1 | -1 | null) => void;
+  onReply?: (speakerIndex?: number) => void;
   onApprove: (id: string) => void;
   onDeny: (id: string) => void;
   onAlwaysAllow?: (id: string, toolName: string) => void;
@@ -239,6 +247,8 @@ export function AssistantMessage({
   const lastTextIdx = message.parts.map((p) => p.type).lastIndexOf("text");
   const bubbles = variant === "bubbles";
   const runs = toRuns(message.parts);
+  const replyButton = (speakerIndex?: number, name = botName ?? "Assistant") => !streaming && !readOnly && onReply && replyContext(message, speakerIndex, name)
+    ? <button type="button" onClick={() => onReply(speakerIndex)} aria-label={`Reply to ${name}`} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent"><Reply className="h-4 w-4" /></button> : null;
   const stepGroups = runs.reduce((n, r) => n + toBlocks(r.parts).filter((b) => b.kind === "steps").length, 0);
   const meta = message.metadata;
   const searchCalls = new Set(message.parts.filter(p => isToolUIPart(p) && p.type === "tool-openai_web_search").map(p => (p as { toolCallId: string }).toolCallId)).size;
@@ -339,6 +349,7 @@ export function AssistantMessage({
         <div className={cn(bubbles ? "space-y-1.5" : "space-y-1")}>
           {runs.map((run, ri) => {
             const lastRun = ri === runs.length - 1;
+            const speakerIndex = run.speakerIndex;
             if (!run.speaker) return <div key={ri} className={cn(bubbles ? "space-y-1.5" : "space-y-1")}>{renderBlocks(run.parts, lastRun)}</div>;
             const active = isLast && lastRun;
             const speakerActivity = active && run.parts.some(({ part }) => needsAction(part)) ? "approval" : streaming && lastRun ? "working" : active && run.parts.some(({ part }) => part.type === "data-run-error" || part.type === "data-bot-error") ? "attention" : "decorative";
@@ -347,7 +358,7 @@ export function AssistantMessage({
               <div key={ri} className={cn("flex items-end gap-2", ri > 0 && "pt-3")}>
                 <BotAvatar botId={run.speaker.botId} activity={speakerActivity} value={run.speaker.avatar} size={28} className="mb-0.5 h-7 w-7" state={streaming && lastRun ? "working" : undefined} />
                 <div className="min-w-0 flex-1 space-y-1.5">
-                  <div className="px-1 text-xs font-medium text-muted">{run.speaker.name}</div>
+                  <div className="flex items-center justify-between px-1 text-xs font-medium text-muted">{run.speaker.name}{replyButton(speakerIndex, run.speaker.name)}</div>
                   {renderBlocks(run.parts, lastRun)}
                 </div>
               </div>
@@ -356,6 +367,7 @@ export function AssistantMessage({
                 <div className={cn("flex items-center gap-2 pb-1 text-sm font-semibold", ri > 0 && "mt-5")}>
                   <BotAvatar botId={run.speaker.botId} activity={speakerActivity} value={run.speaker.avatar} size={24} className="h-6 w-6" />
                   {run.speaker.name}
+                  {replyButton(speakerIndex, run.speaker.name)}
                 </div>
                 {renderBlocks(run.parts, lastRun)}
               </div>
@@ -371,9 +383,10 @@ export function AssistantMessage({
           <div
             className={cn(
               "mt-2 flex items-center gap-0.5 text-muted transition-opacity",
-              isLast ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+              isLast ? "opacity-100" : "sm:opacity-0 group-hover:opacity-100 focus-within:opacity-100",
             )}
           >
+            {!runs.some(run => run.speaker) && replyButton()}
             <Tip label="Copy">
               <span>
                 <CopyButton text={text} label="" className="rounded-lg p-1.5 hover:bg-hover" />
