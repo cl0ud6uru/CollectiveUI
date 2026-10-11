@@ -340,7 +340,9 @@ export function VoiceControl({ target, conversationId, name, icon, disabled = fa
                   className="rounded-full bg-white px-6 py-4 text-sm font-medium text-black disabled:opacity-40">{status === "connecting" ? "Cancel" : status === "ending" ? "Ending…" : "Start voice"}</button>}
               </div>
               <p className="text-xs text-white/40">Voice and text share this chat. You can minimize voice to type or review approvals.</p>
-              <a className="block text-xs text-white/60 underline" href={`/voice/reaction-studio?${new URLSearchParams({ conversationId })}`} target="_blank" rel="noopener noreferrer">Reaction studio</a>
+              {targetConversationId
+                ? <a className="block text-xs text-white/60 underline" href={`/voice/reaction-studio?${new URLSearchParams({ conversationId: targetConversationId })}`} target="_blank" rel="noopener noreferrer">Reaction studio</a>
+                : <p className="text-xs text-white/40">Send a message or finish a voice conversation to use the reaction studio.</p>}
               <VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />
               <VoiceReactionDiagnosticsControls diagnostics={reactionDiagnostics} active={status === "connected"} onCaptureChange={setMotionCapture} />
               {audioBlocked && <button className="text-sm underline" onClick={() => void audioRef.current?.play().then(() => setAudioBlocked(false)).catch(() => setError("Tap again to enable audio playback."))}>Enable voice audio</button>}

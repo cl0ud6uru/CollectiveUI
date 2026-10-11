@@ -14,7 +14,7 @@ const postcss = require('postcss'), tailwind = require('@tailwindcss/postcss');
 const dir = await mkdtemp(path.join(tmpdir(), 'collective-voice-'));
 const entry = path.join(dir, 'entry.tsx');
 await writeFile(entry, `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {VoiceControl} from '@/components/chat/voice-control';
-function App(){const [active,setActive]=useState(false);return <main className="h-screen bg-bg p-8 text-fg"><h1>CollectiveUI voice fixture</h1><VoiceControl target={{botId:'bot00000001',conversationId:'chat00000001'}} conversationId="chat00000001" name="Nimbus" icon="blob:ghost:teal" onActiveChange={setActive} onConversationChange={()=>{window.changes=(window.changes||0)+1}} chatContext={[{id:'prior',role:'user',text:'Remember my notes'}]}/><p data-testid="voice-state">{active?'Voice active':'Voice idle'}</p><input aria-label="Message Nimbus" placeholder="Keep typing here" /></main>};createRoot(document.getElementById('root')).render(<App/>);`);
+function App(){const [active,setActive]=useState(false);const [saved,setSaved]=useState(!location.search.includes('new'));return <main className="h-screen bg-bg p-8 text-fg"><h1>CollectiveUI voice fixture</h1><button onClick={()=>setSaved(true)}>Save fixture conversation</button><VoiceControl target={{botId:'bot00000001',...(saved?{conversationId:'chat00000001'}:{})}} conversationId="chat00000001" name="Nimbus" icon="blob:ghost:teal" onActiveChange={setActive} onConversationChange={()=>{window.changes=(window.changes||0)+1}} chatContext={[{id:'prior',role:'user',text:'Remember my notes'}]}/><p data-testid="voice-state">{active?'Voice active':'Voice idle'}</p><input aria-label="Message Nimbus" placeholder="Keep typing here" /></main>};createRoot(document.getElementById('root')).render(<App/>);`);
 const bundle = await build({ entryPoints: [entry], outfile: path.join(dir, 'bundle.js'), write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src') } });
 const css = await postcss([tailwind({ base: root })]).process(await readFile(path.join(root, 'src/app/globals.css'), 'utf8'), { from: path.join(root, 'src/app/globals.css') });
 const batches = [];
@@ -69,8 +69,16 @@ try {
     }
     window.RTCPeerConnection = Peer;
   });
-  await page.goto(base);
+  await page.goto(base + '/?new');
   await page.getByRole('button', { name: 'Voice conversation', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Reaction studio', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Send a message or finish a voice conversation to use the reaction studio.', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('voice-state')).toHaveText('Voice idle');
+  expect(sessionCount).toBe(0);
+  await page.getByRole('button', { name: 'Minimize voice', exact: true }).click();
+  await page.getByRole('button', { name: 'Save fixture conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Voice conversation', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Reaction studio', exact: true })).toHaveAttribute('href', '/voice/reaction-studio?conversationId=chat00000001');
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await expect.poll(async () => (await dialog.boundingBox())?.width).toBe(1280);
