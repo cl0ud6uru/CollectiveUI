@@ -1,4 +1,6 @@
-import { z } from "zod";
+// Match the AI SDK entrypoint when these schemas are shared with lazy avatar imports.
+// Mixing root Zod and zod/v4 can defer constructor initialization in esbuild bundles.
+import { z } from "zod/v4";
 import type { Reaction } from "./policy";
 
 export const FACE_PROFILES = ["neutral", "warm", "sympathetic", "curious", "reassuring", "serious"] as const;
