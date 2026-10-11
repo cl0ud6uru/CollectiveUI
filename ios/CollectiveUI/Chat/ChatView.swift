@@ -69,7 +69,9 @@ struct ChatView: View {
                 .buttonStyle(.plain).modifier(ChatGlass(cornerRadius: 22))
                 .accessibilityLabel("Open sidebar")
                 .accessibilityActivationPoint(.center)
-                if !model.usesBubbles || compactHeader {
+                if let group = model.target, group.kind == "group" {
+                    GroupChatHeader(group: group)
+                } else if !model.usesBubbles || compactHeader {
                     if model.usesBubbles {
                         BotIdentityView(botId: model.target?.id, icon: model.assistantIcon, size: 32, activity: model.avatarActivity)
                     }
@@ -91,7 +93,7 @@ struct ChatView: View {
                 }
             }
             .padding(.horizontal, 16)
-            if model.usesBubbles && !compactHeader {
+            if model.usesBubbles && model.target?.kind != "group" && !compactHeader {
                 VStack(spacing: -2) {
                     BotIdentityView(botId: model.target?.id, icon: model.assistantIcon, size: 48, activity: model.avatarActivity)
                         .zIndex(1)
