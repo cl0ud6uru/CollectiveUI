@@ -16,6 +16,14 @@ export const APP_PROVIDERS = [...ENABLED_KINDS, "chatgpt"] as const;
 export type AppProvider = (typeof APP_PROVIDERS)[number];
 export const isAppProvider = (k: string): k is AppProvider => (APP_PROVIDERS as readonly string[]).includes(k);
 
+export const SAVED_PROVIDER_KINDS = ["openai", "openai-compatible"] as const;
+export type SavedProviderKind = (typeof SAVED_PROVIDER_KINDS)[number];
+export const isSavedProviderKind = (kind: string): kind is SavedProviderKind => (SAVED_PROVIDER_KINDS as readonly string[]).includes(kind);
+export const SAVED_PROVIDER_LABELS: Record<SavedProviderKind, string> = {
+  openai: "OpenAI · Responses API",
+  "openai-compatible": "OpenAI-compatible · Chat Completions API",
+};
+
 // ---------------------------------------------------------------------------
 // Non-secret configuration (stored in ai_apps.provider_config)
 // ---------------------------------------------------------------------------
@@ -145,6 +153,17 @@ type BaseUrlResult = { ok: true; value: string | null } | { ok: false; error: st
 export function normalizeBaseUrl(kind: EnabledKind, raw: string | null | undefined): BaseUrlResult {
   const input = raw?.trim() ?? "";
   if (kind === "hermes") return normalizeHermesUrl(input);
+  if (isSavedProviderKind(kind) && input) {
+    try {
+      const u = new URL(input);
+      if (u.username || u.password || u.search || u.hash) return { ok: false, error: "Base URL can't contain credentials, a query or a fragment" };
+      if (/\/(?:chat\/completions|responses|models|embeddings)\/*$/i.test(decodeURIComponent(u.pathname))) {
+        return { ok: false, error: "Enter the API base URL, for example https://provider.example/v1, without /chat/completions, /responses, /models or /embeddings." };
+      }
+    } catch {
+      return { ok: false, error: "Base URL is not a valid URL" };
+    }
+  }
   if (kind === "openai-compatible") {
     if (!input) return { ok: false, error: "Base URL is required" };
     try {
@@ -271,8 +290,8 @@ export const AppInput = z
     z.object({ provider: z.literal("hermes"), config: CONFIG_SCHEMAS.hermes.default({ profile: "", approvalTimeoutSec: 300, allowedModels: "" }), ...common }),
   ])
   .superRefine((v, ctx) => {
-    if (v.providerConnectionId && v.provider !== "openai") {
-      ctx.addIssue({ code: "custom", path: ["providerConnectionId"], message: "Saved provider connections currently support OpenAI API models only" });
+    if (v.providerConnectionId && !isSavedProviderKind(v.provider)) {
+      ctx.addIssue({ code: "custom", path: ["providerConnectionId"], message: "Saved provider connections support OpenAI and OpenAI-compatible API models only" });
     }
     if (v.embeddingModel?.trim() && !supportsEmbeddings(v.provider)) {
       ctx.addIssue({ code: "custom", path: ["embeddingModel"], message: `${CATALOG[v.provider].label} doesn't provide embeddings` });
@@ -520,6 +539,12 @@ export function isEligibleEmbeddingApp(app: {
 
 /** Safe admin metadata for named API credentials. No secret or ciphertext can enter model forms. */
 export type ProviderConnectionView = {
-  id: string; name: string; provider: "openai"; baseUrl: string | null; organization: string | null; project: string | null;
+  id: string; name: string; provider: SavedProviderKind; baseUrl: string | null; organization: string | null; project: string | null;
   enabled: boolean; createdBy: string | null; updatedAt: string;
 };
+
+/** Billing selectors belong to the saved credential; protocol-specific model flags stay on the model. */
+export function savedProviderConfig(connection: Pick<ProviderConnectionView, "provider" | "organization" | "project">, config: unknown): AnyProviderConfig {
+  if (connection.provider === "openai-compatible") return CONFIG_SCHEMAS["openai-compatible"].parse(config);
+  return { ...CONFIG_SCHEMAS.openai.parse(config), organization: connection.organization ?? undefined, project: connection.project ?? undefined };
+}

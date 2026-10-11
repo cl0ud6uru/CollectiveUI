@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { APP_PROVIDERS, CATALOG, endpointLabel, supportsEmbeddings, type AppProvider, type CredentialsInput } from "@/lib/llm/catalog";
+import { APP_PROVIDERS, CATALOG, endpointLabel, isEnabledKind, isSavedProviderKind, normalizeBaseUrl, savedProviderConfig, SAVED_PROVIDER_LABELS, supportsEmbeddings, type AppProvider, type CredentialsInput } from "@/lib/llm/catalog";
 import { AppIcon } from "@/components/app-icon";
 import { AvatarPicker } from "@/components/bots/avatar-picker";
 import { GroupPicker } from "./group-picker";
@@ -121,8 +121,10 @@ function AppDialog({
 
   const linked = !!f.providerConnectionId;
   const visibleSecrets = (linked ? [] : entry.secrets).filter((s) => !s.when || String(f.config[s.when.key] ?? "") === s.when.value);
+  const normalizedUrl = isEnabledKind(f.provider) ? normalizeBaseUrl(f.provider, f.baseUrl) : { ok: true as const };
+  const urlError = !normalizedUrl.ok && f.baseUrl !== "https://" ? normalizedUrl.error : null;
   const baseUrlOk = entry.baseUrl.mode !== "required" || (!!f.baseUrl && f.baseUrl !== "https://");
-  const canTest = baseUrlOk && (entry.test !== "probe" || !!f.model);
+  const canTest = !urlError && baseUrlOk && (entry.test !== "probe" || !!f.model);
 
   const payload = (): AppInput =>
     ({
@@ -189,8 +191,26 @@ function AppDialog({
           <Field label="Description">
             <Input aria-label="Description" value={f.description ?? ""} onChange={(e) => set("description", e.target.value)} placeholder={agent ? "Shown when choosing a bot backend" : "Shown in the model picker"} />
           </Field>
-          <Field label={agent ? "Agent backend" : "Model provider"} hint={entry.description}>
-            <Select aria-label={agent ? "Agent backend" : "Model provider"} value={f.provider} onChange={(e) => switchProvider(e.target.value as AppProvider)}>
+          {!agent && <Field label="Saved provider connection" hint="Choose a saved company credential to set the API type and endpoint, or enter credentials on this model.">
+            <Select aria-label="Saved provider connection" value={f.providerConnectionId ?? ""} onChange={e => {
+              const c = connections.find(c => c.id === e.target.value);
+              if (c) setF(x => ({ ...x, provider: c.provider, providerConnectionId: c.id, baseUrl: c.baseUrl,
+                config: savedProviderConfig(c, c.provider === x.provider ? x.config : CATALOG[c.provider].defaultConfig) as Record<string, unknown> }));
+              else setF(x => ({ ...x, providerConnectionId: null, baseUrl: x.provider === "openai-compatible" ? "https://" : null, config: { ...CATALOG[x.provider].defaultConfig } }));
+              setCredentials({}); setModels([]);
+            }}>
+              <option value="">Enter credentials on this model</option>
+              {connections.map(c => <option key={c.id} value={c.id} disabled={!c.enabled && c.id !== f.providerConnectionId}>{c.name} · {SAVED_PROVIDER_LABELS[c.provider]}{!c.enabled ? " (disabled)" : ""}</option>)}
+            </Select>
+            {linked && <Button variant="outline" onClick={test} disabled={testing || !canTest}>Test saved connection</Button>}
+            {!linked && isSavedProviderKind(f.provider) && f.id && f.hasKey && <Button variant="outline" disabled={pending || !!urlError} onClick={() => {
+              const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its API type, endpoint, project and audience are preserved. Service bots whose publication is current stay published; bots that already need review still do.", `${f.name} provider`);
+              if (!name?.trim()) return;
+              start(async () => { try { await migrateAppProviderConnection(f.id!, name); onClose(); router.refresh(); toast.success("Credential migrated; select it on other models to reuse it"); } catch { toast.error("Could not migrate this credential. Check the stored model and administrator access."); } });
+            }}>Migrate stored credential to a named connection</Button>}
+          </Field>}
+          <Field label={agent ? "Agent backend" : "Provider API type"} hint={linked ? "Set by the saved connection. Choose another saved connection or model-specific credentials to change it." : entry.description}>
+            <Select disabled={linked} aria-label={agent ? "Agent backend" : "Provider API type"} value={f.provider} onChange={(e) => switchProvider(e.target.value as AppProvider)}>
               {providers.map((k) => (
                 <option key={k} value={k}>
                   {CATALOG[k].label}
@@ -200,26 +220,9 @@ function AppDialog({
           </Field>
 
           {agent && <p className="rounded-xl border border-border p-3 text-sm text-muted">Bot-only. This connection never appears in New Chat or default model settings. Saving a new manual backend also creates its bot. For isolated per-user runtimes, use Admin → Managed Hermes.</p>}
-          {f.provider === "openai" && <Field label="Saved provider connection" hint="Select a named credential. Endpoint and billing destination are managed on that connection.">
-            <Select aria-label="Saved provider connection" value={f.providerConnectionId ?? ""} onChange={e => {
-              const c = connections.find(c => c.id === e.target.value);
-              setF(x => ({ ...x, providerConnectionId: c?.id ?? null, baseUrl: c?.baseUrl ?? null,
-                config: { ...x.config, organization: c?.organization ?? undefined, project: c?.project ?? undefined } }));
-              setCredentials({}); setModels([]);
-            }}>
-              <option value="">Model-specific credential (legacy)</option>
-              {connections.map(c => <option key={c.id} value={c.id} disabled={!c.enabled && c.id !== f.providerConnectionId}>{c.name}{!c.enabled ? " (disabled)" : ""}</option>)}
-            </Select>
-            {linked && <Button variant="outline" onClick={test} disabled={testing}>Test saved connection</Button>}
-            {!linked && f.id && f.hasKey && <Button variant="outline" disabled={pending} onClick={() => {
-              const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its endpoint, project and audience are preserved. Service bots whose publication is current stay published; bots that already need review still do.", `${f.name} provider`);
-              if (!name?.trim()) return;
-              start(async () => { try { await migrateAppProviderConnection(f.id!, name); onClose(); router.refresh(); toast.success("Credential migrated; select it on other models to reuse it"); } catch { toast.error("Could not migrate this credential. Check the stored model and administrator access."); } });
-            }}>Migrate stored credential to a named connection</Button>}
-          </Field>}
           {entry.baseUrl.mode !== "none" && (
-            <Field label="Base URL" hint={entry.baseUrl.hint}>
-              <Input disabled={linked} aria-label="Base URL" value={f.baseUrl ?? ""} onChange={(e) => set("baseUrl", e.target.value || null)} placeholder={entry.baseUrl.placeholder} />
+            <Field label="Base URL" hint={urlError ?? entry.baseUrl.hint}>
+              <Input disabled={linked} aria-invalid={!!urlError} aria-label="Base URL" value={f.baseUrl ?? ""} onChange={(e) => set("baseUrl", e.target.value || null)} placeholder={entry.baseUrl.placeholder} />
             </Field>
           )}
 
@@ -377,7 +380,7 @@ function AppDialog({
               Cancel
             </Button>
             <Button
-              disabled={pending || !f.name || !baseUrlOk || !f.model}
+              disabled={pending || !f.name || !!urlError || !baseUrlOk || !f.model}
               onClick={() =>
                 start(async () => {
                   try {

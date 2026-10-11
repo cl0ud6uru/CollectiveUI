@@ -26,7 +26,7 @@ import { newId } from "@/lib/ids";
 import { testConnection } from "@/lib/llm";
 import { testChatGPTConnection } from "@/lib/llm/chatgpt/models";
 import { assertCreatableProvider, planAppWrite, planConnectionTest } from "@/lib/llm/app-form";
-import { AppInput as AppInputSchema, CATALOG, CredentialsInput, isEligibleEmbeddingApp, isEligibleUtilityApp, isEnabledKind, type AppInput } from "@/lib/llm/catalog";
+import { AppInput as AppInputSchema, CATALOG, CredentialsInput, isEligibleEmbeddingApp, isEligibleUtilityApp, isEnabledKind, isSavedProviderKind, type AppInput } from "@/lib/llm/catalog";
 import { checkHermesUrl } from "@/lib/llm/providers/hermes";
 import { activeProviderConnection, assertConnectionTarget, connectionConfig, openProviderCredential } from "@/lib/llm/provider-connections";
 import { decodeSecret, sealAppSecret } from "@/lib/llm/secrets";
@@ -179,7 +179,7 @@ export type ConnectionTestInput = z.input<typeof ConnectionTestInput>;
 export async function testAppConnection(raw: ConnectionTestInput) {
   const p = await requireAdmin();
   const input = ConnectionTestInput.parse(raw);
-  if (input.providerConnectionId && input.provider !== "openai") return { ok: false as const, error: "Saved provider connections support OpenAI API models only." };
+  if (input.providerConnectionId && !isSavedProviderKind(input.provider)) return { ok: false as const, error: "Saved provider connections support OpenAI and OpenAI-compatible API models only." };
   // ChatGPT apps: list what the admin's own connected plan offers (there are no app credentials to test).
   if (input.provider === "chatgpt") return testChatGPTConnection(p.user.id, await getSetting("chatgpt"));
   if (!isEnabledKind(input.provider)) return { ok: false as const, error: "Unknown provider" };

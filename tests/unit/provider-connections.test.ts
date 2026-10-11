@@ -39,4 +39,15 @@ describe("saved provider credentials", () => {
       expect(AppInput.safeParse({ name: "Fixture", provider, providerConnectionId: "conn-1", model: "model", supportsTools: true, supportsVision: false, isPublic: true, enabled: true }).success).toBe(false);
     }
   });
+  it("supports compatible credentials with exact destination and API type matching", () => {
+    const row = { ...fixture(), provider: "openai-compatible" as const, baseUrl: "https://provider.example/api/v1/", organization: null, project: null };
+    expect(connectionConfig(row, { store: true, organization: "ignored", project: "ignored", apiKey: "ignored" })).toEqual({});
+    expect(() => assertConnectionTarget(row, "openai-compatible", row.baseUrl, {})).not.toThrow();
+    for (const [kind, url] of [["openai", row.baseUrl], ["openai-compatible", "https://provider.example/other/v1/"], ["openai-compatible", "https://other.example/api/v1/"]]) {
+      expect(() => assertConnectionTarget(row, kind, url, {})).toThrow();
+    }
+    expect(providerConnectionView(row)).toMatchObject({ provider: "openai-compatible", baseUrl: row.baseUrl });
+    expect(providerConnectionView(row)).not.toHaveProperty("credentialEnc");
+    expect(AppInput.safeParse({ name: "Fixture", provider: "openai-compatible", providerConnectionId: row.id, baseUrl: row.baseUrl, model: "model", supportsTools: true, supportsVision: false, isPublic: true, enabled: true }).success).toBe(true);
+  });
 });

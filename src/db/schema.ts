@@ -351,7 +351,7 @@ export const groupMembers = pgTable("group_members", {
 export const providerConnections = pgTable("provider_connections", {
   id: id(),
   name: text("name").notNull(),
-  provider: text("provider").$type<"openai">().notNull().default("openai"),
+  provider: text("provider").$type<import("@/lib/llm/catalog").SavedProviderKind>().notNull().default("openai"),
   baseUrl: text("base_url"),
   organization: text("organization"),
   project: text("project"),
@@ -360,7 +360,10 @@ export const providerConnections = pgTable("provider_connections", {
   createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
-}, (t) => [check("provider_connections_provider_check", sql`${t.provider} = 'openai'`)]);
+}, (t) => [
+  check("provider_connections_provider_check", sql`${t.provider} in ('openai', 'openai-compatible')`),
+  check("provider_connections_compatible_target_check", sql`${t.provider} <> 'openai-compatible' or (${t.baseUrl} is not null and ${t.organization} is null and ${t.project} is null)`),
+]);
 
 /** Dedicated read-only billing credentials; never an inference connection or bot credential. */
 export const providerBillingAccounts = pgTable("provider_billing_accounts", {
@@ -421,7 +424,7 @@ export const aiApps = pgTable(
   },
   (t) => [
     index("ai_apps_provider_connection_idx").on(t.providerConnectionId),
-    check("ai_apps_provider_connection_check", sql`${t.providerConnectionId} is null or (${t.provider} = 'openai' and ${t.credentialMode} = 'org' and ${t.apiKeyEnc} is null)`),
+    check("ai_apps_provider_connection_check", sql`${t.providerConnectionId} is null or (${t.provider} in ('openai', 'openai-compatible') and ${t.credentialMode} = 'org' and ${t.apiKeyEnc} is null)`),
     check("ai_apps_kind_check", sql`${t.kind} in ('model', 'runtime')`),
     check(
       "ai_apps_provider_check",
