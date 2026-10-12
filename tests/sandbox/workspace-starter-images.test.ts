@@ -137,7 +137,7 @@ describe("reviewed workspace starter image definitions", () => {
     expect(source).toContain("Newtonsoft.Json");
     expect(lock.dependencies["net10.0"]["Newtonsoft.Json"]).toMatchObject({
       resolved: "13.0.3",
-      contentHash: "mbJSvHfRxfX3tR/U6n1WU+mWHXswYc+SB/hkOpx8yZZe68hNZGfymJu0cjsaJEkVzCMqePiU6LdIyogqfIn7kg==",
+      contentHash: "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ==",
     });
   });
 
