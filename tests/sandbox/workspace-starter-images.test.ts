@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { loadConfig } from "@/sandboxd/config";
+import { Docker } from "@/sandboxd/docker";
+import { Manager } from "@/sandboxd/manager";
+import { containerName, containerSpec, execSpec, volumeSpec } from "@/sandboxd/spec";
 import { enabled, newRef, run, startSandboxd } from "./harness";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -22,16 +26,30 @@ const manifest = JSON.parse(readFileSync(resolve(root, "docker/workspace-templat
   }>;
 };
 
-function profile(key: string) {
-  const found = manifest.profiles.find((candidate) => candidate.key === key);
-  if (!found) throw new Error(`Missing workspace starter profile ${key}`);
+function profile(slug: string) {
+  const found = manifest.profiles.find((candidate) => candidate.templateSlug === slug);
+  if (!found) throw new Error(`Missing workspace starter profile ${slug}`);
   return found;
+}
+
+async function runInContainer(h: Awaited<ReturnType<typeof startSandboxd>>, containerId: string, command: string, timeoutMs = 150_000) {
+  let out = "";
+  let err = "";
+  const execId = await h.docker.execCreate(containerId, execSpec(["/bin/sh", "-lc", `cd /home/agent/workspace && ${command}`], { stdin: false }));
+  const attached = await h.docker.execAttach(execId, (type, data) => {
+    if (type === 1) out += data.toString();
+    else if (type === 2) err += data.toString();
+  });
+  const timer = setTimeout(() => attached.socket.destroy(), timeoutMs);
+  await attached.ended;
+  clearTimeout(timer);
+  return { code: await h.docker.execExitCode(execId, 5_000), out, err };
 }
 
 describe("reviewed workspace starter image definitions", () => {
   it("pins the Linux base and declares only the two reviewed, offline profiles", () => {
     expect(manifest.schemaVersion).toBe(1);
-    expect(manifest.profiles.map(({ key }) => key)).toEqual(["knowledge-work", "dotnet-linux"]);
+    expect(manifest.profiles.map(({ key }) => key)).toEqual(["knowledge-work-v1", "dotnet-linux-v1"]);
     for (const item of manifest.profiles) {
       expect(item.imageRef === null || /^sha256:[a-f0-9]{64}$/.test(item.imageRef)).toBe(true);
       expect(item.imageRefStatus).toBe(item.imageRef === null ? "build_required" : "recorded");
@@ -41,6 +59,8 @@ describe("reviewed workspace starter image definitions", () => {
       expect(readFileSync(resolve(root, item.dockerfile), "utf8")).toMatch(/HEALTHCHECK/);
     }
     expect(profile("knowledge-work").name).toBe("Knowledge Work");
+    expect(profile("knowledge-work").key).toBe("knowledge-work-v1");
+    expect(profile("knowledge-work").seedBundle.key).toBe("knowledge-work-v1");
     expect(profile("knowledge-work").templateSlug).toBe("knowledge-work");
     expect(profile("knowledge-work").capabilities).toEqual({
       shell: true,
@@ -48,6 +68,8 @@ describe("reviewed workspace starter image definitions", () => {
       dotnet: false,
       agentBrowserView: false,
     });
+    expect(profile("dotnet-linux").key).toBe("dotnet-linux-v1");
+    expect(profile("dotnet-linux").seedBundle.key).toBe("dotnet-linux-v1");
     expect(profile("dotnet-linux").capabilities).toEqual({
       shell: true,
       officeHeadless: false,
@@ -75,6 +97,9 @@ describe("reviewed workspace starter image definitions", () => {
     expect(dockerfile).toContain("dotnet restore Starter.csproj --locked-mode");
     expect(dockerfile).toContain("dotnet build Starter.csproj --no-restore");
     expect(dockerfile).toContain("--source https://api.nuget.org/v3/index.json");
+    expect(dockerfile).toContain("Microsoft.NETCore.App 10.0.12");
+    expect(dockerfile).toContain("Microsoft.NETCore.App.Ref/10.0.12");
+    expect(dockerfile).not.toContain("chmod -R a-w /opt/workspace-template");
     expect(project).toContain("<TargetFramework>net10.0</TargetFramework>");
     expect(project).not.toMatch(/net[1-9][0-9]?\d-windows|Microsoft\.NETFramework|net4\d/);
     expect(source).toContain("Newtonsoft.Json");
@@ -136,7 +161,7 @@ describe("reviewed workspace starter image definitions", () => {
 });
 
 (enabled && profile("dotnet-linux").imageRef ? describe : describe.skip)(".NET Linux image in a read-only-rootfs sandbox", () => {
-  it("builds and runs the locked .NET starter offline from a fresh persistent home", async () => {
+  it("seeds an existing empty volume, builds offline, and preserves edited files after restart", async () => {
     const item = profile("dotnet-linux");
     const h = await startSandboxd({
       SANDBOXD_IMAGE: item.imageRef!,
@@ -144,31 +169,35 @@ describe("reviewed workspace starter image definitions", () => {
       SANDBOXD_PIDS: "256",
       SANDBOXD_TMP_MB: "512",
       SANDBOXD_MAX_EXEC_SECONDS: "180",
+      SANDBOXD_RUNTIME: "runc",
     });
     try {
       const ref = newRef();
-      const ready = await run(h, ref, "id -u; stat -c '%a:%u:%g' /opt/portal/run-agent; touch /tmp/template-writable; if touch /etc/template-readonly 2>/dev/null; then exit 91; fi; rm /tmp/template-writable; dotnet --version; test -s Starter.csproj; test -s packages.lock.json", { timeoutMs: 30_000 });
-      expect(ready, ready.out + ready.err).toMatchObject({ code: 0, reason: "exited" });
-      expect(ready.out).toContain("1000\n755:0:0\n10.0.112\n");
-      for (const path of ["Starter.csproj", "Program.cs", "packages.lock.json"]) {
-        expect(await h.client.readFile(ref, { isolation: "any", path, maxBytes: 16 * 1024 })).not.toBeNull();
-      }
+      await h.docker.volumeCreate(volumeSpec(ref, h.config.instance));
+      const spec = containerSpec({ ref, imageId: item.imageRef!, runtime: "runc", limits: h.config.limits, instance: h.config.instance });
+      const mounts = (spec.HostConfig as { Mounts: Array<Record<string, unknown>> }).Mounts;
+      mounts[0] = { ...mounts[0], VolumeOptions: { NoCopy: true } };
+      const created = await h.docker.containerCreate(containerName(ref), spec);
+      await h.docker.containerStart(created.Id);
 
-      const built = await run(h, ref, "dotnet build Starter.csproj --no-restore --configuration Release", { timeoutMs: 150_000 });
-      expect(built, built.out + built.err).toMatchObject({ code: 0, reason: "exited" });
-      const executed = await run(h, ref, "dotnet run --project Starter.csproj --no-restore --configuration Release --no-build", { timeoutMs: 90_000 });
-      expect(executed, executed.out + executed.err).toMatchObject({ code: 0, reason: "exited" });
+      const ready = await runInContainer(h, created.Id, "for i in $(seq 1 60); do if [ -s Starter.csproj ] && [ -s obj/project.assets.json ] && [ -d /home/agent/.nuget/packages/newtonsoft.json/13.0.3 ]; then break; fi; sleep 0.5; done; id -u; stat -c '%a:%u:%g' /opt/portal/run-agent; test -w Program.cs && test -w obj && touch obj/.permission-check && rm obj/.permission-check; touch /tmp/template-writable; if touch /etc/template-readonly 2>/dev/null; then exit 91; fi; rm /tmp/template-writable; dotnet --version; test -s Starter.csproj; test -s packages.lock.json; test -s obj/project.assets.json", 30_000);
+      expect(ready, ready.out + ready.err).toMatchObject({ code: 0 });
+      expect(ready.out).toContain("1000\n755:0:0\n10.0.112\n");
+
+      const built = await runInContainer(h, created.Id, "dotnet build Starter.csproj --no-restore --configuration Release");
+      expect(built, built.out + built.err).toMatchObject({ code: 0 });
+      const executed = await runInContainer(h, created.Id, "dotnet run --project Starter.csproj --no-restore --configuration Release --no-build", 90_000);
+      expect(executed, executed.out + executed.err).toMatchObject({ code: 0 });
       expect(executed.out).toContain('"targetFramework":"net10.0"');
       expect(executed.out).toContain('"package":"13.0.0.0"');
 
-      const scratch = Buffer.from("persisted across restart\n").toString("base64");
-      await h.client.writeFile(ref, { isolation: "any", path: "restart-check.txt", contentB64: scratch });
-      await h.client.stop(ref);
-      await h.client.start(ref, "any");
-      const persisted = await h.client.readFile(ref, { isolation: "any", path: "restart-check.txt", maxBytes: 1024 });
-      expect(persisted?.bytes.toString()).toBe("persisted across restart\n");
-      const rerun = await run(h, ref, "dotnet run --project Starter.csproj --no-restore --configuration Release --no-build", { timeoutMs: 90_000 });
-      expect(rerun, rerun.out + rerun.err).toMatchObject({ code: 0, reason: "exited" });
+      const edited = await runInContainer(h, created.Id, "sed -i 's/template = \"dotnet-linux\"/template = \"dotnet-linux-user-edited\"/' Program.cs && printf 'persisted across restart\\n' > restart-check.txt && grep -F 'dotnet-linux-user-edited' Program.cs", 30_000);
+      expect(edited, edited.out + edited.err).toMatchObject({ code: 0 });
+      await h.docker.containerStop(created.Id);
+      await h.docker.containerStart(created.Id);
+      const rerun = await runInContainer(h, created.Id, "grep -F 'dotnet-linux-user-edited' Program.cs && test \"$(cat restart-check.txt)\" = 'persisted across restart' && dotnet build Starter.csproj --no-restore --configuration Release && dotnet run --project Starter.csproj --no-restore --configuration Release --no-build", 150_000);
+      expect(rerun, rerun.out + rerun.err).toMatchObject({ code: 0 });
+      expect(rerun.out).toContain('"template":"dotnet-linux-user-edited"');
       expect(rerun.out).toContain('"targetFramework":"net10.0"');
     } finally {
       await h.close();
@@ -177,13 +206,34 @@ describe("reviewed workspace starter image definitions", () => {
 
 });
 
-(enabled ? describe : describe.skip)("workspace image admission errors", () => {
-  it("reports an absent pinned image without creating a sandbox", async () => {
-    const h = await startSandboxd({ SANDBOXD_IMAGE: "collectiveui/workspace-template-missing:never-built" });
-    try {
-      await expect(h.client.start(newRef(), "any")).rejects.toMatchObject({ code: "image_missing" });
-    } finally {
-      await h.close();
-    }
+describe("workspace image admission errors", () => {
+  it("rejects an absent image before creating a volume or container", async () => {
+    const docker = {
+      version: vi.fn().mockResolvedValue({ ApiVersion: "1.44", MinAPIVersion: "1.24" }),
+      info: vi.fn().mockResolvedValue({
+        KernelVersion: "test-kernel",
+        NCPU: 2,
+        MemoryLimit: true,
+        SwapLimit: true,
+        PidsLimit: true,
+        CpuCfsQuota: true,
+        CgroupDriver: "systemd",
+        Runtimes: {},
+      }),
+      imageInspect: vi.fn().mockResolvedValue(null),
+      volumeCreate: vi.fn(),
+      containerCreate: vi.fn(),
+    } as unknown as Docker;
+    const config = loadConfig({
+      SANDBOXD_SECRET: "a".repeat(64),
+      SANDBOXD_IMAGE: "collectiveui/workspace-template-missing:never-built",
+      SANDBOXD_RUNTIME: "runc",
+      SANDBOXD_INSTANCE: "missing-image-test",
+    });
+    const manager = new Manager(docker, config);
+
+    await expect(manager.init()).rejects.toMatchObject({ code: "image_missing" });
+    expect(docker.volumeCreate).not.toHaveBeenCalled();
+    expect(docker.containerCreate).not.toHaveBeenCalled();
   });
 });

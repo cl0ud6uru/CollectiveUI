@@ -4,14 +4,14 @@ W3 supplies two reviewed image recipes in `docker/workspace-templates/manifest.j
 
 ## Profiles
 
-| Profile key | Catalog name | Included capabilities |
-| --- | --- | --- |
-| `knowledge-work` | **Knowledge Work** | Shell, Python, headless LibreOffice writer/calc/impress, existing checked conversion helpers |
-| `dotnet-linux` | **.NET Linux** | Shell, Microsoft .NET SDK 10.0, a locked console starter and pre-restored NuGet cache |
+| Versioned profile key | Template slug (`--only`) | Catalog name | Included capabilities |
+| --- | --- | --- | --- |
+| `knowledge-work-v1` | `knowledge-work` | **Knowledge Work** | Shell, Python, headless LibreOffice writer/calc/impress, existing checked conversion helpers |
+| `dotnet-linux-v1` | `dotnet-linux` | **.NET Linux** | Shell, Microsoft .NET SDK 10.0, a locked console starter and pre-restored NuGet cache |
 
 Knowledge Work reuses `docker/sandbox/office-requirements.txt`, `office-check`, `office-convert`, and the existing runner/file helpers. It provides headless document conversion only; it has no desktop session, GUI or browser viewer. Its seed is created from the manifest and copied with no-clobber semantics into a persistent home.
 
-The .NET image uses the digest-pinned `node:22-bookworm` Linux base and installs the exact Microsoft `dotnet-sdk-10.0` Debian package `10.0.112-1` (CLI SDK `10.0.112`, runtime `10.0.12`). Microsoft lists .NET 10.0.12 as active LTS through November 14, 2028; Debian 12 is the Linux distribution used here. See the [official .NET support policy](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core) and [Microsoft Debian package repository](https://packages.microsoft.com/debian/12/prod/).
+The .NET image uses the digest-pinned `node:22-bookworm` Linux base and installs the exact Microsoft `dotnet-sdk-10.0` Debian package `10.0.112-1` (CLI SDK `10.0.112`, runtime `10.0.12`). The Docker build verifies the SDK, runtime, reference pack, and Linux apphost pack against those manifest versions; the health check rechecks the SDK and runtime. Microsoft lists .NET 10.0.12 as active LTS through November 14, 2028; Debian 12 is the Linux distribution used here. See the [official .NET support policy](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-core) and [Microsoft Debian package repository](https://packages.microsoft.com/debian/12/prod/).
 
 The starter targets `net10.0` and pins `Newtonsoft.Json` 13.0.3 in `packages.lock.json`. The image build performs the only NuGet restore, using the explicit public NuGet v3 feed and `--locked-mode`; it then stores the restored package cache and restore metadata in the image. At first start, the entrypoint seeds only missing starter and package-cache files. It does not replace existing workspace or cache files. From a fresh home, `dotnet build --no-restore` and `dotnet run --no-restore` need no runtime package feed. New package references require a new reviewed template image and lock file.
 

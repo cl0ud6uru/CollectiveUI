@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "profiles": [
     {
-      "key": "knowledge-work",
+      "key": "knowledge-work-v1",
       "templateSlug": "knowledge-work",
       "name": "Knowledge Work",
       "description": "Offline document work with the existing headless LibreOffice conversion and Python helpers.",
@@ -29,7 +29,7 @@
       }
     },
     {
-      "key": "dotnet-linux",
+      "key": "dotnet-linux-v1",
       "templateSlug": "dotnet-linux",
       "name": ".NET Linux",
       "description": "A Linux-only .NET 10 SDK workspace with a locked starter package graph pre-restored for offline builds.",

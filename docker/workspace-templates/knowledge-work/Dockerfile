@@ -35,7 +35,7 @@ RUN node - <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 const manifest = JSON.parse(fs.readFileSync('/opt/workspace-template/manifest.json', 'utf8'));
-const profile = manifest.profiles.find((entry) => entry.key === 'knowledge-work');
+const profile = manifest.profiles.find((entry) => entry.key === 'knowledge-work-v1');
 if (!profile || profile.networkPolicy !== 'none' || profile.capabilities.officeHeadless !== true) {
   throw new Error('Knowledge Work manifest entry is missing or has an invalid capability set');
 }
@@ -46,7 +46,7 @@ for (const file of profile.seedBundle.files) {
     throw new Error('Invalid Knowledge Work seed entry');
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
-  fs.writeFileSync(destination, file.content, { flag: 'wx', mode: 0o444 });
+  fs.writeFileSync(destination, file.content, { flag: 'wx', mode: 0o644 });
 }
 NODE
 

@@ -76,7 +76,7 @@ for (const value of process.argv.slice(3)) {
   const separator = value.indexOf('=');
   const key = value.slice(0, separator);
   const imageRef = value.slice(separator + 1);
-  const profile = manifest.profiles.find((candidate) => candidate.key === key);
+  const profile = manifest.profiles.find((candidate) => candidate.templateSlug === key);
   if (!profile) throw new Error(`Manifest has no profile ${key}`);
   if (!/^sha256:[a-f0-9]{64}$/.test(imageRef)) throw new Error(`Invalid Docker image ID for ${key}`);
   profile.imageRef = imageRef;

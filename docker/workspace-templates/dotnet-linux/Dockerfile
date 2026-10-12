@@ -22,6 +22,10 @@ RUN set -eux; \
       "dotnet-sdk-10.0=${DOTNET_SDK_PACKAGE_VERSION}" git python3; \
     rm -rf /var/lib/apt/lists/*; \
     test -x /usr/share/dotnet/dotnet; \
+    dotnet --list-sdks | grep -Fxq '10.0.112 [/usr/share/dotnet/sdk]'; \
+    dotnet --list-runtimes | grep -Fxq 'Microsoft.NETCore.App 10.0.12 [/usr/share/dotnet/shared/Microsoft.NETCore.App]'; \
+    test -d /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref/10.0.12; \
+    test -d /usr/share/dotnet/packs/Microsoft.NETCore.App.Host.linux-x64/10.0.12; \
     ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
 RUN set -eu; \
@@ -56,8 +60,7 @@ USER root
 # Store the exact locked cache and generated restore metadata in the image. Startup copies them only when missing.
 RUN cp -a /home/agent/workspace/obj/. /opt/workspace-template/starter/obj/ \
     && cp -a /home/agent/.nuget/packages/. /opt/workspace-template/nuget/ \
-    && chown -R root:root /opt/workspace-template \
-    && chmod -R a-w /opt/workspace-template
+    && chown -R root:root /opt/workspace-template
 
 RUN printf '%s\n' \
       '#!/bin/sh' \
@@ -73,4 +76,4 @@ USER 1000:1000
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/workspace-template-init"]
 CMD ["sleep", "infinity"]
-HEALTHCHECK --interval=1m --timeout=15s --start-period=30s --retries=3 CMD dotnet --list-sdks | grep -Fxq '10.0.112 [/usr/share/dotnet/sdk]'
+HEALTHCHECK --interval=1m --timeout=15s --start-period=30s --retries=3 CMD dotnet --list-sdks | grep -Fxq '10.0.112 [/usr/share/dotnet/sdk]' && dotnet --list-runtimes | grep -Fxq 'Microsoft.NETCore.App 10.0.12 [/usr/share/dotnet/shared/Microsoft.NETCore.App]'
