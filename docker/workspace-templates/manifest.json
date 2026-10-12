@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "key": "knowledge-work",
+      "templateSlug": "knowledge-work",
+      "name": "Knowledge Work",
+      "description": "Offline document work with the existing headless LibreOffice conversion and Python helpers.",
+      "version": 1,
+      "imageRef": null,
+      "imageRefStatus": "build_required",
+      "baseImageRef": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
+      "dockerfile": "docker/workspace-templates/knowledge-work/Dockerfile",
+      "seedBundle": {
+        "key": "knowledge-work-v1",
+        "files": [
+          {
+            "path": "README.md",
+            "content": "# Knowledge Work\n\nThis private workspace is ready for offline document and spreadsheet work.\n\nUse `/opt/portal/office-check` to inspect the installed headless Office tools. Use `/opt/portal/office-convert` to create a PDF or recalculated spreadsheet copy; the helper preserves originals.\n\nThis image has no desktop session or browser viewer. It has no runtime network access.\n"
+          }
+        ]
+      },
+      "networkPolicy": "none",
+      "capabilities": {
+        "shell": true,
+        "officeHeadless": true,
+        "dotnet": false,
+        "agentBrowserView": false
+      }
+    },
+    {
+      "key": "dotnet-linux",
+      "templateSlug": "dotnet-linux",
+      "name": ".NET Linux",
+      "description": "A Linux-only .NET 10 SDK workspace with a locked starter package graph pre-restored for offline builds.",
+      "version": 1,
+      "imageRef": null,
+      "imageRefStatus": "build_required",
+      "baseImageRef": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
+      "dockerfile": "docker/workspace-templates/dotnet-linux/Dockerfile",
+      "sdk": {
+        "package": "dotnet-sdk-10.0",
+        "packageVersion": "10.0.112-1",
+        "sdkVersion": "10.0.112",
+        "runtimeVersion": "10.0.12",
+        "distribution": "Debian 12 bookworm"
+      },
+      "seedBundle": {
+        "key": "dotnet-linux-v1",
+        "root": "docker/workspace-templates/dotnet-linux/starter",
+        "files": [
+          "Starter.csproj",
+          "Program.cs",
+          "packages.lock.json"
+        ]
+      },
+      "networkPolicy": "none",
+      "capabilities": {
+        "shell": true,
+        "officeHeadless": false,
+        "dotnet": true,
+        "agentBrowserView": false
+      }
+    }
+  ]
+}
