@@ -46,16 +46,20 @@ export class PortalWorkspace implements Experimental_SandboxSession {
   private readonly client: SandboxdClient;
   private readonly resolveRef: () => Promise<string>;
   private readonly isolation: Isolation;
+  private readonly runtimeProfileKey?: string;
+  readonly instanceId?: string;
   private readonly onUse: () => void;
   private refPromise: Promise<string> | null = null;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly running = new Set<string>();
   private closed = false;
 
-  constructor(opts: { client: SandboxdClient; ref: () => Promise<string>; isolation: Isolation; onUse?: () => void }) {
+  constructor(opts: { client: SandboxdClient; ref: () => Promise<string>; isolation: Isolation; runtimeProfileKey?: string; instanceId?: string; onUse?: () => void }) {
     this.client = opts.client;
     this.resolveRef = opts.ref;
     this.isolation = opts.isolation;
+    this.runtimeProfileKey = opts.runtimeProfileKey;
+    this.instanceId = opts.instanceId;
     this.onUse = opts.onUse ?? (() => {});
   }
 
@@ -100,17 +104,17 @@ export class PortalWorkspace implements Experimental_SandboxSession {
   /** Bytes plus whether they were cut at maxBytes; null when the file doesn't exist. */
   async readRaw(path: string, maxBytes: number, startLine?: number, endLine?: number) {
     this.onUse();
-    return this.client.readFile(await this.ref(), { isolation: this.isolation, path, maxBytes, startLine, endLine });
+    return this.client.readFile(await this.ref(), { isolation: this.isolation, path, maxBytes, startLine, endLine, runtimeProfileKey: this.runtimeProfileKey });
   }
 
   async list(req: Omit<ListRequest, "isolation">) {
     this.onUse();
-    return this.client.listFiles(await this.ref(), { ...req, isolation: this.isolation });
+    return this.client.listFiles(await this.ref(), { ...req, isolation: this.isolation, runtimeProfileKey: this.runtimeProfileKey });
   }
 
   async grep(req: Omit<GrepRequest, "isolation">) {
     this.onUse();
-    return this.client.grep(await this.ref(), { ...req, isolation: this.isolation });
+    return this.client.grep(await this.ref(), { ...req, isolation: this.isolation, runtimeProfileKey: this.runtimeProfileKey });
   }
 
   // --- writes -------------------------------------------------------------------------------------------------------
@@ -128,7 +132,7 @@ export class PortalWorkspace implements Experimental_SandboxSession {
   async writeNow(path: string, content: Uint8Array) {
     if (content.byteLength > MAX_FILE_BYTES) throw new Error(`Files are limited to ${MAX_FILE_BYTES / 1024 / 1024} MB`);
     this.onUse();
-    return this.client.writeFile(await this.ref(), { isolation: this.isolation, path, contentB64: Buffer.from(content).toString("base64") });
+    return this.client.writeFile(await this.ref(), { isolation: this.isolation, path, contentB64: Buffer.from(content).toString("base64"), runtimeProfileKey: this.runtimeProfileKey });
   }
 
   async writeTextFile(o: WriteTextOptions): Promise<void> {
@@ -166,7 +170,7 @@ export class PortalWorkspace implements Experimental_SandboxSession {
       try {
         const exit = await this.client.exec(
           ref,
-          { isolation: this.isolation, command: req.command, cwd: req.cwd, env: req.env, timeoutMs: req.timeoutMs, execId },
+          { isolation: this.isolation, command: req.command, cwd: req.cwd, env: req.env, timeoutMs: req.timeoutMs, execId, runtimeProfileKey: this.runtimeProfileKey },
           { onFrame: req.onFrame, signal: req.signal },
         );
         return { ...exit, execId };

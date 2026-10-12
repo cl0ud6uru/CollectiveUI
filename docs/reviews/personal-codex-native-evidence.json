@@ -1,0 +1,12 @@
+{
+  "version": "0.163.0-alpha.2",
+  "authenticated": false,
+  "verified": false,
+  "checks": {
+    "protocolVersion": true,
+    "managedPolicy": true,
+    "nativeWorkspaceExecution": false,
+    "storageSurvivesReplacement": true
+  },
+  "blocker": "The host/container cannot create the unprivileged namespace required by bubblewrap."
+}

@@ -111,8 +111,8 @@ export class SandboxdClient {
   state(ref: string) {
     return this.json<SandboxState>("GET", `/v1/sandboxes/${ref}`);
   }
-  start(ref: string, isolation: ExecRequest["isolation"]) {
-    return this.json<SandboxState>("POST", `/v1/sandboxes/${ref}/start`, { isolation }, 120_000);
+  start(ref: string, isolation: ExecRequest["isolation"], runtimeProfileKey?: string) {
+    return this.json<SandboxState>("POST", `/v1/sandboxes/${ref}/start`, { isolation, runtimeProfileKey }, 120_000);
   }
   stop(ref: string) {
     return this.json<SandboxState>("POST", `/v1/sandboxes/${ref}/stop`, {}, 60_000);

@@ -1,0 +1,7 @@
+{
+  "name": "collectiveui-agent-browserd",
+  "private": true,
+  "type": "module",
+  "dependencies": { "playwright-core": "1.63.0" },
+  "engines": { "node": ">=22.18" }
+}

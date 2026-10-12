@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
+vi.mock('server-only', () => ({}));
 const fixture = vi.hoisted(() => ({ client: null as PGlite | null, schedule: vi.fn(async () => {}), enqueue: vi.fn(), utility: vi.fn(), ensure: vi.fn(), revoke: vi.fn(), pagePrincipal: vi.fn() }));
 vi.mock('@/lib/session', () => ({ requirePagePrincipal: fixture.pagePrincipal }));
 vi.mock('@/components/chat/start-side-chat', () => ({ StartSideChat: () => null }));

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/agent/learning/store", () => ({ learningIsEnabled: async () => false, learnedSkillsForBot: async () => [] }));
+const { resolveWorkspaceMock } = vi.hoisted(() => ({ resolveWorkspaceMock: vi.fn() }));
 import { botDelegates, botTools, toolGrants, type AiApp, type Bot } from "@/db/schema";
 import type { SandboxSettings } from "@/lib/settings";
 
@@ -26,7 +27,8 @@ vi.mock("@/lib/sandbox/client", async (importOriginal) => ({
 }));
 
 const getOrCreateRef = vi.fn(async () => "abcdefghij0123456789");
-vi.mock("@/lib/sandbox/store", () => ({ getOrCreateRef: () => getOrCreateRef(), touchSandbox: async () => {} }));
+vi.mock("@/lib/sandbox/store", () => ({ getOrCreateRef: () => getOrCreateRef(), touchSandbox: async () => {}, touchWorkspaceInstance: async () => {} }));
+vi.mock("@/lib/workspaces/resolve", () => ({ resolveWorkspace: (input: unknown) => resolveWorkspaceMock(input) }));
 
 import { buildToolset } from "@/lib/agent/toolset";
 import { PortalWorkspace } from "@/lib/sandbox/session";
@@ -66,6 +68,15 @@ describe("buildToolset workspace wiring", () => {
     sandbox = { ...ENABLED };
     client = {};
     getOrCreateRef.mockClear();
+    resolveWorkspaceMock.mockImplementation(async ({ botId }: { botId: string }) => ({
+      instanceId: `instance-${botId}`,
+      ownerUserId: "u1",
+      botId,
+      templateVersionId: null,
+      sandboxRef: botId === "b1" ? "abcdefghij0123456789" : "bcdefghij0123456789a",
+      runtimeProfileKey: "legacy",
+      workspaceRoot: "/home/agent/workspace",
+    }));
   });
 
   it("adds the seven tools, a per-tool timeout, and a lazily resolved workspace", async () => {
@@ -74,10 +85,29 @@ describe("buildToolset workspace wiring", () => {
     expect(Object.keys(ts.tools)).toEqual(["workspace_bash", "workspace_write", "workspace_edit", "workspace_read", "workspace_list", "workspace_grep", "workspace_import_attachment"]);
     expect(ts.timeout).toEqual({ tools: { workspace_bashMs: 120_000 } });
     expect(ts.workspace).toBeInstanceOf(PortalWorkspace);
+    expect(ts.workspace?.instanceId).toBeUndefined();
     expect(ctx.workspace).toBe(ts.workspace);
+    expect(resolveWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ botId: "b1", createIfMissing: true }));
     // No sandbox is created just because a bot has the tools.
     expect(getOrCreateRef).not.toHaveBeenCalled();
     expect(ts.warnings).toEqual([]);
+  });
+
+  it("adds the artifact selector only when the resolved workspace is template based", async () => {
+    resolveWorkspaceMock.mockResolvedValueOnce({
+      instanceId: "template-instance-123",
+      ownerUserId: "u1",
+      botId: "b1",
+      templateVersionId: "template-version-123",
+      sandboxRef: "abcdefghij0123456789",
+      runtimeProfileKey: "knowledge-work-v1",
+      workspaceRoot: "/home/agent/workspace",
+    });
+
+    const ts = await buildToolset(newCtx());
+
+    expect(ts.workspace).toBeInstanceOf(PortalWorkspace);
+    expect(ts.workspace?.instanceId).toBe("template-instance-123");
   });
 
   it("warns and leaves the tools out when workspaces are off, not allowed or not set up", async () => {
@@ -107,11 +137,24 @@ describe("buildToolset workspace wiring", () => {
     expect(ts.tools).toEqual({});
   });
 
-  it("delegates share the caller's handle, and only the creator closes it", async () => {
+  it("reuses a workspace only for the same bot; delegates get their own private instance", async () => {
     const close = vi.spyOn(PortalWorkspace.prototype, "close").mockResolvedValue();
     const ctx = newCtx();
     const parent = await buildToolset(ctx);
     const child = await buildToolset({ ...ctx, bot: { id: "b2", name: "Helper", ownerId: "u1" } as Bot, depth: 1 });
+    expect(child.workspace).not.toBe(parent.workspace);
+    await child.close();
+    expect(close).toHaveBeenCalledTimes(1);
+    await parent.close();
+    expect(close).toHaveBeenCalledTimes(2);
+    close.mockRestore();
+  });
+
+  it("shares the same bot's selected workspace with a delegate without closing the owner's handle", async () => {
+    const close = vi.spyOn(PortalWorkspace.prototype, "close").mockResolvedValue();
+    const ctx = newCtx();
+    const parent = await buildToolset(ctx);
+    const child = await buildToolset({ ...ctx, depth: 1 });
     expect(child.workspace).toBe(parent.workspace);
     await child.close();
     expect(close).not.toHaveBeenCalled();

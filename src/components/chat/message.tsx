@@ -1,5 +1,7 @@
 "use client";
 
+import { CodexApproval } from "./codex-approval";
+
 import { useState } from "react";
 import { isToolUIPart } from "ai";
 import { ChevronLeft, ChevronRight, FileText, Pencil, RefreshCw, Reply, ThumbsDown, ThumbsUp } from "lucide-react";
@@ -268,6 +270,7 @@ export function AssistantMessage({
     ) : null;
 
   const renderPart = (part: Part, i: number) => {
+    if (part.type === "data-codex-approval") return <CodexApproval key={i} readOnly={readOnly} data={part.data as { id: string; label: string; state: string }} />;
     if (part.type === "data-bot-error") {
       // Group chats: this bot couldn't answer (e.g. its ChatGPT plan isn't connected).
       return (

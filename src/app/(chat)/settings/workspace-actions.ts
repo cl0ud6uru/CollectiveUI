@@ -5,7 +5,9 @@ import { execIdForToolCall } from "@/lib/agent/tools/workspace";
 import { HttpError } from "@/lib/authz";
 import { audit } from "@/lib/audit";
 import { SandboxError, sandboxd } from "@/lib/sandbox/client";
-import { findSandbox } from "@/lib/sandbox/store";
+import { findSandbox, findWorkspaceInstance } from "@/lib/sandbox/store";
+import { db, schema } from "@/db";
+import { and, eq } from "drizzle-orm";
 import { workspaceView } from "@/lib/sandbox/view";
 import { requirePrincipal } from "@/lib/session";
 
@@ -64,5 +66,40 @@ export async function stopWorkspaceCommand(toolCallId: string) {
     const { client, ref } = await own();
     if (!ref) return false;
     return (await client.kill(ref, execIdForToolCall(toolCallId))).killed;
+  });
+}
+
+/** Stops exactly one of this person's registered template instances and keeps its files. */
+export async function stopOwnWorkspaceInstance(instanceId: string) {
+  return friendly(async () => {
+    if (typeof instanceId !== "string" || instanceId.length > 128) throw new HttpError(400, "Invalid workspace");
+    const p = await requirePrincipal();
+    const row = await findWorkspaceInstance(p.user.id, instanceId);
+    if (!row || row.origin !== "template") throw new HttpError(404, "Workspace not found");
+    const client = sandboxd();
+    if (!client) throw new HttpError(503, "Workspace service is unavailable");
+    await client.stop(row.sandboxRef);
+    await audit(p.user.id, "workspace.instance_stop", row.id);
+    revalidatePath("/settings");
+  });
+}
+
+/** Resets only the selected private instance. The binding and profile pin remain; other instances are untouched. */
+export async function resetOwnWorkspaceInstance(instanceId: string, confirm: string) {
+  return friendly(async () => {
+    if (confirm !== "reset") throw new HttpError(400, 'Type "reset" to confirm.');
+    if (typeof instanceId !== "string" || instanceId.length > 128) throw new HttpError(400, "Invalid workspace");
+    const p = await requirePrincipal();
+    const row = await findWorkspaceInstance(p.user.id, instanceId);
+    if (!row || row.origin !== "template") throw new HttpError(404, "Workspace not found");
+    const client = sandboxd();
+    if (!client) throw new HttpError(503, "Workspace service is unavailable");
+    await client.destroy(row.sandboxRef);
+    await db.update(schema.workspaceInstances).set({ provisionState: "missing", lastUsedAt: null }).where(and(
+      eq(schema.workspaceInstances.ownerUserId, p.user.id),
+      eq(schema.workspaceInstances.id, row.id),
+    ));
+    await audit(p.user.id, "workspace.instance_reset", row.id);
+    revalidatePath("/settings");
   });
 }

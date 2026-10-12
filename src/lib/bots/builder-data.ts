@@ -93,7 +93,7 @@ export async function loadBuilderData(p: Principal, botId?: string) {
       maintainerIds: selected.length ? selected.map(m => m.userId) : [p.user.id], expectedVersion: definition?.version ?? 0 };
   }
   const codexRuntimeStatus = { api: 'No verified API runtime assigned to you.', chatgpt_subscription: 'No authorized subscription runtime assigned to you.' };
-  if (process.env.CODEX_RUNTIME_MANIFEST) {
+  if (process.env.CODEX_RUNTIME_MANIFEST || process.env.PERSONAL_CODEX_SOCKET) {
     const { callerRuntime } = await import('@/lib/codex/runtime');
     for (const funding of ['api', 'chatgpt_subscription'] as const)
       if (await callerRuntime(p.user.id, funding).catch(() => null)) codexRuntimeStatus[funding] = 'Assigned; live account access and entitlement have not been checked.';

@@ -11,6 +11,8 @@ export const LABEL_RUNTIME = "ai-portal.runtime";
 export const LABEL_KIND = "ai-portal.kind";
 /** Which sandboxd owns it (tests run their own instance next to a dev one). */
 export const LABEL_INSTANCE = "ai-portal.instance";
+/** Durable ref-to-profile pin, mirrored on the persistent volume and its container. */
+export const LABEL_PROFILE = "ai-portal.profile";
 
 export const HOME = "/home/agent";
 export const WORKSPACE = "/home/agent/workspace";
@@ -42,11 +44,11 @@ const MB = 1024 * 1024;
 export const containerName = (ref: string) => `portal-sbx-${ref}`;
 export const volumeName = (ref: string) => `portal-home-${ref}`;
 
-export function volumeSpec(ref: string, instance = "default", kind: "workspace" | "probe" = "workspace") {
-  return { Name: volumeName(ref), Driver: "local", Labels: { [LABEL_SANDBOX]: ref, [LABEL_KIND]: kind, [LABEL_INSTANCE]: instance } };
+export function volumeSpec(ref: string, instance = "default", kind: "workspace" | "probe" = "workspace", profileKey = "legacy") {
+  return { Name: volumeName(ref), Driver: "local", Labels: { [LABEL_SANDBOX]: ref, [LABEL_KIND]: kind, [LABEL_INSTANCE]: instance, [LABEL_PROFILE]: profileKey } };
 }
 
-type SpecInput = { ref: string; imageId: string; runtime: Runtime; limits: Limits; kind?: "workspace" | "probe"; instance?: string };
+type SpecInput = { ref: string; imageId: string; runtime: Runtime; limits: Limits; kind?: "workspace" | "probe"; instance?: string; profileKey?: string };
 
 function baseSpec(i: SpecInput) {
   return {
@@ -99,6 +101,7 @@ export function containerSpec(i: SpecInput) {
       [LABEL_SPEC]: specHash(i),
       [LABEL_RUNTIME]: i.runtime,
       [LABEL_INSTANCE]: i.instance ?? "default",
+      [LABEL_PROFILE]: i.profileKey ?? "legacy",
     },
   };
 }
