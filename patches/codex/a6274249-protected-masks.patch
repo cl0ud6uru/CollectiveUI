@@ -1,0 +1,335 @@
+diff --git a/codex-rs/linux-sandbox/src/bwrap.rs b/codex-rs/linux-sandbox/src/bwrap.rs
+index 51200dc..d18aca5 100644
+--- a/codex-rs/linux-sandbox/src/bwrap.rs
++++ b/codex-rs/linux-sandbox/src/bwrap.rs
+@@ -619,6 +619,8 @@ fn create_filesystem_args(
+         }
+     }
+     let unreadable_paths: HashSet<PathBuf> = unreadable_roots.iter().cloned().collect();
++    let mount_unreadable_roots =
++        coalesce_unreadable_directory_mounts(&unreadable_roots, &allowed_write_paths);
+     let mut sorted_writable_roots = writable_roots;
+     sorted_writable_roots.sort_by_key(|writable_root| path_depth(writable_root.root.as_path()));
+     let binds_file_system_root = sorted_writable_roots
+@@ -643,7 +645,7 @@ fn create_filesystem_args(
+     unreadable_ancestors_of_writable_roots.sort_by_key(|path| path_depth(path));
+
+     for unreadable_root in &unreadable_ancestors_of_writable_roots {
+-        append_unreadable_root_args(&mut bwrap_args, unreadable_root, &allowed_write_paths)?;
++        append_unreadable_root_args(&mut bwrap_args, unreadable_root, &allowed_write_paths, true)?;
+     }
+
+     for writable_root in &sorted_writable_roots {
+@@ -651,7 +653,7 @@ fn create_filesystem_args(
+         let symlink_target = canonical_target_if_symlinked_path(root);
+         // If a denied ancestor was already masked, recreate any missing mount
+         // target parents before binding the narrower writable descendant.
+-        if let Some(masking_root) = unreadable_roots
++        if let Some(masking_root) = mount_unreadable_roots
+             .iter()
+             .map(PathBuf::as_path)
+             .filter(|unreadable_root| root.starts_with(unreadable_root))
+@@ -687,7 +689,6 @@ fn create_filesystem_args(
+             .read_only_subpaths
+             .iter()
+             .map(|path| path.as_path().to_path_buf())
+-            .filter(|path| !unreadable_paths.contains(path))
+             .filter(|path| !missing_auto_metadata_read_only_project_root_subpaths.contains(path))
+             .collect();
+         // Remember which mounts belong to a deeper writable root without dropping
+@@ -714,6 +715,10 @@ fn create_filesystem_args(
+             root,
+             protected_metadata_names,
+         );
++        // Explicit denies must win over automatic metadata read-only masks.
++        // In particular, a missing .codex cannot be both an empty directory
++        // (the automatic mask) and an empty file (the deny mask).
++        read_only_subpaths.retain(|path| !unreadable_paths.contains(path));
+         if let Some(target) = &symlink_target {
+             read_only_subpaths = remap_paths_for_symlink_target(read_only_subpaths, root, target);
+             deferred_read_only_subpaths =
+@@ -781,9 +786,19 @@ fn create_filesystem_args(
+             nested_unreadable_roots =
+                 remap_paths_for_symlink_target(nested_unreadable_roots, root, target);
+         }
++        let mut nested_mount_unreadable_roots = mount_unreadable_roots.clone();
++        if let Some(target) = &symlink_target {
++            nested_mount_unreadable_roots =
++                remap_paths_for_symlink_target(nested_mount_unreadable_roots, root, target);
++        }
+         nested_unreadable_roots.sort_by_key(|path| path_depth(path));
+         for unreadable_root in nested_unreadable_roots {
+-            append_unreadable_root_args(&mut bwrap_args, &unreadable_root, &allowed_write_paths)?;
++            append_unreadable_root_args(
++                &mut bwrap_args,
++                &unreadable_root,
++                &allowed_write_paths,
++                nested_mount_unreadable_roots.contains(&unreadable_root),
++            )?;
+         }
+     }
+
+@@ -799,7 +814,12 @@ fn create_filesystem_args(
+         .collect();
+     rootless_unreadable_roots.sort_by_key(|path| path_depth(path));
+     for unreadable_root in rootless_unreadable_roots {
+-        append_unreadable_root_args(&mut bwrap_args, &unreadable_root, &allowed_write_paths)?;
++        append_unreadable_root_args(
++            &mut bwrap_args,
++            &unreadable_root,
++            &allowed_write_paths,
++            mount_unreadable_roots.contains(&unreadable_root),
++        )?;
+     }
+
+     if options.mask_wslg_distro
+@@ -1378,8 +1398,32 @@ fn append_existing_empty_directory_args(
+         ));
+ }
+
+-fn append_unreadable_root_args(
+-    bwrap_args: &mut BwrapArgs,
++// Only coalesce below an existing denied directory without any writable
++// descendants. A reopened child, even below another denial, can expose synthetic
++// intermediate directories; retaining those masks is necessary. Both logical and
++// canonical write roots are included by the caller. Logical policy entries stay
++// unchanged; this only avoids mounting children into an already frozen empty view.
++fn coalesce_unreadable_directory_mounts(
++    unreadable_roots: &[PathBuf],
++    allowed_write_paths: &[PathBuf],
++) -> Vec<PathBuf> {
++    unreadable_roots
++        .iter()
++        .filter(|path| {
++            !unreadable_roots.iter().any(|parent| {
++                parent != *path
++                    && path.starts_with(parent)
++                    && parent.is_dir()
++                    && !allowed_write_paths
++                        .iter()
++                        .any(|root| root.starts_with(parent))
++            })
++        })
++        .cloned()
++        .collect()
++}
++
++fn validate_unreadable_root_path(
+     unreadable_root: &Path,
+     allowed_write_paths: &[PathBuf],
+ ) -> Result<()> {
+@@ -1400,6 +1444,23 @@ fn append_unreadable_root_args(
+         )));
+     }
+
++    Ok(())
++}
++
++fn append_unreadable_root_args(
++    bwrap_args: &mut BwrapArgs,
++    unreadable_root: &Path,
++    allowed_write_paths: &[PathBuf],
++    mount_required: bool,
++) -> Result<()> {
++    // Validate every original denial, including covered children, at its
++    // original position after writable-root alias remapping. The root alias
++    // itself can be immutable even though its directory target is writable.
++    validate_unreadable_root_path(unreadable_root, allowed_write_paths)?;
++    if !mount_required {
++        return Ok(());
++    }
++
+     if !unreadable_root.exists() {
+         if let Some(first_missing_component) = find_first_non_existent_component(unreadable_root)
+             && is_within_allowed_write_paths(&first_missing_component, allowed_write_paths)
+@@ -1584,6 +1645,190 @@ mod tests {
+     use pretty_assertions::assert_eq;
+     use tempfile::TempDir;
+
++    fn mask_collision_policy(
++        entries: Vec<(PathBuf, FileSystemAccessMode)>,
++    ) -> FileSystemSandboxPolicy {
++        let mut rules = vec![FileSystemSandboxEntry {
++            path: FileSystemPath::Special {
++                value: FileSystemSpecialPath::Root,
++            },
++            access: FileSystemAccessMode::Read,
++            missing_path_behavior: None,
++        }];
++        rules.extend(entries.into_iter().map(|(path, access)| {
++            FileSystemSandboxEntry {
++                path: AbsolutePathBuf::from_absolute_path(path)
++                    .expect("absolute fixture path")
++                    .into(),
++                access,
++                missing_path_behavior: None,
++            }
++        }));
++        FileSystemSandboxPolicy::restricted(rules)
++    }
++
++    #[test]
++    fn mask_collision_explicit_metadata_deny_has_one_physical_mask() {
++        for state in ["missing", "empty", "populated"] {
++            let temp_dir = TempDir::new().expect("temp dir");
++            let workspace = temp_dir.path().join("workspace");
++            let metadata = workspace.join(".codex");
++            fs::create_dir(&workspace).expect("workspace");
++            if state != "missing" {
++                fs::create_dir(&metadata).expect("metadata");
++            }
++            if state == "populated" {
++                fs::write(metadata.join("sentinel"), "not a credential").expect("sentinel");
++            }
++            let policy = mask_collision_policy(vec![
++                (workspace.clone(), FileSystemAccessMode::Write),
++                (metadata.clone(), FileSystemAccessMode::Deny),
++            ]);
++            let args = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++                .expect("plan denied metadata");
++            let path = path_to_string(&metadata);
++            let mounts = args
++                .args
++                .windows(2)
++                .filter(|window| window == &["--tmpfs", path.as_str()])
++                .count();
++            let files = args
++                .args
++                .windows(3)
++                .filter(|window| window[0] == "--ro-bind-data" && window[2] == path)
++                .count();
++            assert_eq!(mounts + files, 1, "exactly one mask for {state}");
++            assert!(!policy.can_read_local_path_with_cwd(&metadata, &workspace));
++            if state == "missing" {
++                assert_eq!(files, 1);
++                assert!(!metadata.exists(), "planning must not create metadata");
++                assert!(protected_create_target_paths(&args).contains(&metadata));
++                assert!(synthetic_mount_target_paths(&args).contains(&metadata));
++            } else {
++                assert_eq!(mounts, 1);
++                assert!(
++                    args.args
++                        .windows(4)
++                        .any(|window| { window == &["--perms", "000", "--tmpfs", path.as_str()] })
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn mask_collision_denied_home_covers_existing_and_missing_children() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let home = temp_dir.path().join("home");
++        fs::create_dir(&workspace).expect("workspace");
++        fs::create_dir(&home).expect("home");
++        let auth = home.join("auth.json");
++        let session = home.join("sessions/missing.json");
++        fs::write(&auth, "fixture only").expect("auth sentinel");
++        let policy = mask_collision_policy(vec![
++            (workspace.clone(), FileSystemAccessMode::Write),
++            (home.clone(), FileSystemAccessMode::Deny),
++            (auth.clone(), FileSystemAccessMode::Deny),
++            (session.clone(), FileSystemAccessMode::Deny),
++        ]);
++        let args = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect("plan nested home denies");
++        let home_str = path_to_string(&home);
++        assert!(
++            args.args
++                .windows(4)
++                .any(|window| { window == &["--perms", "000", "--tmpfs", home_str.as_str()] })
++        );
++        for child in [&auth, &session] {
++            assert!(
++                !args.args.contains(&path_to_string(child)),
++                "child is hidden by parent"
++            );
++            assert!(!policy.can_read_local_path_with_cwd(child, &workspace));
++        }
++        assert_eq!(
++            fs::read_to_string(auth).expect("sentinel retained"),
++            "fixture only"
++        );
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn mask_collision_pruned_child_still_rejects_mutable_symlink() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let blocked = workspace.join("blocked");
++        let outside = temp_dir.path().join("outside");
++        fs::create_dir_all(&blocked).expect("blocked");
++        fs::create_dir(&outside).expect("outside");
++        let link = blocked.join("link");
++        std::os::unix::fs::symlink(&outside, &link).expect("mutable link");
++        let policy = mask_collision_policy(vec![
++            (workspace.clone(), FileSystemAccessMode::Write),
++            (blocked, FileSystemAccessMode::Deny),
++            (link.clone(), FileSystemAccessMode::Deny),
++        ]);
++        let error = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect_err("covered child must retain symlink validation");
++        assert!(error.to_string().contains("crosses writable symlink"));
++        assert!(error.to_string().contains(&path_to_string(&link)));
++    }
++
++    #[test]
++    fn mask_collision_writable_descendant_below_child_keeps_both_denies() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let parent = temp_dir.path().join("blocked");
++        let child = parent.join("private");
++        let output = child.join("output");
++        fs::create_dir_all(&output).expect("writable descendant");
++        let policy = mask_collision_policy(vec![
++            (parent.clone(), FileSystemAccessMode::Deny),
++            (child.clone(), FileSystemAccessMode::Deny),
++            (output.clone(), FileSystemAccessMode::Write),
++        ]);
++        let args = create_filesystem_args(&policy, temp_dir.path(), BwrapOptions::default())
++            .expect("nested writable plan");
++        for denied in [&parent, &child] {
++            let path = path_to_string(denied);
++            assert!(
++                args.args
++                    .windows(4)
++                    .any(|window| { window == &["--perms", "111", "--tmpfs", path.as_str()] }),
++                "both denied ancestors need their own directory mask"
++            );
++        }
++        assert!(policy.can_write_local_path_with_cwd(&output, temp_dir.path()));
++        assert!(!policy.can_read_local_path_with_cwd(&child, temp_dir.path()));
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn mask_collision_canonical_writable_alias_prevents_coalescing() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let parent = temp_dir.path().join("blocked");
++        let child = parent.join("private");
++        let output = child.join("output");
++        let alias = temp_dir.path().join("output-alias");
++        fs::create_dir_all(&output).expect("output");
++        std::os::unix::fs::symlink(&output, &alias).expect("readonly alias parent");
++        let policy = mask_collision_policy(vec![
++            (parent.clone(), FileSystemAccessMode::Deny),
++            (child.clone(), FileSystemAccessMode::Deny),
++            (alias, FileSystemAccessMode::Write),
++        ]);
++        let args = create_filesystem_args(&policy, temp_dir.path(), BwrapOptions::default())
++            .expect("canonical writable alias plan");
++        for denied in [&parent, &child] {
++            let path = path_to_string(denied);
++            assert!(
++                args.args
++                    .windows(4)
++                    .any(|window| { window == &["--perms", "111", "--tmpfs", path.as_str()] }),
++                "canonical write root must prevent coalescing"
++            );
++        }
++    }
++
+     #[test]
+     fn default_unreadable_glob_scan_has_no_depth_cap() {
+         assert_eq!(BwrapOptions::default().glob_scan_max_depth, None);

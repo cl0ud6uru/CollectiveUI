@@ -1,0 +1,42 @@
+{
+  "version": "0.163.0-alpha.2",
+  "authenticated": false,
+  "verified": false,
+  "cases": {
+    "missing": {
+      "protocolVersion": true,
+      "managedPolicy": true,
+      "requirementsMatch": true,
+      "containerBoundary": true,
+      "nativeWorkspaceExecution": false,
+      "cleanupComplete": true
+    },
+    "empty": {
+      "protocolVersion": true,
+      "managedPolicy": true,
+      "requirementsMatch": true,
+      "containerBoundary": true,
+      "nativeWorkspaceExecution": false,
+      "cleanupComplete": true
+    },
+    "populated": {
+      "protocolVersion": true,
+      "managedPolicy": true,
+      "requirementsMatch": true,
+      "containerBoundary": true,
+      "nativeWorkspaceExecution": false,
+      "cleanupComplete": true
+    }
+  },
+  "artifacts": {
+    "requestedImage": "collectiveui/personal-codex:protocol-fixture",
+    "requirementsSha256": "0ac28a075138ce8dba7d8916f726f97743c030da7d769e168fd8a18dca969b66",
+    "sandboxProfile": "default-docker",
+    "imageIds": {
+      "missing": "sha256:7dfe46d2ad8ccd633b8b2cf2eff71cbf1daea7802150213b6e4809f815b2c58a",
+      "empty": "sha256:7dfe46d2ad8ccd633b8b2cf2eff71cbf1daea7802150213b6e4809f815b2c58a",
+      "populated": "sha256:7dfe46d2ad8ccd633b8b2cf2eff71cbf1daea7802150213b6e4809f815b2c58a"
+    }
+  },
+  "blocker": "The protected-path native gate is incomplete or failed. Activation remains blocked."
+}

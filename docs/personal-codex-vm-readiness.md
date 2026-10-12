@@ -122,3 +122,5 @@ pivot only from `/tmp/oldroot/` to `/tmp/`. Host global restriction stays enable
 5. **Live acceptance:** separately approve harmless native file/command, Stop, same-thread follow-up, container restart/replacement/history retention, and cross-owner isolation tests for both callers. Actual model access must succeed under their own subscriptions before release.
 
 The broker's connect probe remains mandatory. Positive approval of dangerous/escalated commands, network expansion, and central Hermes grant sharing are outside this pilot. See [execution and authentication contracts](codex-harness.md).
+
+The pinned native protected-mask collisions require the separate [source-patch investigation and stricter no-credential proof](reviews/personal-codex-protected-masks.md). The source patch is a proposal; the production image remains unchanged. Passing ordinary shell execution does not prove metadata, helper or `/proc` protection.
