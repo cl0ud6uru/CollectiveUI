@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { isAbsolute } from 'node:path';
 import { PERSONAL_CODEX_WORKSPACE } from './workspace';
 import { ownerId } from './contracts';
+import { sandboxPolicy } from './sandbox-policy.mjs';
 
 const absolute = z.string().refine(v => isAbsolute(v) && !/[\x00-\x1f,]/.test(v));
 export const BrokerConfig = z.object({
@@ -13,6 +14,8 @@ export const BrokerConfig = z.object({
   namespace: z.string().regex(/^cui-codex-[a-z0-9-]{1,20}$/),
   // Admission is installed by an operator, never supplied by an HTTP caller.
   owners: z.array(ownerId).min(1).max(1000),
+  sandboxProfile: z.literal('collectiveui-sandbox-v1').optional(),
+  dockerExecutable: z.enum(['/usr/local/bin/docker', '/usr/bin/docker']).default('/usr/local/bin/docker'),
   memoryMb: z.number().int().min(512).max(16384).default(2048),
   cpus: z.number().min(.25).max(8).default(2),
 }).strict();
@@ -24,13 +27,17 @@ const unavailable = () => new Error('Personal Codex runtime configuration or sto
 
 /** Only trusted provisioner code calls Docker. All names/mounts/commands are derived here. */
 export class PersonalCodexDriver {
-  constructor(readonly config: BrokerConfig) {}
+  readonly config: BrokerConfig;
+  constructor(config: BrokerConfig) { this.config = BrokerConfig.parse(config); }
+  private async policy() {
+    try { return await sandboxPolicy(this.config.sandboxProfile); } catch { throw unavailable(); }
+  }
   name(owner: string) {
     if (!this.config.owners.includes(ownerId.parse(owner))) throw unavailable();
     return `${this.config.namespace}-${runtimeKey(owner)}`;
   }
   protected async command(args: string[]): Promise<string> {
-    try { return (await exec('/usr/local/bin/docker', args, { env: dockerEnv, timeout: 45000, maxBuffer: 2 * 1024 * 1024 })).stdout; }
+    try { return (await exec(this.config.dockerExecutable, args, { env: dockerEnv, timeout: 45000, maxBuffer: 2 * 1024 * 1024 })).stdout; }
     catch { throw unavailable(); }
   }
   private labels(owner: string, labels: Record<string, string>) {
@@ -64,6 +71,7 @@ export class PersonalCodexDriver {
   }
   async inspect(owner: string) {
     const name = this.name(owner);
+    const policy = await this.policy();
     if (!(await this.command(['container', 'ls', '-a', '--filter', `name=^/${name}$`, '--format', '{{.ID}}'])).trim()) return null;
     const [c] = JSON.parse(await this.command(['inspect', name]));
     const h = c.HostConfig;
@@ -72,7 +80,8 @@ export class PersonalCodexDriver {
       c.Config.Entrypoint?.length || h.Privileged || !h.ReadonlyRootfs || h.PidMode || h.UTSMode || h.UsernsMode ||
       !['private', ''].includes(h.IpcMode ?? '') || h.Binds?.length || h.Devices?.length || h.DeviceRequests?.length || h.ExtraHosts?.length ||
       JSON.stringify(h.CapDrop) !== JSON.stringify(['ALL']) || h.CapAdd?.length ||
-      JSON.stringify(h.SecurityOpt) !== JSON.stringify(['no-new-privileges:true']) ||
+      JSON.stringify(h.SecurityOpt) !== JSON.stringify(policy.inspect) ||
+      c.AppArmorProfile !== (policy.appArmorProfile ?? 'docker-default') ||
       h.Memory !== this.config.memoryMb * 1024 * 1024 || h.MemorySwap !== h.Memory || h.NanoCpus !== this.config.cpus * 1e9 || h.PidsLimit !== 256 ||
       h.RestartPolicy?.Name !== 'no' || h.LogConfig?.Type !== 'none' || Object.keys(h.PortBindings ?? {}).length ||
       h.NetworkMode !== `${name}-egress` || JSON.stringify(Object.keys(c.NetworkSettings.Networks)) !== JSON.stringify([`${name}-egress`]) ||
@@ -88,7 +97,9 @@ export class PersonalCodexDriver {
     return c;
   }
   async ensure(owner: string) {
-    const name = this.name(owner), network = await this.network(owner);
+    const name = this.name(owner);
+    const policy = await this.policy();
+    const network = await this.network(owner);
     // No auto-pull/build. Operator must review/install this exact image before enrollment.
     await this.command(['image', 'inspect', this.config.image]);
     let c = await this.inspect(owner);
@@ -96,7 +107,7 @@ export class PersonalCodexDriver {
       const home = await this.volume(owner, 'home', true), workspace = await this.volume(owner, 'workspace', true);
       await this.command(['create', '--name', name, '--label', `collective.codex.owner=${runtimeKey(owner)}`,
         '--label', `collective.codex.namespace=${this.config.namespace}`, '--user', '10001:10001', '--workdir', PERSONAL_CODEX_WORKSPACE,
-        '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--pids-limit', '256',
+        '--read-only', '--cap-drop', 'ALL', ...policy.create.flatMap(opt => ['--security-opt', opt]), '--pids-limit', '256',
         '--memory', `${this.config.memoryMb}m`, '--memory-swap', `${this.config.memoryMb}m`, '--cpus', String(this.config.cpus),
         '--network', network, '--restart', 'no', '--log-driver', 'none', '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m,mode=1777',
         '--mount', `type=volume,src=${home},dst=/codex-home`, '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`,
@@ -117,7 +128,7 @@ export class PersonalCodexDriver {
   }
   async bridge(owner: string): Promise<ChildProcessWithoutNullStreams> {
     if (!(await this.inspect(owner))?.State.Running) throw unavailable();
-    return spawn('/usr/local/bin/docker', ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/bridge.mjs'],
+    return spawn(this.config.dockerExecutable, ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/bridge.mjs'],
       { env: dockerEnv, stdio: 'pipe' });
   }
 }

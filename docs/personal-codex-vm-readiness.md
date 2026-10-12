@@ -23,7 +23,7 @@ scripts/build-personal-codex-fixture.sh
 node scripts/probe-personal-codex.mjs
 ```
 
-Require exit **0**, `authenticated: false`, `verified: true`, and every reported check true: exact protocol, managed policy, native workspace execution, protected auth/proc reads denied, symlink read denied, reachable loopback positive control, native network denied, both volumes retained, and the native-created file retained after replacement. A missing listener or RPC error must not count as a successful denial. The probe now tests that positive control explicitly.
+Require exit **0**, `authenticated: false`, `verified: true`, and every reported check true: exact inspected sandbox policy, exact protocol, managed policy, native workspace execution, protected auth/proc reads denied, symlink read denied, reachable loopback positive control, native network denied, both volumes retained, and the native-created file retained after replacement. A missing listener or RPC error must not count as a successful denial. The probe now tests that positive control explicitly.
 
 If namespace creation fails, stop. Do not disable the sandbox or add privileged mode, capabilities, unconfined seccomp, or host namespaces to pass. Select/review a host supporting the same constraints. The fixture omits production git/python tooling and does not prove actual model tool execution, native thread history, authentication, or proxy enforcement.
 
@@ -32,6 +32,86 @@ After separate approval installs the reviewed production digest, repeat the same
 ```sh
 PERSONAL_CODEX_NATIVE_IMAGE='collectiveui/personal-codex@sha256:<reviewed-digest>' node scripts/probe-personal-codex.mjs
 ```
+
+## Reviewed operator sandbox profile (optional, fail closed)
+
+The broker accepts `"sandboxProfile": "collectiveui-sandbox-v1"` and
+`"dockerExecutable": "/usr/bin/docker"` in its protected operator JSON. The
+executable defaults to `/usr/local/bin/docker`; only these two absolute paths are
+accepted, with no PATH lookup or inherited Docker context. Omit `sandboxProfile`
+to retain Docker default confinement; this is not an automatic namespace workaround.
+No arbitrary security options, profile paths or replacement hashes are accepted.
+
+After separate host-security approval, install the exact checked-in files:
+
+```sh
+sudo install -d -o root -g root -m 0755 /etc/collectiveui/security
+sudo install -o root -g root -m 0444 docker/personal-codex/collectiveui-seccomp-v1.json /etc/collectiveui/security/collectiveui-seccomp-v1.json
+sudo install -o root -g root -m 0444 docker/personal-codex/collectiveui-sandbox-v1 /etc/apparmor.d/collectiveui-sandbox-v1
+sudo apparmor_parser -r /etc/apparmor.d/collectiveui-sandbox-v1
+```
+
+All parents through `/` must be root-owned real directories without group/other
+write permission; both files must be root-owned, regular, non-writable files
+(no symlinks). The driver rechecks paths and SHA256 before creation, inspection,
+retained start and bridge admission; failures retain storage and require operator
+reconciliation. Compiled-in pins (also tested against repository bytes):
+
+- Seccomp: `e077360ce81d54eb7acf5d15d20e7c9444a16c68ea50a38ac66cb8e3ccf13370`
+- AppArmor source: `d0b2b0d205f15ed22d05bfe0e21a64947cab9ddff933652bfd22caab1789852b`
+
+These policies derive from Moby defaults with nested unprivileged namespace
+`clone`, `unshare`, `setns`, `mount`, `umount2`, `pivot_root` allowances and AppArmor
+`mount`/`userns` permission. `clone3` retains the default ENOSYS fallback. This
+expands kernel attack surface: it grants **no outer capabilities** and is only
+admitted with cap-drop ALL, non-root user, no-new-privileges, exact mounts/network
+and all existing limits. Do not apply it to unrelated/browser runtimes.
+
+Docker inspect records the seccomp JSON, not the CLI filename. Admission requires
+exact ordered SecurityOpt (`no-new-privileges:true`, named AppArmor, compact pinned
+seccomp JSON) and exact `AppArmorProfile`; unconfined, missing or extra entries
+are rejected. A root administrator remains trusted: source hashing cannot attest
+the kernel's compiled AppArmor policy, and root can replace/reload profiles or race
+checks. Operators must load these exact bytes and not redefine the same profile
+name; no protection against a compromised root/Docker daemon is claimed.
+
+Repeat the no-credentials gate using the **same** shared verifier and profile:
+
+```sh
+PERSONAL_CODEX_DOCKER_EXECUTABLE=/usr/bin/docker \
+PERSONAL_CODEX_SANDBOX_PROFILE=collectiveui-sandbox-v1 \
+PERSONAL_CODEX_NATIVE_IMAGE='collectiveui/personal-codex@sha256:<reviewed-digest>' \
+node scripts/probe-personal-codex.mjs
+```
+
+These are explicit fixed selections, not general security-opt environment
+options. The probe's native command, protected/symlink reads, network positive
+control and replacement storage checks remain mandatory; each named check must
+be exactly true. No sign-in or real credential is used.
+
+## Home VM evidence (2026-10-12)
+
+On `10.1.31.136`, scoped policy `collectiveui-sandbox-v1` permits the pinned
+bubblewrap namespace operations without host-wide AppArmor changes or outer
+capabilities. Chromium 154.0.8037.92 / Playwright 1.63.0 passed the actual
+production BrowserRuntime DOM, title, button, and intercepted-egress checks with
+`chromiumSandbox: true`, network none, a read-only root, cap-drop ALL, and the
+scoped policies. This is a deterministic synthetic-page launch proof, not a live
+owner/viewer/authentication proof.
+
+Codex 0.163.0-alpha.2 remains **blocked**. Its exact production image passed
+protocol, managed-policy, pinned-container-policy and replacement-storage checks,
+but native workspace execution failed while masking the missing workspace
+`.codex` directory. A diagnostic pre-existing directory got beyond that error
+and exposed an overlapping-denial failure masking `/codex-home/auth.json` inside
+the denied auth home. No protected-read or network enforcement success is claimed;
+those assertions were not reached. Do not remove the auth-home or metadata denials
+to activate it. A separately reviewed managed-filesystem compatibility fix and a
+fully green no-credentials probe are still required.
+
+The seccomp profile permits `chroot` for Chromium's nested user-namespace sandbox;
+outer containers retain no capabilities. AppArmor permits bubblewrap's observed
+pivot only from `/tmp/oldroot/` to `/tmp/`. Host global restriction stays enabled.
 
 ## 3. Explicit activation approvals
 
