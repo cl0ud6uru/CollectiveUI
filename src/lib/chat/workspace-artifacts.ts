@@ -19,15 +19,20 @@ export function artifactPath(value: unknown, normalize = false): string | null {
   return path;
 }
 
-export function artifactLink(path: unknown): { downloadUrl: string } | Record<string, never> {
+const INSTANCE_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+export function artifactLink(path: unknown, instanceId?: unknown): { downloadUrl: string; instanceId?: string } | Record<string, never> {
   const safe = artifactPath(path, true);
-  return safe ? { downloadUrl: `/api/workspace/files?path=${encodeURIComponent(safe)}` } : {};
+  if (!safe) return {};
+  const selectedInstance = typeof instanceId === "string" && INSTANCE_ID_RE.test(instanceId) ? instanceId : undefined;
+  const selector = selectedInstance ? `&instanceId=${encodeURIComponent(selectedInstance)}` : "";
+  return { downloadUrl: `/api/workspace/files?path=${encodeURIComponent(safe)}${selector}`, ...(selectedInstance ? { instanceId: selectedInstance } : {}) };
 }
 
 /** Ignore model-provided URLs: UI actions derive their route from a successful, known file tool result. */
 export function workspaceArtifact(name: string, output: unknown): { path: string; downloadUrl: string } | null {
   if (!["workspace_write", "workspace_edit", "workspace_read"].includes(name) || !output || typeof output !== "object") return null;
-  const result = output as { ok?: unknown; path?: unknown };
+  const result = output as { ok?: unknown; path?: unknown; instanceId?: unknown };
   const path = result.ok === true ? artifactPath(result.path, true) : null;
-  return path ? { path, ...artifactLink(path) } as { path: string; downloadUrl: string } : null;
+  return path ? { path, ...artifactLink(path, result.instanceId) } as { path: string; downloadUrl: string } : null;
 }

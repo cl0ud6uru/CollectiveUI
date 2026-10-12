@@ -38,7 +38,8 @@ import { parseHeadersInput } from "@/lib/secret-input";
 import { requireAdmin } from "@/lib/session";
 import { deleteAllChatGPTConnections, deleteChatGPTConnection } from "@/lib/llm/chatgpt/store";
 import { sandboxd } from "@/lib/sandbox/client";
-import { onUserDisabled, onUserEnabled } from "@/lib/sandbox/lifecycle";
+import { onUserDisabledLocked, onUserEnabledLocked } from "@/lib/sandbox/lifecycle";
+import { withWorkspaceUserLock } from "@/lib/workspaces/locks";
 import { findSandbox, findWorkspaceInstanceById, forgetSandbox, forgetWorkspaceInstance, listSandboxRows, listWorkspaceInstances } from "@/lib/sandbox/store";
 import {
   getSetting,
@@ -242,14 +243,18 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
   const p = await requireAdmin();
   if (userId === p.user.id) throw new HttpError(400, "You can't disable yourself");
   assertAuthOrigin(await headers());
-  await changeUserAccess(p.user, z.string().min(1).max(100).parse(userId), { disabled: z.boolean().parse(disabled) });
-  // A disabled account's own ChatGPT sign-in is revoked, not just left unusable; its workspace is stopped and
-  // scheduled for deletion (re-enabling cancels that).
-  if (disabled) {
-    await deleteChatGPTConnection(userId);
-    await onUserDisabled(userId, p.user.id);
-  } else await onUserEnabled(userId);
-  await audit(p.user.id, disabled ? "user.disable" : "user.enable", userId);
+  const targetUserId = z.string().min(1).max(100).parse(userId);
+  const targetDisabled = z.boolean().parse(disabled);
+  await withWorkspaceUserLock(targetUserId, async (lockedDb) => {
+    await changeUserAccess(p.user, targetUserId, { disabled: targetDisabled });
+    // A disabled account's own ChatGPT sign-in is revoked, and the lock makes the state change atomic with respect
+    // to an in-flight workspace reservation/start. The lifecycle handler then sees every committed instance.
+    if (targetDisabled) {
+      await deleteChatGPTConnection(targetUserId);
+      await onUserDisabledLocked(targetUserId, p.user.id, lockedDb);
+    } else await onUserEnabledLocked(targetUserId, lockedDb);
+  });
+  await audit(p.user.id, targetDisabled ? "user.disable" : "user.enable", targetUserId);
   done();
 }
 

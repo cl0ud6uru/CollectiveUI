@@ -11,10 +11,14 @@ const state = vi.hoisted(() => ({
   db: null as unknown,
   allowed: new Set<string>(),
   client: null as unknown,
+  principals: new Map<string, unknown>(),
+  startHook: null as null | (() => Promise<void>),
 }));
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", () => ({ get db() { return state.db; } }));
+vi.mock("@/lib/workspaces/locks", () => ({ withWorkspaceUserLock: async (_userId: string, run: (database: unknown) => Promise<unknown>) => run(state.db) }));
+vi.mock("@/lib/auth/groups", () => ({ loadPrincipal: async (userId: string) => state.principals.get(userId) ?? null }));
 vi.mock("@/lib/authz", () => ({
   HttpError: class HttpError extends Error { constructor(readonly status: number, message: string) { super(message); } },
   getUsableBot: async (principal: { user: { id: string } }, botId: string) => {
@@ -43,11 +47,15 @@ function fakeDaemon(volumes: Map<string, Volume>, unavailable: { profile: string
       if (existing && existing.profileKey !== profileKey) throw new Error("profile mismatch");
       if (!existing) volumes.set(ref, { profileKey, files: {} });
       running.add(ref);
+      if (state.startHook) await state.startHook();
       return { ref, state: "running", runtime: "runc", drift: false, createdAt: null, lastUsedAt: null, activeExecs: 0 };
     }),
     stop: vi.fn(async (ref: string) => { running.delete(ref); return { ref, state: "stopped" }; }),
     destroy: vi.fn(async (ref: string) => { running.delete(ref); volumes.delete(ref); return { destroyed: true }; }),
-    list: vi.fn(async () => []),
+    list: vi.fn(async () => [...volumes.keys()].map((ref) => ({
+      ref, state: running.has(ref) ? "running" : "stopped", runtime: "runc", drift: false,
+      createdAt: new Date(Date.now() - 10_000).toISOString(), lastUsedAt: null, activeExecs: 0,
+    }))),
     running,
   };
 }
@@ -61,17 +69,17 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
   const volumes = new Map<string, Volume>();
   const unavailable = { profile: null as string | null };
   const aliceLegacyRef = "legacyabcdefghijklmn"; // 20 lower-case characters
-  const alice = { user: { id: "alice", upn: "alice@example.invalid", name: "Alice" }, groupIds: [], isAdmin: false } as never;
-  const bob = { user: { id: "bob", upn: "bob@example.invalid", name: "Bob" }, groupIds: [], isAdmin: false } as never;
+  const alice = { user: { id: "alice", upn: "alice@example.invalid", name: "Alice", disabled: false, sessionVersion: 1 }, groupIds: [], isAdmin: false } as never;
+  const bob = { user: { id: "bob", upn: "bob@example.invalid", name: "Bob", disabled: false, sessionVersion: 1 }, groupIds: [], isAdmin: false } as never;
 
   beforeAll(async () => {
     pg = new PGlite();
-    await pg.exec(`CREATE TABLE users(id text PRIMARY KEY);
+    await pg.exec(`CREATE TABLE users(id text PRIMARY KEY, disabled boolean NOT NULL DEFAULT false, session_version integer NOT NULL DEFAULT 1);
       CREATE TABLE bots(id text PRIMARY KEY, owner_id text REFERENCES users(id) ON DELETE CASCADE);
       CREATE TABLE sandboxes(user_id text PRIMARY KEY REFERENCES users(id), ref text UNIQUE NOT NULL,
         last_used_at timestamptz, delete_after timestamptz, created_at timestamptz NOT NULL);
       INSERT INTO users VALUES ('alice'), ('bob');
-      INSERT INTO bots VALUES ('shared-bot','alice'), ('alice-bot','alice'), ('unbound-bot','alice'), ('bob-unbound-bot','bob');
+      INSERT INTO bots VALUES ('shared-bot','alice'), ('alice-bot','alice'), ('unbound-bot','alice'), ('alice-revoked-bot','alice'), ('bob-unbound-bot','bob'), ('bob-reservation-bot','bob');
       INSERT INTO sandboxes VALUES ('alice','${aliceLegacyRef}','2026-10-01Z',NULL,'2026-09-01Z');`);
     folder = await mkdtemp(path.join(tmpdir(), "workspace-bindings-"));
     await mkdir(path.join(folder, "meta"));
@@ -84,11 +92,15 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     }));
     await migrate(drizzle(pg), { migrationsFolder: folder });
     state.db = drizzle(pg);
+    state.principals.set("alice", alice);
+    state.principals.set("bob", bob);
     state.allowed.add("alice:shared-bot");
     state.allowed.add("bob:shared-bot");
     state.allowed.add("alice:alice-bot");
     state.allowed.add("alice:unbound-bot");
+    state.allowed.add("alice:alice-revoked-bot");
     state.allowed.add("bob:bob-unbound-bot");
+    state.allowed.add("bob:bob-reservation-bot");
     state.client = fakeDaemon(volumes, unavailable);
     const service = await import("@/lib/workspaces/instances");
     assignTemplate = service.assignTemplate;
@@ -114,7 +126,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     volumes.set(aliceLegacyRef, { profileKey: "legacy", files: { "legacy.txt": "old personal files" } });
   }, 30_000);
 
-  beforeEach(() => { unavailable.profile = null; });
+  beforeEach(() => { unavailable.profile = null; state.startHook = null; });
 
   afterAll(async () => {
     const { WORKSPACE_PROFILES } = await import("@/sandboxd/profiles");
@@ -147,6 +159,69 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     })));
     expect(new Set(results.map((r) => r.id)).size).toBe(1);
     expect(new Set(results.map((r) => r.state))).toEqual(new Set(["ready"]));
+  });
+
+  it("commits a provisioning reservation before daemon volume creation so orphan sweep preserves it", async () => {
+    const { db } = await import("@/db");
+    const { workspaceInstances } = await import("@/db/schema");
+    const daemon = state.client as ReturnType<typeof fakeDaemon>;
+    let announceStarted!: () => void;
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => { announceStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseStart = resolve; });
+    state.startHook = async () => { announceStarted(); await blocked; };
+
+    const pending = assignTemplate({ principal: bob, botId: "bob-reservation-bot", templateVersionId: "office-v1" });
+    await started;
+    const [reservation] = await db.select().from(workspaceInstances)
+      .where(and(eq(workspaceInstances.ownerUserId, "bob"), eq(workspaceInstances.provisionState, "provisioning")));
+    expect(reservation?.provisionState).toBe("provisioning");
+
+    const { sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
+    const sweep = await sweepSandboxes(new Date());
+    expect(sweep.orphans).toBe(0);
+    expect(daemon.destroy).not.toHaveBeenCalledWith(reservation?.sandboxRef);
+    releaseStart();
+    await pending;
+  });
+
+  it("rechecks disabled state and session version after provisioning before keeping a bot binding", async () => {
+    const { db } = await import("@/db");
+    const { users, workspaceInstances, workspaceBotBindings } = await import("@/db/schema");
+    let announceStarted!: () => void;
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => { announceStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseStart = resolve; });
+    state.startHook = async () => { announceStarted(); await blocked; };
+
+    const pending = assignTemplate({ principal: alice, botId: "unbound-bot", templateVersionId: "office-v1" });
+    await started;
+    await db.update(users).set({ disabled: true, sessionVersion: 2 }).where(eq(users.id, "alice"));
+    releaseStart();
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+
+    expect(await db.select().from(workspaceBotBindings).where(eq(workspaceBotBindings.botId, "unbound-bot"))).toHaveLength(0);
+    const reservations = await db.select().from(workspaceInstances).where(and(eq(workspaceInstances.ownerUserId, "alice"), eq(workspaceInstances.templateVersionId, "office-v1")));
+    expect(reservations.some((row) => row.provisionState === "unavailable" && row.deleteAfter !== null)).toBe(true);
+    await db.update(users).set({ disabled: false, sessionVersion: 1 }).where(eq(users.id, "alice"));
+  });
+
+  it("rechecks bot access after provisioning and removes a revoked provisional binding", async () => {
+    const { db } = await import("@/db");
+    const { workspaceBotBindings } = await import("@/db/schema");
+    let announceStarted!: () => void;
+    let releaseStart!: () => void;
+    const started = new Promise<void>((resolve) => { announceStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { releaseStart = resolve; });
+    state.startHook = async () => { announceStarted(); await blocked; };
+
+    const pending = assignTemplate({ principal: alice, botId: "alice-revoked-bot", templateVersionId: "office-v1" });
+    await started;
+    state.allowed.delete("alice:alice-revoked-bot");
+    releaseStart();
+    await expect(pending).rejects.toThrow(/access denied/);
+    expect(await db.select().from(workspaceBotBindings).where(eq(workspaceBotBindings.botId, "alice-revoked-bot"))).toHaveLength(0);
+    state.allowed.add("alice:alice-revoked-bot");
   });
 
   it("persists files through stop and daemon restart, and keeps replaced versions intact", async () => {
@@ -200,6 +275,32 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
 
     const noWorkspace = await resolveWorkspace({ principal: bob, botId: "bob-unbound-bot", createIfMissing: false });
     expect(noWorkspace).toBeNull();
+  });
+
+  it("reconciles old-binary legacy timestamps, disable deadlines, and re-enable clears", async () => {
+    const { db } = await import("@/db");
+    const { sandboxes, workspaceInstances, users } = await import("@/db/schema");
+    const { ensureLegacyInstance } = await import("@/lib/sandbox/store");
+    const { sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
+    await resolveWorkspace({ principal: alice, botId: "unbound-bot", createIfMissing: false });
+    const lastUsedAt = new Date("2026-10-05T00:00:00Z");
+    const deleteAfter = new Date("2026-10-20T00:00:00Z");
+    await db.update(sandboxes).set({ lastUsedAt, deleteAfter }).where(eq(sandboxes.userId, "alice"));
+    const legacy = await ensureLegacyInstance("alice", aliceLegacyRef);
+    expect(legacy?.lastUsedAt?.getTime()).toBe(lastUsedAt.getTime());
+    expect(legacy?.deleteAfter?.getTime()).toBe(deleteAfter.getTime());
+
+    await db.update(users).set({ disabled: true }).where(eq(users.id, "alice"));
+    await db.update(workspaceInstances).set({ deleteAfter: new Date("2026-10-15T00:00:00Z") }).where(eq(workspaceInstances.ownerUserId, "alice"));
+    await sweepSandboxes(new Date("2026-10-10T00:00:00Z"));
+    const disabledRows = await db.select().from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, "alice"));
+    expect(disabledRows.every((row) => row.deleteAfter?.getTime() === deleteAfter.getTime())).toBe(true);
+
+    await db.update(sandboxes).set({ deleteAfter: null }).where(eq(sandboxes.userId, "alice"));
+    await db.update(users).set({ disabled: false }).where(eq(users.id, "alice"));
+    await sweepSandboxes(new Date("2026-10-10T00:00:00Z"));
+    const enabledRows = await db.select().from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, "alice"));
+    expect(enabledRows.every((row) => row.deleteAfter === null)).toBe(true);
   });
 
   it("enforces the owner/instance composite foreign key and returns only owner DTOs", async () => {

@@ -3,10 +3,10 @@ import { HttpError } from "@/lib/authz";
 import { SandboxError } from "@/lib/sandbox/client";
 import { artifactLink, artifactPath, MAX_ARTIFACT_BYTES, workspaceArtifact } from "@/lib/chat/workspace-artifacts";
 import { isMobileApiPath } from "@/lib/public-routes";
-const f = vi.hoisted(() => ({ principal: vi.fn(), setting: vi.fn(), find: vi.fn(), read: vi.fn(), touch: vi.fn() }));
+const f = vi.hoisted(() => ({ principal: vi.fn(), setting: vi.fn(), find: vi.fn(), findInstance: vi.fn(), read: vi.fn(), touch: vi.fn(), touchInstance: vi.fn() }));
 vi.mock("@/lib/session", () => ({ requirePrincipal: f.principal, errorResponse: (e: {status?: number;message: string}) => Response.json({error:e.message},{status:e.status ?? 500}) }));
 vi.mock("@/lib/settings", () => ({ getSetting: f.setting }));
-vi.mock("@/lib/sandbox/store", () => ({ findSandbox: f.find, touchSandbox: f.touch }));
+vi.mock("@/lib/sandbox/store", () => ({ findSandbox: f.find, findWorkspaceInstance: f.findInstance, touchSandbox: f.touch, touchWorkspaceInstance: f.touchInstance }));
 vi.mock("@/lib/sandbox/client", async (original) => ({ ...await original<object>(), sandboxd: () => ({ readFile: f.read }) }));
 import { GET } from "@/app/api/workspace/files/route";
 const request = (query = "path=drawing.svg") => new Request(`https://portal.test/api/workspace/files?${query}`);
@@ -15,6 +15,7 @@ beforeEach(() => {
   f.principal.mockResolvedValue({ user: {id:"owner",upn:"owner@test"}, groupIds:[], isAdmin:false });
   f.setting.mockResolvedValue({ enabled:true, access:"everyone", allowRunc:false });
   f.find.mockResolvedValue({ref:"ownersandbox"});
+  f.findInstance.mockResolvedValue({ id:"instance_1234567", ownerUserId:"owner", sandboxRef:"templatevolume", runtimeProfileKey:"knowledge-work-v1" });
   f.read.mockResolvedValue({bytes:Buffer.from('<svg onload="alert(1)"/>'),size:24,truncated:false});
 });
 describe("workspace artifact ownership and serving", () => {
@@ -38,6 +39,22 @@ describe("workspace artifact ownership and serving", () => {
     f.principal.mockResolvedValue({user:{id:"admin",upn:"admin@test"},groupIds:[],isAdmin:true});
     await GET(request());
     expect(f.find).toHaveBeenCalledWith("admin");
+  });
+  it("pins template artifact downloads to the owner-checked instance and runtime profile", async () => {
+    const response = await GET(request("path=drawing.svg&instanceId=instance_1234567"));
+    expect(response.status).toBe(200);
+    expect(f.findInstance).toHaveBeenCalledWith("owner", "instance_1234567");
+    expect(f.find).not.toHaveBeenCalled();
+    expect(f.read).toHaveBeenCalledWith("templatevolume", {
+      isolation:"gvisor", path:"drawing.svg", maxBytes:MAX_ARTIFACT_BYTES, runtimeProfileKey:"knowledge-work-v1",
+    });
+    expect(f.touchInstance).toHaveBeenCalledWith("instance_1234567", "owner");
+  });
+  it("does not fall back to the owner's legacy sandbox for a missing or foreign instance selector", async () => {
+    f.findInstance.mockResolvedValueOnce(null);
+    expect((await GET(request("path=drawing.svg&instanceId=foreign_1234567"))).status).toBe(404);
+    expect(f.find).not.toHaveBeenCalled();
+    expect(f.read).not.toHaveBeenCalled();
   });
   it("does not read files when unauthenticated or access revoked", async () => {
     f.principal.mockRejectedValueOnce(new HttpError(401,"Unauthorized"));
@@ -71,6 +88,9 @@ describe("artifact links", () => {
   it("supports command-created files through read results and normalizes workspace absolute paths", () => {
     expect(artifactLink("/home/agent/workspace/art/100%.svg")).toEqual({downloadUrl:"/api/workspace/files?path=art%2F100%25.svg"});
     expect(workspaceArtifact("workspace_read", {ok:true,path:"art.svg",downloadUrl:"https://evil.test"})?.downloadUrl).toBe("/api/workspace/files?path=art.svg");
+    expect(workspaceArtifact("workspace_read", {ok:true,path:"art.svg",instanceId:"instance_1234567",downloadUrl:"https://evil.test"})?.downloadUrl)
+      .toBe("/api/workspace/files?path=art.svg&instanceId=instance_1234567");
+    expect(artifactLink("art.svg", "bad id")).toEqual({downloadUrl:"/api/workspace/files?path=art.svg"});
     expect(workspaceArtifact("workspace_bash", {ok:true,path:"art.svg"})).toBeNull();
     expect(workspaceArtifact("workspace_write", {ok:false,path:"art.svg"})).toBeNull();
     expect(artifactLink("./art/../drawing.svg")).toEqual({downloadUrl:"/api/workspace/files?path=drawing.svg"});

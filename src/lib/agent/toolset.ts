@@ -87,6 +87,7 @@ async function workspaceFor(ctx: AgentCtx, settings: SandboxSettings, warnings: 
     client,
     ref: async () => resolved.sandboxRef,
     runtimeProfileKey: resolved.runtimeProfileKey === "legacy" ? undefined : resolved.runtimeProfileKey,
+    instanceId: resolved.instanceId,
     isolation: requiredIsolation(settings),
     onUse: () => {
       if (Date.now() - lastTouch < 60_000) return;

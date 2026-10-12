@@ -171,7 +171,7 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
           return { ok: false as const, reason: "redacted", message: `The content contains "${MASK}", a masked secret you saw in a tool result. Don't write it back; use workspace_edit to change only the parts you need.` };
         try {
           const r = await ws.writeRaw(path, new TextEncoder().encode(content));
-          return { ok: true as const, path, bytes: r.bytes, created: r.created, ...artifactLink(path) };
+          return { ok: true as const, path, bytes: r.bytes, created: r.created, ...artifactLink(path, ws.instanceId) };
         } catch (err) {
           return failure(err);
         }
@@ -209,7 +209,7 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
               return { ok: false as const, reason: "ambiguous", message: `old_string appears ${count} times. Include more surrounding text, or set replace_all.` };
             const next = replace_all ? text.split(old_string).join(new_string) : text.replace(old_string, () => new_string);
             await ws.writeNow(path, new TextEncoder().encode(next));
-            return { ok: true as const, path, replacements: replace_all ? count : 1, ...artifactLink(path) };
+            return { ok: true as const, path, replacements: replace_all ? count : 1, ...artifactLink(path, ws.instanceId) };
           });
         } catch (err) {
           return failure(err);
@@ -232,12 +232,12 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
         try {
           const file = await ws.readRaw(path, readBudget, start_line, end_line);
           if (!file) return { ok: false as const, reason: "not_found", message: `${path} doesn't exist.` };
-          if (looksBinary(file.bytes)) return { ok: true as const, path, binary: true, size: file.size, ...artifactLink(path) };
+          if (looksBinary(file.bytes)) return { ok: true as const, path, binary: true, size: file.size, ...artifactLink(path, ws.instanceId) };
           const first = start_line ?? 1;
           const lines = cleanText(file.bytes).split("\n");
           if (lines.at(-1) === "") lines.pop();
           const numbered = lines.map((l, i) => `${String(first + i).padStart(5)}  ${l}`).join("\n");
-          return { ok: true as const, path, size: file.size, truncated: file.truncated, content: numbered, ...artifactLink(path) };
+          return { ok: true as const, path, size: file.size, truncated: file.truncated, content: numbered, ...artifactLink(path, ws.instanceId) };
         } catch (err) {
           return failure(err);
         }

@@ -47,17 +47,19 @@ export class PortalWorkspace implements Experimental_SandboxSession {
   private readonly resolveRef: () => Promise<string>;
   private readonly isolation: Isolation;
   private readonly runtimeProfileKey?: string;
+  readonly instanceId?: string;
   private readonly onUse: () => void;
   private refPromise: Promise<string> | null = null;
   private chain: Promise<unknown> = Promise.resolve();
   private readonly running = new Set<string>();
   private closed = false;
 
-  constructor(opts: { client: SandboxdClient; ref: () => Promise<string>; isolation: Isolation; runtimeProfileKey?: string; onUse?: () => void }) {
+  constructor(opts: { client: SandboxdClient; ref: () => Promise<string>; isolation: Isolation; runtimeProfileKey?: string; instanceId?: string; onUse?: () => void }) {
     this.client = opts.client;
     this.resolveRef = opts.ref;
     this.isolation = opts.isolation;
     this.runtimeProfileKey = opts.runtimeProfileKey;
+    this.instanceId = opts.instanceId;
     this.onUse = opts.onUse ?? (() => {});
   }
 
