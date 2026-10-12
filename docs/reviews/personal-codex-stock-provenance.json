@@ -1,0 +1,72 @@
+{
+  "recordedAt": "2026-10-12",
+  "platform": "linux/amd64",
+  "buildCommand": "scripts/build-personal-codex-stock.sh",
+  "dockerBuildNetwork": "none",
+  "rustBuild": false,
+  "inputLockSha256": "6f2af557d4f8020e27aa0b7ea3292ab19b36af769e117e1c565e5103a340a383",
+  "baseImage": "node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392",
+  "baseImageId": "sha256:d0a16be756b6ec6658aecb8b7bcf87fa6c7d0d7fcc6ca53ad14bb49a4c90bdd7",
+  "officialSourceCommit": "a6274249d5877030676db098914db686bab7c921",
+  "officialNpmArtifactSha256": "ab47cfba65f596acaac865e779532fccd422b5928f375ae36bc1b997b75ce49a",
+  "officialNpmArtifactSha512": "d289b873a551db9e5827b3233c537014d8ab535224e7e1ef50476a54e9a9488ce2ca1a6a20e1fffa216c7b8e18cc488badac611b25f7fb82fe4306eed27dd38c",
+  "nativeSha256": "68374c44c942514b480b21a14f666d75922633594c652f3a2052e3eca80ea947",
+  "bundledBubblewrapSha256": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c",
+  "npmPublishedProvenance": {
+    "_type": "https://in-toto.io/Statement/v1",
+    "subject": [
+      {
+        "name": "pkg:npm/%40openai/codex@0.163.0-alpha.2-linux-x64",
+        "digest": {
+          "sha512": "d289b873a551db9e5827b3233c537014d8ab535224e7e1ef50476a54e9a9488ce2ca1a6a20e1fffa216c7b8e18cc488badac611b25f7fb82fe4306eed27dd38c"
+        }
+      }
+    ],
+    "predicateType": "https://slsa.dev/provenance/v1",
+    "predicate": {
+      "buildDefinition": {
+        "buildType": "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1",
+        "externalParameters": {
+          "workflow": {
+            "ref": "refs/tags/rust-v0.163.0-alpha.2",
+            "repository": "https://github.com/openai/codex",
+            "path": ".github/workflows/rust-release.yml"
+          }
+        },
+        "internalParameters": {
+          "github": {
+            "event_name": "push",
+            "repository_id": "965415649",
+            "repository_owner_id": "14957082"
+          }
+        },
+        "resolvedDependencies": [
+          {
+            "uri": "git+https://github.com/openai/codex@refs/tags/rust-v0.163.0-alpha.2",
+            "digest": {
+              "gitCommit": "a6274249d5877030676db098914db686bab7c921"
+            }
+          }
+        ]
+      },
+      "runDetails": {
+        "builder": {
+          "id": "https://github.com/actions/runner/github-hosted"
+        },
+        "metadata": {
+          "invocationId": "https://github.com/openai/codex/actions/runs/37864122938/attempts/1"
+        }
+      }
+    }
+  },
+  "provenanceVerification": "Decoded upstream npm SLSA attestation; its subject digest and source commit match the pinned artifact. Sigstore signature was not independently verified. All build inputs were SHA-256 verified.",
+  "imageId": "sha256:087feda902028b7713d70f4187a4e6d5094fa620d2c7dc44e27649485e1aac71",
+  "registryDigest": null,
+  "archiveFile": "collectiveui-personal-codex-stock-runtime.tar",
+  "archiveSha256": "6680e3d7bb4b409d8771391534cc381f45166d17aec1db308f954d4df87b0ae6",
+  "archiveBytes": 978256896,
+  "requirementsSha256": "cd789bc4cc3345ac488fafd47b68034342da5f2ad8cb9fac08600b0448d5d768",
+  "imagePublished": false,
+  "nativeAcceptance": false,
+  "testedWithRealAccount": false
+}

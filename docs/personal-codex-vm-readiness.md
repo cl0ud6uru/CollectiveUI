@@ -1,5 +1,6 @@
 # Minimal personal Codex VM readiness check
 
+**Current stock route:** use the [pinned build, requirements tradeoffs, actual cloud evidence and credential-free Hermes handoff](reviews/personal-codex-stock-runtime.md). The native namespace gate remains blocked in the cloud. The earlier source-patch/planner work and VM observations below are historical evidence, not acceptance of the stock route.
 Run this only on the nominated execution VM, against a reviewed checkout/image. It does not authorize deployment, real account sign-in, security changes, or live egress rules. The current CollectiveUI cloud host fails the native sandbox gate.
 
 ## 1. Read-only prerequisites
@@ -19,13 +20,13 @@ The tested fixture path requires Linux x86_64/amd64, Node 22.18 or later, the ex
 Approve running this development fixture on the candidate VM: public package/image downloads, an offline fixture image build, and disposable containers/volumes on Docker `network=none`. It creates no native grant, owner enrollment, external network, proxy, firewall rule, or host security configuration.
 
 ```sh
-scripts/build-personal-codex-fixture.sh
+scripts/build-personal-codex-stock.sh
 node scripts/probe-personal-codex.mjs
 ```
 
-Require exit **0**, `authenticated: false`, `verified: true`, and every reported check true: exact inspected sandbox policy, exact protocol, managed policy, native workspace execution, protected auth/proc reads denied, symlink read denied, reachable loopback positive control, native network denied, both volumes retained, and the native-created file retained after replacement. A missing listener or RPC error must not count as a successful denial. The probe now tests that positive control explicitly.
+Require exit **0**, `authenticated: false`, `verified: true`, and every reported check true: exact inspected sandbox policy, exact protocol, managed policy, native workspace execution, protected auth/proc reads denied, symlink read denied, reachable loopback positive control, native network denied, both volumes retained, and the native-created file retained after replacement. Also require the full stock matrix in the linked handoff to pass. A missing listener or RPC error must not count as a successful denial. The probe now tests that positive control explicitly.
 
-If namespace creation fails, stop. Do not disable the sandbox or add privileged mode, capabilities, unconfined seccomp, or host namespaces to pass. Select/review a host supporting the same constraints. The fixture omits production git/python tooling and does not prove actual model tool execution, native thread history, authentication, or proxy enforcement.
+If namespace creation fails, stop. Do not disable the sandbox or add privileged mode, capabilities, unconfined seccomp, or host namespaces to pass. Select/review a host supporting the same constraints. The stock image includes pinned Git/Python. These credential-free checks do not prove actual model tool execution, native thread history, authentication, or proxy enforcement.
 
 After separate approval installs the reviewed production digest, repeat the same no-credentials probe against that image:
 
@@ -123,4 +124,4 @@ pivot only from `/tmp/oldroot/` to `/tmp/`. Host global restriction stays enable
 
 The broker's connect probe remains mandatory. Positive approval of dangerous/escalated commands, network expansion, and central Hermes grant sharing are outside this pilot. See [execution and authentication contracts](codex-harness.md).
 
-The pinned native protected-mask collisions require the separate [source-patch investigation and stricter no-credential proof](reviews/personal-codex-protected-masks.md). The source patch is a proposal; the production image remains unchanged. Passing ordinary shell execution does not prove metadata, helper or `/proc` protection.
+The [stock-runtime handoff](reviews/personal-codex-stock-runtime.md) now proposes the official prebuilt binary and a restricted read allowlist. The [earlier native source-patch investigation](reviews/personal-codex-protected-masks.md) remains historical; its tests are not stock acceptance. Passing ordinary shell execution does not prove metadata, helper or parent-process protection.

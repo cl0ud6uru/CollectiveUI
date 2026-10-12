@@ -1,5 +1,6 @@
 # Personal Codex protected-mask investigation
 
+**Historical investigation:** the approved direction is now the [official stock-runtime route](personal-codex-stock-runtime.md). This source patch and its planner results are preserved but are not used to build or accept that image.
 This is a proposed patch to pinned **native Codex**, plus a stricter disposable proof. It does not activate or replace the runtime. Production requirements, npm/image pins, the broker, Hermes and browser-runtime paths are unchanged. Production remains disabled.
 
 The branch starts at CollectiveUI main **015b091868fa0878c298b856c14d059342f5d9e9**. Operator commit **946723b1a9e26da2ca0b9dd017b18e734d1d1a36** was inspected without accessing its VM; its reviewed-profile files are now included in main. The new probe uses that fixed hash-verified importer when a profile is selected. No host profile, capability, security permission, account, credential or network rule was changed by this work.

@@ -9,7 +9,7 @@ const security = policy.create.flatMap(opt => ['--security-opt', opt]);
 const dockerEnv = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent' };
 
 // Isolated, disposable fixtures only. The native grant is never populated and the network is none.
-const image = process.env.PERSONAL_CODEX_NATIVE_IMAGE ?? 'collectiveui/personal-codex:protocol-fixture';
+const image = process.env.PERSONAL_CODEX_NATIVE_IMAGE ?? 'collectiveui/personal-codex:stock-runtime';
 if (!/^collectiveui\/personal-codex(?::[a-z0-9-]+|@sha256:[a-f0-9]{64})$/.test(image)) throw new Error('Reviewed personal Codex fixture image required.');
 const name = `cui-codex-probe-${randomUUID()}`, home = `${name}-home`, workspace = `${name}-workspace`;
 const docker = (args) => execFileSync(executable, args, { encoding: 'utf8', timeout: 30000, env: dockerEnv });
@@ -25,8 +25,7 @@ try {
   docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', ...security,
     '--user', '10001:10001', '--mount', `type=volume,src=${home},dst=/codex-home`, '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`,
     image, 'sh', '-c', 'printf fixture-private-auth-sentinel > /codex-home/auth.json; printf retained-workspace-sentinel > /home/agent/workspace/retained.txt']);
-  child = spawn(executable, ['run', '-i', ...common, image, 'codex', '-c', 'projects={"/home/agent/workspace"={trust_level="untrusted"}}',
-    '-c', 'notify=[]', '-c', 'web_search="disabled"', 'app-server', '--listen', 'stdio://'], { stdio: 'pipe', env: dockerEnv });
+  child = spawn(executable, ['run', '-i', ...common, image, 'node', '/opt/collective-codex/server.mjs', '--stdio'], { stdio: 'pipe', env: dockerEnv });
   child.stderr.resume(); // Native diagnostics never go to production/browser logs.
   let next = 0; const pending = new Map();
   createInterface({ input: child.stdout }).on('line', line => {
@@ -50,7 +49,7 @@ try {
   if (!evidence.checks.nativeWorkspaceExecution) {
     evidence.blocker = /namespace/.test(write.result?.stderr ?? '') ? 'The host/container cannot create the unprivileged namespace required by bubblewrap.' : 'Native workspace execution failed; runtime cannot be activated.';
   } else {
-    const denied = await exec(['sh', '-c', 'cat /codex-home/auth.json /proc/1/environ']);
+    const denied = await exec(['sh', '-c', 'cat /codex-home/auth.json /proc/1/root/codex-home/auth.json']);
     evidence.checks.protectedReadDenied = !!denied.result && typeof denied.result.exitCode === 'number' && denied.result.exitCode !== 0 && !denied.result.stdout.includes('fixture-private-auth-sentinel');
     const symlink = await exec(['sh', '-c', 'ln -s /codex-home/auth.json /home/agent/workspace/auth-link && cat /home/agent/workspace/auth-link']);
     evidence.checks.symlinkReadDenied = !!symlink.result && typeof symlink.result.exitCode === 'number' && symlink.result.exitCode !== 0 && !symlink.result.stdout.includes('fixture-private-auth-sentinel');

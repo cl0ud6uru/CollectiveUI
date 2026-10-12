@@ -5,7 +5,7 @@ RUN chmod -R a+rX /opt/codex && chmod 0755 /opt/codex/bin/codex && ln -s /opt/co
  && groupadd --gid 10001 codex && useradd --uid 10001 --gid 10001 --home-dir /codex-home codex \
  && mkdir -p /codex-home /home/agent/workspace && chown 10001:10001 /codex-home /home/agent/workspace && chmod 0700 /codex-home /home/agent/workspace
 COPY requirements.toml /etc/codex/requirements.toml
-COPY server.mjs bridge.mjs /opt/collective-codex/
+COPY server.mjs bridge.mjs prepare-workspace.mjs /opt/collective-codex/
 COPY node_modules /opt/collective-codex/node_modules
 RUN chmod 0644 /etc/codex/requirements.toml /opt/collective-codex/server.mjs /opt/collective-codex/bridge.mjs
 ENV PATH=/usr/local/bin:/usr/bin:/bin
