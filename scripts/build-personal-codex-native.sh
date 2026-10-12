@@ -123,10 +123,11 @@ docker run --rm --network none --read-only --cap-drop ALL --user "$uid:$gid" \
   "$rust_image" sh -eu -c '
     ln -s /cache/registry "$CARGO_HOME/registry"
     ln -s /cache/git "$CARGO_HOME/git"
-    # Keep the upstream optimized release settings, but disable whole-program
-    # LTO for the final CLI binary. On the small disposable builder this avoids
-    # emitting more than 1 GiB of temporary cross-crate LTO objects.
-    cargo rustc --offline --locked --release --package codex-cli --bin codex -- -C lto=off
+    # Keep the upstream optimized release settings, disable whole-program LTO
+    # for the final CLI binary, and serialize lld. The dependency artifacts
+    # still carry ThinLTO bitcode, so a single linker thread bounds peak memory.
+    cargo rustc --offline --locked --release --package codex-cli --bin codex -- \
+      -C lto=off -C link-arg=-Wl,--threads=1
   '
 
 test -x "$target_dir/release/codex"
@@ -146,5 +147,6 @@ printf 'source_commit=%s\npatch_sha256=%s\nbwrap_sha256=%s\nfixture_base_image_i
   "$commit" "$patch_sha" "$bwrap_sha" "$fixture_id"
 printf 'codex_binary_sha256=%s\n' "$binary_sha"
 printf 'codex_cli_lto=off\n'
+printf 'codex_linker_threads=1\n'
 printf 'persistent_build_target=%s\n' "$target_dir"
 docker image inspect "$image_tag" --format '{{json .Config.Labels}}'
