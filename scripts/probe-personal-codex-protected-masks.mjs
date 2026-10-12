@@ -1,8 +1,8 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { MASK_STATES, allStockChecksPass, stockCommands, passedProbe, networkCommand } from './lib/personal-codex-stock-proof.mjs';
+import { fixtureRpc, fixtureFailure } from './lib/personal-codex-fixture-rpc.mjs';
 
 // Disposable fixtures only. No enrollment/grants are read. Only synthetic command
 // failures produce bounded diagnostics; production native logs stay suppressed.
@@ -38,7 +38,8 @@ try {
   for (const state of MASK_STATES) await runCase(state);
   evidence.verified = allStockChecksPass(evidence.cases);
   if (!evidence.verified) evidence.blocker = 'The protected-path native gate is incomplete or failed. Activation remains blocked.';
-} catch {
+} catch (error) {
+  evidence.failure = fixtureFailure(error, 'fixtureInputsOrPolicy');
   evidence.blocker = 'Fixture setup or reviewed policy validation failed. No live account was used.';
 } finally {
   console.log(JSON.stringify(evidence, null, 2));
@@ -51,6 +52,7 @@ async function runCase(state) {
   const home = name + '-home', workspace = name + '-workspace';
   const checks = evidence.cases[state] = {};
   let runtime;
+  let stage = 'volumeCreate';
   const base = ['--network', 'none', '--read-only', '--cap-drop', 'ALL',
     ...security.create.flatMap(value => ['--security-opt', value]), '--user', '10001:10001',
     '--pids-limit', '256', '--memory', '2048m', '--memory-swap', '2048m', '--cpus', '2',
@@ -73,6 +75,7 @@ async function runCase(state) {
   ].join('\n');
   try {
     docker(['volume', 'create', home]); docker(['volume', 'create', workspace]);
+    stage = 'fixtureSetup';
     docker(['run', '--rm', '--name', setupName, ...base, image, 'node', '-e', [
       "const fs=require('node:fs'),path=require('node:path');",
       "for(const [file,value] of Object.entries(" + JSON.stringify(fixtureHome) + ")) { const target='/codex-home/'+file;",
@@ -83,6 +86,7 @@ async function runCase(state) {
       "if(" + JSON.stringify(state) + "==='populated') fs.writeFileSync('/home/agent/workspace/.codex/fixture.txt','fixture-private-metadata-sentinel');",
     ].join('\n')]);
     runtime = await start();
+    stage = 'containerInspection';
     const inspected = JSON.parse(docker(['inspect', name]))[0];
     evidence.artifacts.imageIds[state] = inspected.Image;
     checks.requirementsMatch = outside("process.stdout.write(require('node:crypto').createHash('sha256').update(require('node:fs').readFileSync('/etc/codex/requirements.toml')).digest('hex'))") === requirementsSha256;
@@ -101,29 +105,34 @@ async function runCase(state) {
     const commands = stockCommands(state);
     const execute = script => runtime.request('command/exec', { command: ['node', '-e', script], cwd: '/home/agent/workspace',
       permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 2048 });
+    stage = 'networkPositiveControl';
     docker(['exec', '-d', name, 'node', '-e', "const net=require('node:net'),udp=require('node:dgram').createSocket('udp4');net.createServer(socket=>socket.end()).listen(4500,'127.0.0.1');net.createServer(socket=>socket.end()).listen('/home/agent/workspace/fixture-network.sock');udp.on('message',(bytes,remote)=>udp.send('fixture-udp-control',remote.port,remote.address));udp.bind(4501,'127.0.0.1');"]);
     const connect = networkCommand(false);
     const control = () => passedProbe({ result: { exitCode: 0, stdout: outside(connect), stderr: '' } }, 'networkControlReachable');
     for (let i=0; i<30 && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/fixture-network.sock')))")!=='true'; i++) await new Promise(resolve=>setTimeout(resolve,50));
     checks.networkControlReachable = control();
+    stage = 'nativeWorkspaceExecution';
     const workspaceReply = await execute(commands.nativeWorkspaceExecution);
     checks.nativeWorkspaceExecution = passedProbe(workspaceReply, 'nativeWorkspaceExecution');
     if (!checks.nativeWorkspaceExecution) {
       const detail = workspaceReply.error?.message ?? workspaceReply.result?.stderr ?? '';
       evidence.failures ??= {};
       evidence.failures[state] = { stage: 'nativeWorkspaceExecution', exitCode: workspaceReply.result?.exitCode ?? null,
-        reason: /namespace/i.test(detail) ? 'unprivileged-namespace-unavailable' : /Read-only file system|Is a directory/.test(detail) ? 'mount-planner-conflict' : 'native-command-unavailable',
+        reason: /pivot_root|pivotroot/i.test(detail) ? 'pivot-root-denied' : /namespace/i.test(detail) ? 'unprivileged-namespace-unavailable' : /Read-only file system|Is a directory/.test(detail) ? 'mount-planner-conflict' : 'native-command-unavailable',
         diagnostic: detail.slice(0, 2000) }; // Only this synthetic fixture can emit bounded diagnostics.
     }
     if (!checks.nativeWorkspaceExecution) {
       // Volume persistence is independently testable; no sandbox denial is credited.
+      stage = 'backingDataIntegrity';
       checks.backingDataUnchanged = outside(verifyBacking) === 'backing-fixtures-retained';
       await stop();
-      runtime = await start();
+      runtime = await start('replacement');
+      stage = 'replacementStorage';
       checks.storageSurvivesReplacement = outside(verifyBacking) === 'backing-fixtures-retained'
         && outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/retained.txt','utf8'))") === 'retained-workspace-sentinel';
       return;
     }
+    stage = 'nativeProtectionMatrix';
     outside("const cp=require('node:child_process');const child=cp.spawn('node',['-e',\"const fs=require('node:fs');process.chdir('/codex-home');const fd=fs.openSync('/codex-home/unknown-sibling.txt','r');fs.writeFileSync('/home/agent/workspace/fixture-parent.json',JSON.stringify({pid:process.pid,fd,pidNamespace:fs.readlinkSync('/proc/self/ns/pid')}));setInterval(()=>{},1000)\"],{detached:true,stdio:'ignore',env:{PATH:process.env.PATH,CUI_PRIVATE_PARENT:'fixture-parent-process-sentinel'}});child.unref();");
     for (let i=0; i<30 && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/fixture-parent.json')))")!=='true'; i++) await new Promise(resolve=>setTimeout(resolve,50));
     for (const [probe, script] of Object.entries(commands)) {
@@ -134,7 +143,8 @@ async function runCase(state) {
     checks.nativeNetworkDenied &&= checks.networkControlReachable;
     checks.backingDataUnchanged = outside(verifyBacking) === 'backing-fixtures-retained';
     await stop();
-    runtime = await start();
+    runtime = await start('replacement');
+    stage = 'replacementExecutionAndIntegrity';
     checks.storageSurvivesReplacement = outside(verifyBacking) === 'backing-fixtures-retained'
       && outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/retained.txt','utf8'))") === 'retained-workspace-sentinel';
     checks.nativeFileSurvivesReplacement = outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/native-" + state + ".txt','utf8'))") === 'native-mask-fixture';
@@ -147,8 +157,12 @@ async function runCase(state) {
       && /cannot enforce sandbox (deny-read|read-only) path/.test(diagnostic) && /crosses writable symlink/.test(diagnostic)
       && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/symlink-command-ran')))") === 'false';
     checks.fixtureCompleted = true;
-  } catch {
+  } catch (error) {
     checks.fixtureCompleted = false;
+    const failure = fixtureFailure(error, stage, runtime?.snapshot());
+    evidence.failures ??= {};
+    if (evidence.failures[state]) { evidence.secondaryFailures ??= {}; evidence.secondaryFailures[state] = failure; }
+    else evidence.failures[state] = failure;
   } finally {
     checks.cleanupComplete = await stop();
     const setupRemoved = removeContainer(setupName);
@@ -158,32 +172,24 @@ async function runCase(state) {
     }
   }
 
-  async function start() {
+  async function start(phase = 'initial') {
     const child = spawn(dockerPath, ['run', '-i', '--name', name, ...base, image, 'node', '/opt/collective-codex/server.mjs', '--stdio'], { stdio: 'pipe',
       env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent' } });
-    child.stderr.resume();
-    let next = 0; const pending = new Map();
-    createInterface({ input: child.stdout }).on('line', line => {
-      let message; try { message = JSON.parse(line); } catch { return; }
-      if (message.id !== undefined && pending.has(message.id)) {
-        const entry = pending.get(message.id); clearTimeout(entry.timer); pending.delete(message.id); entry.resolve(message);
-      }
-    });
-    child.on('error', finish); child.on('exit', finish); child.stdin.on('error', finish);
-    function finish() { for (const entry of pending.values()) { clearTimeout(entry.timer); entry.resolve({ error: { message: 'Fixture process unavailable.' } }); } pending.clear(); }
-    const request = (method, params) => new Promise(resolve => {
-      const id = ++next, timer = setTimeout(() => { pending.delete(id); resolve({ error: { message: 'Fixture RPC timed out.' } }); }, 15000);
-      pending.set(id, { resolve, timer }); child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
-    });
-    runtime = { child, request }; // Register cleanup before initialize can fail.
+    const rpc = fixtureRpc(child);
+    const { request, notify } = rpc;
+    runtime = { child, ...rpc }; // Register cleanup and diagnostics before initialize.
+    stage = `${phase}.initialize`;
     const initialized = await request('initialize', { clientInfo: { name: 'collective_mask_probe', version: 'fixture' }, capabilities: { experimentalApi: true } });
     const version = initialized.result?.userAgent?.includes('/0.163.0-alpha.2 ') === true;
     checks.protocolVersion = checks.protocolVersion === undefined ? version : checks.protocolVersion && version;
-    child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+    if (!version) throw new Error(initialized.error?.message ?? 'Fixture protocol version mismatch.');
+    if (!notify('initialized')) throw new Error('Fixture process unavailable after initialize.');
+    stage = `${phase}.managedRequirements`;
     const policy = await request('configRequirements/read', {});
     const managed = policy.result?.requirements?.defaultPermissions === 'collective-personal'
       && policy.result.requirements.allowedLoginMethods?.join() === 'chatgpt';
     checks.managedPolicy = checks.managedPolicy === undefined ? managed : checks.managedPolicy && managed;
+    if (!managed) throw new Error(policy.error?.message ?? 'Fixture managed policy mismatch.');
     return runtime;
   }
   async function stop() {

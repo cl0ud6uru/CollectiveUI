@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from 'node:child_process';
-import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { sandboxPolicy, dockerExecutable } from '../src/personal-codex/sandbox-policy.mjs';
+import { fixtureRpc, fixtureFailure } from './lib/personal-codex-fixture-rpc.mjs';
 
 const executable = dockerExecutable(process.env.PERSONAL_CODEX_DOCKER_EXECUTABLE);
 const policy = await sandboxPolicy(process.env.PERSONAL_CODEX_SANDBOX_PROFILE);
@@ -18,37 +18,39 @@ const common = ['--name', name, '--network', 'none', '--read-only', '--cap-drop'
   '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m,mode=1777', '--mount', `type=volume,src=${home},dst=/codex-home`,
   '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`, '--env', 'NODE_VERSION', '--env', 'YARN_VERSION',
   '--env', 'HOME=/codex-home', '--env', 'CODEX_HOME=/codex-home', '--workdir', '/home/agent/workspace'];
-let child, removed = false;
+let child, rpc, removed = false;
+let stage = 'volumeCreate';
 const evidence = { version: '0.163.0-alpha.2', authenticated: false, verified: false, checks: {} };
 try {
   docker(['volume', 'create', home]); docker(['volume', 'create', workspace]);
+  stage = 'fixtureSetup';
   docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', ...security,
     '--user', '10001:10001', '--mount', `type=volume,src=${home},dst=/codex-home`, '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`,
     image, 'sh', '-c', 'printf fixture-private-auth-sentinel > /codex-home/auth.json; printf retained-workspace-sentinel > /home/agent/workspace/retained.txt']);
   child = spawn(executable, ['run', '-i', ...common, image, 'node', '/opt/collective-codex/server.mjs', '--stdio'], { stdio: 'pipe', env: dockerEnv });
-  child.stderr.resume(); // Native diagnostics never go to production/browser logs.
-  let next = 0; const pending = new Map();
-  createInterface({ input: child.stdout }).on('line', line => {
-    let m; try { m = JSON.parse(line); } catch { return; }
-    if (m.id !== undefined && pending.has(m.id)) { const p = pending.get(m.id); clearTimeout(p.timer); pending.delete(m.id); p.resolve(m); }
-  });
-  const request = (method, params) => new Promise(resolve => {
-    const id = ++next, timer = setTimeout(() => { pending.delete(id); resolve({ error: { message: 'Native probe timed out.' } }); }, 15000);
-    pending.set(id, { resolve, timer }); child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
-  });
+  rpc = fixtureRpc(child);
+  const { request, notify } = rpc;
+  stage = 'initial.initialize';
   const initialized = await request('initialize', { clientInfo: { name: 'collective_probe', version: 'fixture' }, capabilities: { experimentalApi: true } });
+  evidence.checks.protocolVersion = initialized.result?.userAgent?.includes('/0.163.0-alpha.2 ') === true;
+  if (!evidence.checks.protocolVersion) throw new Error(initialized.error?.message ?? 'Fixture protocol version mismatch.');
+  if (!notify('initialized')) throw new Error('Fixture process unavailable after initialize.');
+  stage = 'containerInspection';
   const [container] = JSON.parse(docker(['inspect', name]));
   evidence.checks.sandboxPolicyMatches = JSON.stringify(container.HostConfig.SecurityOpt) === JSON.stringify(policy.inspect) && container.AppArmorProfile === (policy.appArmorProfile ?? 'docker-default');
-  evidence.checks.protocolVersion = initialized.result?.userAgent.includes('/0.163.0-alpha.2 ') === true;
-  child.stdin.write(`${JSON.stringify({ method: 'initialized' })}\n`);
+  stage = 'initial.managedRequirements';
   const nativePolicy = await request('configRequirements/read', {});
   evidence.checks.managedPolicy = nativePolicy.result?.requirements?.defaultPermissions === 'collective-personal' && nativePolicy.result.requirements.allowedLoginMethods?.join() === 'chatgpt';
+  if (!evidence.checks.managedPolicy) throw new Error(nativePolicy.error?.message ?? 'Fixture managed policy mismatch.');
   const exec = command => request('command/exec', { command, cwd: '/home/agent/workspace', permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 2048 });
+  stage = 'nativeWorkspaceExecution';
   const write = await exec(['sh', '-c', 'printf native-write-sentinel > /home/agent/workspace/native.txt && cat /home/agent/workspace/native.txt']);
   evidence.checks.nativeWorkspaceExecution = write.result?.exitCode === 0 && write.result.stdout === 'native-write-sentinel';
   if (!evidence.checks.nativeWorkspaceExecution) {
+    evidence.failure = fixtureFailure(new Error(write.error?.message ?? write.result?.stderr ?? 'Native command unavailable.'), stage, rpc.snapshot());
     evidence.blocker = /namespace/.test(write.result?.stderr ?? '') ? 'The host/container cannot create the unprivileged namespace required by bubblewrap.' : 'Native workspace execution failed; runtime cannot be activated.';
   } else {
+    stage = 'nativeProtectionAndNetwork';
     const denied = await exec(['sh', '-c', 'cat /codex-home/auth.json /proc/1/root/codex-home/auth.json']);
     evidence.checks.protectedReadDenied = !!denied.result && typeof denied.result.exitCode === 'number' && denied.result.exitCode !== 0 && !denied.result.stdout.includes('fixture-private-auth-sentinel');
     const symlink = await exec(['sh', '-c', 'ln -s /codex-home/auth.json /home/agent/workspace/auth-link && cat /home/agent/workspace/auth-link']);
@@ -60,6 +62,7 @@ try {
     const network = await exec(['node', '-e', 'const net=require("node:net");const s=net.connect(4500,"127.0.0.1");s.on("connect",()=>process.exit(1));s.on("error",()=>{console.log("network-denied");process.exit(0)});setTimeout(()=>process.exit(2),2000)']);
     evidence.checks.nativeNetworkDenied = evidence.checks.networkControlReachable && network.result?.exitCode === 0 && network.result.stdout.trim() === 'network-denied';
   }
+  stage = 'replacementStorage';
   child.stdin.end(); docker(['stop', name]); docker(['rm', name]); removed = true;
   // Container replacement reuses the exact fixture volumes; credentials/history volume is separate.
   const retained = docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', ...security, '--user', '10001:10001',
@@ -68,7 +71,12 @@ try {
   if (evidence.checks.nativeWorkspaceExecution) evidence.checks.nativeFileSurvivesReplacement = docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', ...security, '--user', '10001:10001',
     '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`, image, 'cat', '/home/agent/workspace/native.txt']) === 'native-write-sentinel';
   evidence.verified = ['sandboxPolicyMatches', 'protocolVersion', 'managedPolicy', 'nativeWorkspaceExecution', 'protectedReadDenied', 'symlinkReadDenied', 'networkControlReachable', 'nativeNetworkDenied', 'storageSurvivesReplacement', 'nativeFileSurvivesReplacement'].every(key => evidence.checks[key] === true);
-} catch { evidence.blocker = 'Native fixture setup or execution failed; no live account was used.'; }
+} catch (error) {
+  const failure = fixtureFailure(error, stage, rpc?.snapshot());
+  if (evidence.failure) evidence.secondaryFailure = failure;
+  else evidence.failure = failure;
+  evidence.blocker = 'Native fixture setup or execution failed; no live account was used.';
+}
 finally {
   child?.kill();
   try { if (!removed) docker(['rm', '-f', name]); } catch { /* only this disposable probe container */ }
