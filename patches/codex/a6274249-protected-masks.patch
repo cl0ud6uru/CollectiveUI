@@ -1,56 +1,969 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index d751d31..9be7540 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -278,3 +278,3 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
+ name = "app_test_support"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1876,3 +1876,3 @@ dependencies = [
+ name = "codex-agent-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1888,3 +1888,3 @@ dependencies = [
+ name = "codex-agent-graph-store"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1903,3 +1903,3 @@ dependencies = [
+ name = "codex-agent-identity"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1923,3 +1923,3 @@ dependencies = [
+ name = "codex-agent-message-board-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1946,3 +1946,3 @@ dependencies = [
+ name = "codex-agent-message-board-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1969,3 +1969,3 @@ dependencies = [
+ name = "codex-agent-roles"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -1982,3 +1982,3 @@ dependencies = [
+ name = "codex-analytics"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2005,3 +2005,3 @@ dependencies = [
+ name = "codex-ansi-escape"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2016,3 +2016,3 @@ dependencies = [
+ name = "codex-api"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2054,3 +2054,3 @@ dependencies = [
+ name = "codex-app-server"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2168,3 +2168,3 @@ dependencies = [
+ name = "codex-app-server-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2195,3 +2195,3 @@ dependencies = [
+ name = "codex-app-server-daemon"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2221,3 +2221,3 @@ dependencies = [
+ name = "codex-app-server-protocol"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2255,3 +2255,3 @@ dependencies = [
+ name = "codex-app-server-protocol-noop-macros"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ 
+@@ -2259,3 +2259,3 @@ version = "0.0.0"
+ name = "codex-app-server-test-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2281,3 +2281,3 @@ dependencies = [
+ name = "codex-app-server-transport"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2323,3 +2323,3 @@ dependencies = [
+ name = "codex-apply-patch"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2343,3 +2343,3 @@ dependencies = [
+ name = "codex-arg0"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2366,3 +2366,3 @@ dependencies = [
+ name = "codex-async-utils"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2376,3 +2376,3 @@ dependencies = [
+ name = "codex-attachment-store"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2386,3 +2386,3 @@ dependencies = [
+ name = "codex-aws-auth"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2412,3 +2412,3 @@ dependencies = [
+ name = "codex-backend-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2432,3 +2432,3 @@ dependencies = [
+ name = "codex-backend-openapi-models"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2441,3 +2441,3 @@ dependencies = [
+ name = "codex-build-info"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2454,3 +2454,3 @@ dependencies = [
+ name = "codex-bwrap"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2463,3 +2463,3 @@ dependencies = [
+ name = "codex-chatgpt"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2485,3 +2485,3 @@ dependencies = [
+ name = "codex-cli"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2587,3 +2587,3 @@ dependencies = [
+ name = "codex-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2601,3 +2601,3 @@ dependencies = [
+ name = "codex-cloud-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2625,3 +2625,3 @@ dependencies = [
+ name = "codex-cloud-config"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2651,3 +2651,3 @@ dependencies = [
+ name = "codex-cloud-tasks"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2684,3 +2684,3 @@ dependencies = [
+ name = "codex-cloud-tasks-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2699,3 +2699,3 @@ dependencies = [
+ name = "codex-cloud-tasks-mock-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2708,3 +2708,3 @@ dependencies = [
+ name = "codex-code-mode"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2731,3 +2731,3 @@ dependencies = [
+ name = "codex-code-mode-host"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2760,3 +2760,3 @@ dependencies = [
+ name = "codex-code-mode-protocol"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2778,3 +2778,3 @@ dependencies = [
+ name = "codex-code-mode-runtime"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2796,3 +2796,3 @@ dependencies = [
+ name = "codex-collaboration-mode-templates"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ 
+@@ -2800,3 +2800,3 @@ version = "0.0.0"
+ name = "codex-config"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2850,3 +2850,3 @@ dependencies = [
+ name = "codex-config-schema"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2859,3 +2859,3 @@ dependencies = [
+ name = "codex-connectors"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2881,3 +2881,3 @@ dependencies = [
+ name = "codex-connectors-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2895,3 +2895,3 @@ dependencies = [
+ name = "codex-context-fragments"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -2905,3 +2905,3 @@ dependencies = [
+ name = "codex-core"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3046,3 +3046,3 @@ dependencies = [
+ name = "codex-core-api"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3069,3 +3069,3 @@ dependencies = [
+ name = "codex-core-plugin-common"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3080,3 +3080,3 @@ dependencies = [
+ name = "codex-core-plugins"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3137,3 +3137,3 @@ dependencies = [
+ name = "codex-diagnostics"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3145,3 +3145,3 @@ dependencies = [
+ name = "codex-exec"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3197,3 +3197,3 @@ dependencies = [
+ name = "codex-exec-server"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3269,3 +3269,3 @@ dependencies = [
+ name = "codex-exec-server-protocol"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3286,3 +3286,3 @@ dependencies = [
+ name = "codex-exec-server-test-support"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3301,3 +3301,3 @@ dependencies = [
+ name = "codex-execpolicy"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3319,3 +3319,3 @@ dependencies = [
+ name = "codex-experimental-api-macros"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3328,3 +3328,3 @@ dependencies = [
+ name = "codex-extension-api"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3350,3 +3350,3 @@ dependencies = [
+ name = "codex-extension-items"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3362,3 +3362,3 @@ dependencies = [
+ name = "codex-external-agent-migration"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3392,3 +3392,3 @@ dependencies = [
+ name = "codex-features"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3406,3 +3406,3 @@ dependencies = [
+ name = "codex-feedback"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3433,3 +3433,3 @@ dependencies = [
+ name = "codex-file-search"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3449,3 +3449,3 @@ dependencies = [
+ name = "codex-file-system"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3461,3 +3461,3 @@ dependencies = [
+ name = "codex-file-watcher"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3472,3 +3472,3 @@ dependencies = [
+ name = "codex-git-attribution"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3485,3 +3485,3 @@ dependencies = [
+ name = "codex-git-utils"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3513,3 +3513,3 @@ dependencies = [
+ name = "codex-goal-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3538,3 +3538,3 @@ dependencies = [
+ name = "codex-guardian-context"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3550,3 +3550,3 @@ dependencies = [
+ name = "codex-guardian-reviewer"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3575,3 +3575,3 @@ dependencies = [
+ name = "codex-guardian-v2"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3613,3 +3613,3 @@ dependencies = [
+ name = "codex-history"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3625,3 +3625,3 @@ dependencies = [
+ name = "codex-history-notes-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3650,3 +3650,3 @@ dependencies = [
+ name = "codex-home"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3662,3 +3662,3 @@ dependencies = [
+ name = "codex-hooks"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3690,3 +3690,3 @@ dependencies = [
+ name = "codex-http-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3726,3 +3726,3 @@ dependencies = [
+ name = "codex-image-generation-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3754,3 +3754,3 @@ dependencies = [
+ name = "codex-install-context"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3767,3 +3767,3 @@ dependencies = [
+ name = "codex-keyring-store"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3778,3 +3778,3 @@ dependencies = [
+ name = "codex-linux-sandbox"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3807,3 +3807,3 @@ dependencies = [
+ name = "codex-lmstudio"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3821,3 +3821,3 @@ dependencies = [
+ name = "codex-login"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3867,3 +3867,3 @@ dependencies = [
+ name = "codex-mcp"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3910,3 +3910,3 @@ dependencies = [
+ name = "codex-mcp-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3943,3 +3943,3 @@ dependencies = [
+ name = "codex-memories-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3965,3 +3965,3 @@ dependencies = [
+ name = "codex-memories-read"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -3975,3 +3975,3 @@ dependencies = [
+ name = "codex-memories-write"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4012,3 +4012,3 @@ dependencies = [
+ name = "codex-mermaid"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4021,3 +4021,3 @@ dependencies = [
+ name = "codex-message-history"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4035,3 +4035,3 @@ dependencies = [
+ name = "codex-model-provider"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4069,3 +4069,3 @@ dependencies = [
+ name = "codex-model-provider-info"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4087,3 +4087,3 @@ dependencies = [
+ name = "codex-models-manager"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4106,3 +4106,3 @@ dependencies = [
+ name = "codex-mxc-sandbox"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4126,3 +4126,3 @@ dependencies = [
+ name = "codex-network-proxy"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4175,3 +4175,3 @@ dependencies = [
+ name = "codex-ollama"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4195,3 +4195,3 @@ dependencies = [
+ name = "codex-otel"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4232,3 +4232,3 @@ dependencies = [
+ name = "codex-otel-trace-websocket"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4243,3 +4243,3 @@ dependencies = [
+ name = "codex-plugin"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4258,3 +4258,3 @@ dependencies = [
+ name = "codex-process-hardening"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4266,3 +4266,3 @@ dependencies = [
+ name = "codex-prompts"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4283,3 +4283,3 @@ dependencies = [
+ name = "codex-protocol"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4328,3 +4328,3 @@ dependencies = [
+ name = "codex-queue-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4349,3 +4349,3 @@ dependencies = [
+ name = "codex-realtime-webrtc"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4368,3 +4368,3 @@ dependencies = [
+ name = "codex-response-debug-context"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4379,3 +4379,3 @@ dependencies = [
+ name = "codex-responses-api-proxy"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4396,3 +4396,3 @@ dependencies = [
+ name = "codex-rmcp-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4447,3 +4447,3 @@ dependencies = [
+ name = "codex-rollout"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4478,3 +4478,3 @@ dependencies = [
+ name = "codex-rollout-trace"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4494,3 +4494,3 @@ dependencies = [
+ name = "codex-sandboxing"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4522,3 +4522,3 @@ dependencies = [
+ name = "codex-secrets"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4543,3 +4543,3 @@ dependencies = [
+ name = "codex-shell-command"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4566,3 +4566,3 @@ dependencies = [
+ name = "codex-skills"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4583,3 +4583,3 @@ dependencies = [
+ name = "codex-skills-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4621,3 +4621,3 @@ dependencies = [
+ name = "codex-state"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4648,3 +4648,3 @@ dependencies = [
+ name = "codex-stdio-to-uds"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4660,3 +4660,3 @@ dependencies = [
+ name = "codex-tcp-tunnel"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4681,3 +4681,3 @@ dependencies = [
+ name = "codex-terminal-detection"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4689,3 +4689,3 @@ dependencies = [
+ name = "codex-test-binary-support"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4697,3 +4697,3 @@ dependencies = [
+ name = "codex-thread-manager-sample"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4708,3 +4708,3 @@ dependencies = [
+ name = "codex-thread-store"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4739,3 +4739,3 @@ dependencies = [
+ name = "codex-tools"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4763,3 +4763,3 @@ dependencies = [
+ name = "codex-tui"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4889,3 +4889,3 @@ dependencies = [
+ name = "codex-uds"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4903,3 +4903,3 @@ dependencies = [
+ name = "codex-user-verification"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4923,3 +4923,3 @@ dependencies = [
+ name = "codex-utils-absolute-path"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4937,3 +4937,3 @@ dependencies = [
+ name = "codex-utils-approval-presets"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4944,3 +4944,3 @@ dependencies = [
+ name = "codex-utils-audio"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4958,3 +4958,3 @@ dependencies = [
+ name = "codex-utils-cache"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4967,3 +4967,3 @@ dependencies = [
+ name = "codex-utils-cargo-bin"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4976,3 +4976,3 @@ dependencies = [
+ name = "codex-utils-cli"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -4988,3 +4988,3 @@ dependencies = [
+ name = "codex-utils-elapsed"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ 
+@@ -4992,3 +4992,3 @@ version = "0.0.0"
+ name = "codex-utils-fuzzy-match"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ 
+@@ -4996,3 +4996,3 @@ version = "0.0.0"
+ name = "codex-utils-git-discovery"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5009,3 +5009,3 @@ dependencies = [
+ name = "codex-utils-home-dir"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5019,3 +5019,3 @@ dependencies = [
+ name = "codex-utils-image"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5033,3 +5033,3 @@ dependencies = [
+ name = "codex-utils-json-to-toml"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5042,3 +5042,3 @@ dependencies = [
+ name = "codex-utils-oss"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5052,3 +5052,3 @@ dependencies = [
+ name = "codex-utils-output-truncation"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5062,3 +5062,3 @@ dependencies = [
+ name = "codex-utils-path"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5073,3 +5073,3 @@ dependencies = [
+ name = "codex-utils-path-uri"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5089,3 +5089,3 @@ dependencies = [
+ name = "codex-utils-plugins"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5103,3 +5103,3 @@ dependencies = [
+ name = "codex-utils-process"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5111,3 +5111,3 @@ dependencies = [
+ name = "codex-utils-pty"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5130,3 +5130,3 @@ dependencies = [
+ name = "codex-utils-readiness"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5140,3 +5140,3 @@ dependencies = [
+ name = "codex-utils-redacted-string"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5148,3 +5148,3 @@ dependencies = [
+ name = "codex-utils-rustls-provider"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5155,3 +5155,3 @@ dependencies = [
+ name = "codex-utils-sandbox-summary"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5165,3 +5165,3 @@ dependencies = [
+ name = "codex-utils-sleep-inhibitor"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5175,3 +5175,3 @@ dependencies = [
+ name = "codex-utils-stream-parser"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5182,3 +5182,3 @@ dependencies = [
+ name = "codex-utils-string"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5192,3 +5192,3 @@ dependencies = [
+ name = "codex-utils-template"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5199,3 +5199,3 @@ dependencies = [
+ name = "codex-v8-poc"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5207,3 +5207,3 @@ dependencies = [
+ name = "codex-voice-host"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5234,3 +5234,3 @@ dependencies = [
+ name = "codex-web-search-extension"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5256,3 +5256,3 @@ dependencies = [
+ name = "codex-websocket-auth"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5275,3 +5275,3 @@ dependencies = [
+ name = "codex-websocket-client"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5291,3 +5291,3 @@ dependencies = [
+ name = "codex-windows-sandbox"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5321,3 +5321,3 @@ dependencies = [
+ name = "codex-windows-sandbox-service"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5338,3 +5338,3 @@ dependencies = [
+ name = "codex-windows-sandbox-test-support"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5345,3 +5345,3 @@ dependencies = [
+ name = "codex-workload-identity"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5360,3 +5360,3 @@ dependencies = [
+ name = "codex-worktree"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
+@@ -5607,3 +5607,3 @@ dependencies = [
+ name = "core_test_support"
+-version = "0.0.0"
++version = "0.163.0-alpha.2"
+ dependencies = [
 diff --git a/codex-rs/linux-sandbox/src/bwrap.rs b/codex-rs/linux-sandbox/src/bwrap.rs
-index 51200dc..d18aca5 100644
+index 51200dc..84c5b78 100644
 --- a/codex-rs/linux-sandbox/src/bwrap.rs
 +++ b/codex-rs/linux-sandbox/src/bwrap.rs
-@@ -619,6 +619,8 @@ fn create_filesystem_args(
-         }
+@@ -335,2 +335,7 @@ fn create_bwrap_flags(
+ ) -> Result<BwrapArgs> {
++    let explicitly_denies_proc = file_system_sandbox_policy
++        .get_unreadable_roots_with_cwd_preserving_symlinks(sandbox_policy_cwd)
++        .iter()
++        .map(AbsolutePathBuf::as_path)
++        .any(|denied| Path::new("/proc").starts_with(denied));
+     if options.mask_wslg_distro {
+@@ -373,4 +378,17 @@ fn create_bwrap_flags(
+         // Hide it so host process roots cannot restore the masked WSL views.
+-        args.push("--tmpfs".to_string());
+-        args.push("/proc".to_string());
++        if explicitly_denies_proc {
++            // Keep an explicit whole-proc denial at mode 000 even when the
++            // platform fallback must replace the inherited procfs.
++            args.extend([
++                "--perms".to_string(),
++                "000".to_string(),
++                "--tmpfs".to_string(),
++                "/proc".to_string(),
++                "--remount-ro".to_string(),
++                "/proc".to_string(),
++            ]);
++        } else {
++            args.push("--tmpfs".to_string());
++            args.push("/proc".to_string());
++        }
      }
+@@ -388,7 +406,2 @@ fn create_bwrap_flags(
+     }
+-    // Mount a fresh /proc unless the caller explicitly disables it.
+-    if options.mount_proc {
+-        args.push("--proc".to_string());
+-        args.push("/proc".to_string());
+-    }
+     if normalized_command_cwd.as_path() != command_cwd {
+@@ -606,2 +619,7 @@ fn create_filesystem_args(
+     }
++    let writable_filesystem_root = writable_roots.iter().any(|writable_root| {
++        writable_root.root.as_path() == Path::new("/")
++            || canonical_target_if_symlinked_path(writable_root.root.as_path()).as_deref()
++                == Some(Path::new("/"))
++    });
+     let mut bwrap_args = BwrapArgs {
+@@ -612,2 +630,9 @@ fn create_filesystem_args(
+     };
++    // A fresh procfs is part of the standard sandbox view, but explicit deny
++    // masks must be applied after it. A later writable `/` bind would replace
++    // this mount, so that case is mounted immediately after the root bind.
++    if options.mount_proc && !writable_filesystem_root {
++        bwrap_args.args.push("--proc".to_string());
++        bwrap_args.args.push("/proc".to_string());
++    }
+     let mut allowed_write_paths = Vec::with_capacity(writable_roots.len());
+@@ -620,3 +645,61 @@ fn create_filesystem_args(
+     }
++    // Read grants beneath an unreadable ancestor need one narrow read-only
++    // mount after that ancestor is hidden. Never reopen a parent directory or
++    // treat these roots as writable symlink targets.
++    let mut reopened_read_paths = file_system_sandbox_policy
++        .get_readable_roots_with_cwd(cwd)
++        .into_iter()
++        .map(AbsolutePathBuf::into_path_buf)
++        .filter(|path| {
++            path.exists()
++                && file_system_sandbox_policy.can_read_local_path_with_cwd(path, cwd)
++                && !allowed_write_paths
++                    .iter()
++                    .any(|root| path.starts_with(root))
++                && unreadable_roots
++                    .iter()
++                    .any(|denied| path != denied && path.starts_with(denied))
++        })
++        .collect::<Vec<_>>();
++    reopened_read_paths.sort_by_key(|path| path_depth(path));
++    reopened_read_paths.dedup();
++    if let Some(read_root) = reopened_read_paths.iter().find(|read_root| {
++        allowed_write_paths
++            .iter()
++            .any(|write_root| write_root != *read_root && write_root.starts_with(read_root))
++    }) {
++        return Err(CodexErr::Fatal(format!(
++            "cannot enforce sandbox read-only path {} because it contains a writable descendant",
++            read_root.display()
++        )));
++    }
++    if let Some(read_root) = reopened_read_paths.iter().find(|read_root| {
++        unreadable_roots
++            .iter()
++            .any(|denied| denied.starts_with(read_root) && !denied.exists())
++    }) {
++        return Err(CodexErr::Fatal(format!(
++            "cannot enforce missing sandbox deny-read path beneath reopened read-only path {}",
++            read_root.display()
++        )));
++    }
++    if let Some(read_root) = reopened_read_paths
++        .iter()
++        .find(|path| canonical_target_if_symlinked_path(path).is_some())
++    {
++        return Err(CodexErr::Fatal(format!(
++            "cannot enforce sandbox read-only path {} because it crosses a symbolic link",
++            read_root.display()
++        )));
++    }
++    let mut grant_mount_paths = allowed_write_paths.clone();
++    grant_mount_paths.extend(reopened_read_paths.iter().cloned());
++    grant_mount_paths.sort();
++    grant_mount_paths.dedup();
      let unreadable_paths: HashSet<PathBuf> = unreadable_roots.iter().cloned().collect();
-+    let mount_unreadable_roots =
-+        coalesce_unreadable_directory_mounts(&unreadable_roots, &allowed_write_paths);
++    let mount_unreadable_roots = coalesce_unreadable_directory_mounts(
++        &unreadable_roots,
++        &allowed_write_paths,
++        &reopened_read_paths,
++    );
      let mut sorted_writable_roots = writable_roots;
-     sorted_writable_roots.sort_by_key(|writable_root| path_depth(writable_root.root.as_path()));
-     let binds_file_system_root = sorted_writable_roots
-@@ -643,7 +645,7 @@ fn create_filesystem_args(
-     unreadable_ancestors_of_writable_roots.sort_by_key(|path| path_depth(path));
-
+@@ -636,3 +719,3 @@ fn create_filesystem_args(
+                 .any(|root| unreadable_root.starts_with(root))
+-                && allowed_write_paths
++                && grant_mount_paths
+                     .iter()
+@@ -645,3 +728,9 @@ fn create_filesystem_args(
      for unreadable_root in &unreadable_ancestors_of_writable_roots {
 -        append_unreadable_root_args(&mut bwrap_args, unreadable_root, &allowed_write_paths)?;
-+        append_unreadable_root_args(&mut bwrap_args, unreadable_root, &allowed_write_paths, true)?;
++        append_unreadable_root_args(
++            &mut bwrap_args,
++            unreadable_root,
++            &allowed_write_paths,
++            &grant_mount_paths,
++            true,
++        )?;
      }
-
-     for writable_root in &sorted_writable_roots {
-@@ -651,7 +653,7 @@ fn create_filesystem_args(
-         let symlink_target = canonical_target_if_symlinked_path(root);
-         // If a denied ancestor was already masked, recreate any missing mount
+@@ -653,3 +742,3 @@ fn create_filesystem_args(
          // target parents before binding the narrower writable descendant.
 -        if let Some(masking_root) = unreadable_roots
 +        if let Some(masking_root) = mount_unreadable_roots
              .iter()
-             .map(PathBuf::as_path)
-             .filter(|unreadable_root| root.starts_with(unreadable_root))
-@@ -687,7 +689,6 @@ fn create_filesystem_args(
-             .read_only_subpaths
-             .iter()
+@@ -681,2 +770,8 @@ fn create_filesystem_args(
+                 ]);
++                if mount_root == Path::new("/") && options.mount_proc {
++                    // Mount after `--bind / /` so the inherited procfs cannot
++                    // replace the fresh view, but before this root's deny pass.
++                    bwrap_args.args.push("--proc".to_string());
++                    bwrap_args.args.push("/proc".to_string());
++                }
+             }
+@@ -689,3 +784,2 @@ fn create_filesystem_args(
              .map(|path| path.as_path().to_path_buf())
 -            .filter(|path| !unreadable_paths.contains(path))
              .filter(|path| !missing_auto_metadata_read_only_project_root_subpaths.contains(path))
-             .collect();
-         // Remember which mounts belong to a deeper writable root without dropping
-@@ -714,6 +715,10 @@ fn create_filesystem_args(
-             root,
-             protected_metadata_names,
+@@ -716,2 +810,6 @@ fn create_filesystem_args(
          );
 +        // Explicit denies must win over automatic metadata read-only masks.
 +        // In particular, a missing .codex cannot be both an empty directory
 +        // (the automatic mask) and an empty file (the deny mask).
 +        read_only_subpaths.retain(|path| !unreadable_paths.contains(path));
          if let Some(target) = &symlink_target {
-             read_only_subpaths = remap_paths_for_symlink_target(read_only_subpaths, root, target);
-             deferred_read_only_subpaths =
-@@ -781,9 +786,19 @@ fn create_filesystem_args(
-             nested_unreadable_roots =
-                 remap_paths_for_symlink_target(nested_unreadable_roots, root, target);
+@@ -783,5 +881,16 @@ fn create_filesystem_args(
          }
 +        let mut nested_mount_unreadable_roots = mount_unreadable_roots.clone();
 +        if let Some(target) = &symlink_target {
@@ -64,29 +977,68 @@ index 51200dc..d18aca5 100644
 +                &mut bwrap_args,
 +                &unreadable_root,
 +                &allowed_write_paths,
++                &grant_mount_paths,
 +                nested_mount_unreadable_roots.contains(&unreadable_root),
 +            )?;
          }
-     }
-
-@@ -799,7 +814,12 @@ fn create_filesystem_args(
-         .collect();
-     rootless_unreadable_roots.sort_by_key(|path| path_depth(path));
+@@ -793,3 +902,3 @@ fn create_filesystem_args(
+             let unreadable_root = path.as_path();
+-            !allowed_write_paths
++            !grant_mount_paths
+                 .iter()
+@@ -801,3 +910,44 @@ fn create_filesystem_args(
      for unreadable_root in rootless_unreadable_roots {
 -        append_unreadable_root_args(&mut bwrap_args, &unreadable_root, &allowed_write_paths)?;
 +        append_unreadable_root_args(
 +            &mut bwrap_args,
 +            &unreadable_root,
 +            &allowed_write_paths,
++            &grant_mount_paths,
 +            mount_unreadable_roots.contains(&unreadable_root),
 +        )?;
++    }
++
++    // Reopen only the effectively-readable descendants selected above. The
++    // denied ancestor stays execute-only, its parents are synthetic and
++    // execute-only, and sibling home entries remain hidden. Reapply denials
++    // nested inside each grant after the read-only bind.
++    for read_root in &reopened_read_paths {
++        if let Some(masking_root) = mount_unreadable_roots
++            .iter()
++            .map(PathBuf::as_path)
++            .filter(|unreadable_root| read_root.starts_with(unreadable_root))
++            .max_by_key(|unreadable_root| path_depth(unreadable_root))
++        {
++            append_mount_target_parent_dir_args(&mut bwrap_args.args, read_root, masking_root);
++        }
++        bwrap_args.args.push("--ro-bind".to_string());
++        bwrap_args.args.push(path_to_string(read_root));
++        bwrap_args.args.push(path_to_string(read_root));
++        append_daemon_socket_masks(&mut bwrap_args.args, read_root, &daemon_directories)?;
++
++        let mut nested_denials = unreadable_roots
++            .iter()
++            .filter(|denied| denied.starts_with(read_root))
++            .cloned()
++            .collect::<Vec<_>>();
++        nested_denials.sort_by_key(|path| path_depth(path));
++        for denied in nested_denials {
++            append_unreadable_root_args(
++                &mut bwrap_args,
++                &denied,
++                &allowed_write_paths,
++                &grant_mount_paths,
++                mount_unreadable_roots.contains(&denied),
++            )?;
++        }
      }
-
-     if options.mask_wslg_distro
-@@ -1378,8 +1398,32 @@ fn append_existing_empty_directory_args(
-         ));
- }
-
+@@ -1268,2 +1418,4 @@ fn append_mount_target_parent_dir_args(args: &mut Vec<String>, mount_target: &Pa
+     for mount_target_dir in mount_target_dirs {
++        args.push("--perms".to_string());
++        args.push("111".to_string());
+         args.push("--dir".to_string());
+@@ -1380,4 +1532,33 @@ fn append_existing_empty_directory_args(
+ 
 -fn append_unreadable_root_args(
 -    bwrap_args: &mut BwrapArgs,
 +// Only coalesce below an existing denied directory without any writable
@@ -97,6 +1049,7 @@ index 51200dc..d18aca5 100644
 +fn coalesce_unreadable_directory_mounts(
 +    unreadable_roots: &[PathBuf],
 +    allowed_write_paths: &[PathBuf],
++    reopened_read_paths: &[PathBuf],
 +) -> Vec<PathBuf> {
 +    unreadable_roots
 +        .iter()
@@ -108,6 +1061,10 @@ index 51200dc..d18aca5 100644
 +                    && !allowed_write_paths
 +                        .iter()
 +                        .any(|root| root.starts_with(parent))
++                    && !reopened_read_paths.iter().any(|root| {
++                        root.starts_with(parent)
++                            && (root.starts_with(path) || path.starts_with(root))
++                    })
 +            })
 +        })
 +        .cloned()
@@ -116,12 +1073,9 @@ index 51200dc..d18aca5 100644
 +
 +fn validate_unreadable_root_path(
      unreadable_root: &Path,
-     allowed_write_paths: &[PathBuf],
- ) -> Result<()> {
-@@ -1400,6 +1444,23 @@ fn append_unreadable_root_args(
-         )));
-     }
-
+@@ -1402,3 +1583,37 @@ fn append_unreadable_root_args(
+ 
+-    if !unreadable_root.exists() {
 +    Ok(())
 +}
 +
@@ -129,23 +1083,74 @@ index 51200dc..d18aca5 100644
 +    bwrap_args: &mut BwrapArgs,
 +    unreadable_root: &Path,
 +    allowed_write_paths: &[PathBuf],
++    grant_mount_paths: &[PathBuf],
 +    mount_required: bool,
 +) -> Result<()> {
 +    // Validate every original denial, including covered children, at its
 +    // original position after writable-root alias remapping. The root alias
 +    // itself can be immutable even though its directory target is writable.
 +    validate_unreadable_root_path(unreadable_root, allowed_write_paths)?;
++    let unreadable_root_exists = unreadable_root.exists();
++    if !unreadable_root_exists
++        && grant_mount_paths.iter().any(|grant| {
++            !is_within_allowed_write_paths(grant, allowed_write_paths)
++                && unreadable_root.starts_with(grant)
++        })
++    {
++        // A host writer can create a child after the read-only grant was
++        // selected. A bind of the granted parent would expose that new child
++        // unless bubblewrap can mask it; fail closed because a read-only bind
++        // cannot reliably create a masking target in its source tree.
++        return Err(CodexErr::Fatal(format!(
++            "cannot enforce missing sandbox deny-read path beneath reopened read-only path {}",
++            unreadable_root.display()
++        )));
++    }
 +    if !mount_required {
 +        return Ok(());
 +    }
 +
-     if !unreadable_root.exists() {
++    if !unreadable_root_exists {
          if let Some(first_missing_component) = find_first_non_existent_component(unreadable_root)
-             && is_within_allowed_write_paths(&first_missing_component, allowed_write_paths)
-@@ -1584,6 +1645,190 @@ mod tests {
-     use pretty_assertions::assert_eq;
-     use tempfile::TempDir;
-
+@@ -1411,3 +1626,3 @@ fn append_unreadable_root_args(
+ 
+-    append_existing_unreadable_path_args(bwrap_args, unreadable_root, allowed_write_paths)
++    append_existing_unreadable_path_args(bwrap_args, unreadable_root, grant_mount_paths)
+ }
+@@ -1420,3 +1635,3 @@ fn append_existing_unreadable_path_args(
+     if unreadable_root.is_dir() {
+-        let mut writable_descendants: Vec<&Path> = allowed_write_paths
++        let mut granted_descendants: Vec<&Path> = allowed_write_paths
+             .iter()
+@@ -1426,7 +1641,6 @@ fn append_existing_unreadable_path_args(
+         bwrap_args.args.push("--perms".to_string());
+-        // Execute-only perms let the process traverse into explicitly
+-        // re-opened writable descendants while still hiding the denied
+-        // directory contents. Plain denied directories with no writable child
+-        // mounts stay at `000`.
+-        bwrap_args.args.push(if writable_descendants.is_empty() {
++        // Execute-only perms let the process traverse into explicitly reopened
++        // descendants while still hiding the denied directory contents. Plain
++        // denied directories with no child grants stay at `000`.
++        bwrap_args.args.push(if granted_descendants.is_empty() {
+             "000".to_string()
+@@ -1437,10 +1651,10 @@ fn append_existing_unreadable_path_args(
+         bwrap_args.args.push(path_to_string(unreadable_root));
+-        // Recreate any writable descendants inside the tmpfs before remounting
++        // Recreate any granted descendants inside the tmpfs before remounting
+         // the denied parent read-only. Otherwise bubblewrap cannot mkdir the
+         // nested mount targets after the parent has been frozen.
+-        writable_descendants.sort_by_key(|path| path_depth(path));
+-        for writable_descendant in writable_descendants {
++        granted_descendants.sort_by_key(|path| path_depth(path));
++        for granted_descendant in granted_descendants {
+             append_mount_target_parent_dir_args(
+                 &mut bwrap_args.args,
+-                writable_descendant,
++                granted_descendant,
+                 unreadable_root,
+@@ -1586,2 +1800,464 @@ mod tests {
+ 
 +    fn mask_collision_policy(
 +        entries: Vec<(PathBuf, FileSystemAccessMode)>,
 +    ) -> FileSystemSandboxPolicy {
@@ -166,6 +1171,284 @@ index 51200dc..d18aca5 100644
 +            }
 +        }));
 +        FileSystemSandboxPolicy::restricted(rules)
++    }
++
++    fn restricted_mask_policy(
++        entries: Vec<(PathBuf, FileSystemAccessMode)>,
++    ) -> FileSystemSandboxPolicy {
++        FileSystemSandboxPolicy::restricted(
++            entries
++                .into_iter()
++                .map(|(path, access)| FileSystemSandboxEntry {
++                    path: AbsolutePathBuf::from_absolute_path(path)
++                        .expect("absolute fixture path")
++                        .into(),
++                    access,
++                    missing_path_behavior: None,
++                })
++                .collect(),
++        )
++    }
++
++    #[test]
++    fn denied_home_reopens_only_the_effectively_readable_helper_alias() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let home = temp_dir.path().join("home");
++        let arg0 = home.join("tmp/arg0");
++        let helper = arg0.join("codex-arg0-active");
++        let sibling_helper = arg0.join("codex-arg0-sibling");
++        fs::create_dir_all(&workspace).expect("workspace");
++        fs::create_dir_all(&helper).expect("helper alias");
++        fs::create_dir(&sibling_helper).expect("sibling alias");
++        let auth = home.join("auth.json");
++        fs::create_dir_all(&home).expect("home");
++        fs::write(&auth, "fixture only").expect("auth sentinel");
++        fs::write(helper.join("codex-linux-sandbox"), "helper executable").expect("helper");
++        fs::write(sibling_helper.join("private"), "sibling sentinel").expect("sibling");
++
++        let mut policy = restricted_mask_policy(vec![
++            (workspace.clone(), FileSystemAccessMode::Write),
++            (home.clone(), FileSystemAccessMode::Deny),
++            (auth.clone(), FileSystemAccessMode::Deny),
++        ]);
++        let helper_root = AbsolutePathBuf::from_absolute_path(helper.clone()).expect("helper root");
++        policy = policy.with_additional_readable_roots(&workspace, &[helper_root]);
++
++        let args = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect("plan narrow helper reopen");
++        let home_str = path_to_string(&home);
++        let helper_str = path_to_string(&helper);
++        let sibling_helper_str = path_to_string(&sibling_helper);
++        let home_mask = args
++            .args
++            .windows(4)
++            .position(|window| window == ["--perms", "111", "--tmpfs", home_str.as_str()])
++            .expect("denied home remains execute-only and empty");
++        let helper_mount = args
++            .args
++            .windows(3)
++            .rposition(|window| window == ["--ro-bind", helper_str.as_str(), helper_str.as_str()])
++            .expect("active helper alias is rebound readonly after the home mask");
++        assert!(helper_mount > home_mask);
++        assert!(
++            !args.args.windows(3).any(|window| {
++                window
++                    == [
++                        "--ro-bind",
++                        sibling_helper_str.as_str(),
++                        sibling_helper_str.as_str(),
++                    ]
++            }),
++            "the sibling helper alias must not be opened"
++        );
++        assert!(
++            !args
++                .args
++                .windows(3)
++                .any(|window| { window == ["--ro-bind", home_str.as_str(), home_str.as_str()] }),
++            "the whole home must never be reopened"
++        );
++        assert!(!policy.can_read_local_path_with_cwd(&auth, &workspace));
++        assert!(policy.can_read_local_path_with_cwd(&helper, &workspace));
++        assert_eq!(
++            fs::read_to_string(auth).expect("sentinel retained"),
++            "fixture only"
++        );
++    }
++
++    #[test]
++    fn denied_proc_mask_is_applied_after_the_fresh_proc_mount() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        fs::create_dir(&workspace).expect("workspace");
++        let proc = PathBuf::from("/proc");
++        let policy = restricted_mask_policy(vec![(proc.clone(), FileSystemAccessMode::Deny)]);
++        let args = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect("plan denied proc");
++        let fresh_proc = args
++            .args
++            .windows(2)
++            .position(|window| window == ["--proc", "/proc"])
++            .expect("fresh procfs remains requested");
++        let denied_proc = args
++            .args
++            .windows(4)
++            .position(|window| window == ["--perms", "000", "--tmpfs", "/proc"])
++            .expect("explicit /proc denial gets a final mask");
++        assert!(denied_proc > fresh_proc);
++    }
++
++    #[test]
++    fn writable_filesystem_root_replaces_proc_before_applying_denials() {
++        let policy = restricted_mask_policy(vec![
++            (PathBuf::from("/"), FileSystemAccessMode::Write),
++            (
++                PathBuf::from("/proc/self/environ"),
++                FileSystemAccessMode::Deny,
++            ),
++        ]);
++        let args = create_filesystem_args(&policy, Path::new("/"), BwrapOptions::default())
++            .expect("plan root write with proc denial");
++        let root_bind = args
++            .args
++            .windows(3)
++            .position(|window| window == ["--bind", "/", "/"])
++            .expect("writable root bind");
++        let fresh_proc = args
++            .args
++            .windows(2)
++            .position(|window| window == ["--proc", "/proc"])
++            .expect("fresh procfs");
++        let denied_environ = args
++            .args
++            .windows(3)
++            .rposition(|window| window[0] == "--ro-bind-data" && window[2] == "/proc/self/environ")
++            .expect("explicit environment denial");
++        assert!(root_bind < fresh_proc);
++        assert!(fresh_proc < denied_environ);
++    }
++
++    #[test]
++    fn wsl_proc_fallback_keeps_an_explicit_denial_at_mode_zero() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        fs::create_dir(&workspace).expect("workspace");
++        let policy =
++            restricted_mask_policy(vec![(PathBuf::from("/proc"), FileSystemAccessMode::Deny)]);
++        let args = create_bwrap_command_args(
++            vec!["/bin/true".to_string()],
++            &policy,
++            &workspace,
++            &workspace,
++            BwrapOptions {
++                mount_proc: false,
++                mask_wsl_interop: true,
++                ..BwrapOptions::default()
++            },
++        )
++        .expect("plan denied proc with WSL fallback")
++        .args;
++        let denied_proc_masks = args
++            .windows(4)
++            .enumerate()
++            .filter(|(_, window)| {
++                window[0] == "--perms"
++                    && window[1] == "000"
++                    && window[2] == "--tmpfs"
++                    && window[3] == "/proc"
++            })
++            .count();
++        assert!(
++            denied_proc_masks >= 2,
++            "fallback must preserve the explicit mode-000 mask"
++        );
++        assert!(!args.windows(2).any(|window| window == ["--tmpfs", "/proc"]));
++    }
++
++    #[test]
++    fn nested_denial_inside_reopened_helper_stays_after_its_readonly_mount() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let home = temp_dir.path().join("home");
++        let helper = home.join("tmp/arg0/codex-arg0-active");
++        let private = helper.join("private");
++        fs::create_dir_all(&workspace).expect("workspace");
++        fs::create_dir_all(&private).expect("private helper data");
++        let mut policy = restricted_mask_policy(vec![
++            (workspace.clone(), FileSystemAccessMode::Write),
++            (home.clone(), FileSystemAccessMode::Deny),
++            (private.clone(), FileSystemAccessMode::Deny),
++        ]);
++        let helper_root = AbsolutePathBuf::from_absolute_path(helper.clone()).expect("helper root");
++        policy = policy.with_additional_readable_roots(&workspace, &[helper_root]);
++
++        let args = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect("plan helper with nested denial");
++        let helper_str = path_to_string(&helper);
++        let private_str = path_to_string(&private);
++        let helper_mount = args
++            .args
++            .windows(3)
++            .rposition(|window| window == ["--ro-bind", helper_str.as_str(), helper_str.as_str()])
++            .expect("readonly helper mount");
++        let private_mask = args
++            .args
++            .windows(4)
++            .rposition(|window| window == ["--perms", "000", "--tmpfs", private_str.as_str()])
++            .expect("nested denial reapplied after helper reopen");
++        assert!(private_mask > helper_mount);
++        assert!(!policy.can_read_local_path_with_cwd(&private, &workspace));
++    }
++
++    #[test]
++    fn missing_nested_denial_under_reopened_helper_fails_closed() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let home = temp_dir.path().join("home");
++        let helper = home.join("tmp/arg0/codex-arg0-active");
++        let missing_private = helper.join("private");
++        fs::create_dir_all(&workspace).expect("workspace");
++        fs::create_dir_all(&helper).expect("helper alias");
++        let mut policy = restricted_mask_policy(vec![
++            (workspace.clone(), FileSystemAccessMode::Write),
++            (home.clone(), FileSystemAccessMode::Deny),
++            (missing_private, FileSystemAccessMode::Deny),
++        ]);
++        let helper_root = AbsolutePathBuf::from_absolute_path(helper).expect("helper root");
++        policy = policy.with_additional_readable_roots(&workspace, &[helper_root]);
++
++        let error = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect_err("future host-created denied child must not leak through the reopened bind");
++        assert!(error.to_string().contains("missing sandbox deny-read path"));
++    }
++
++    #[test]
++    fn vanished_nested_denial_under_reopened_helper_fails_closed() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let helper = temp_dir.path().join("home/tmp/arg0/codex-arg0-active");
++        let vanished_denial = helper.join("private");
++        fs::create_dir_all(&workspace).expect("workspace");
++        fs::create_dir_all(&helper).expect("helper alias");
++
++        let mut bwrap_args = BwrapArgs {
++            args: Vec::new(),
++            preserved_files: Vec::new(),
++            synthetic_mount_targets: Vec::new(),
++            protected_create_targets: Vec::new(),
++        };
++        let error = append_unreadable_root_args(
++            &mut bwrap_args,
++            &vanished_denial,
++            std::slice::from_ref(&workspace),
++            &[workspace, helper],
++            true,
++        )
++        .expect_err("a missing child cannot safely remain visible in an RO bind");
++        assert!(error.to_string().contains("missing sandbox deny-read path"));
++    }
++
++    #[test]
++    fn writable_descendant_of_reopened_helper_fails_closed() {
++        let temp_dir = TempDir::new().expect("temp dir");
++        let workspace = temp_dir.path().join("workspace");
++        let home = temp_dir.path().join("home");
++        let helper = home.join("tmp/arg0/codex-arg0-active");
++        let nested_write = helper.join("mutable");
++        fs::create_dir_all(&workspace).expect("workspace");
++        fs::create_dir_all(&nested_write).expect("nested writable path");
++        let mut policy = restricted_mask_policy(vec![
++            (workspace.clone(), FileSystemAccessMode::Write),
++            (home.clone(), FileSystemAccessMode::Deny),
++            (nested_write, FileSystemAccessMode::Write),
++        ]);
++        let helper_root = AbsolutePathBuf::from_absolute_path(helper).expect("helper root");
++        policy = policy.with_additional_readable_roots(&workspace, &[helper_root]);
++
++        let error = create_filesystem_args(&policy, &workspace, BwrapOptions::default())
++            .expect_err("a readonly parent rebind must not hide a writable child mount");
++        assert!(error.to_string().contains("writable descendant"));
 +    }
 +
 +    #[test]
@@ -331,5 +1614,3 @@ index 51200dc..d18aca5 100644
 +    }
 +
      #[test]
-     fn default_unreadable_glob_scan_has_no_depth_cap() {
-         assert_eq!(BwrapOptions::default().glob_scan_max_depth, None);

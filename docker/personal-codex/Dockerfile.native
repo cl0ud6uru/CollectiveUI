@@ -1,0 +1,26 @@
+# Offline assembly for the pinned source-built Codex app-server. The fixture image
+# is produced by scripts/build-personal-codex-fixture.sh from pinned public inputs.
+ARG CODEX_BASE_IMAGE=collectiveui/personal-codex:protocol-fixture
+FROM ${CODEX_BASE_IMAGE}
+
+ARG CODEX_COMMIT=a6274249d5877030676db098914db686bab7c921
+ARG CODEX_PATCH_SHA256
+ARG CODEX_BWRAP_SHA256
+ARG CODEX_FIXTURE_IMAGE_ID
+
+LABEL org.opencontainers.image.source="https://github.com/openai/codex" \
+      org.opencontainers.image.revision="${CODEX_COMMIT}" \
+      io.collectiveui.codex.patch-sha256="${CODEX_PATCH_SHA256}" \
+      io.collectiveui.codex.bwrap-sha256="${CODEX_BWRAP_SHA256}" \
+      io.collectiveui.codex.fixture-base-image-id="${CODEX_FIXTURE_IMAGE_ID}" \
+      io.collectiveui.codex.cli-lto="off" \
+      io.collectiveui.codex.version="0.163.0-alpha.2"
+
+USER 0:0
+COPY codex /opt/codex/bin/codex
+RUN chmod 0755 /opt/codex/bin/codex \
+ && test "$(/opt/codex/bin/codex --version)" = "codex-cli 0.163.0-alpha.2" \
+ && test "$(sha256sum /opt/codex/codex-resources/bwrap | cut -d ' ' -f 1)" = "${CODEX_BWRAP_SHA256}" \
+ && /opt/codex/codex-resources/bwrap --help >/dev/null
+
+USER 10001:10001
