@@ -1351,7 +1351,7 @@ export const codexRuns = pgTable('codex_runs', {
   runId: text('run_id').primaryKey(), userId: text('user_id').notNull(),
   runtimeId: text('runtime_id').notNull(), binding: text('binding').notNull(),
   funding: text('funding').$type<'api' | 'chatgpt_subscription'>().notNull(),
-  threadId: text('thread_id'), turnId: text('turn_id'),
+  threadId: text('thread_id'), turnId: text('turn_id'), baselineTurnId: text('baseline_turn_id'),
   phase: text('phase').$type<'reserved' | 'ready' | 'dispatching' | 'running' | 'terminal' | 'stop_unconfirmed'>().notNull(),
   updatedAt: updatedAt(),
 }, t => [index('codex_runs_recovery_idx').on(t.phase, t.updatedAt), index('codex_runs_owner_idx').on(t.userId),
@@ -1782,3 +1782,26 @@ export type WorkspaceTemplateRow = typeof workspaceTemplates.$inferSelect;
 export type WorkspaceTemplateVersionRow = typeof workspaceTemplateVersions.$inferSelect;
 export type WorkspaceInstanceRow = typeof workspaceInstances.$inferSelect;
 export type WorkspaceBotBindingRow = typeof workspaceBotBindings.$inferSelect;
+
+/** One personal runtime connection per caller. Contains only account metadata; Codex owns tokens. */
+export const personalCodexAccounts = pgTable('personal_codex_accounts', {
+  userId: text('user_id').primaryKey().references(() => users.id),
+  credentialBinding: text('credential_binding').notNull(),
+  email: text('email').notNull(), workspaceId: text('workspace_id').notNull(), planType: text('plan_type').notNull(),
+  connected: boolean('connected').notNull().default(true), updatedAt: updatedAt(),
+}, t => [uniqueIndex('personal_codex_account_owner_idx').on(sql`lower(${t.email})`).where(sql`${t.connected}`)]);
+
+/** Native thread lineage survives runtime replacement; chats/bots never own runtime volumes. */
+export const codexThreads = pgTable('codex_threads', {
+  conversationId: text('conversation_id').primaryKey().references(() => conversations.id, { onDelete: 'cascade' }),
+  userId: text('user_id').notNull(), binding: text('binding').notNull(), appId: text('app_id').notNull(),
+  threadId: text('thread_id').notNull(), lastMessageId: text('last_message_id'),
+  tokenTotals: jsonb('token_totals').$type<import('@/lib/codex/session').CodexTokenUsage>(), updatedAt: updatedAt(),
+});
+
+/** Explicit escalation choices. A decision never grants broader runtime/network permissions. */
+export const codexApprovals = pgTable('codex_approvals', {
+  id: text('id').primaryKey(), runId: text('run_id').notNull(), userId: text('user_id').notNull(),
+  binding: text('binding').notNull(), threadId: text('thread_id').notNull(), turnId: text('turn_id').notNull(),
+  decision: text('decision').$type<'decline' | 'cancel'>(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+}, t => [index('codex_approvals_run_idx').on(t.runId), check('codex_approval_decision_check', sql`${t.decision} is null or ${t.decision} in ('decline', 'cancel')`)]);

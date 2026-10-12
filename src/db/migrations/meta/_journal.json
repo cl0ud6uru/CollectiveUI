@@ -386,6 +386,13 @@
       "when": 1791771095537,
       "tag": "0054_workspace_contract_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1791772696121,
+      "tag": "0055_personal_codex",
+      "breakpoints": true
     }
   ]
 }

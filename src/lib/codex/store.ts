@@ -13,6 +13,12 @@ export async function codexPolicy(botId: string, q: DbOrTx = db) {
 }
 export async function reserveCodexRun(run: RunHandle, runtime: CodexRuntime) {
   await db.transaction(async tx => {
+    const { lockPersonalOwner } = await import('@/personal-codex/accounts');
+    await lockPersonalOwner(runtime.ownerId, tx);
+    if (runtime.managed) {
+      const { personalAccount } = await import('@/personal-codex/accounts');
+      if ((await personalAccount(runtime.ownerId, tx))?.credentialBinding !== runtime.credentialBinding) throw new HttpError(409, 'Your Codex connection changed before reservation.');
+    }
     await fence(run, runtime.ownerId, tx);
     const [unresolved] = await tx.select().from(codexRuns).where(and(eq(codexRuns.userId, runtime.ownerId), ne(codexRuns.phase, 'terminal'))).limit(1);
     if (unresolved) throw new HttpError(409, 'An earlier Codex request is active or its stop is unconfirmed. Wait for runtime recovery before starting another request.');
@@ -27,7 +33,7 @@ async function fence(run: RunHandle, ownerId: string, q: DbOrTx) {
     eq(agentRuns.status, 'running'), eq(agentRuns.holder, run.holder ?? ''), isNull(agentRuns.cancelRequestedAt))).for('update');
   if (!row || row.segment !== 0 || row.background || row.executionMode !== 'worker') throw new HttpError(409, 'This Codex run no longer has permission to dispatch.');
 }
-export async function checkpointCodexRun(run: RunHandle, ownerId: string, values: Partial<Pick<typeof codexRuns.$inferInsert, 'threadId' | 'turnId' | 'phase'>>) {
+export async function checkpointCodexRun(run: RunHandle, ownerId: string, values: Partial<Pick<typeof codexRuns.$inferInsert, 'threadId' | 'turnId' | 'baselineTurnId' | 'phase'>>) {
   await db.transaction(async tx => {
     await fence(run, ownerId, tx);
     const rows = await tx.update(codexRuns).set({ ...values, updatedAt: new Date() }).where(and(eq(codexRuns.runId, run.id),

@@ -27,43 +27,70 @@ import { executeCodexSession } from '@/lib/codex/session';
 import { checkpointCodexRun, reserveCodexRun } from '@/lib/codex/store';
 import { CODEX_VERSION } from '@/lib/codex/config';
 
+const unixServer = createServer();
 const server = createServer(), wss = new WebSocketServer({ server });
 let root: string, origin: string;
-let mode: 'normal' | 'hold' | 'lost_ack' | 'approval' | 'wrong_account' | 'unreachable_stop' | 'switch_preflight' | 'native_tool' | 'completed_tool' | 'completed_text' = 'normal';
+const serverReplies: unknown[] = [];
+unixServer.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+let mode: 'normal' | 'hold' | 'lost_ack' | 'approval' | 'wrong_account' | 'unreachable_stop' | 'switch_preflight' | 'native_tool' | 'completed_tool' | 'completed_text' | 'agent_tools' | 'switch_at_completion' | 'resolved_approval' = 'normal';
 const seen: { owner: string; method: string; params: Record<string, unknown> }[] = [];
-let subscription = false;
+let subscription = false, managed = false, nativeSequence = 0;
 const states = new Map<string, { id: string; status: string }>();
 const send = (ws: WebSocket, value: unknown) => ws.send(JSON.stringify(value));
 wss.on('connection', (ws, req) => {
-  const owner = req.url!.slice(1);
-  expect(req.headers.authorization).toBe(`Bearer fixture-only-${owner}-transport-token-00000000`);
+  const owner = String(req.headers['x-collective-owner'] ?? req.url!.slice(1));
+  if (!managed) expect(req.headers.authorization).toBe(`Bearer fixture-only-${owner}-transport-token-00000000`);
+  let lateAccountChange = false;
   ws.on('message', bytes => {
     const m = JSON.parse(bytes.toString());
-    if (!m.method) return;
+    if (!m.method) {
+      serverReplies.push(m);
+      if (managed && m.id === 'approval' && m.result?.decision) {
+        const turn = states.get(`thread-${owner}`)!;
+        turn.status = m.result.decision === 'cancel' ? 'interrupted' : 'completed';
+        send(ws, { method: 'turn/completed', params: { threadId: `thread-${owner}`, turn: { ...turn } } });
+      }
+      return;
+    }
     seen.push({ owner, method: m.method, params: m.params });
     const reply = (result: unknown) => send(ws, { id: m.id, result });
     const notification = (method: string, params: unknown) => send(ws, { method, params });
     if (m.method === 'initialize') reply({ userAgent: `codex_cli_rs/${CODEX_VERSION} (Linux)` });
-    else if (m.method === 'account/read') reply({ account: mode === 'wrong_account' || subscription ? { type: 'chatgpt', email: mode === 'wrong_account' ? 'other@test.invalid' : `${owner}@test.invalid`, planType: 'business' } : { type: 'apiKey' }, requiresOpenaiAuth: true });
-    else if (m.method === 'config/read') reply({ config: subscription ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: 'shared-workspace' } : {} });
+    else if (m.method === 'account/read') {
+      const accountReply = () => reply({ account: mode === 'wrong_account' || subscription || managed ? { type: 'chatgpt', email: mode === 'wrong_account' || lateAccountChange ? 'other@test.invalid' : `${owner}@test.invalid`, planType: 'business' } : { type: 'apiKey' }, requiresOpenaiAuth: true, ...(managed ? { workspaceRouting: { chatgptAccountId: 'shared-workspace', backendOrigin: 'https://chatgpt.com/backend-api', accountRoutingOverride: 'NO_CONSTRAINT' } } : {}) });
+      if (lateAccountChange) setTimeout(accountReply, 30); else accountReply();
+    }
+    else if (m.method === 'config/read') reply({ config: subscription || managed ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: 'shared-workspace' } : {} });
+    else if (m.method === 'configRequirements/read') reply({ requirements: { defaultPermissions: 'collective-personal', allowedPermissionProfiles: { 'collective-personal': true }, allowedLoginMethods: ['chatgpt'], allowedApprovalsReviewers: ['user'], allowedApprovalPolicies: ['on-request'] } });
     else if (m.method === 'model/list') { if (mode === 'switch_preflight') notification('account/updated', { authMode: 'chatgpt' }); reply({ data: [{ model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }], nextCursor: null }); }
-    else if (m.method === 'thread/start') reply({ thread: { id: `thread-${owner}` }, model: 'fixture-model', modelProvider: 'openai', cwd: '/audit',
-      approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly', networkAccess: false } });
+    else if (m.method === 'thread/start' || m.method === 'thread/resume') reply({ thread: { id: `thread-${owner}`, turns: m.method === 'thread/resume' && states.has(`thread-${owner}`) ? [states.get(`thread-${owner}`)!] : [] }, model: 'fixture-model', modelProvider: 'openai', cwd: managed ? '/home/agent/workspace' : '/audit',
+      ...(managed ? { activePermissionProfile: { id: 'collective-personal', extends: null } } : {}),
+      approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: managed ? 'workspaceWrite' : 'readOnly', networkAccess: false } });
     else if (m.method === 'turn/start') {
-      const threadId = String(m.params.threadId), turnId = `turn-${owner}`;
+      const threadId = String(m.params.threadId), turnId = managed ? `turn-${owner}-${++nativeSequence}` : `turn-${owner}`;
       states.set(threadId, { id: turnId, status: 'inProgress' });
       if (mode === 'lost_ack' || mode === 'unreachable_stop') { ws.terminate(); return; }
       if (mode === 'hold') { reply({ turn: { id: turnId } }); return; }
       if (mode === 'approval') {
-        reply({ turn: { id: turnId } }); send(ws, { id: 'approval', method: 'item/commandExecution/requestApproval', params: { threadId, turnId } }); return;
+        reply({ turn: { id: turnId } }); send(ws, { id: 'approval', method: 'item/commandExecution/requestApproval', params: { threadId, turnId, ...(managed ? { itemId: 'native-command', command: 'protected-command', reason: 'Additional permissions' } : {}) } }); return;
       }
       if (mode === 'native_tool' || mode === 'completed_tool') { reply({ turn: { id: turnId } }); notification(mode === 'completed_tool' ? 'item/completed' : 'item/started', { threadId, turnId, item: { type: 'fileChange' } }); return; }
+      if (mode === 'switch_at_completion') { lateAccountChange = true; notification('account/updated', { authMode: 'chatgpt' }); }
+      if (mode === 'resolved_approval') {
+        send(ws, { id: 'resolved-native', method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'native-command' } });
+        notification('serverRequest/resolved', { threadId, requestId: 'resolved-native' });
+      }
+      if (mode === 'agent_tools') {
+        notification('item/started', { threadId, turnId, item: { id: 'cmd', type: 'commandExecution', command: 'python3 report.py', cwd: '/home/agent/workspace', status: 'inProgress' } });
+        notification('item/completed', { threadId, turnId, item: { id: 'cmd', type: 'commandExecution', command: 'python3 report.py', cwd: '/home/agent/workspace', status: 'completed', aggregatedOutput: 'report ready', exitCode: 0 } });
+        notification('item/completed', { threadId, turnId, item: { id: 'patch', type: 'fileChange', status: 'completed', changes: [{ path: '/home/agent/workspace/report.py', diff: '+print(1)' }] } });
+      }
       // Real race: events may be delivered before the turn/start response. Foreign events cannot contaminate it.
       notification('item/agentMessage/delta', { threadId: 'foreign', turnId, itemId: 'bad', delta: 'not yours' });
       notification('item/agentMessage/delta', { threadId, turnId: 'foreign', itemId: 'bad', delta: 'not yours either' });
       if (mode !== 'completed_text') notification('item/agentMessage/delta', { threadId, turnId, itemId: 'answer', delta: `Hello ${owner}` });
       notification('item/completed', { threadId, turnId, item: { id: 'answer', type: 'agentMessage', text: `Hello ${owner}` } });
-      notification('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { total: { inputTokens: 7, outputTokens: 3, cachedInputTokens: 2, reasoningOutputTokens: 1 }, last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } } });
+      notification('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { total: { inputTokens: managed ? nativeSequence * 7 : 7, outputTokens: managed ? nativeSequence * 3 : 3, cachedInputTokens: managed ? nativeSequence * 2 : 2, reasoningOutputTokens: managed ? nativeSequence : 1 }, last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } } });
       states.set(threadId, { id: turnId, status: 'completed' });
       notification('turn/completed', { threadId, turn: { id: turnId, status: 'completed' } });
       reply({ turn: { id: turnId } });
@@ -82,10 +109,11 @@ beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('fixture address');
   origin = `ws://127.0.0.1:${address.port}`;
+  await new Promise<void>(resolve => unixServer.listen(join(root, 'native.sock'), resolve));
 }, 45000);
 beforeEach(async () => {
-  mode = 'normal'; subscription = false; seen.length = 0; states.clear();
-  await fixture.client!.exec('TRUNCATE users, ai_apps, codex_runs CASCADE');
+  mode = 'normal'; subscription = false; managed = false; nativeSequence = 0; serverReplies.length = 0; vi.stubEnv('PERSONAL_CODEX_SOCKET', ''); seen.length = 0; states.clear();
+  await fixture.client!.exec('TRUNCATE users, ai_apps, codex_runs, settings, codex_approvals CASCADE');
   await db.insert(schema.users).values(['alice', 'bob'].map(id => ({ id, upn: `${id}@test.invalid`, name: id, authSource: 'local' as const, identityRealm: 'local' as const })));
   await db.insert(schema.bots).values({ id: 'audit', ownerId: 'alice', name: 'Shared example bot', visibility: 'org' });
   await db.insert(schema.codexBotConfigs).values({ botId: 'audit', policy: { funding: 'api', model: 'fixture-model', effort: 'medium' } });
@@ -103,6 +131,7 @@ afterAll(async () => {
   for (const ws of wss.clients) ws.terminate();
   await new Promise<void>(resolve => wss.close(() => resolve()));
   await new Promise<void>(resolve => server.close(() => resolve()));
+  await new Promise<void>(resolve => unixServer.close(() => resolve()));
   await fixture.client!.close(); await rm(root, { recursive: true, force: true }); vi.unstubAllEnvs();
 });
 async function options(owner: string, suffix = '1') {
@@ -251,4 +280,104 @@ describe('Codex native app-server harness (local protocol fixtures, no live infe
     expect(RuntimeManifestSchema.safeParse({ version: 1, runtimes: [{ ...runtime, endpoint: 'ws://remote.example' }] }).success).toBe(false);
     expect(RuntimeManifestSchema.safeParse({ version: 1, runtimes: [{ ...runtime, funding: 'chatgpt_subscription' }] }).success).toBe(false);
   });
+  it('resumes the same managed native thread, allows command/file items, and reports per-turn usage deltas', async () => {
+    managed = true; mode = 'agent_tools';
+    const runtime = { ...await callerRuntime('alice', 'api'), funding: 'chatgpt_subscription' as const, managed: true as const,
+      socketPath: join(root, 'native.sock'), endpoint: 'ws://127.0.0.1/runtime', cwd: '/home/agent/workspace', expectedEmail: 'alice@test.invalid', expectedWorkspaceId: 'shared-workspace' };
+    let totals: import('@/lib/codex/session').CodexTokenUsage | undefined;
+    const tools: unknown[] = [], usage: unknown[] = [];
+    for (let turn = 0; turn < 2; turn++) {
+      const client = await CodexClient.connect(runtime);
+      try { await executeCodexSession(client, runtime, { funding: 'chatgpt_subscription', model: 'fixture-model', effort: 'medium' }, 'create report', '',
+        { checkpoint: async () => {}, text: () => {}, resumeThreadId: turn ? 'thread-alice' : undefined,
+          baselineUsage: totals, totalUsage: value => { totals = value; }, usage: value => usage.push(value), tool: (item, phase) => tools.push({ item, phase }) }, AbortSignal.timeout(3000)); }
+      finally { client.close(); }
+    }
+    expect(seen.filter(s => s.method === 'thread/start')).toHaveLength(1);
+    expect(seen.filter(s => s.method === 'thread/resume')).toHaveLength(1);
+    expect(seen.filter(s => s.method === 'turn/start').every(s => s.params.permissions === 'collective-personal' && !s.params.sandboxPolicy)).toBe(true);
+    expect(tools).toHaveLength(6);
+    expect(usage).toEqual([{ inputTokens: 7, outputTokens: 3, cachedInputTokens: 2, reasoningOutputTokens: 1 }, { inputTokens: 7, outputTokens: 3, cachedInputTokens: 2, reasoningOutputTokens: 1 }]);
+  });
+  it('does not mistake the previous completed native turn for an uncertain new dispatch', async () => {
+    const { opts, runId } = await options('alice');
+    await reserveCodexRun(opts.run!, await callerRuntime('alice', 'api'));
+    await checkpointCodexRun(opts.run!, 'alice', { phase: 'ready', threadId: 'thread-alice', baselineTurnId: 'old-completed' });
+    await checkpointCodexRun(opts.run!, 'alice', { phase: 'dispatching' });
+    states.set('thread-alice', { id: 'old-completed', status: 'completed' });
+    await stopCodexRun(runId);
+    expect((await db.select().from(schema.codexRuns))[0].phase).toBe('stop_unconfirmed');
+  });
+
+  async function managedConnection() {
+    managed = true; vi.stubEnv('PERSONAL_CODEX_SOCKET', join(root, 'native.sock'));
+    await db.insert(schema.settings).values({ key: 'chatgpt', value: { enabled: true, access: 'everyone', allowPersonalPlans: true, allowedUpns: [], allowedGroupIds: [], allowedWorkspaceIds: [] } });
+    await db.update(schema.codexBotConfigs).set({ policy: { funding: 'chatgpt_subscription', model: 'fixture-model', effort: 'medium' } });
+    await db.insert(schema.personalCodexAccounts).values({ userId: 'alice', credentialBinding: 'fixture-account-generation', email: 'alice@test.invalid', workspaceId: 'shared-workspace', planType: 'business' });
+  }
+  it('persists native tool parts and continues the same owner-bound thread through the production run adapter', async () => {
+    await managedConnection(); mode = 'agent_tools';
+    const first = await options('alice'); const reply = await consume(first.opts);
+    expect(reply.result.error).toBeUndefined();
+    expect(reply.chunks.filter(c => c.type === 'tool-input-available')).toHaveLength(2);
+    expect(reply.result.responseMessage.parts.some(p => p.type === 'dynamic-tool')).toBe(true);
+    await db.update(schema.agentRuns).set({ status: 'succeeded' }).where(eq(schema.agentRuns.id, first.runId));
+    const next = await options('alice', 'followup');
+    next.opts.conversation = first.opts.conversation;
+    next.opts.history = [...first.opts.history, reply.result.responseMessage, { id: 'followup-user', role: 'user', parts: [{ type: 'text', text: 'Now update the report.' }] }];
+    await db.update(schema.agentRuns).set({ conversationId: first.opts.conversation.id }).where(eq(schema.agentRuns.id, next.runId));
+    expect((await consume(next.opts)).result.error).toBeUndefined();
+    expect(seen.filter(s => s.method === 'thread/start')).toHaveLength(1);
+    expect(seen.filter(s => s.method === 'thread/resume')).toHaveLength(1);
+    expect(seen.filter(s => s.method === 'turn/start')[1].params.input).toEqual([{ type: 'text', text: 'Now update the report.', text_elements: [] }]);
+    expect((await db.select().from(schema.codexThreads))[0]).toMatchObject({ userId: 'alice', threadId: 'thread-alice', lastMessageId: next.opts.responseMessageId });
+    expect((await db.select().from(schema.usageEvents)).map(row => row.inputTokens)).toEqual([7, 7]);
+    next.opts.history.at(-2)!.id = 'another-branch';
+    await expect(runCodexTurn(next.opts)).rejects.toThrow('conversation branch');
+  });
+  it('requires the caller’s explicit decline for native escalation and never grants expanded permissions', async () => {
+    await managedConnection(); mode = 'approval';
+    const { opts } = await options('alice'); const running = consume(opts);
+    await until(async () => (await db.select().from(schema.codexApprovals)).length === 1);
+    const [approval] = await db.select().from(schema.codexApprovals);
+    const { decideApproval } = await import('@/personal-codex/approvals');
+    await expect(decideApproval('bob', 0, approval.id, 'decline')).rejects.toThrow('no longer pending');
+    await decideApproval('alice', opts.principal.user.sessionVersion, approval.id, 'decline');
+    const result = await running;
+    expect(result.result.error).toBeUndefined();
+    expect(result.result.responseMessage.parts.some(p => p.type === 'data-codex-approval' && (p.data as { state: string }).state === 'decline')).toBe(true);
+    expect(serverReplies).toContainEqual({ id: 'approval', result: { decision: 'decline' } });
+    await expect(decideApproval('alice', opts.principal.user.sessionVersion, approval.id, 'decline')).rejects.toThrow('no longer pending');
+    expect(JSON.stringify(serverReplies)).not.toContain('accept');
+  });
+  it('expires pending approval callbacks when the owner cancels, without replay on reconnect', async () => {
+    await managedConnection(); mode = 'approval';
+    const { opts, runId } = await options('alice'); const stop = new AbortController(); opts.abortSignal = stop.signal;
+    const running = consume(opts);
+    await until(async () => (await db.select().from(schema.codexApprovals)).length === 1);
+    stop.abort(); const cancelled = await running; expect(cancelled.result.error).toContain('stopped');
+    expect(cancelled.result.responseMessage.parts.some(p => p.type === 'data-codex-approval' && (p.data as { state: string }).state === 'pending')).toBe(false);
+    await until(async () => (await db.select().from(schema.codexApprovals))[0].decision === 'cancel');
+    expect(seen.filter(s => s.method === 'turn/start')).toHaveLength(1);
+    await stopCodexRun(runId);
+    expect((await db.select().from(schema.codexRuns))[0].phase).toBe('terminal');
+  });
+
+  it('awaits a delayed account recheck before accepting terminal success', async () => {
+    await managedConnection(); mode = 'switch_at_completion';
+    const { opts } = await options('alice');
+    const result = await consume(opts);
+    expect(result.result.error).toContain('funding and identity');
+    expect(result.chunks.find(c => c.type === 'finish')).toMatchObject({ finishReason: 'error' });
+  });
+  it('suppresses pre-ack approval callbacks already resolved by the native server', async () => {
+    await managedConnection(); mode = 'resolved_approval';
+    const { opts } = await options('alice');
+    const result = await consume(opts);
+    expect(result.result.error).toBeUndefined();
+    expect(await db.select().from(schema.codexApprovals)).toHaveLength(0);
+    expect(result.result.responseMessage.parts.some(p => p.type === 'data-codex-approval')).toBe(false);
+    expect(serverReplies.some(r => (r as { id: string }).id === 'resolved-native')).toBe(false);
+  });
+
 });
