@@ -1,4 +1,5 @@
-import 'server-only';
+// Shared by the Next server and plain Node worker; this builtin rejects browser bundles.
+import 'node:net';
 import { and, eq, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db';

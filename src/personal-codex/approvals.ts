@@ -1,4 +1,4 @@
-import 'server-only';
+// Shared server code uses Node builtins, not the React Server Component marker.
 import { randomUUID } from 'node:crypto';
 import { and, eq, isNull, gt, ne } from 'drizzle-orm';
 import { db } from '@/db';

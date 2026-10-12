@@ -1,4 +1,4 @@
-import 'server-only';
+// Node-only protected IPC, also imported by the plain Node worker.
 import { isAbsolute } from 'node:path';
 import { socketFetch, LOCAL_ORIGIN } from '@/lib/local-hermes/client';
 import { HttpError } from '@/lib/authz';

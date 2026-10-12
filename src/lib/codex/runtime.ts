@@ -1,5 +1,5 @@
 import { HttpError } from '@/lib/authz';
-import 'server-only';
+// Node-only credential/runtime lookup, also imported by the plain Node worker.
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 export { runtimeBinding } from './binding';

@@ -1,4 +1,4 @@
-import 'server-only';
+// Node-only transport, also imported by the plain Node worker.
 import WebSocket from 'ws';
 import { isAbsolute } from 'node:path';
 import { connect as connectSocket } from 'node:net';

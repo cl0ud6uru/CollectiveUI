@@ -1,5 +1,6 @@
 import { HttpError } from '@/lib/authz';
-import 'server-only';
+// Shared by the Next server and plain Node worker; this builtin rejects browser bundles.
+import 'node:async_hooks';
 import type { UIMessageChunk, DynamicToolUIPart } from 'ai';
 import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
