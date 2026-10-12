@@ -4,10 +4,10 @@ import type { Principal } from "@/lib/auth/groups";
 import { HttpError } from "@/lib/http-error";
 
 /**
- * Operator-maintained profile allowlist. These are stable keys installed by the
- * workspace runtime; callers can never supply an image, endpoint, or profile path.
- * The browser viewer is intentionally unavailable until a real same-session source
- * is integrated.
+ * Operator-maintained catalog allowlist. Profile identifiers are validated here,
+ * but allowlisting does not prove a runtime image exists or is admitted. Callers
+ * can never supply an image, endpoint, or profile path. The browser viewer remains
+ * unavailable until a real same-session source is integrated.
  */
 export const WORKSPACE_RUNTIME_PROFILE_ALLOWLIST = {
   "knowledge-work-v1": {

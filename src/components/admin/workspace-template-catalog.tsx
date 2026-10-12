@@ -150,7 +150,7 @@ export function WorkspaceTemplateCatalog({
       <header>
         <h1 className="text-2xl font-semibold">Workspace templates</h1>
         <p className="mt-1 max-w-3xl text-sm text-muted">
-          Create reusable recipes for signed-in users to choose from. Publishing makes a recipe visible in the internal catalog; it does not share files or credentials.
+          Create reusable recipes for signed-in users to choose from. Publishing makes a recipe visible in the internal catalog; it does not share files or credentials, install an image, or admit a runtime.
         </p>
       </header>
 
@@ -162,7 +162,7 @@ export function WorkspaceTemplateCatalog({
       <Card className="space-y-4">
         <div>
           <h2 className="text-lg font-medium">Knowledge Work</h2>
-          <p className="mt-1 text-sm text-muted">Prebuilt Office template · slug <code>knowledge-work</code>. The name, slug, profile, and recipe are fixed for this starter.</p>
+          <p className="mt-1 text-sm text-muted">Prebuilt Office template · slug <code>knowledge-work</code>. The name, slug, profile, and recipe are fixed for this starter. Profile allowlisting does not prove image availability or assignment admission.</p>
         </div>
         <form className="space-y-4" onSubmit={(event) => submitForm(event, createWorkspaceTemplateDraft, "Knowledge Work draft created.")}>
           <input type="hidden" name="name" value="Knowledge Work" />

@@ -86,6 +86,8 @@ try {
     await page.goto(base);
     await expect(page.getByRole("heading", { name: "Workspace templates", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Knowledge Work", exact: true })).toBeVisible();
+    await expect(page.getByText(/does not share files or credentials, install an image, or admit a runtime/)).toBeVisible();
+    await expect(page.getByText(/Profile allowlisting does not prove image availability or assignment admission/)).toBeVisible();
     await expect(page.locator('input[type="hidden"][name="name"]')).toHaveValue("Knowledge Work");
     await expect(page.locator('input[type="hidden"][name="slug"]')).toHaveValue("knowledge-work");
     await expect(page.getByRole("checkbox", { name: "Agent browser view (not available)" })).toBeDisabled();
