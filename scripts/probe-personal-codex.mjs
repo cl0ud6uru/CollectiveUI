@@ -43,17 +43,23 @@ try {
     evidence.blocker = /namespace/.test(write.result?.stderr ?? '') ? 'The host/container cannot create the unprivileged namespace required by bubblewrap.' : 'Native workspace execution failed; runtime cannot be activated.';
   } else {
     const denied = await exec(['sh', '-c', 'cat /codex-home/auth.json /proc/1/environ']);
-    evidence.checks.protectedReadDenied = denied.result?.exitCode !== 0 && !denied.result?.stdout.includes('fixture-private-auth-sentinel');
+    evidence.checks.protectedReadDenied = !!denied.result && typeof denied.result.exitCode === 'number' && denied.result.exitCode !== 0 && !denied.result.stdout.includes('fixture-private-auth-sentinel');
     const symlink = await exec(['sh', '-c', 'ln -s /codex-home/auth.json /home/agent/workspace/auth-link && cat /home/agent/workspace/auth-link']);
-    evidence.checks.symlinkReadDenied = symlink.result?.exitCode !== 0 && !symlink.result?.stdout.includes('fixture-private-auth-sentinel');
-    const network = await exec(['node', '-e', 'const net=require("node:net");const s=net.connect(4500,"127.0.0.1");s.on("connect",()=>process.exit(1));s.on("error",()=>{console.log("network-denied");process.exit(0)});setTimeout(()=>{console.log("network-denied");process.exit(0)},500)']);
-    evidence.checks.nativeNetworkDenied = network.result?.exitCode === 0 && network.result.stdout.trim() === 'network-denied';
+    evidence.checks.symlinkReadDenied = !!symlink.result && typeof symlink.result.exitCode === 'number' && symlink.result.exitCode !== 0 && !symlink.result.stdout.includes('fixture-private-auth-sentinel');
+    // A listening positive control is essential: an absent server cannot prove a sandbox denial.
+    docker(['exec', '-d', name, 'node', '-e', 'require("node:net").createServer(s=>s.end("fixture-network-control")).listen(4500,"127.0.0.1")']);
+    const connect = 'const net=require("node:net");let attempts=0;const probe=()=>{const s=net.connect(4500,"127.0.0.1");s.on("connect",()=>{s.destroy();console.log("fixture-network-reachable");process.exit(0)});s.on("error",()=>{if(++attempts<20)setTimeout(probe,50);else process.exit(1)});};probe();setTimeout(()=>process.exit(1),3000)';
+    evidence.checks.networkControlReachable = docker(['exec', name, 'node', '-e', connect]).trim() === 'fixture-network-reachable';
+    const network = await exec(['node', '-e', 'const net=require("node:net");const s=net.connect(4500,"127.0.0.1");s.on("connect",()=>process.exit(1));s.on("error",()=>{console.log("network-denied");process.exit(0)});setTimeout(()=>process.exit(2),2000)']);
+    evidence.checks.nativeNetworkDenied = evidence.checks.networkControlReachable && network.result?.exitCode === 0 && network.result.stdout.trim() === 'network-denied';
   }
   child.stdin.end(); docker(['stop', name]); docker(['rm', name]); removed = true;
   // Container replacement reuses the exact fixture volumes; credentials/history volume is separate.
   const retained = docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--user', '10001:10001',
     '--mount', `type=volume,src=${home},dst=/codex-home`, '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`, image, 'sh', '-c', 'cat /home/agent/workspace/retained.txt; cat /codex-home/auth.json']);
   evidence.checks.storageSurvivesReplacement = retained === 'retained-workspace-sentinelfixture-private-auth-sentinel';
+  if (evidence.checks.nativeWorkspaceExecution) evidence.checks.nativeFileSurvivesReplacement = docker(['run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--user', '10001:10001',
+    '--mount', `type=volume,src=${workspace},dst=/home/agent/workspace`, image, 'cat', '/home/agent/workspace/native.txt']) === 'native-write-sentinel';
   evidence.verified = Object.values(evidence.checks).every(Boolean) && evidence.checks.nativeWorkspaceExecution;
 } catch { evidence.blocker = 'Native fixture setup or execution failed; no live account was used.'; }
 finally {

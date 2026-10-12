@@ -38,6 +38,7 @@ vi.mock("@/lib/settings", () => ({ getSetting: f.settings }));
 vi.mock("@/lib/agent-browser/admission", () => ({ assertBrowserAdmission: vi.fn(async () => {}) }));
 vi.mock("@/lib/auth/web-sessions", async original => ({ ...await original<object>(), webSessionRegistryEnabled: () => true, activeWebSession: f.registry }));
 vi.mock("@/lib/workspaces/instances", () => ({ resolveWorkspace: f.workspace }));
+vi.mock("@/lib/workspaces/resolve", () => ({ resolveWorkspace: f.workspace }));
 const enabled = process.env.AGENT_BROWSER_VIEWER_PROOF === "1" && existsSync(join(process.cwd(), "src/lib/agent-browser/session-source.ts"));
 
 describe.skipIf(!enabled)("W4 real page through integrated W5 source resolver and SSE route", () => {

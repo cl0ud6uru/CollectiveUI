@@ -1,7 +1,7 @@
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { webSessionRegistryEnabled } from "@/lib/auth/web-sessions";
 import { HttpError } from "@/lib/authz";
-import { resolveWorkspace } from "@/lib/workspaces/instances";
+import { resolveWorkspace } from "@/lib/workspaces/resolve";
 import { agentBrowserTools } from "@/lib/agent/tools/agent-browser";
 import type { AgentCtx } from "@/lib/agent/types";
 

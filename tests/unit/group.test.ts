@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+vi.mock("server-only", () => ({}));
 import { groupTranscript, initialQueue } from "@/lib/agent/group";
 import { resolveMentions } from "@/lib/agent/mentions";
 import type { PortalUIMessage } from "@/lib/chat/store";

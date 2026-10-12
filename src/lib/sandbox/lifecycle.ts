@@ -34,7 +34,7 @@ export async function onUserDisabledLocked(userId: string, actorId: string, lock
   for (const ref of refs) {
     await client.stop(ref).catch(async (err) => {
       console.error("[sandbox] couldn't stop a disabled user's workspace", err);
-      await audit(actorId, "workspace.stop_failed", userId, { reason: String((err as Error)?.message ?? err).slice(0, 200) });
+      await audit(actorId, "workspace.stop_failed", userId, { reason: String((err as Error)?.message ?? err).slice(0, 200) }, lockedDb);
     });
   }
 }
@@ -117,7 +117,7 @@ export async function sweepSandboxes(now = new Date()): Promise<{ expired: numbe
           return true;
         });
         if (didExpire) {
-          await audit(null, "workspace.destroyed_after_disable", candidate.ownerUserId);
+          await audit(null, "workspace.destroyed_after_disable", candidate.ownerUserId, undefined, lockedDb);
           expired++;
         }
       } catch (err) {

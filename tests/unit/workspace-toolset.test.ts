@@ -28,7 +28,7 @@ vi.mock("@/lib/sandbox/client", async (importOriginal) => ({
 
 const getOrCreateRef = vi.fn(async () => "abcdefghij0123456789");
 vi.mock("@/lib/sandbox/store", () => ({ getOrCreateRef: () => getOrCreateRef(), touchSandbox: async () => {}, touchWorkspaceInstance: async () => {} }));
-vi.mock("@/lib/workspaces/instances", () => ({ resolveWorkspace: (input: unknown) => resolveWorkspaceMock(input) }));
+vi.mock("@/lib/workspaces/resolve", () => ({ resolveWorkspace: (input: unknown) => resolveWorkspaceMock(input) }));
 
 import { buildToolset } from "@/lib/agent/toolset";
 import { PortalWorkspace } from "@/lib/sandbox/session";
@@ -85,11 +85,29 @@ describe("buildToolset workspace wiring", () => {
     expect(Object.keys(ts.tools)).toEqual(["workspace_bash", "workspace_write", "workspace_edit", "workspace_read", "workspace_list", "workspace_grep", "workspace_import_attachment"]);
     expect(ts.timeout).toEqual({ tools: { workspace_bashMs: 120_000 } });
     expect(ts.workspace).toBeInstanceOf(PortalWorkspace);
+    expect(ts.workspace?.instanceId).toBeUndefined();
     expect(ctx.workspace).toBe(ts.workspace);
     expect(resolveWorkspaceMock).toHaveBeenCalledWith(expect.objectContaining({ botId: "b1", createIfMissing: true }));
     // No sandbox is created just because a bot has the tools.
     expect(getOrCreateRef).not.toHaveBeenCalled();
     expect(ts.warnings).toEqual([]);
+  });
+
+  it("adds the artifact selector only when the resolved workspace is template based", async () => {
+    resolveWorkspaceMock.mockResolvedValueOnce({
+      instanceId: "template-instance-123",
+      ownerUserId: "u1",
+      botId: "b1",
+      templateVersionId: "template-version-123",
+      sandboxRef: "abcdefghij0123456789",
+      runtimeProfileKey: "knowledge-work-v1",
+      workspaceRoot: "/home/agent/workspace",
+    });
+
+    const ts = await buildToolset(newCtx());
+
+    expect(ts.workspace).toBeInstanceOf(PortalWorkspace);
+    expect(ts.workspace?.instanceId).toBe("template-instance-123");
   });
 
   it("warns and leaves the tools out when workspaces are off, not allowed or not set up", async () => {

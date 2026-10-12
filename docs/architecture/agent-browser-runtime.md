@@ -19,8 +19,10 @@ The factory's optional register/unregister callbacks are the runtime-side source
 In-memory registration alone cannot cross a worker/web process boundary; use daemon lookup.
 
 The parent-approved integration consumes W5 PR #181 at `0b5ff7b56b445962a91d4674ab919b28eb614638`,
-W2 PR #182 at `274de2a61068ac168c42a6c41ec5436b6d558b63`, and the personal-Codex migration 0055
-ancestry. `instrumentation.ts` registers the W4 resolver at web startup; `toolset.ts` installs the
+W2 PR #182 at `d2547bcaff4d2faf83e73bf823cfbb07b2a7ca10`, and the personal-Codex migration 0055
+ancestry, including owner recovery fix `57b9266bb8280a8e80a6de7fe4edd2a4a9a47114`
+after settings fixture fix `b805513984f4c43bcfe833d49b54aa00cec37007`.
+`instrumentation.ts` registers the W4 resolver at web startup; `toolset.ts` installs the
 `agent_browser` group and its close callback. `native-integration.ts` resolves the real W2 binding with
 `createIfMissing:false` and rechecks it on every agent operation. W5's source selector uses that same
 binding; it never provisions a browser/workspace during viewing or falls back across instances.
@@ -121,7 +123,7 @@ availability: `agentBrowserView` template capability stays false pending provide
 
 ## Verified evidence and remaining gates
 
-- Full unit suite passes: 222 files, 2,677 tests; four files / 16 tests skip under their existing gates.
+- Full unit suite passes: 223 files, 2,681 tests; four files / 16 tests skip under their existing gates.
   Full TypeScript check passes after a clean locked `npm ci`; changed-file ESLint passes.
 - Provider/admission tests cover scope spoofing, current principal/version/bot/tool/workspace policy,
   cancellation, signed transport, pinned DNS and blocked redirect/network policy.
@@ -134,7 +136,7 @@ availability: `agentBrowserView` template capability stays false pending provide
 - Registry/logout tests exercise races, replay, another login, cross-user denial, fixed expiry/cleanup,
   account revocation and DB outages. Migration test preserves 0054 workspace and 0055 Codex records,
   verifies snapshot ancestry/constraints and migrator rerun. All 57 migrations applied twice in a
-  disposable PostgreSQL 16 container; mobile auth and W2 migration/binding regressions passed (20 tests).
+  disposable PostgreSQL 16 container; mobile auth and W2 migration/binding/pool-lock regressions passed (22 tests).
 - Actual Chromium fixtures use explicit `AGENT_BROWSER_TEST_UNSANDBOXED=1` through injected test
   launchers because this host's Chromium sandbox helper is misconfigured. Production always enables
   the Chromium sandbox. Functional evidence is not proof of production containment.
@@ -151,9 +153,10 @@ Run real synthetic page fixtures with `AGENT_BROWSER_RUNTIME_TEST=1 AGENT_BROWSE
  tests/sandbox/agent-browser-viewer-integration.test.ts`. The unsandboxed flag is a fixture-only override.
 
 Before release, an operator must build and validate the sandbox-enabled image, namespace support,
-private socket permissions, separate egress service and resource limits. The combined worker starts
-and gracefully stops; its unrelated Codex sweeper still logs a `server-only` import error from
-`src/lib/codex/recovery.ts`, reported to PR #184 owner. W4 excludes Codex execution. Then install approved migration
+private socket permissions, separate egress service and resource limits using the
+[operator test checklist](agent-browser-operator-checklist.md). The combined worker uses the owner
+Codex recovery patch; plain Node imports and browser-bundle rejection are regression-tested.
+W4 excludes Codex execution. Then install approved migration
 0056 and explicitly enable both opt-ins. No deployment, migration against a live database, runtime-owned
 credential action or production security/configuration change was performed. `agentBrowserView`
 template capability remains false pending production provider admission and review.
