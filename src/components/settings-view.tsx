@@ -41,6 +41,7 @@ export function SettingsView({
   user,
   chatgpt,
   workspace,
+  workspaceBots,
   security,
   hermes,
   teamConnections,
@@ -56,6 +57,7 @@ export function SettingsView({
   chatgpt: ChatGPTConnectionView | null;
   /** Null when workspaces are off (the tab is hidden). */
   workspace: WorkspaceView | null;
+  workspaceBots: { id: string; name: string }[];
   security: ReactNode;
   hermes: ReactNode;
   /** Retained own Team account cleanup; only present when the actor has saved accounts. */
@@ -242,7 +244,7 @@ export function SettingsView({
         )}
 
         {tab === "Connected accounts" && <>{chatgpt && <ChatGPTConnection view={chatgpt} />}{hermes}{teamConnections}</>}
-        {tab === "Workspace" && workspace && <WorkspacePanel view={workspace} />}
+        {tab === "Workspace" && workspace && <WorkspacePanel view={workspace} bots={workspaceBots} />}
         {tab === "Data controls" && (
           <>
             <div>

@@ -9,8 +9,8 @@ import { SecurityPanel } from "@/components/settings/security-panel";
 import { HermesTeamSavedConnections } from "@/components/settings/hermes-team-connections";
 import { listOwnedMemberMcpConnections } from "@/lib/mcp/member-connections";
 import { db } from "@/db";
-import { bots, conversations, memories, toolGrants } from "@/db/schema";
-import { listAccessibleModels } from "@/lib/authz";
+import { botTools, bots, conversations, memories, toolGrants } from "@/db/schema";
+import { listAccessibleBots, listAccessibleModels } from "@/lib/authz";
 import { listStartBots } from "@/lib/chat/targets";
 import { getPendingChatGPTLogin } from "@/lib/llm/chatgpt/device";
 import { planLabel, userMayUseChatGPT } from "@/lib/llm/chatgpt/policy";
@@ -54,9 +54,11 @@ export default async function SettingsPage() {
             : null,
         }
       : null;
-  const [apps, startBots, mems, archived, grants, workspace, teamConnections] = await Promise.all([
+  const [apps, startBots, accessibleBots, workspaceToolRows, mems, archived, grants, workspace, teamConnections] = await Promise.all([
     listAccessibleModels(p),
     listStartBots(p),
+    listAccessibleBots(p),
+    db.select({ botId: botTools.botId }).from(botTools).where(eq(botTools.toolKey, "workspace")),
     db.select().from(memories).where(and(eq(memories.userId, p.user.id), isNull(memories.botId))).orderBy(desc(memories.updatedAt)),
     db
       .select({ id: conversations.id, title: conversations.title, updatedAt: conversations.updatedAt })
@@ -71,6 +73,8 @@ export default async function SettingsPage() {
     workspaceView(p),
     listOwnedMemberMcpConnections(p),
   ]);
+  const workspaceBotIds = new Set(workspaceToolRows.map((row) => row.botId));
+  const workspaceBots = accessibleBots.filter((bot) => workspaceBotIds.has(bot.id)).map((bot) => ({ id: bot.id, name: bot.name }));
   const savedTeamConnections = { ...teamConnections, connections: teamConnections.connections.filter(row => row.id !== undefined) };
   return (
     <PageFrame title="Settings">
@@ -84,6 +88,7 @@ export default async function SettingsPage() {
         user={{ name: p.user.name, upn: p.user.upn, authSource: p.user.authSource }}
         chatgpt={chatgpt}
         workspace={workspace}
+        workspaceBots={workspaceBots}
         security={<SecurityPanel />}
         teamConnections={savedTeamConnections.connections.length > 0 ? <HermesTeamSavedConnections key={`${p.user.id}:${p.user.sessionVersion}`} initial={savedTeamConnections} /> : null}
         hermes={hermes || remotePolicy.enabled || remoteConnections.length > 0 ? <>{hermes}{(remotePolicy.enabled || remoteConnections.length > 0) && <RemoteHermes allowed={remotePolicy.enabled} initial={remoteConnections} />}</> : null}

@@ -7,6 +7,7 @@ import { resetWorkspace, stopWorkspace } from "@/app/(chat)/settings/workspace-a
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { WorkspaceView } from "@/lib/sandbox/view";
+import { WorkspaceTemplatePicker } from "./workspace-template-picker";
 
 const STATE: Record<WorkspaceView["state"], { label: string; tone: string }> = {
   running: { label: "Running", tone: "bg-green-500/15 text-green-700 dark:text-green-300" },
@@ -22,7 +23,7 @@ function size(bytes: number) {
 }
 
 /** Settings → Workspace: this person's own sandbox (status, stop, reset). */
-export function WorkspacePanel({ view }: { view: WorkspaceView }) {
+export function WorkspacePanel({ view, bots }: { view: WorkspaceView; bots: { id: string; name: string }[] }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [confirm, setConfirm] = useState("");
@@ -34,8 +35,7 @@ export function WorkspacePanel({ view }: { view: WorkspaceView }) {
       <div>
         <h2 className="font-medium">Workspace</h2>
         <p className="mt-1 text-sm text-muted">
-          Your private Linux workspace, where bots with workspace tools run commands and edit files for you. It has no network access, and only
-          you (through your chats) can use it. Every command asks for your approval first. Files stay until you reset it.
+          Your legacy personal Linux workspace for bots without a template binding. It has no network access and only you can use it through your chats. Files stay until you reset this workspace.
         </p>
       </div>
 
@@ -105,6 +105,7 @@ export function WorkspacePanel({ view }: { view: WorkspaceView }) {
           </div>
         </div>
       )}
+      {view.allowed && view.configured && <WorkspaceTemplatePicker bots={bots} />}
     </section>
   );
 }

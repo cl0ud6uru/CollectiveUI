@@ -11,7 +11,8 @@ import { isAgentServer } from "@/lib/llm/catalog";
 import { sandboxd } from "@/lib/sandbox/client";
 import { isHardDenied, requiredIsolation, userMayUseWorkspace } from "@/lib/sandbox/policy";
 import { PortalWorkspace } from "@/lib/sandbox/session";
-import { getOrCreateRef, touchSandbox } from "@/lib/sandbox/store";
+import { touchWorkspaceInstance } from "@/lib/sandbox/store";
+import { resolveWorkspace } from "@/lib/workspaces/instances";
 import { getSetting, type SandboxSettings } from "@/lib/settings";
 import { slugify } from "@/lib/utils";
 import { activeServiceGrants } from "@/lib/bots/service";
@@ -63,8 +64,8 @@ const EMPTY: Toolset = {
 };
 
 /**
- * The acting person's workspace for this turn: one handle, created by the first toolset that needs it and shared
- * with delegates through ctx (only the creator closes it). Null, with a warning, when the person may not use one.
+ * The acting person's bot-bound private workspace for this turn. A delegated bot reuses a handle only when it resolves
+ * to the same bot; otherwise it receives its own binding or the owner's legacy fallback.
  */
 async function workspaceFor(ctx: AgentCtx, settings: SandboxSettings, warnings: string[], closers: (() => Promise<void>)[]) {
   if (!userMayUseWorkspace(ctx.principal, settings)) {
@@ -76,20 +77,25 @@ async function workspaceFor(ctx: AgentCtx, settings: SandboxSettings, warnings: 
     warnings.push("Workspaces aren't set up on this server.");
     return null;
   }
-  if (ctx.workspace) return ctx.workspace;
+  if (ctx.workspace && ctx.workspaceBotId === ctx.bot?.id) return ctx.workspace;
+  if (!ctx.bot) return null;
+  const resolved = await resolveWorkspace({ principal: ctx.principal, botId: ctx.bot.id, createIfMissing: true });
+  if (!resolved) return null;
   const userId = ctx.principal.user.id;
   let lastTouch = 0;
   const ws = new PortalWorkspace({
     client,
-    ref: () => getOrCreateRef(userId),
+    ref: async () => resolved.sandboxRef,
+    runtimeProfileKey: resolved.runtimeProfileKey === "legacy" ? undefined : resolved.runtimeProfileKey,
     isolation: requiredIsolation(settings),
     onUse: () => {
       if (Date.now() - lastTouch < 60_000) return;
       lastTouch = Date.now();
-      void touchSandbox(userId).catch(() => {});
+      void touchWorkspaceInstance(resolved.instanceId, userId).catch(() => {});
     },
   });
   ctx.workspace = ws;
+  ctx.workspaceBotId = ctx.bot.id;
   closers.push(() => ws.close());
   return ws;
 }

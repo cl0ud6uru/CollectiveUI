@@ -1,7 +1,17 @@
 import { audit } from "@/lib/audit";
 import { getSetting } from "@/lib/settings";
 import { sandboxd } from "./client";
-import { clearDeleteAfter, expiredSandboxes, findSandbox, forgetSandbox, listSandboxRows, markDeleteAfter } from "./store";
+import {
+  clearDeleteAfter,
+  ensureLegacyInstance,
+  expiredWorkspaceInstances,
+  findSandbox,
+  forgetSandbox,
+  forgetWorkspaceInstance,
+  listSandboxRows,
+  listWorkspaceInstances,
+  markDeleteAfter,
+} from "./store";
 
 const ORPHAN_AGE_MS = 60 * 60_000;
 
@@ -10,15 +20,19 @@ const ORPHAN_AGE_MS = 60 * 60_000;
  * then the container is stopped best-effort. Re-enabling the person cancels the deletion.
  */
 export async function onUserDisabled(userId: string, actorId: string) {
-  const row = await findSandbox(userId);
-  if (!row) return;
+  const legacy = await findSandbox(userId);
+  if (legacy) await ensureLegacyInstance(userId, legacy.ref);
+  const instances = (await listWorkspaceInstances()).filter((row) => row.ownerUserId === userId);
+  if (!instances.length) return;
   await markDeleteAfter(userId, (await getSetting("sandbox")).deleteAfterDays);
-  await sandboxd()
-    ?.stop(row.ref)
-    .catch(async (err) => {
+  const client = sandboxd();
+  if (!client) return;
+  for (const row of instances) {
+    await client.stop(row.sandboxRef).catch(async (err) => {
       console.error("[sandbox] couldn't stop a disabled user's workspace", err);
       await audit(actorId, "workspace.stop_failed", userId, { reason: String((err as Error)?.message ?? err).slice(0, 200) });
     });
+  }
 }
 
 export async function onUserEnabled(userId: string) {
@@ -32,19 +46,23 @@ export async function onUserEnabled(userId: string) {
 export async function sweepSandboxes(now = new Date()): Promise<{ expired: number; orphans: number }> {
   const client = sandboxd();
   if (!client) return { expired: 0, orphans: 0 };
+  // W0 registered existing rows. Reconcile rows created by an older portal binary before using the union for cleanup.
+  for (const row of await listSandboxRows()) await ensureLegacyInstance(row.userId, row.ref);
   let expired = 0;
-  for (const row of await expiredSandboxes(now)) {
+  for (const row of await expiredWorkspaceInstances(now)) {
     try {
-      await client.destroy(row.ref);
-      await forgetSandbox(row.userId);
-      await audit(null, "workspace.destroyed_after_disable", row.userId);
+      await client.destroy(row.sandboxRef);
+      if (row.origin === "legacy_personal") await forgetSandbox(row.ownerUserId);
+      else await forgetWorkspaceInstance(row.ownerUserId, row.id);
+      await audit(null, "workspace.destroyed_after_disable", row.ownerUserId);
       expired++;
     } catch (err) {
       console.error("[sandbox] couldn't destroy an expired workspace", err);
     }
   }
   const listed = await client.list();
-  const known = new Set((await listSandboxRows()).map((r) => r.ref));
+  const [legacyRows, instanceRows] = await Promise.all([listSandboxRows(), listWorkspaceInstances()]);
+  const known = new Set([...legacyRows.map((r) => r.ref), ...instanceRows.map((r) => r.sandboxRef)]);
   let orphans = 0;
   for (const s of listed) {
     if (known.has(s.ref) || s.activeExecs > 0) continue;

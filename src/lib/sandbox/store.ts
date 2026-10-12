@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "@/db";
-import { sandboxes, type SandboxRow } from "@/db/schema";
+import { workspaceBotBindings, workspaceInstances, sandboxes, type SandboxRow, type WorkspaceInstanceRow } from "@/db/schema";
+import { newId } from "@/lib/ids";
 
 /** Random, lowercase alphanumeric (sandboxd's REF_RE): unlinkable to the person without this table. */
 const newRef = () => {
@@ -12,10 +13,43 @@ const newRef = () => {
 /** The person's sandbox ref, created on first use (concurrent first uses agree on one row). */
 export async function getOrCreateRef(userId: string): Promise<string> {
   const [existing] = await db.select({ ref: sandboxes.ref }).from(sandboxes).where(eq(sandboxes.userId, userId));
-  if (existing) return existing.ref;
+  if (existing) {
+    await ensureLegacyInstance(userId, existing.ref);
+    return existing.ref;
+  }
   await db.insert(sandboxes).values({ userId, ref: newRef() }).onConflictDoNothing({ target: sandboxes.userId });
   const [row] = await db.select({ ref: sandboxes.ref }).from(sandboxes).where(eq(sandboxes.userId, userId));
+  await ensureLegacyInstance(userId, row.ref);
   return row.ref;
+}
+
+/** Add the existing personal ref to the new registry without changing its ref, volume, or timestamps. */
+export async function ensureLegacyInstance(userId: string, ref?: string): Promise<WorkspaceInstanceRow | null> {
+  const [legacy] = await db.select().from(workspaceInstances).where(and(
+    eq(workspaceInstances.ownerUserId, userId),
+    eq(workspaceInstances.origin, "legacy_personal"),
+  ));
+  if (legacy) return legacy;
+  const sandbox = ref ? null : await findSandbox(userId);
+  const sandboxRef = ref ?? sandbox?.ref;
+  if (!sandboxRef) return null;
+  await db.insert(workspaceInstances).values({
+    id: newId(),
+    ownerUserId: userId,
+    templateVersionId: null,
+    origin: "legacy_personal",
+    sandboxRef,
+    runtimeProfileKey: "legacy",
+    provisionState: "missing",
+    lastUsedAt: sandbox?.lastUsedAt ?? null,
+    deleteAfter: sandbox?.deleteAfter ?? null,
+    createdAt: sandbox?.createdAt,
+  }).onConflictDoNothing();
+  const [created] = await db.select().from(workspaceInstances).where(and(
+    eq(workspaceInstances.ownerUserId, userId),
+    eq(workspaceInstances.origin, "legacy_personal"),
+  ));
+  return created ?? null;
 }
 
 export async function findSandbox(userId: string): Promise<SandboxRow | null> {
@@ -24,19 +58,39 @@ export async function findSandbox(userId: string): Promise<SandboxRow | null> {
 }
 
 export async function touchSandbox(userId: string) {
-  await db.update(sandboxes).set({ lastUsedAt: new Date() }).where(eq(sandboxes.userId, userId));
+  const now = new Date();
+  await db.update(sandboxes).set({ lastUsedAt: now }).where(eq(sandboxes.userId, userId));
+  await db.update(workspaceInstances).set({ lastUsedAt: now }).where(and(
+    eq(workspaceInstances.ownerUserId, userId),
+    eq(workspaceInstances.origin, "legacy_personal"),
+  ));
+}
+
+export async function touchWorkspaceInstance(instanceId: string, ownerUserId: string) {
+  const now = new Date();
+  const [instance] = await db.update(workspaceInstances).set({ lastUsedAt: now }).where(and(
+    eq(workspaceInstances.id, instanceId),
+    eq(workspaceInstances.ownerUserId, ownerUserId),
+  )).returning({ origin: workspaceInstances.origin, sandboxRef: workspaceInstances.sandboxRef });
+  // Keep legacy settings/cleanup consumers coherent while the additive adapter is in place.
+  if (instance?.origin === "legacy_personal") {
+    await db.update(sandboxes).set({ lastUsedAt: now }).where(and(
+      eq(sandboxes.userId, ownerUserId),
+      eq(sandboxes.ref, instance.sandboxRef),
+    ));
+  }
 }
 
 /** Disabled people: keep the workspace for `days`, then the cleanup job destroys it. */
 export async function markDeleteAfter(userId: string, days: number) {
-  await db
-    .update(sandboxes)
-    .set({ deleteAfter: new Date(Date.now() + days * 86_400_000) })
-    .where(eq(sandboxes.userId, userId));
+  const deleteAfter = new Date(Date.now() + days * 86_400_000);
+  await db.update(sandboxes).set({ deleteAfter }).where(eq(sandboxes.userId, userId));
+  await db.update(workspaceInstances).set({ deleteAfter }).where(eq(workspaceInstances.ownerUserId, userId));
 }
 
 export async function clearDeleteAfter(userId: string) {
   await db.update(sandboxes).set({ deleteAfter: null }).where(eq(sandboxes.userId, userId));
+  await db.update(workspaceInstances).set({ deleteAfter: null }).where(eq(workspaceInstances.ownerUserId, userId));
 }
 
 export function listSandboxRows() {
@@ -50,6 +104,65 @@ export function expiredSandboxes(now = new Date()) {
     .where(and(isNotNull(sandboxes.deleteAfter), lt(sandboxes.deleteAfter, now)));
 }
 
+export function listWorkspaceInstances() {
+  return db.select().from(workspaceInstances);
+}
+
+export function expiredWorkspaceInstances(now = new Date()) {
+  return db.select().from(workspaceInstances).where(and(
+    isNotNull(workspaceInstances.deleteAfter),
+    lt(workspaceInstances.deleteAfter, now),
+  ));
+}
+
+export async function findWorkspaceInstance(ownerUserId: string, instanceId: string): Promise<WorkspaceInstanceRow | null> {
+  const [row] = await db.select().from(workspaceInstances).where(and(
+    eq(workspaceInstances.id, instanceId),
+    eq(workspaceInstances.ownerUserId, ownerUserId),
+  ));
+  return row ?? null;
+}
+
+export async function findWorkspaceInstanceById(instanceId: string): Promise<WorkspaceInstanceRow | null> {
+  const [row] = await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, instanceId));
+  return row ?? null;
+}
+
+/** Remove only the specified user's registry row and bot binding; the caller destroys its selected ref first. */
+export async function forgetWorkspaceInstance(ownerUserId: string, instanceId: string) {
+  await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(workspaceInstances).where(and(
+      eq(workspaceInstances.ownerUserId, ownerUserId),
+      eq(workspaceInstances.id, instanceId),
+    ));
+    if (!row) return;
+    await tx.delete(workspaceBotBindings).where(and(
+      eq(workspaceBotBindings.userId, ownerUserId),
+      eq(workspaceBotBindings.instanceId, instanceId),
+    ));
+    await tx.delete(workspaceInstances).where(and(
+      eq(workspaceInstances.ownerUserId, ownerUserId),
+      eq(workspaceInstances.id, instanceId),
+    ));
+    if (row.origin === "legacy_personal") {
+      await tx.delete(sandboxes).where(and(eq(sandboxes.userId, ownerUserId), eq(sandboxes.ref, row.sandboxRef)));
+    }
+  });
+}
+
 export async function forgetSandbox(userId: string) {
-  await db.delete(sandboxes).where(eq(sandboxes.userId, userId));
+  await db.transaction(async (tx) => {
+    const [legacy] = await tx.select({ id: workspaceInstances.id }).from(workspaceInstances).where(and(
+      eq(workspaceInstances.ownerUserId, userId),
+      eq(workspaceInstances.origin, "legacy_personal"),
+    ));
+    if (legacy) {
+      await tx.delete(workspaceBotBindings).where(and(
+        eq(workspaceBotBindings.userId, userId),
+        eq(workspaceBotBindings.instanceId, legacy.id),
+      ));
+      await tx.delete(workspaceInstances).where(eq(workspaceInstances.id, legacy.id));
+    }
+    await tx.delete(sandboxes).where(eq(sandboxes.userId, userId));
+  });
 }

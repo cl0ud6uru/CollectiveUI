@@ -24,7 +24,7 @@ import type { AgentCtx } from "./types";
 import type { DelegatedTask } from "@/lib/delegation/store";
 
 export type TurnOptions = {
-  delegation?: { task: DelegatedTask; parent?: Pick<AgentCtx, "inGroup" | "workspace">; authorize: () => Promise<void> };
+  delegation?: { task: DelegatedTask; parent?: Pick<AgentCtx, "inGroup" | "workspace" | "workspaceBotId">; authorize: () => Promise<void> };
   principal: Principal;
   conversation: Conversation;
   app: AiApp;
@@ -91,7 +91,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   const ctx: AgentCtx = { principal, conversationId: conversation.id, bot, app, depth: delegated?.task.depth ?? 0, background, toolSettings, usage, nativeSearchMode: conversation.nativeSearchMode,
     ...(opts.run?.holder && opts.run.deadlineAt ? { execution: { holder: opts.run.holder, deadlineAt: opts.run.deadlineAt, segment: opts.run.segment } } : {}),
     ...(native ? { awaitTask: (taskId: string) => { if (!native.taskIds.includes(taskId)) native.taskIds.push(taskId); } } : {}),
-    ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace,
+    ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace, workspaceBotId: delegated.parent?.workspaceBotId,
       relayWorkspaceApproval: nativeEligible && delegated.task.mode === "async" } : {}) };
   const { delegatedAuthorityBinding, DelegationAuthorityChangedError } = await import("@/lib/delegation/authority");
   const authority = delegated ? await delegatedAuthorityBinding(ctx, true) : null;

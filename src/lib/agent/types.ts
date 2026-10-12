@@ -32,8 +32,9 @@ export type AgentCtx = {
   nativeSearchMode?: import("@/lib/native-search-policy").NativeSearchMode | null;
   /** Usage ledger scope of the turn; each child task has its own assistant message and run. */
   usage?: UsageScope;
-  /** The acting person's workspace for this turn, shared with delegates (created by the first toolset that needs it). */
+  /** The current bot's acting-person workspace for this turn. Child bots may resolve a different private instance. */
   workspace?: PortalWorkspace;
+  workspaceBotId?: string;
 };
 
 /** What the approval policy knows about an MCP tool (from the server's accepted snapshot and admin policy). */
