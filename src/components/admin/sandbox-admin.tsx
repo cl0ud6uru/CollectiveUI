@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
-import { adminDestroyOrphan, adminDestroySandbox, adminStopSandbox, saveSandboxSettings } from "@/app/admin/actions";
+import { adminDestroyOrphan, adminDestroyWorkspaceInstance, adminStopWorkspaceInstance, saveSandboxSettings } from "@/app/admin/actions";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -14,10 +14,14 @@ import { Badge, Card, Table, Td } from "./ui";
 import { WorkspaceSetup } from "./workspace-setup";
 
 export type SandboxRowView = {
-  userId: string;
+  id: string;
+  ownerUserId: string;
   name: string;
   upn: string;
   disabled: boolean;
+  origin: "legacy_personal" | "template";
+  templateName: string;
+  provisionState: "missing" | "provisioning" | "ready" | "unavailable";
   state: "running" | "stopped" | "missing" | "unknown";
   runtime: "runc" | "runsc" | null;
   activeExecs: number;
@@ -162,12 +166,13 @@ export function SandboxAdmin({
 
       <Table head={["Person", "State", "Isolation", "Last used", ""]}>
         {rows.map((r) => (
-          <tr key={r.userId}>
+          <tr key={r.id}>
             <Td>
               <div className="font-medium">{r.name}</div>
               <div className="text-xs text-muted">
                 {r.upn}
                 {r.disabled && " · disabled"}
+                <div className="text-xs text-subtle">{r.templateName}</div>
               </div>
             </Td>
             <Td>
@@ -175,22 +180,23 @@ export function SandboxAdmin({
                 <Badge tone={r.state === "running" ? "green" : r.state === "unknown" ? "red" : "default"}>{r.state === "missing" ? "not created" : r.state}</Badge>
                 {r.activeExecs > 0 && <Badge tone="blue">{r.activeExecs} running</Badge>}
                 {r.drift && <Badge tone="amber">update pending</Badge>}
+                {r.provisionState === "unavailable" && <Badge tone="red">provision unavailable</Badge>}
                 {r.deleteAfter && <Badge tone="red">deleted {r.deleteAfter.slice(0, 10)}</Badge>}
               </div>
             </Td>
             <Td className="text-xs text-muted">{r.runtime === "runsc" ? "gVisor" : r.runtime === "runc" ? "standard" : "—"}</Td>
             <Td className="text-xs text-muted">{r.lastUsedAt ? new Date(r.lastUsedAt).toLocaleString() : "never"}</Td>
             <Td className="whitespace-nowrap">
-              <Button size="sm" variant="ghost" disabled={pending || r.state !== "running"} onClick={() => run(() => adminStopSandbox(r.userId), "Stopped")}>
+              <Button size="sm" variant="ghost" disabled={pending || r.state !== "running"} onClick={() => run(() => adminStopWorkspaceInstance(r.id), "Stopped")}>
                 Stop
               </Button>
               <Button
                 size="sm"
                 variant="ghost"
                 className="text-danger"
-                aria-label={`Destroy ${r.name}'s workspace`}
+                aria-label={`Destroy ${r.name}'s ${r.templateName} workspace`}
                 disabled={pending}
-                onClick={() => confirm(`Delete ${r.name}'s workspace and all its files?`) && run(() => adminDestroySandbox(r.userId), "Workspace deleted")}
+                onClick={() => confirm(`Delete ${r.name}'s ${r.templateName} workspace and all its files?`) && run(() => adminDestroyWorkspaceInstance(r.id), "Workspace deleted")}
               >
                 Destroy
               </Button>

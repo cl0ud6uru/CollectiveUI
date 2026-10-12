@@ -7,5 +7,5 @@ export const CodexPolicySchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh']),
 }).strict();
 export type CodexPolicy = z.infer<typeof CodexPolicySchema>;
-export const CODEX_DIRECT_ONLY = 'Codex supports direct text chats only in this pilot. Groups, routines, delegation, attachments and approval continuations are unavailable.';
+export const CODEX_DIRECT_ONLY = 'Codex supports direct text chats in this pilot. Groups, routines, delegation, attachments and portal approval continuations are unavailable.';
 export const CODEX_VERSION = '0.163.0-alpha.2';

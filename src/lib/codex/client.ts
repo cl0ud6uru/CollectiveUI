@@ -1,11 +1,14 @@
 import 'server-only';
 import WebSocket from 'ws';
+import { isAbsolute } from 'node:path';
+import { connect as connectSocket } from 'node:net';
 import { z } from 'zod';
 import { CODEX_VERSION } from './config';
 import { runtimeToken, type CodexRuntime } from './runtime';
 
 const envelope = z.object({ id: z.union([z.string(), z.number()]).optional(), method: z.string().optional(),
   params: z.unknown().optional(), result: z.unknown().optional(), error: z.unknown().optional() }).passthrough();
+export type CodexServerRequest = { id: string | number; method: string; params: unknown };
 export type CodexNotification = { method: string; params: unknown };
 const failure = () => new Error('The Codex app-server connection failed. The request will not be replayed automatically.');
 
@@ -14,6 +17,7 @@ export class CodexClient {
   private nextId = 0;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private listeners = new Set<(event: CodexNotification) => void>();
+  private requestListeners = new Set<(event: CodexServerRequest) => void>();
   private failureListeners = new Set<(error: Error) => void>();
   private failed = false;
   private heartbeat: ReturnType<typeof setInterval>;
@@ -23,6 +27,10 @@ export class CodexClient {
       try {
         const m = envelope.parse(JSON.parse(data.toString()));
         if (m.method && m.id !== undefined) {
+          if (this.requestListeners.size) {
+            for (const fn of this.requestListeners) fn({ id: m.id, method: m.method, params: m.params });
+            return;
+          }
           // No approval is ever auto-accepted. Unknown requests fail closed and stop this turn.
           ws.send(JSON.stringify({ id: m.id, error: { code: -32601, message: 'Interactive approvals and tools are unavailable in this client.' } }));
           this.fail(new Error('Codex requested an unsupported approval or interactive tool. The turn was stopped.'));
@@ -44,18 +52,28 @@ export class CodexClient {
     this.heartbeat.unref();
   }
   static async connect(runtime: CodexRuntime) {
-    const ws = new WebSocket(runtime.endpoint, { headers: { Authorization: `Bearer ${await runtimeToken(runtime)}` },
+    if (runtime.managed && (!runtime.socketPath || !isAbsolute(runtime.socketPath) || /[\x00-\x1f]/.test(runtime.socketPath) || runtime.endpoint !== 'ws://127.0.0.1/runtime'))
+      throw new Error('The personal Codex Unix transport is not configured.');
+    const ws = new WebSocket(runtime.endpoint, { ...(runtime.managed ? { createConnection: () => connectSocket(runtime.socketPath!), headers: { 'x-collective-owner': runtime.ownerId } } : { headers: { Authorization: `Bearer ${await runtimeToken(runtime)}` } }),
       followRedirects: false, perMessageDeflate: false, maxPayload: 1024 * 1024, handshakeTimeout: 8000 });
     const client = new CodexClient(ws);
     try {
       await new Promise<void>((resolve, reject) => { ws.once('open', resolve); ws.once('error', () => reject(failure())); ws.once('close', () => reject(failure())); });
       const result = z.object({ userAgent: z.string() }).parse(await client.request('initialize', {
-        clientInfo: { name: 'collective_ui', title: 'CollectiveUI', version: '0.1.0' }, capabilities: { experimentalApi: false },
+        clientInfo: { name: 'collective_ui', title: 'CollectiveUI', version: '0.1.0' }, capabilities: { experimentalApi: runtime.managed === true },
       }));
       if (!result.userAgent.split(/[ /()]+/).includes(CODEX_VERSION)) throw new Error('The Codex runtime version is unsupported.');
       client.notify('initialized', {});
       return client;
     } catch (err) { client.close(); throw err; }
+  }
+  onServerRequest(fn: (event: CodexServerRequest) => void) { this.requestListeners.add(fn); return () => this.requestListeners.delete(fn); }
+  respond(id: string | number, result: unknown) {
+    if (this.failed || this.ws.readyState !== WebSocket.OPEN) throw failure();
+    this.ws.send(JSON.stringify({ id, result }));
+  }
+  rejectRequest(id: string | number) {
+    if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ id, error: { code: -32601, message: 'Unsupported request.' } }));
   }
   onNotification(fn: (event: CodexNotification) => void) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   onFailure(fn: (error: Error) => void) { this.failureListeners.add(fn); if (this.failed) fn(failure()); return () => this.failureListeners.delete(fn); }

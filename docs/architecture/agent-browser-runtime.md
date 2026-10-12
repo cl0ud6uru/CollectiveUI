@@ -18,20 +18,25 @@ The runtime source is `{ ...scope, sessionId, status(), subscribeFrames(signal) 
 The factory's optional register/unregister callbacks are the runtime-side source registration hook.
 In-memory registration alone cannot cross a worker/web process boundary; use daemon lookup.
 
-For W5 PR #181 at exact `0b5ff7b56b445962a91d4674ab919b28eb614638`, import W4
-`installBrowserSessionSourceResolver` from `viewer-source-adapter.ts` and pass W5's
-`registerBrowserSessionSourceResolver` plus a server authorization callback. This matches W5's
-`(scope, signal) => source | null` and `source.status(signal)` shapes without changing W5-owned files.
-The callback returns the full W4 scope, deriving conversationId from the persisted owned run and
-verifying the actual W2 instance binding every time. W5 currently builds a null instance selector;
-template integration must derive the real binding or reject the mismatch. No fallback across instances.
+The parent-approved integration consumes W5 PR #181 at `0b5ff7b56b445962a91d4674ab919b28eb614638`,
+W2 PR #182 at `274de2a61068ac168c42a6c41ec5436b6d558b63`, and the personal-Codex migration 0055
+ancestry. `instrumentation.ts` registers the W4 resolver at web startup; `toolset.ts` installs the
+`agent_browser` group and its close callback. `native-integration.ts` resolves the real W2 binding with
+`createIfMissing:false` and rechecks it on every agent operation. W5's source selector uses that same
+binding; it never provisions a browser/workspace during viewing or falls back across instances.
 
-The viewer authorization callback must also enforce **server-side logout/session-end revocation**.
-PR #181's current Auth.js JWT checks, 30-second streams and unmount abort do not provide that guarantee:
-an already-open request retains its original cookie. W4 deliberately has no permissive default viewer
-authorization callback. Keep viewer/runtime opt-in disabled until the auth owner supplies and tests
-that guarantee. Synthetic callback revocation proves the adapter stops frames; it cannot prove that
-actual logout triggers the callback's denial.
+`integration.ts` rechecks the signed request's durable web-session record, fresh principal, usable bot,
+configured browser tool group, direct owned conversation/run and selected private instance on EVERY
+source/status/frame poll. Additive migration `0056_web_sessions` stores a domain-separated SHA-256
+session identifier, owner/version, fixed absolute expiry and revocation time; it stores no JWT/cookie.
+Set `AUTH_WEB_SESSION_REGISTRY_ENABLED=1` only after installing that migration. This prerequisite is
+checked before browser source registration. Registry admission never revives tombstones or extends
+expiry; bounded cleanup removes only expired rows. HTTP logout validates origin, original signed
+cookie and Auth.js CSRF proof; server-action logout decodes the original signed cookie. Both commit
+revocation before Auth.js clears cookies. DB failure preserves retry cookies, including at the auth
+proxy, while successful renewal preserves the complete cookie-chunk cleanup/replacement bundle.
+An already-open stream cannot use its original request cookie to override logout; source failure
+errors the SSE stream and discards queued bytes. Frames already delivered to a client cannot be recalled.
 
 Status provider method returns `active | idle | disconnected`; broker status includes
 `{ state, viewOnly: true, lastFrameAt: string | null }`. A missing source / failed status request means
@@ -63,7 +68,7 @@ CDP URLs, scripts, filesystem paths or owner selectors in tool inputs. Viewer ro
 their principal, own conversation/run, current usable bot, current workspace binding and view policy;
 they supply the callback, never trust selectors as authorization. Viewing does not grant tool admission.
 
-## Parent-owned registration
+## Authorized native registration
 
 Call `agentBrowserTools(ctx, { workspace, assertWorkspace, registerSource, unregisterSource })` from the
 `agent_browser` tool group in the parent's small `toolset.ts` integration. Add the group to the builtin
@@ -72,8 +77,8 @@ the returned close callback. Navigate/act are sensitive and non-grantable. The f
 only direct native durable caller runs; it rechecks enabled user, workspace audience, bot, conversation,
 run/holder/cancellation and configured tool group on every call. Delegated, group, service, Hermes and
 Codex runs are unsupported. W2 supplies an ownership-checked instance plus a revalidation closure;
-without W2 use null for the explicit per-owner browser. No root package/schema/toolset edits are made
-in W4. Browser execution depends on `playwright-core@1.63.0` in the broker's independent package;
+without W2 use null for the explicit per-owner browser. Parent-authorized shared hooks and migration
+0056 are confined to the integration branch; foundation/Codex 0054/0055 files are unchanged. Browser execution depends on `playwright-core@1.63.0` in the broker's independent package;
 the portal transport has no Playwright runtime import. Parent owns any shared package integration.
 
 ## Isolated infrastructure, disabled by default
@@ -116,36 +121,39 @@ availability: `agentBrowserView` template capability stays false pending provide
 
 ## Verified evidence and remaining gates
 
-- 83 focused unit/regression tests pass: browser provider/admission plus existing sandbox policy,
-  signing protocol and workspace-browser tests. Scope spoofing, refreshed principal/session version,
-  current bot/tool/workspace admission, cancellation, egress pinning and blocked redirect policy covered.
-- Six actual Chromium tests pass with synthetic routed pages: native tool navigation/click changes
-  decoded same-page JPEG pixels; separate owner browser processes/cookies; same-origin HttpOnly cookie
-  forwarding and cross-origin redirect isolation; embedded documents; cancellation; small text POST
-  forwarding and oversized generated POST rejection; resource/idle/restart cleanup.
-- Joint W4/W5 fixture `tests/sandbox/agent-browser-viewer-integration.test.ts` passes against exact
-  W5 head above. Actual native tools -> private broker -> separate view-only provider -> W5 resolver
-  and actual SSE route -> changed JPEG pixels. Viewer cancel preserves the agent browser; synthetic
-  source revocation stops frames. No fabricated frame generator in this proof.
-- Fixtures use explicit `AGENT_BROWSER_TEST_UNSANDBOXED=1` only via injected test launchers because
-  this host's Chromium setuid helper is misconfigured. Production code always enables Chromium sandbox.
-  Functional proof is not a production containment claim. Native Node TypeScript daemon import passes.
-- A disposable `node:22-slim` container with uid 1000, read-only rootfs, network:none, cap-drop ALL,
-  memory/CPU/PID limits reports loopback interfaces only. This proves that isolated test configuration,
-  not the unbuilt browser image. Browser image build is blocked by Docker DNS for Debian package servers.
-- Full TypeScript check has exactly the same diagnostics as clean main in this workspace: missing
-  installed `three` and dependent voice/avatar type errors. Changed paths lint clean; no new diagnostics.
+- Full unit suite passes: 222 files, 2,676 tests; four files / 16 tests skip under their existing gates.
+  Full TypeScript check passes after a clean locked `npm ci`; changed-file ESLint passes.
+- Provider/admission tests cover scope spoofing, current principal/version/bot/tool/workspace policy,
+  cancellation, signed transport, pinned DNS and blocked redirect/network policy.
+- Six actual Chromium fixtures use synthetic pages and verify navigation/click JPEG pixels, separate
+  owner processes/cookies, redirects/HttpOnly cookies, embedded documents, request bodies and cleanup.
+- Joint fixture `tests/sandbox/agent-browser-viewer-integration.test.ts` uses actual native tools,
+  the broker, production viewer authorization, W5 resolver/SSE and real PGlite registry. Another Node
+  process discovers the same Page. Two simultaneous viewer windows stop after real signed logout,
+  queued frames are discarded, replayed old-cookie status fails, and the agent browser remains active.
+- Registry/logout tests exercise races, replay, another login, cross-user denial, fixed expiry/cleanup,
+  account revocation and DB outages. Migration test preserves 0054 workspace and 0055 Codex records,
+  verifies snapshot ancestry/constraints and migrator rerun. All 57 migrations applied twice in a
+  disposable PostgreSQL 16 container; mobile auth and W2 migration/binding regressions passed (20 tests).
+- Actual Chromium fixtures use explicit `AGENT_BROWSER_TEST_UNSANDBOXED=1` through injected test
+  launchers because this host's Chromium sandbox helper is misconfigured. Production always enables
+  the Chromium sandbox. Functional evidence is not proof of production containment.
+- A disposable nonroot/read-only/cap-drop/network:none/resource-bounded container reports only
+  loopback interfaces. Production browser image build is blocked by Docker DNS to Debian package
+  servers; sandbox-enabled Chromium and final operator-reviewed socket/egress containment are unverified.
 
-Run unit tests with `npm test -- --project unit tests/unit/agent-browser-provider.test.ts
-tests/unit/agent-browser-admission.test.ts tests/unit/sandbox-policy.test.ts
-tests/unit/sandboxd-protocol.test.ts tests/unit/workspace-browser.test.ts`.
-Run real-page fixtures with `AGENT_BROWSER_RUNTIME_TEST=1 npm test -- --project sandbox
-tests/sandbox/agent-browser-runtime.test.ts`; the explicit unsandboxed test flag is only for the
-synthetic host fixture when necessary and never applies to the production entrypoint.
-Run joint proof in an isolated worktree containing this W4 branch plus exact W5 head with
-`AGENT_BROWSER_VIEWER_PROOF=1 npm test -- --project sandbox tests/sandbox/agent-browser-viewer-integration.test.ts`.
+Run focused unit tests with `npm test -- --project unit tests/unit/agent-browser-provider.test.ts
+ tests/unit/agent-browser-admission.test.ts tests/unit/web-session-revocation.test.ts
+ tests/unit/web-session-migration.test.ts tests/unit/web-logout-boundary.test.ts
+ tests/unit/web-logout-wiring.test.ts tests/unit/agent-browser-viewer.test.ts`.
+Run real synthetic page fixtures with `AGENT_BROWSER_RUNTIME_TEST=1 AGENT_BROWSER_VIEWER_PROOF=1
+ npm test -- --project sandbox tests/sandbox/agent-browser-runtime.test.ts
+ tests/sandbox/agent-browser-viewer-integration.test.ts`. The unsandboxed flag is a fixture-only override.
 
-Before release: parent registers native tool group/closers and startup source resolver; W2/W5 resolve
-actual private instance selectors; auth owner proves logout/session-end revocation; operator builds
-and validates the sandbox-enabled browser container, socket permissions, egress separation and limits.
-No deployment, shared migration, runtime-owned credentials or production security setting changed here.
+Before release, an operator must build and validate the sandbox-enabled image, namespace support,
+private socket permissions, separate egress service and resource limits. The combined worker starts
+and gracefully stops; its unrelated Codex sweeper still logs a `server-only` import error from
+`src/lib/codex/recovery.ts`, reported to PR #184 owner. W4 excludes Codex execution. Then install approved migration
+0056 and explicitly enable both opt-ins. No deployment, migration against a live database, runtime-owned
+credential action or production security/configuration change was performed. `agentBrowserView`
+template capability remains false pending production provider admission and review.

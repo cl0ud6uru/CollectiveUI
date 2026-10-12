@@ -4,7 +4,7 @@ import { getSetting } from "@/lib/settings";
 import { artifactPath, MAX_ARTIFACT_BYTES } from "@/lib/chat/workspace-artifacts";
 import { sandboxd, SandboxError } from "@/lib/sandbox/client";
 import { requiredIsolation, userMayUseWorkspace } from "@/lib/sandbox/policy";
-import { findSandbox, touchSandbox } from "@/lib/sandbox/store";
+import { findSandbox, findWorkspaceInstance, touchSandbox, touchWorkspaceInstance } from "@/lib/sandbox/store";
 
 export async function GET(req: Request) {
   try {
@@ -13,16 +13,28 @@ export async function GET(req: Request) {
     if (!userMayUseWorkspace(p, settings)) throw new HttpError(403, "Workspace access is unavailable");
     const query = new URL(req.url).searchParams;
     const path = query.getAll("path").length === 1 ? artifactPath(query.get("path")) : null;
-    if (!path || [...query.keys()].some((key) => key !== "path")) throw new HttpError(400, "Invalid workspace file path");
+    const instanceIds = query.getAll("instanceId");
+    const instanceId = instanceIds.length === 1 ? instanceIds[0] : undefined;
+    if (!path || [...query.keys()].some((key) => key !== "path" && key !== "instanceId") ||
+      (instanceIds.length > 0 && (!instanceId || !/^[A-Za-z0-9_-]{8,64}$/.test(instanceId)))) {
+      throw new HttpError(400, "Invalid workspace file path");
+    }
     // Even an admin can download only their own workspace. Never allocate a workspace for a download.
-    const workspace = await findSandbox(p.user.id);
+    const instance = instanceId ? await findWorkspaceInstance(p.user.id, instanceId) : null;
+    const workspace = instanceId ? instance : await findSandbox(p.user.id);
     if (!workspace) throw new HttpError(404, "Workspace file not found");
     const client = sandboxd();
     if (!client) throw new HttpError(503, "Workspace service is unavailable");
-    const file = await client.readFile(workspace.ref, { isolation: requiredIsolation(settings), path, maxBytes: MAX_ARTIFACT_BYTES });
+    const ref = instance ? instance.sandboxRef : "ref" in workspace ? workspace.ref : workspace.sandboxRef;
+    const profileKey = instance && instance.runtimeProfileKey !== "legacy" ? instance.runtimeProfileKey : undefined;
+    const file = await client.readFile(ref, {
+      isolation: requiredIsolation(settings), path, maxBytes: MAX_ARTIFACT_BYTES,
+      ...(profileKey ? { runtimeProfileKey: profileKey } : {}),
+    });
     if (!file) throw new HttpError(404, "Workspace file not found");
     if (file.truncated || file.size > MAX_ARTIFACT_BYTES || file.bytes.length > MAX_ARTIFACT_BYTES) throw new HttpError(413, "Workspace files can be downloaded up to 10 MB");
-    await touchSandbox(p.user.id);
+    if (instance) await touchWorkspaceInstance(instance.id, p.user.id);
+    else await touchSandbox(p.user.id);
     return new Response(new Uint8Array(file.bytes), {
       headers: {
         "Content-Type": "application/octet-stream",

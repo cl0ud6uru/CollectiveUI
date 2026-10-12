@@ -1,6 +1,11 @@
 import { HttpError } from '@/lib/authz';
 import 'server-only';
-import type { UIMessageChunk } from 'ai';
+import type { UIMessageChunk, DynamicToolUIPart } from 'ai';
+import { and, eq } from 'drizzle-orm';
+import { db } from '@/db';
+import { codexThreads } from '@/db/schema';
+import { runtimeBinding as binding } from './binding';
+import { waitForApproval } from '@/personal-codex/approvals';
 import type { TurnOptions, TurnResult } from '@/lib/agent/run';
 import type { PortalUIMessage } from '@/lib/chat/store';
 import { CODEX_DIRECT_ONLY, CodexPolicySchema } from './config';
@@ -19,14 +24,18 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
   if (!opts.bot || !opts.run?.holder || !opts.persist || !opts.responseMessageId || opts.continuation || opts.background || opts.delegation ||
     opts.conversation.userId !== opts.principal.user.id || opts.bot.executionMode !== 'caller' || opts.run.segment !== 0)
     throw new HttpError(409, CODEX_DIRECT_ONLY);
-  if (opts.history.some(m => m.parts.some(p => p.type === 'file' || p.type.startsWith('tool-') || p.type === 'dynamic-tool')))
-    throw new HttpError(409, CODEX_DIRECT_ONLY);
+  if (opts.history.some(m => m.parts.some(p => p.type === 'file'))) throw new HttpError(409, CODEX_DIRECT_ONLY);
   const raw = opts.app.providerConfig ?? {};
   const policy = CodexPolicySchema.parse({ funding: raw.funding, model: raw.model, effort: raw.effort });
   const transcript = JSON.stringify(opts.history.map(m => ({ role: m.role, text: m.parts.filter(p => p.type === 'text').map(p => p.text).join('\n') })));
   if (transcript.length > 200000) throw new HttpError(409, 'This chat is too long for the Codex pilot. Start a new chat.');
   const runtime = await callerRuntime(opts.principal.user.id, policy.funding);
   assertRuntimeOwner(runtime, opts.principal.user);
+  if (!runtime.managed && opts.history.some(m => m.parts.some(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool')))
+    throw new HttpError(409, CODEX_DIRECT_ONLY);
+  const [retained] = runtime.managed ? await db.select().from(codexThreads).where(and(eq(codexThreads.conversationId, opts.conversation.id), eq(codexThreads.userId, runtime.ownerId))) : [];
+  if (retained && (retained.binding !== binding(runtime) || retained.appId !== opts.app.id || retained.lastMessageId !== opts.history.at(-2)?.id))
+    throw new HttpError(409, 'This Codex chat belongs to a different account, bot revision or conversation branch. Start a new chat.');
   await reserveCodexRun(opts.run, runtime);
   const cancelled = new AbortController();
   const signal = AbortSignal.any([opts.abortSignal ?? AbortSignal.timeout(30 * 60 * 1000), cancelled.signal]);
@@ -41,6 +50,7 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
     void (async () => {
       let client: CodexClient | undefined, error: string | undefined;
       let tokens = mapUsage(undefined), dispatched = false;
+      let tokenTotals: import('./session').CodexTokenUsage | undefined;
       const abortTransport = () => client?.close();
       signal.addEventListener('abort', abortTransport, { once: true });
       const text = new Map<string, { type: 'text'; text: string; state: 'streaming' | 'done' }>();
@@ -49,8 +59,10 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
         signal.throwIfAborted();
         client = await CodexClient.connect(runtime);
         await executeCodexSession(client, runtime, policy,
-          `Conversation transcript (JSON). Respond to the last user message.\n${transcript}`,
-          [opts.bot!.instructions, opts.bot!.boundaries, 'This is a text-only CollectiveUI session. Do not invoke tools or request approvals.'].filter(Boolean).join('\n\n'), {
+          runtime.managed && retained ? opts.history.at(-1)!.parts.filter(p => p.type === 'text').map(p => p.text).join('\n') : `Conversation transcript (JSON). Respond to the last user message.\n${transcript}`,
+          [opts.bot!.instructions, opts.bot!.boundaries, runtime.managed ? 'Execute useful commands and file edits inside your personal workspace. Protected auth storage and external tools are unavailable. Permission expansion requires review; this pilot permits decline or stop only.' : 'This is a text-only CollectiveUI session. Do not invoke tools or request approvals.'].filter(Boolean).join('\n\n'), {
+            resumeThreadId: retained?.threadId, clientMessageId: opts.run!.id, baselineUsage: retained?.tokenTotals,
+            totalUsage: u => { tokenTotals = u; },
             authorizeAccount: async identity => {
               if (identity?.type === 'chatgpt') {
                 const settings = await getSetting('chatgpt');
@@ -68,7 +80,37 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
                 assertRuntimeOwner(runtime, fresh.user);
               }
               await checkpointCodexRun(opts.run!, runtime.ownerId, values);
+              if (runtime.managed && values.threadId) await db.insert(codexThreads).values({ conversationId: opts.conversation.id,
+                userId: runtime.ownerId, binding: binding(runtime), appId: opts.app.id, threadId: values.threadId, lastMessageId: retained?.lastMessageId ?? null })
+                .onConflictDoUpdate({ target: codexThreads.conversationId, set: { threadId: values.threadId, updatedAt: new Date() } });
               if (values.phase === 'dispatching') dispatched = true;
+            },
+            tool: (item, phase) => {
+              let part = responseMessage.parts.find(p => p.type === 'dynamic-tool' && p.toolCallId === item.id) as DynamicToolUIPart | undefined;
+              const input = item.type === 'commandExecution' ? { command: item.command, cwd: item.cwd } : { changes: item.changes };
+              if (!part) {
+                part = { type: 'dynamic-tool', toolCallId: item.id, toolName: `codex_${item.type}`, state: 'input-available', input };
+                responseMessage.parts.push(part);
+                emit({ type: 'tool-input-available', toolCallId: item.id, toolName: part.toolName, input, dynamic: true });
+              }
+              if (phase === 'completed') {
+                const output = item.type === 'commandExecution' ? { status: item.status, stdout: item.aggregatedOutput ?? '', exitCode: item.exitCode } : { status: item.status, changes: item.changes };
+                const complete: DynamicToolUIPart = { type: 'dynamic-tool', toolCallId: item.id, toolName: part.toolName, state: 'output-available', input, output };
+                Object.assign(part, complete); emit({ type: 'tool-output-available', toolCallId: item.id, output, dynamic: true });
+              }
+            },
+            approval: async (request, approvalSignal) => {
+              const p = request.params as { threadId: string; turnId: string; itemId: string; command?: string; reason?: string };
+              const label = request.method === 'item/commandExecution/requestApproval' ? 'Command requires broader permissions' : 'File edit requires broader permissions';
+              let approvalId: string | undefined;
+              const decision = await waitForApproval(opts.run!.id, runtime, p.threadId, p.turnId, approvalSignal, id => {
+                approvalId = id;
+                const part = { type: 'data-codex-approval' as const, id, data: { id, label, state: 'pending' } };
+                responseMessage.parts.push(part); emit(part);
+              });
+              const part = responseMessage.parts.find(p => p.type === 'data-codex-approval' && p.id === approvalId);
+              if (part?.type === 'data-codex-approval') { (part.data as { state: string }).state = decision; emit({ type: 'data-codex-approval', id: part.id, data: part.data }); }
+              return decision;
             },
             usage: u => { tokens = mapUsage({ inputTokens: { total: u.inputTokens, cacheRead: u.cachedInputTokens }, outputTokens: { total: u.outputTokens, reasoning: u.reasoningOutputTokens } }); },
             text: (id, delta) => {
@@ -87,6 +129,11 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
       } finally {
         signal.removeEventListener('abort', abortTransport);
         client?.close();
+        for (const part of responseMessage.parts) {
+          if (part.type === 'data-codex-approval' && (part.data as { state: string }).state === 'pending') {
+            (part.data as { state: string }).state = 'cancel'; emit({ type: 'data-codex-approval', id: part.id, data: part.data });
+          }
+        }
         for (const [id, part] of text) { part.state = 'done'; emit({ type: 'text-end', id }); }
         if (error) emit({ type: 'error', errorText: error });
         if (dispatched) await recordUsage({ purpose: 'chat', billingSource: source, providerKind: opts.app.provider,
@@ -99,6 +146,8 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
             extra: { model: policy.model, inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, billingSource: source, providerKind: opts.app.provider, appId: opts.app.id },
             // No company-funded memory/title side-call for caller-owned Codex execution.
             background: true }, { error });
+          if (runtime.managed) await db.update(codexThreads).set({ lastMessageId: responseMessage.id, tokenTotals: dispatched && error ? null : tokenTotals, updatedAt: new Date() })
+            .where(and(eq(codexThreads.conversationId, opts.conversation.id), eq(codexThreads.binding, binding(runtime))));
         } catch { error = 'The Codex response could not be saved.'; }
         emit({ type: 'finish', finishReason: error ? 'error' : 'stop' }); if (!closed) controller.close(); closed = true;
         resolveDone({ responseMessage, pendingApproval: false, error });

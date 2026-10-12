@@ -1,5 +1,6 @@
 "use client";
 
+import { PersonalCodexConnection } from "@/components/settings/personal-codex-connection";
 import { CodexAllowance } from "@/components/settings/codex-allowance";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -41,6 +42,7 @@ export function SettingsView({
   user,
   chatgpt,
   workspace,
+  workspaceBots,
   security,
   hermes,
   teamConnections,
@@ -56,6 +58,7 @@ export function SettingsView({
   chatgpt: ChatGPTConnectionView | null;
   /** Null when workspaces are off (the tab is hidden). */
   workspace: WorkspaceView | null;
+  workspaceBots: { id: string; name: string }[];
   security: ReactNode;
   hermes: ReactNode;
   /** Retained own Team account cleanup; only present when the actor has saved accounts. */
@@ -64,7 +67,7 @@ export function SettingsView({
   const router = useRouter();
   const searchParams = useSearchParams();
   const { theme, setTheme } = useTheme();
-  const tabs = TABS.filter((t) => (t !== "Connected accounts" || chatgpt || hermes || teamConnections) && (t !== "Workspace" || workspace));
+  const tabs = TABS.filter((t) => (t !== "Workspace" || workspace));
   const selected = TABS.find(t => tabSlug(t) === searchParams.get("tab")) ?? "General";
   // A tab can disappear (e.g. Connected accounts after disconnecting): fall back instead of showing an empty pane.
   const tab: Tab = tabs.includes(selected) ? selected : "General";
@@ -241,8 +244,8 @@ export function SettingsView({
           </>
         )}
 
-        {tab === "Connected accounts" && <>{chatgpt && <ChatGPTConnection view={chatgpt} />}{hermes}{teamConnections}</>}
-        {tab === "Workspace" && workspace && <WorkspacePanel view={workspace} />}
+        {tab === "Connected accounts" && <><PersonalCodexConnection />{chatgpt && <ChatGPTConnection view={chatgpt} />}{hermes}{teamConnections}</>}
+        {tab === "Workspace" && workspace && <WorkspacePanel view={workspace} bots={workspaceBots} />}
         {tab === "Data controls" && (
           <>
             <div>

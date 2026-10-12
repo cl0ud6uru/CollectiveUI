@@ -38,7 +38,7 @@ export const RuntimeManifestSchema = z.object({ version: z.literal(1), runtimes:
     const accounts = runtimes.filter(r => r.funding === 'chatgpt_subscription' && r.expectedEmail).map(r => r.expectedEmail!.toLowerCase());
     if (new Set(accounts).size !== accounts.length) ctx.addIssue({ code: 'custom', message: 'A subscription account cannot be assigned to multiple callers' });
   });
-export type CodexRuntime = z.infer<typeof RuntimeSchema>;
+export type CodexRuntime = z.infer<typeof RuntimeSchema> & { managed?: true; socketPath?: string };
 const unavailable = () => new HttpError(409, 'Your Codex runtime is unavailable or needs administrator verification. No other account was selected.');
 
 export function assertRuntimeOwner(runtime: CodexRuntime, user: { id: string; upn: string; email: string | null }) {
@@ -49,6 +49,12 @@ export function assertRuntimeOwner(runtime: CodexRuntime, user: { id: string; up
 
 /** Server-installed manifest only. Never accept an endpoint, token or account from a browser or bot author. */
 export async function callerRuntime(ownerId: string, funding: CodexPolicy['funding']): Promise<CodexRuntime> {
+  if (funding === 'chatgpt_subscription' && process.env.PERSONAL_CODEX_SOCKET) {
+    const { personalAccount } = await import('@/personal-codex/accounts');
+    const account = await personalAccount(ownerId);
+    if (!account) throw new HttpError(409, 'Connect your own ChatGPT account in Settings → Connected accounts before using Codex.');
+    return managedRuntimeForAccount(ownerId, account);
+  }
   try {
     const path = process.env.CODEX_RUNTIME_MANIFEST;
     if (!path || !isAbsolute(path)) throw unavailable();
@@ -66,4 +72,13 @@ export async function runtimeToken(runtime: CodexRuntime) {
     if (token.length < 32 || token.length > 8192 || /\s/.test(token)) throw unavailable();
     return token;
   } catch { throw unavailable(); }
+}
+
+/** Pure binding construction after an account row has been read under the caller's owner lock. */
+export async function managedRuntimeForAccount(ownerId: string, account: { credentialBinding: string; email: string; workspaceId: string }): Promise<CodexRuntime> {
+  const { personalSocket } = await import('@/personal-codex/control');
+  return { id: `personal:${ownerId}`, ownerId, funding: 'chatgpt_subscription', endpoint: 'ws://127.0.0.1/runtime', tokenFile: '',
+    isolationId: `personal:${ownerId}`, credentialBinding: account.credentialBinding, cwd: '/home/agent/workspace', isolated: true,
+    nativeMcpDisabled: true, expectedEmail: account.email, expectedWorkspaceId: account.workspaceId,
+    managed: true, socketPath: personalSocket() };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { containerSpec, execSpec, LABEL_RUNTIME, LABEL_SANDBOX, LABEL_SPEC, SANDBOX_ENV, specHash, volumeSpec, type Limits } from "@/sandboxd/spec";
+import { containerSpec, execSpec, LABEL_PROFILE, LABEL_RUNTIME, LABEL_SANDBOX, LABEL_SPEC, SANDBOX_ENV, specHash, volumeSpec, type Limits } from "@/sandboxd/spec";
 import { fsGrep, fsList, fsRead, fsWrite, killRun, TemplateError, validateEnv, workspaceExec } from "@/sandboxd/templates";
 import { redactSecrets } from "@/lib/redact";
 
@@ -64,7 +64,7 @@ describe("sandbox container spec", () => {
     expect(volumeSpec("a".repeat(20))).toEqual({
       Name: `portal-home-${"a".repeat(20)}`,
       Driver: "local",
-      Labels: { [LABEL_SANDBOX]: "a".repeat(20), "ai-portal.kind": "workspace", "ai-portal.instance": "default" },
+      Labels: { [LABEL_SANDBOX]: "a".repeat(20), "ai-portal.kind": "workspace", "ai-portal.instance": "default", [LABEL_PROFILE]: "legacy" },
     });
   });
 

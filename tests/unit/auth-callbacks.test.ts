@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const captured = vi.hoisted(() => ({ config: null as NextAuthConfig | null }));
 const mocks = vi.hoisted(() => ({ sync: vi.fn(), save: vi.fn(), groups: vi.fn(), state: vi.fn() }));
 vi.mock("next-auth", () => {
-  return { CredentialsSignin: class extends Error {}, default: (config: NextAuthConfig) => { captured.config = config; return {}; } };
+  return { CredentialsSignin: class extends Error {}, default: (config: NextAuthConfig) => { captured.config = config; return { auth: vi.fn(), signIn: vi.fn(), signOut: vi.fn(), handlers: { GET: vi.fn(), POST: vi.fn() } }; } };
 });
 vi.mock("@/lib/auth/groups", () => ({ syncUserOnSignIn: mocks.sync }));
 vi.mock("@/lib/auth/entra", () => ({ fetchEntraGroupsViaGraph: mocks.groups, saveEntraTokens: mocks.save }));

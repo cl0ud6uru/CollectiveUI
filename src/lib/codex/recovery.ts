@@ -33,7 +33,7 @@ export async function stopCodexRun(runId: string): Promise<boolean> {
       await client.request('turn/interrupt', { threadId: row.threadId, turnId: row.turnId ?? '' }, 8000).catch(() => {});
       const state = threadRead.parse(await client.request('thread/read', { threadId: row.threadId, includeTurns: true }));
       const turn = row.turnId ? state.thread.turns.find(t => t.id === row.turnId) : state.thread.turns.at(-1);
-      confirmed = !!turn && ['completed', 'failed', 'interrupted'].includes(turn.status);
+      confirmed = !!turn && turn.id !== row.baselineTurnId && ['completed', 'failed', 'interrupted'].includes(turn.status);
     }
   } catch { confirmed = false; }
   finally { client?.close(); }

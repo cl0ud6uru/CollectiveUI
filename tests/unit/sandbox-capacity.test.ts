@@ -1,9 +1,10 @@
 import { PassThrough } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/sandboxd/config";
 import { type ContainerInfo, type Docker } from "@/sandboxd/docker";
 import { Manager } from "@/sandboxd/manager";
-import { LABEL_INSTANCE, LABEL_SANDBOX, containerName, containerSpec } from "@/sandboxd/spec";
+import { WORKSPACE_PROFILES } from "@/sandboxd/profiles";
+import { LABEL_INSTANCE, LABEL_PROFILE, LABEL_SANDBOX, containerName, containerSpec, volumeName, volumeSpec } from "@/sandboxd/spec";
 
 const ref = (n: number) => n.toString(16).padStart(20, "0");
 const deferred = () => {
@@ -15,6 +16,7 @@ const deferred = () => {
 function fixture(maxRunning = 1) {
   const config = loadConfig({ SANDBOXD_SECRET: "a".repeat(64), SANDBOXD_RUNTIME: "runc", SANDBOXD_MAX_RUNNING: String(maxRunning) });
   const containers = new Map<string, ContainerInfo>();
+  const volumes = new Map<string, { Name: string; Labels: Record<string, string> | null; content?: string }>();
   const stops: string[] = [];
   let peak = 0;
   let createGate: ReturnType<typeof deferred> | undefined;
@@ -28,7 +30,7 @@ function fixture(maxRunning = 1) {
   const docker = {
     version: async () => ({ Version: "25", ApiVersion: "1.44", MinAPIVersion: "1.24" }),
     info: async () => ({ MemoryLimit: true, PidsLimit: true, CpuCfsQuota: true, SwapLimit: true, CgroupDriver: "systemd", NCPU: 8, Runtimes: {} }),
-    imageInspect: async () => ({ Id: "image" }),
+    imageInspect: async (image: string) => ({ Id: image }),
     containerList: async (labels: Record<string, string>, all = true) => [...containers.entries()]
       .filter(([, c]) => (all || c.State.Running) && Object.entries(labels).every(([k, v]) => c.Config.Labels[k] === v))
       .map(([name, c]) => ({ Id: c.Id, Names: [name], State: c.State.Running ? "running" : "exited", Labels: c.Config.Labels, Created: 0 })),
@@ -36,7 +38,10 @@ function fixture(maxRunning = 1) {
       if (fail === "inspect" && find(id)) { fail = undefined; throw new Error("inspect failed"); }
       return find(id);
     },
-    volumeCreate: async () => { if (fail === "volume") { fail = undefined; throw new Error("volume failed"); } },
+    volumeCreate: async (spec: ReturnType<typeof volumeSpec>) => {
+      if (fail === "volume") { fail = undefined; throw new Error("volume failed"); }
+      if (!volumes.has(spec.Name)) volumes.set(spec.Name, { Name: spec.Name, Labels: spec.Labels });
+    },
     containerCreate: async (name: string, spec: ReturnType<typeof containerSpec>) => {
       await createGate?.promise;
       if (fail === "create") { fail = undefined; throw new Error("create failed"); }
@@ -58,7 +63,9 @@ function fixture(maxRunning = 1) {
       find(id)!.State.Running = false; stops.push(id);
     },
     containerRemove: async (id: string) => { await removeGate?.promise; containers.delete(id); },
-    volumeInspect: async () => null,
+    volumeInspect: async (name: string) => volumes.get(name) ?? null,
+    volumeList: async (labels: Record<string, string>) => [...volumes.values()].filter(v => Object.entries(labels).every(([k, val]) => v.Labels?.[k] === val)),
+    volumeRemove: async (name: string) => { volumes.delete(name); },
     execCreate: async (_id: string, spec: { Cmd: string[] }) => spec.Cmd[0] === "/opt/portal/run-agent" ? "command" : "helper",
     execAttach: async (_id: string, onData: (kind: number, data: Buffer) => void) => {
       if (_id === "command") onData(2, Buffer.from("\x1eportal-run-started\n"));
@@ -69,10 +76,14 @@ function fixture(maxRunning = 1) {
   };
   const manager = new Manager(docker as unknown as Docker, config);
   const seed = (n: number, active = true, instance = config.instance) => {
-    const spec = containerSpec({ ref: ref(n), imageId: "image", runtime: "runc", limits: config.limits, instance });
+    const spec = containerSpec({ ref: ref(n), imageId: config.image, runtime: "runc", limits: config.limits, instance });
     containers.set(containerName(ref(n)), { Id: containerName(ref(n)), Created: "", State: { Running: active, Status: active ? "running" : "exited", StartedAt: "", OOMKilled: false }, Config: { Labels: spec.Labels }, HostConfig: { Runtime: "runc" } });
+    if (instance === config.instance) {
+      const volume = volumeSpec(ref(n), instance, "workspace", spec.Labels[LABEL_PROFILE]);
+      volumes.set(volume.Name, { Name: volume.Name, Labels: volume.Labels });
+    }
   };
-  return { manager, containers, seed, stops, running, peak: () => peak,
+  return { manager, docker: docker as unknown as Docker, config, containers, volumes, seed, stops, running, peak: () => peak,
     fail: (kind: typeof fail) => { fail = kind; },
     gate: (kind: "create" | "start" | "helper" | "remove" | "command") => {
       const gate = deferred();
@@ -88,6 +99,14 @@ function fixture(maxRunning = 1) {
 
 // Resolve enough queued Docker calls to expose the old check-before-start race, without wall-clock sleeps.
 const flush = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
+
+const TEMPLATE_PROFILE_TEST_IMAGE = `sha256:${"a".repeat(64)}`;
+beforeEach(() => {
+  for (const profile of Object.values(WORKSPACE_PROFILES)) profile.imageRef = TEMPLATE_PROFILE_TEST_IMAGE;
+});
+afterEach(() => {
+  for (const profile of Object.values(WORKSPACE_PROFILES)) profile.imageRef = null;
+});
 
 describe("sandbox admission capacity (fixture Docker only)", () => {
   it("rejects fractional capacity so admission always has an integer ceiling", () => {
@@ -124,6 +143,40 @@ describe("sandbox admission capacity (fixture Docker only)", () => {
     const f = fixture(); await f.manager.init();
     await Promise.all(Array.from({ length: 10 }, () => f.manager.ensure(ref(1), "any")));
     expect(f.containers.size).toBe(1); expect(f.peak()).toBe(1); expect(f.stops).toEqual([]);
+  });
+
+  it("pins template profiles to an isolated durable volume and keeps the pin after daemon restart", async () => {
+    const f = fixture();
+    await f.manager.init();
+    await f.manager.ensure(ref(10), "any", undefined, false, "knowledge-work-v1");
+    const volume = f.volumes.get(volumeName(ref(10)))!;
+    volume.content = "saved project";
+    expect(volume.Labels?.[LABEL_PROFILE]).toBe("knowledge-work-v1");
+
+    const restarted = new Manager(f.docker, f.config);
+    await restarted.init();
+    await restarted.ensure(ref(10), "any", undefined, false, "knowledge-work-v1");
+    expect(f.volumes.get(volumeName(ref(10)))?.content).toBe("saved project");
+    await expect(restarted.ensure(ref(10), "any")).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("gives two template profile refs different named volumes and refuses unknown profiles", async () => {
+    const f = fixture(); await f.manager.init();
+    await f.manager.ensure(ref(11), "any", undefined, false, "knowledge-work-v1");
+    await f.manager.ensure(ref(12), "any", undefined, false, "dotnet-linux-v1");
+    expect(volumeName(ref(11))).not.toBe(volumeName(ref(12)));
+    expect(f.volumes.get(volumeName(ref(11)))?.Labels?.[LABEL_PROFILE]).toBe("knowledge-work-v1");
+    expect(f.volumes.get(volumeName(ref(12)))?.Labels?.[LABEL_PROFILE]).toBe("dotnet-linux-v1");
+    await expect(f.manager.ensure(ref(13), "any", undefined, false, "host-root")).rejects.toMatchObject({ code: "bad_request" });
+    expect(f.containers.has(containerName(ref(13)))).toBe(false);
+  });
+
+  it("does not admit a template profile until an immutable image ID is recorded", async () => {
+    WORKSPACE_PROFILES["knowledge-work-v1"].imageRef = null;
+    const f = fixture(); await f.manager.init();
+    await expect(f.manager.ensure(ref(14), "any", undefined, false, "knowledge-work-v1")).rejects.toMatchObject({ code: "image_missing" });
+    expect(f.volumes.has(volumeName(ref(14)))).toBe(false);
+    expect(f.containers.has(containerName(ref(14)))).toBe(false);
   });
 
   for (const kind of ["volume", "create", "inspect", "start", "warning"] as const) it(`releases admission after ${kind} failure`, async () => {

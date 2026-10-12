@@ -14,6 +14,6 @@ export function CodexHarnessSettings({ value, onChange, status }: { value: Codex
     <Field label="Reasoning effort"><Select aria-label="Reasoning effort" value={value.effort} onChange={e => onChange({ ...value, effort: e.target.value as CodexPolicy['effort'] })}>
       {(["low", "medium", "high", "xhigh"] as const).map(e => <option key={e} value={e}>{e}</option>)}
     </Select></Field>
-    <p className="text-xs text-muted">Direct text chats only. Native tools, approvals, files and background work are unavailable. Standard speed. Subscription eligibility requires separate verification.</p>
+    <p className="text-xs text-muted">Personal subscription runtimes execute commands and edit files in your private workspace, with native history retained across turns. Connect once in Settings → Connected accounts. Standard speed. Attachments, background work and permission expansion are unavailable. Legacy API runtime assignments remain text-only.</p>
   </div>);
 }

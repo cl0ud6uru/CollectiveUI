@@ -68,6 +68,11 @@ const str = (v: unknown, what: string): string => {
   return v;
 };
 const optStr = (v: unknown, what: string) => (v === undefined ? undefined : str(v, what));
+const profileKey = (v: unknown) => {
+  const value = optStr(v, "runtimeProfileKey");
+  if (value !== undefined && !/^[a-z0-9][a-z0-9._-]{0,79}$/.test(value)) throw new BadRequest("Invalid runtime profile key");
+  return value;
+};
 const int = (v: unknown, what: string): number => {
   if (typeof v !== "number" || !Number.isInteger(v)) throw new BadRequest(`${what} must be an integer`);
   return v;
@@ -110,7 +115,7 @@ export function createServer(manager: Manager, config: Config, log: Log): http.S
       return sendJson(res, 200, { destroyed: true });
     }
     if (method === "POST" && sub === "/start") {
-      await manager.ensure(ref, isolationOf(json.isolation));
+      await manager.ensure(ref, isolationOf(json.isolation), undefined, false, profileKey(json.runtimeProfileKey));
       return sendJson(res, 200, await manager.state(ref));
     }
     if (method === "POST" && sub === "/stop") return sendJson(res, 200, await manager.stop(ref));
@@ -123,12 +128,13 @@ export function createServer(manager: Manager, config: Config, log: Log): http.S
     if (method === "POST" && sub === "/files/read") {
       const r: ReadRequest = {
         isolation: isolationOf(json.isolation),
+        runtimeProfileKey: profileKey(json.runtimeProfileKey),
         path: str(json.path, "path"),
         maxBytes: int(json.maxBytes, "maxBytes"),
         startLine: optInt(json.startLine, "startLine"),
         endLine: optInt(json.endLine, "endLine"),
       };
-      const { header, payload } = await manager.fsCall(ref, r.isolation, fsRead(r), { maxBytes: r.maxBytes + 4096 });
+      const { header, payload } = await manager.fsCall(ref, r.isolation, fsRead(r), { maxBytes: r.maxBytes + 4096, runtimeProfileKey: r.runtimeProfileKey });
       res.writeHead(200, {
         "content-type": "application/octet-stream",
         "cache-control": "no-store",
@@ -138,33 +144,34 @@ export function createServer(manager: Manager, config: Config, log: Log): http.S
       return res.end(payload);
     }
     if (method === "POST" && sub === "/files/write") {
-      const w: WriteRequest = { isolation: isolationOf(json.isolation), path: str(json.path, "path"), contentB64: str(json.contentB64, "contentB64") };
+      const w: WriteRequest = { isolation: isolationOf(json.isolation), runtimeProfileKey: profileKey(json.runtimeProfileKey), path: str(json.path, "path"), contentB64: str(json.contentB64, "contentB64") };
       const content = Buffer.from(w.contentB64, "base64");
       if (content.length > MAX_FILE_WRITE) throw new SandboxdError("too_large", "The file is too large");
-      const { header } = await manager.fsCall(ref, w.isolation, fsWrite({ path: w.path, maxBytes: MAX_FILE_WRITE }), { stdin: content });
+      const { header } = await manager.fsCall(ref, w.isolation, fsWrite({ path: w.path, maxBytes: MAX_FILE_WRITE }), { stdin: content, runtimeProfileKey: w.runtimeProfileKey });
       return sendJson(res, 200, { bytes: header.bytes, created: header.created });
     }
     if (method === "POST" && sub === "/list") {
-      const l: ListRequest = { isolation: isolationOf(json.isolation), path: optStr(json.path, "path"), depth: int(json.depth, "depth"), maxEntries: int(json.maxEntries, "maxEntries") };
-      const { header } = await manager.fsCall(ref, l.isolation, fsList(l));
+      const l: ListRequest = { isolation: isolationOf(json.isolation), runtimeProfileKey: profileKey(json.runtimeProfileKey), path: optStr(json.path, "path"), depth: int(json.depth, "depth"), maxEntries: int(json.maxEntries, "maxEntries") };
+      const { header } = await manager.fsCall(ref, l.isolation, fsList(l), { runtimeProfileKey: l.runtimeProfileKey });
       return sendJson(res, 200, { entries: header.entries, truncated: header.truncated });
     }
     if (method === "POST" && sub === "/grep") {
       const g: GrepRequest = {
         isolation: isolationOf(json.isolation),
+        runtimeProfileKey: profileKey(json.runtimeProfileKey),
         pattern: str(json.pattern, "pattern"),
         path: optStr(json.path, "path"),
         glob: optStr(json.glob, "glob"),
         ignoreCase: json.ignoreCase === true,
         maxMatches: int(json.maxMatches, "maxMatches"),
       };
-      const { header } = await manager.fsCall(ref, g.isolation, fsGrep(g), { timeoutMs: 60_000 });
+      const { header } = await manager.fsCall(ref, g.isolation, fsGrep(g), { timeoutMs: 60_000, runtimeProfileKey: g.runtimeProfileKey });
       return sendJson(res, 200, { matches: header.matches, truncated: header.truncated });
     }
     if (method === "POST" && sub === "/usage") {
       const state = await manager.state(ref);
       if (state.state !== "running") return sendJson(res, 200, { bytes: null });
-      const { header } = await manager.fsCall(ref, isolationOf(json.isolation), fsUsage());
+      const { header } = await manager.fsCall(ref, isolationOf(json.isolation), fsUsage(), { runtimeProfileKey: profileKey(json.runtimeProfileKey) });
       return sendJson(res, 200, { bytes: header.bytes });
     }
     return sendJson(res, 404, { error: "not_found", message: "No such endpoint" });
@@ -175,6 +182,7 @@ export function createServer(manager: Manager, config: Config, log: Log): http.S
     if (env !== undefined && (typeof env !== "object" || env === null || Array.isArray(env))) throw new BadRequest("env must be an object");
     const r: ExecRequest = {
       isolation: isolationOf(json.isolation),
+      runtimeProfileKey: profileKey(json.runtimeProfileKey),
       command: str(json.command, "command"),
       cwd: optStr(json.cwd, "cwd"),
       env: env as Record<string, string> | undefined,
