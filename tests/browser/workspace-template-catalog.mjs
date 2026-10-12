@@ -14,10 +14,10 @@ const dir = await mkdtemp(path.join(tmpdir(), "workspace-template-catalog-browse
 let browser, server;
 let templates = [];
 const profiles = [
-  { key: "knowledge-work-v1", label: "Knowledge Work", seedBundleKeys: ["knowledge-work"], capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false } },
-  { key: "dotnet-linux-v1", label: ".NET Linux", seedBundleKeys: ["dotnet-linux-starter"], capabilities: { shell: true, officeHeadless: false, dotnet: true, agentBrowserView: false } },
+  { key: "knowledge-work-v1", label: "Knowledge Work", templateSlug: "knowledge-work", templateName: "Knowledge Work", description: "Prebuilt Office workspace for writing, spreadsheets, and presentations.", seedBundleKey: "knowledge-work-v1", seedBundleKeys: ["knowledge-work-v1"], capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false } },
+  { key: "dotnet-linux-v1", label: ".NET Linux", templateSlug: "dotnet-linux", templateName: ".NET Linux", description: "Offline Linux .NET console starter workspace.", seedBundleKey: "dotnet-linux-v1", seedBundleKeys: ["dotnet-linux-v1"], capabilities: { shell: true, officeHeadless: false, dotnet: true, agentBrowserView: false } },
 ];
-const recipe = { schemaVersion: 1, runtimeProfileKey: "knowledge-work-v1", seedBundleKey: "knowledge-work", networkPolicy: "none", capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false } };
+const recipe = { schemaVersion: 1, runtimeProfileKey: "knowledge-work-v1", seedBundleKey: "knowledge-work-v1", networkPolicy: "none", capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false } };
 const calls = [];
 
 try {
@@ -87,9 +87,12 @@ try {
     await expect(page.getByRole("heading", { name: "Workspace templates", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Knowledge Work", exact: true })).toBeVisible();
     await expect(page.getByText(/does not share files or credentials, install an image, or admit a runtime/)).toBeVisible();
-    await expect(page.getByText(/Profile allowlisting does not prove image availability or assignment admission/)).toBeVisible();
-    await expect(page.locator('input[type="hidden"][name="name"]')).toHaveValue("Knowledge Work");
-    await expect(page.locator('input[type="hidden"][name="slug"]')).toHaveValue("knowledge-work");
+    await expect(page.getByText(/Profile allowlisting does not prove image availability or assignment admission/).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: ".NET Linux", exact: true })).toBeVisible();
+    expect(await page.locator('input[type="hidden"][name="name"]').evaluateAll(nodes => nodes.map(node => node.value))).toEqual(["Knowledge Work", ".NET Linux"]);
+    expect(await page.locator('input[type="hidden"][name="slug"]').evaluateAll(nodes => nodes.map(node => node.value))).toEqual(["knowledge-work", "dotnet-linux"]);
+    expect(await page.locator('input[type="hidden"][name="runtimeProfileKey"]').evaluateAll(nodes => nodes.map(node => node.value))).toEqual(["knowledge-work-v1", "dotnet-linux-v1"]);
+    expect(await page.locator('input[type="hidden"][name="seedBundleKey"]').evaluateAll(nodes => nodes.map(node => node.value))).toEqual(["knowledge-work-v1", "dotnet-linux-v1"]);
     await expect(page.getByRole("checkbox", { name: "Agent browser view (not available)" })).toBeDisabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }

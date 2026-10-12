@@ -18,6 +18,7 @@ import {
 } from "@/lib/workspaces/catalog";
 import {
   canonicalWorkspaceRecipe,
+  listWorkspaceCatalogProfileOptions,
   parseWorkspaceRecipe,
   type WorkspaceTemplateDraftInput,
 } from "@/lib/workspaces/catalog-policy";
@@ -26,16 +27,20 @@ import type { WorkspaceRecipe } from "@/lib/workspaces/contracts";
 const knowledgeWork: WorkspaceRecipe = {
   schemaVersion: 1,
   runtimeProfileKey: "knowledge-work-v1",
-  seedBundleKey: "knowledge-work",
+  seedBundleKey: "knowledge-work-v1",
   networkPolicy: "none",
   capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false },
 };
 const dotnet: WorkspaceRecipe = {
   schemaVersion: 1,
   runtimeProfileKey: "dotnet-linux-v1",
-  seedBundleKey: "dotnet-linux-starter",
+  seedBundleKey: "dotnet-linux-v1",
   networkPolicy: "none",
   capabilities: { shell: true, officeHeadless: false, dotnet: true, agentBrowserView: false },
+};
+const knowledgeWorkRevision: WorkspaceRecipe = {
+  ...knowledgeWork,
+  capabilities: { ...knowledgeWork.capabilities, shell: false },
 };
 const admin = { isAdmin: true, user: { id: "catalog-admin" } } as unknown as Principal;
 const ordinary = { isAdmin: false, user: { id: "catalog-user" } } as unknown as Principal;
@@ -82,6 +87,11 @@ describe("workspace template catalog", () => {
     expect(parseWorkspaceRecipe(knowledgeWork)).toEqual(knowledgeWork);
     expect(parseWorkspaceRecipe(dotnet)).toEqual(dotnet);
     expect(() => parseWorkspaceRecipe({ ...knowledgeWork, runtimeProfileKey: "../../etc/passwd" })).toThrow();
+    expect(() => parseWorkspaceRecipe({ ...knowledgeWork, runtimeProfileKey: "knowledge-work" })).toThrow();
+    expect(() => parseWorkspaceRecipe({ ...dotnet, runtimeProfileKey: "dotnet-linux" })).toThrow();
+    expect(() => parseWorkspaceRecipe({ ...knowledgeWork, seedBundleKey: "knowledge-work" })).toThrow(/Starter bundle/);
+    expect(() => parseWorkspaceRecipe({ ...dotnet, seedBundleKey: "dotnet-linux-starter" })).toThrow(/Starter bundle/);
+    expect(() => parseWorkspaceRecipe({ ...knowledgeWork, seedBundleKey: null })).toThrow();
     expect(() => parseWorkspaceRecipe({ ...knowledgeWork, seedBundleKey: "/home/agent/workspace" })).toThrow();
     expect(() => parseWorkspaceRecipe({ ...knowledgeWork, credentials: { token: "secret" } })).toThrow();
     expect(() => parseWorkspaceRecipe({ ...knowledgeWork, liveFiles: ["report.docx"] })).toThrow();
@@ -90,11 +100,38 @@ describe("workspace template catalog", () => {
     expect(() => parseWorkspaceRecipe({ ...knowledgeWork, capabilities: { ...knowledgeWork.capabilities, agentBrowserView: true } })).toThrow(/not allowlisted/);
   });
 
+  it("keeps the starter slug, display name, profile, and seed mapping canonical", async () => {
+    expect(listWorkspaceCatalogProfileOptions().map(({ key, templateSlug, templateName, seedBundleKey }) => ({ key, templateSlug, templateName, seedBundleKey }))).toEqual([
+      { key: "knowledge-work-v1", templateSlug: "knowledge-work", templateName: "Knowledge Work", seedBundleKey: "knowledge-work-v1" },
+      { key: "dotnet-linux-v1", templateSlug: "dotnet-linux", templateName: ".NET Linux", seedBundleKey: "dotnet-linux-v1" },
+    ]);
+    await expect(createWorkspaceTemplateDraft(admin, {
+      slug: "knowledge-work",
+      name: "Office Work",
+      description: "Wrong display name.",
+      recipe: knowledgeWork,
+    }, database)).rejects.toMatchObject({ status: 400 });
+    await expect(createWorkspaceTemplateDraft(admin, {
+      slug: "dotnet-linux",
+      name: ".NET Linux",
+      description: "Wrong seed.",
+      recipe: { ...dotnet, seedBundleKey: "dotnet-linux-starter" },
+    }, database)).rejects.toMatchObject({ status: 400 });
+    const validDotnet = await createWorkspaceTemplateDraft(admin, {
+      slug: "dotnet-linux",
+      name: ".NET Linux",
+      description: "Offline Linux .NET console starter workspace.",
+      recipe: dotnet,
+    }, database);
+    expect(validDotnet.version).toBe(1);
+    expect((await pg.query("SELECT count(*)::int AS count FROM workspace_templates")).rows[0] as Record<string, unknown>).toMatchObject({ count: 1 });
+  });
+
   it("hashes canonical recipes and increments versions without changing published content", async () => {
     const reversed = {
       capabilities: { agentBrowserView: false, dotnet: false, officeHeadless: true, shell: true },
       networkPolicy: "none",
-      seedBundleKey: "knowledge-work",
+      seedBundleKey: "knowledge-work-v1",
       runtimeProfileKey: "knowledge-work-v1",
       schemaVersion: 1,
     };
@@ -111,7 +148,7 @@ describe("workspace template catalog", () => {
 
     const published = await publishWorkspaceTemplateVersion(admin, first.versionId, database);
     expect(published.recipeHash).toBe(first.recipeHash);
-    const second = await createWorkspaceTemplateVersion(admin, first.templateId, dotnet, database);
+    const second = await createWorkspaceTemplateVersion(admin, first.templateId, knowledgeWorkRevision, database);
     expect(second.version).toBe(2);
     expect(second.recipeHash).not.toBe(first.recipeHash);
 

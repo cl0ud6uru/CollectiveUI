@@ -13,14 +13,6 @@ import type { WorkspaceRecipe } from "@/lib/workspaces/contracts";
 import type { WorkspaceCatalogProfileOption, WorkspaceRuntimeProfileKey } from "@/lib/workspaces/catalog-policy";
 import type { WorkspaceTemplateAdminItem } from "@/lib/workspaces/catalog";
 
-const KNOWLEDGE_WORK_RECIPE: WorkspaceRecipe = {
-  schemaVersion: 1,
-  runtimeProfileKey: "knowledge-work-v1",
-  seedBundleKey: "knowledge-work",
-  networkPolicy: "none",
-  capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false },
-};
-
 type Capability = keyof WorkspaceRecipe["capabilities"];
 const CAPABILITIES: Array<{ key: Capability; label: string }> = [
   { key: "shell", label: "Shell" },
@@ -28,6 +20,16 @@ const CAPABILITIES: Array<{ key: Capability; label: string }> = [
   { key: "dotnet", label: ".NET" },
   { key: "agentBrowserView", label: "Agent browser view" },
 ];
+
+function recipeForProfile(profile: WorkspaceCatalogProfileOption): WorkspaceRecipe {
+  return {
+    schemaVersion: 1,
+    runtimeProfileKey: profile.key,
+    seedBundleKey: profile.seedBundleKey,
+    networkPolicy: "none",
+    capabilities: { ...profile.capabilities },
+  };
+}
 
 function RecipeFields({
   id,
@@ -58,7 +60,7 @@ function RecipeFields({
               const next = profiles.find((candidate) => candidate.key === event.currentTarget.value);
               if (!next) return;
               setProfileKey(next.key);
-              setSeedBundleKey(next.seedBundleKeys[0] ?? "");
+              setSeedBundleKey(next.seedBundleKey);
             }}
           >
             {profiles.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
@@ -73,7 +75,6 @@ function RecipeFields({
             value={seedBundleKey}
             onChange={(event) => setSeedBundleKey(event.currentTarget.value)}
           >
-            <option value="">None</option>
             {profile.seedBundleKeys.map((key) => <option key={key} value={key}>{key}</option>)}
           </select>
         </div>
@@ -114,7 +115,6 @@ export function WorkspaceTemplateCatalog({
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [failure, setFailure] = useState("");
-  const hasKnowledgeWork = templates.some((template) => template.slug === "knowledge-work");
 
   async function run(action: () => Promise<{ ok: true } | { ok: false; error: string }>, success: string) {
     setPending(true);
@@ -159,35 +159,45 @@ export function WorkspaceTemplateCatalog({
         {failure && <p role="alert" className="text-sm text-danger">{failure}</p>}
       </div>
 
-      <Card className="space-y-4">
-        <div>
-          <h2 className="text-lg font-medium">Knowledge Work</h2>
-          <p className="mt-1 text-sm text-muted">Prebuilt Office template · slug <code>knowledge-work</code>. The name, slug, profile, and recipe are fixed for this starter. Profile allowlisting does not prove image availability or assignment admission.</p>
-        </div>
-        <form className="space-y-4" onSubmit={(event) => submitForm(event, createWorkspaceTemplateDraft, "Knowledge Work draft created.")}>
-          <input type="hidden" name="name" value="Knowledge Work" />
-          <input type="hidden" name="slug" value="knowledge-work" />
-          <input type="hidden" name="runtimeProfileKey" value="knowledge-work-v1" />
-          <input type="hidden" name="seedBundleKey" value="knowledge-work" />
-          <input type="hidden" name="shell" value="on" />
-          <input type="hidden" name="officeHeadless" value="on" />
-          <div className="space-y-1">
-            <label className="block text-sm font-medium" htmlFor="knowledge-work-description">Description</label>
-            <textarea className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" id="knowledge-work-description" name="description" defaultValue="Prebuilt Office workspace for writing, spreadsheets, and presentations." maxLength={500} rows={2} />
-          </div>
-          <p className="text-xs text-muted">Shell and headless Office are enabled. Network access is none; agent browser view and .NET are unavailable.</p>
-          {hasKnowledgeWork
-            ? <p className="text-sm text-muted">Knowledge Work is already in the catalog. Use its version controls below.</p>
-            : <button className="rounded-lg bg-fg px-4 py-2 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={pending}>
-                {pending ? "Saving…" : "Create Knowledge Work draft"}
-              </button>}
-        </form>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {profiles.map((profile) => {
+          const recipe = recipeForProfile(profile);
+          const exists = templates.some((template) => template.slug === profile.templateSlug);
+          const enabledCapabilities = CAPABILITIES.filter(({ key }) => recipe.capabilities[key]).map(({ label }) => label);
+          return (
+            <Card key={profile.key} className="space-y-4">
+              <div>
+                <h2 className="text-lg font-medium">{profile.templateName}</h2>
+                <p className="mt-1 text-sm text-muted">Starter template · slug <code>{profile.templateSlug}</code>. Name, slug, profile, and matching seed are fixed.</p>
+                {profile.templateSlug === "knowledge-work" && <p className="mt-1 text-xs text-muted">Prebuilt Office template.</p>}
+                <p className="mt-1 text-xs text-muted">Profile allowlisting does not prove image availability or assignment admission.</p>
+              </div>
+              <form className="space-y-4" onSubmit={(event) => submitForm(event, createWorkspaceTemplateDraft, `${profile.templateName} draft created.`)}>
+                <input type="hidden" name="name" value={profile.templateName} />
+                <input type="hidden" name="slug" value={profile.templateSlug} />
+                <input type="hidden" name="runtimeProfileKey" value={profile.key} />
+                <input type="hidden" name="seedBundleKey" value={profile.seedBundleKey} />
+                {CAPABILITIES.filter(({ key }) => recipe.capabilities[key]).map(({ key }) => <input key={key} type="hidden" name={key} value="on" />)}
+                <div className="space-y-1">
+                  <label className="block text-sm font-medium" htmlFor={`${profile.templateSlug}-description`}>Description</label>
+                  <textarea className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" id={`${profile.templateSlug}-description`} name="description" defaultValue={profile.description} maxLength={500} rows={2} />
+                </div>
+                <p className="text-xs text-muted">{enabledCapabilities.join(" and ")} · Starter: {profile.seedBundleKey} · network access: none.</p>
+                {exists
+                  ? <p className="text-sm text-muted">{profile.templateName} is already in the catalog. Use its version controls below.</p>
+                  : <button className="rounded-lg bg-fg px-4 py-2 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={pending}>
+                      {pending ? "Saving…" : `Create ${profile.templateName} draft`}
+                    </button>}
+              </form>
+            </Card>
+          );
+        })}
+      </div>
 
       <Card className="space-y-4">
         <div>
           <h2 className="text-lg font-medium">Create another template</h2>
-          <p className="mt-1 text-sm text-muted">Choose a runtime profile from the operator allowlist. Recipe fields reject extra paths, files, credentials, and capabilities.</p>
+          <p className="mt-1 text-sm text-muted">Choose a runtime profile from the operator allowlist. Recipes require that profile’s matching seed bundle and reject extra paths, files, credentials, and capabilities.</p>
         </div>
         <form className="space-y-4" onSubmit={(event) => submitForm(event, createWorkspaceTemplateDraft, "Template draft created.")}>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -205,7 +215,7 @@ export function WorkspaceTemplateCatalog({
             <label className="block text-sm font-medium" htmlFor="custom-template-description">Description</label>
             <textarea className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" id="custom-template-description" name="description" maxLength={500} rows={2} />
           </div>
-          <RecipeFields id="new-custom-template" profiles={profiles} initialRecipe={{ ...KNOWLEDGE_WORK_RECIPE, seedBundleKey: null }} />
+          {profiles[0] && <RecipeFields id="new-custom-template" profiles={profiles} initialRecipe={recipeForProfile(profiles[0])} />}
           <button className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-hover disabled:opacity-60" type="submit" disabled={pending}>{pending ? "Saving…" : "Create template draft"}</button>
         </form>
       </Card>
@@ -216,11 +226,11 @@ export function WorkspaceTemplateCatalog({
           <p className="mt-1 text-sm text-muted">Published versions are immutable. Retiring a version removes it from new selections and keeps existing instances pinned.</p>
         </div>
         {templates.length === 0 ? (
-          <Card><p className="text-sm text-muted">No workspace templates yet. Create the Knowledge Work draft above to begin.</p></Card>
+          <Card><p className="text-sm text-muted">No workspace templates yet. Create one of the starter drafts above to begin.</p></Card>
         ) : (
           <div className="space-y-4">
             {templates.map((template) => {
-              const initialRecipe = template.versions[0]?.recipe ?? KNOWLEDGE_WORK_RECIPE;
+              const initialRecipe = template.versions[0]?.recipe ?? (profiles[0] ? recipeForProfile(profiles[0]) : undefined);
               return (
                 <Card key={template.id} className="space-y-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
@@ -261,7 +271,7 @@ export function WorkspaceTemplateCatalog({
                     <summary className="cursor-pointer text-sm font-medium">Create a new draft version</summary>
                     <form className="mt-3 space-y-4" onSubmit={(event) => submitForm(event, createWorkspaceTemplateVersion, `New draft version for ${template.name} created.`)}>
                       <input type="hidden" name="templateId" value={template.id} />
-                      <RecipeFields id={`version-${template.id}`} profiles={profiles} initialRecipe={initialRecipe} />
+                      {initialRecipe && <RecipeFields id={`version-${template.id}`} profiles={profiles} initialRecipe={initialRecipe} />}
                       <button className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-hover disabled:opacity-60" type="submit" disabled={pending}>{pending ? "Saving…" : "Create draft version"}</button>
                     </form>
                   </details>

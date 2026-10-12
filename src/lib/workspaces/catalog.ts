@@ -8,6 +8,8 @@ import type { WorkspaceRecipe, WorkspaceTemplateSummary } from "@/lib/workspaces
 import { newId } from "@/lib/ids";
 import { HttpError } from "@/lib/http-error";
 import {
+  assertWorkspaceTemplateRecipeForSlug,
+  assertWorkspaceTemplateNameForSlug,
   assertWorkspaceCatalogAdmin,
   canonicalWorkspaceRecipe,
   parseWorkspaceRecipe,
@@ -94,11 +96,13 @@ export async function createWorkspaceTemplateVersion(
 
   return database.transaction(async (tx) => {
     const [template] = await tx
-      .select({ id: workspaceTemplates.id })
+      .select({ id: workspaceTemplates.id, slug: workspaceTemplates.slug, name: workspaceTemplates.name })
       .from(workspaceTemplates)
       .where(eq(workspaceTemplates.id, templateId))
       .for("update");
     if (!template) throw new HttpError(404, "Workspace template not found");
+    assertWorkspaceTemplateNameForSlug(template.slug, template.name);
+    assertWorkspaceTemplateRecipeForSlug(template.slug, recipe);
 
     const [latest] = await tx
       .select({ version: workspaceTemplateVersions.version })
@@ -135,11 +139,12 @@ export async function publishWorkspaceTemplateVersion(
       .limit(1);
     if (!initial) throw new HttpError(404, "Workspace template version not found");
 
-    await tx
-      .select({ id: workspaceTemplates.id })
+    const [template] = await tx
+      .select({ slug: workspaceTemplates.slug, name: workspaceTemplates.name })
       .from(workspaceTemplates)
       .where(eq(workspaceTemplates.id, initial.templateId))
       .for("update");
+    if (!template) throw new HttpError(404, "Workspace template not found");
 
     const [candidate] = await tx
       .select({
@@ -153,7 +158,8 @@ export async function publishWorkspaceTemplateVersion(
       .limit(1);
     if (!candidate) throw new HttpError(404, "Workspace template version not found");
     if (candidate.publishedAt || candidate.retiredAt) throw new HttpError(409, "Only an active draft can be published");
-    checkedStoredRecipe(candidate.recipe, candidate.recipeHash);
+    assertWorkspaceTemplateNameForSlug(template.slug, template.name);
+    assertWorkspaceTemplateRecipeForSlug(template.slug, checkedStoredRecipe(candidate.recipe, candidate.recipeHash));
 
     await tx
       .update(workspaceTemplateVersions)
@@ -238,13 +244,19 @@ export async function listAdminWorkspaceTemplates(
     })
     .from(workspaceTemplateVersions)
     .orderBy(asc(workspaceTemplateVersions.templateId), desc(workspaceTemplateVersions.version));
+  const templateById = new Map(templates.map((template) => [template.id, template]));
   const versionsByTemplate = new Map<string, WorkspaceTemplateAdminVersion[]>();
   for (const row of versions) {
+    const recipe = checkedStoredRecipe(row.recipe, row.recipeHash);
+    const template = templateById.get(row.templateId);
+    if (!template) throw new HttpError(404, "Workspace template not found");
+    assertWorkspaceTemplateNameForSlug(template.slug, template.name);
+    assertWorkspaceTemplateRecipeForSlug(template.slug, recipe);
     const list = versionsByTemplate.get(row.templateId) ?? [];
     list.push({
       id: row.id,
       version: row.version,
-      recipe: checkedStoredRecipe(row.recipe, row.recipeHash),
+      recipe,
       recipeHash: row.recipeHash,
       publishedAt: row.publishedAt?.toISOString() ?? null,
       retiredAt: row.retiredAt?.toISOString() ?? null,
@@ -284,6 +296,8 @@ export async function listVisibleWorkspaceTemplates(query: DbOrTx = db): Promise
   const seen = new Set<string>();
   for (const row of rows) {
     const recipe = checkedStoredRecipe(row.recipe, row.recipeHash);
+    assertWorkspaceTemplateNameForSlug(row.slug, row.name);
+    assertWorkspaceTemplateRecipeForSlug(row.slug, recipe);
     if (seen.has(row.id)) continue;
     seen.add(row.id);
     summaries.push({
