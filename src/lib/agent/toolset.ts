@@ -87,7 +87,9 @@ async function workspaceFor(ctx: AgentCtx, settings: SandboxSettings, warnings: 
     client,
     ref: async () => resolved.sandboxRef,
     runtimeProfileKey: resolved.runtimeProfileKey === "legacy" ? undefined : resolved.runtimeProfileKey,
-    instanceId: resolved.instanceId,
+    // Only template artifacts need an instance-pinned download. Legacy artifacts keep the historical
+    // selector-free behavior so their Open action still opens the legacy workspace browser.
+    instanceId: resolved.templateVersionId ? resolved.instanceId : undefined,
     isolation: requiredIsolation(settings),
     onUse: () => {
       if (Date.now() - lastTouch < 60_000) return;
