@@ -36,7 +36,7 @@ import { acceptMcpDrift, refreshMcpServer } from "@/lib/mcp/servers";
 import { checkMcpUrl } from "@/lib/mcp/url";
 import { parseHeadersInput } from "@/lib/secret-input";
 import { requireAdmin } from "@/lib/session";
-import { deleteAllChatGPTConnections, deleteChatGPTConnection } from "@/lib/llm/chatgpt/store";
+import { deleteAllChatGPTConnections, removeChatGPTConnection } from "@/lib/llm/chatgpt/store";
 import { sandboxd } from "@/lib/sandbox/client";
 import { onUserDisabledLocked, onUserEnabledLocked } from "@/lib/sandbox/lifecycle";
 import { withWorkspaceUserLock } from "@/lib/workspaces/locks";
@@ -245,15 +245,23 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
   assertAuthOrigin(await headers());
   const targetUserId = z.string().min(1).max(100).parse(userId);
   const targetDisabled = z.boolean().parse(disabled);
-  await withWorkspaceUserLock(targetUserId, async (lockedDb) => {
-    await changeUserAccess(p.user, targetUserId, { disabled: targetDisabled });
-    // A disabled account's own ChatGPT sign-in is revoked, and the lock makes the state change atomic with respect
-    // to an in-flight workspace reservation/start. The lifecycle handler then sees every committed instance.
-    if (targetDisabled) {
-      await deleteChatGPTConnection(targetUserId);
-      await onUserDisabledLocked(targetUserId, p.user.id, lockedDb);
-    } else await onUserEnabledLocked(targetUserId, lockedDb);
+  const result = await withWorkspaceUserLock(targetUserId, async (lockedDb) => {
+    const teamBotIds = await changeUserAccess(p.user, targetUserId, { disabled: targetDisabled }, {
+      database: lockedDb,
+      deferTeamReconciliation: true,
+    });
+    // Keep account changes and credential removal on the owner's lock connection. Remote token revocation and
+    // team runtime reconciliation happen after the owner lock releases, so neither can wait on its own pool slot.
+    const revokeChatGPT = targetDisabled ? await removeChatGPTConnection(targetUserId, lockedDb) : null;
+    if (targetDisabled) await onUserDisabledLocked(targetUserId, p.user.id, lockedDb);
+    else await onUserEnabledLocked(targetUserId, lockedDb);
+    return { teamBotIds, revokeChatGPT };
   });
+  if (result.revokeChatGPT) await result.revokeChatGPT();
+  if (result.teamBotIds.length) {
+    const { reconcileTeamAccess } = await import("@/lib/hermes-team/revocation");
+    for (const botId of result.teamBotIds) await reconcileTeamAccess(botId);
+  }
   await audit(p.user.id, targetDisabled ? "user.disable" : "user.enable", targetUserId);
   done();
 }

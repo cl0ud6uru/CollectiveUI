@@ -3,6 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
 import type { Principal } from '@/lib/auth/groups';
+vi.mock('server-only', () => ({}));
 const fixture = vi.hoisted(() => ({ client: null as PGlite|null, principal: null as Principal|null,
   proof: vi.fn(), enqueue: vi.fn(), statements: [] as string[], authorize: undefined as undefined|(() => Promise<void>) }));
 vi.mock('@/db', async () => {

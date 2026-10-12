@@ -12,7 +12,7 @@ import { sandboxd } from "@/lib/sandbox/client";
 import { isHardDenied, requiredIsolation, userMayUseWorkspace } from "@/lib/sandbox/policy";
 import { PortalWorkspace } from "@/lib/sandbox/session";
 import { touchWorkspaceInstance } from "@/lib/sandbox/store";
-import { resolveWorkspace } from "@/lib/workspaces/instances";
+import { resolveWorkspace } from "@/lib/workspaces/resolve";
 import { getSetting, type SandboxSettings } from "@/lib/settings";
 import { slugify } from "@/lib/utils";
 import { activeServiceGrants } from "@/lib/bots/service";

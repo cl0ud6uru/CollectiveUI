@@ -28,7 +28,7 @@ vi.mock("@/lib/sandbox/client", async (importOriginal) => ({
 
 const getOrCreateRef = vi.fn(async () => "abcdefghij0123456789");
 vi.mock("@/lib/sandbox/store", () => ({ getOrCreateRef: () => getOrCreateRef(), touchSandbox: async () => {}, touchWorkspaceInstance: async () => {} }));
-vi.mock("@/lib/workspaces/instances", () => ({ resolveWorkspace: (input: unknown) => resolveWorkspaceMock(input) }));
+vi.mock("@/lib/workspaces/resolve", () => ({ resolveWorkspace: (input: unknown) => resolveWorkspaceMock(input) }));
 
 import { buildToolset } from "@/lib/agent/toolset";
 import { PortalWorkspace } from "@/lib/sandbox/session";

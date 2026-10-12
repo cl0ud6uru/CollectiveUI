@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+vi.mock("server-only", () => ({}));
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ToolPartView } from "@/components/chat/tool-part";
+import { WorkspaceFileContext } from "@/components/chat/workspace-context";
 import { HttpError } from "@/lib/authz";
 import { SandboxError } from "@/lib/sandbox/client";
 import { artifactLink, artifactPath, MAX_ARTIFACT_BYTES, workspaceArtifact } from "@/lib/chat/workspace-artifacts";
@@ -90,6 +95,8 @@ describe("artifact links", () => {
     expect(workspaceArtifact("workspace_read", {ok:true,path:"art.svg",downloadUrl:"https://evil.test"})?.downloadUrl).toBe("/api/workspace/files?path=art.svg");
     expect(workspaceArtifact("workspace_read", {ok:true,path:"art.svg",instanceId:"instance_1234567",downloadUrl:"https://evil.test"})?.downloadUrl)
       .toBe("/api/workspace/files?path=art.svg&instanceId=instance_1234567");
+    expect(workspaceArtifact("workspace_read", {ok:true,path:"art.svg",instanceId:"instance_1234567"})?.instanceId).toBe("instance_1234567");
+    expect(workspaceArtifact("workspace_read", {ok:true,path:"art.svg",instanceId:"bad id"})).toBeNull();
     expect(artifactLink("art.svg", "bad id")).toEqual({downloadUrl:"/api/workspace/files?path=art.svg"});
     expect(workspaceArtifact("workspace_bash", {ok:true,path:"art.svg"})).toBeNull();
     expect(workspaceArtifact("workspace_write", {ok:false,path:"art.svg"})).toBeNull();
@@ -97,5 +104,30 @@ describe("artifact links", () => {
     expect(artifactPath("../a")).toBeNull();
     expect(isMobileApiPath("/api/workspace/files")).toBe(true);
     expect(isMobileApiPath("/api/workspace/files/foreign")).toBe(false);
+  });
+
+  it("keeps legacy Open behavior but suppresses Open for a template result with the same path", () => {
+    const opener = vi.fn();
+    const render = (instanceId?: string) => renderToStaticMarkup(createElement(
+      WorkspaceFileContext.Provider,
+      { value: opener },
+      createElement(ToolPartView, {
+        part: {
+          type: "tool-workspace_read",
+          state: "output-available",
+          input: { path: "same.txt" },
+          output: { ok: true, path: "same.txt", ...(instanceId ? { instanceId } : {}) },
+        } as never,
+        onApprove: vi.fn(),
+        onDeny: vi.fn(),
+      }),
+    ));
+
+    const legacyMarkup = render();
+    const templateMarkup = render("instance_1234567");
+    expect(legacyMarkup).toContain("Open same.txt");
+    expect(templateMarkup).not.toContain("Open same.txt");
+    expect(templateMarkup).toContain("Download same.txt");
+    expect(opener).not.toHaveBeenCalled();
   });
 });

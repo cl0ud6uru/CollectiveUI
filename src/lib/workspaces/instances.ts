@@ -8,17 +8,13 @@ import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { getSetting } from "@/lib/settings";
 import { requiredIsolation, userMayUseWorkspace } from "@/lib/sandbox/policy";
 import { SandboxError, sandboxd } from "@/lib/sandbox/client";
-import { ensureLegacyInstance, findSandbox, getOrCreateRef, touchWorkspaceInstance } from "@/lib/sandbox/store";
+import { touchWorkspaceInstance } from "@/lib/sandbox/store";
 import { newId } from "@/lib/ids";
 import { withWorkspaceUserLock } from "./locks";
-import type { ResolvedWorkspace, WorkspaceInstanceView } from "./contracts";
+import type { WorkspaceInstanceView } from "./contracts";
 import { admitWorkspaceRecipe, WorkspaceRecipePolicyError } from "./instance-policy";
-
-async function assertWorkspaceAccess(principal: Principal) {
-  const settings = await getSetting("sandbox");
-  if (!userMayUseWorkspace(principal, settings)) throw new HttpError(403, "Workspace access is unavailable");
-  return settings;
-}
+import { assertWorkspaceAccess } from "./resolve";
+export { resolveWorkspace } from "./resolve";
 
 async function freshPrincipalForAssignment(tx: Tx, original: Principal): Promise<Principal> {
   const [current] = await tx.select({ disabled: users.disabled, sessionVersion: users.sessionVersion })
@@ -43,52 +39,6 @@ function view(row: { id: string; templateVersionId: string | null; templateName:
   };
 }
 
-function resolved(row: { id: string; ownerUserId: string; templateVersionId: string | null; sandboxRef: string; runtimeProfileKey: string }, botId: string): ResolvedWorkspace {
-  return {
-    instanceId: row.id,
-    ownerUserId: row.ownerUserId,
-    botId,
-    templateVersionId: row.templateVersionId,
-    sandboxRef: row.sandboxRef,
-    runtimeProfileKey: row.runtimeProfileKey,
-    workspaceRoot: "/home/agent/workspace",
-  };
-}
-
-/** Read-only resolution never creates an instance or starts a daemon container. */
-export async function resolveWorkspace(input: {
-  principal: Principal;
-  botId: string;
-  createIfMissing: boolean;
-}): Promise<ResolvedWorkspace | null> {
-  await assertWorkspaceAccess(input.principal);
-  await getUsableBot(input.principal, input.botId);
-  const userId = input.principal.user.id;
-  const [binding] = await db.select({ instanceId: workspaceBotBindings.instanceId })
-    .from(workspaceBotBindings)
-    .where(and(eq(workspaceBotBindings.userId, userId), eq(workspaceBotBindings.botId, input.botId)));
-  if (binding) {
-    const [instance] = await db.select().from(workspaceInstances).where(and(
-      eq(workspaceInstances.id, binding.instanceId),
-      eq(workspaceInstances.ownerUserId, userId),
-    ));
-    if (!instance) throw new HttpError(409, "This bot's private workspace is unavailable. Reassign a template to continue.");
-    if (instance.provisionState === "provisioning") throw new HttpError(409, "This bot's private workspace is still starting. Try again shortly.");
-    return resolved(instance, input.botId);
-  }
-
-  let legacy = await ensureLegacyInstance(userId);
-  if (!legacy && input.createIfMissing) {
-    const ref = await getOrCreateRef(userId);
-    legacy = await ensureLegacyInstance(userId, ref);
-  }
-  if (!legacy) {
-    const sandbox = await findSandbox(userId);
-    if (!sandbox) return null;
-    legacy = await ensureLegacyInstance(userId, sandbox.ref);
-  }
-  return legacy ? resolved(legacy, input.botId) : null;
-}
 
 /** Only this user's safe DTOs leave the server. The ref and runtime profile never enter the response. */
 export async function listOwnInstances(principal: Principal): Promise<WorkspaceInstanceView[]> {
@@ -108,8 +58,9 @@ export async function listOwnInstances(principal: Principal): Promise<WorkspaceI
 }
 
 /**
- * Creates/reuses a private instance for an explicit bot/version selection. A reservation and provisional binding
- * commit before sandboxd creates the volume; failure restores a previous binding and keeps the volume registered.
+ * Creates/reuses a private instance for an explicit bot/version selection. A new reservation commits before
+ * sandboxd creates the volume. The current binding changes only after the new instance is ready, so a process
+ * restart during provisioning leaves the previous workspace usable and the candidate visible to cleanup.
  */
 export async function assignTemplate(input: {
   principal: Principal;
@@ -136,9 +87,6 @@ export async function assignTemplate(input: {
           ))
         : [];
       const currentIsSame = current?.templateVersionId === input.templateVersionId;
-      if (current && current.provisionState === "provisioning" && !currentIsSame) {
-        throw new HttpError(409, "Another workspace version is still starting for this bot.");
-      }
       const [version] = await tx.select({
         id: workspaceTemplateVersions.id,
         recipe: workspaceTemplateVersions.recipe,
@@ -162,8 +110,8 @@ export async function assignTemplate(input: {
         throw new HttpError(409, "This private workspace no longer matches its pinned template recipe.");
       }
 
-      // Only the currently bound same-version instance is reused. A new reservation and its binding commit before
-      // sandboxd creates a volume, so concurrent cleanup always sees authoritative owner/ref registration.
+      // Only the currently bound same-version instance is reused. Keep a different-version binding untouched
+      // until the candidate is ready; the committed, unbound reservation is already visible to cleanup.
       const isExistingBinding = !!(currentIsSame && current);
       const row = isExistingBinding ? current! : (await tx.insert(workspaceInstances).values({
         id: newId(),
@@ -176,15 +124,12 @@ export async function assignTemplate(input: {
         deleteAfter: null,
       }).returning())[0];
       if (isExistingBinding) {
-        await tx.update(workspaceInstances).set({ provisionState: "provisioning", deleteAfter: null })
-          .where(and(eq(workspaceInstances.ownerUserId, userId), eq(workspaceInstances.id, row.id)));
-      }
-      if (!binding || binding.instanceId !== row.id) {
-        await tx.insert(workspaceBotBindings).values({ userId, botId: input.botId, instanceId: row.id })
-          .onConflictDoUpdate({
-            target: [workspaceBotBindings.userId, workspaceBotBindings.botId],
-            set: { instanceId: row.id, updatedAt: new Date() },
-          });
+        // A provisioning state on a bound row can only be left by an older process that crashed after its
+        // reservation committed. Normalize it so it does not keep the bot stuck if this retry also crashes.
+        await tx.update(workspaceInstances).set({
+          ...(current!.provisionState === "provisioning" ? { provisionState: "unavailable" as const } : {}),
+          deleteAfter: null,
+        }).where(and(eq(workspaceInstances.ownerUserId, userId), eq(workspaceInstances.id, row.id)));
       }
       return {
         row,
@@ -201,7 +146,7 @@ export async function assignTemplate(input: {
       startError = err;
     }
 
-    const latestSettings = await getSetting("sandbox");
+    const latestSettings = await getSetting("sandbox", lockedDb);
     const finalized = await lockedDb.transaction(async (tx) => {
       let failure = startError;
       try {
@@ -215,7 +160,7 @@ export async function assignTemplate(input: {
       const [binding] = await tx.select({ instanceId: workspaceBotBindings.instanceId })
         .from(workspaceBotBindings)
         .where(and(eq(workspaceBotBindings.userId, userId), eq(workspaceBotBindings.botId, input.botId)));
-      if (!binding || binding.instanceId !== reservation.row.id) {
+      if ((binding?.instanceId ?? null) !== reservation.previousInstanceId) {
         failure ??= new HttpError(409, "The workspace assignment changed while it was starting.");
       }
 
@@ -224,14 +169,6 @@ export async function assignTemplate(input: {
           eq(workspaceInstances.ownerUserId, userId),
           eq(workspaceInstances.id, reservation.row.id),
         ));
-        if (!reservation.isExistingBinding && binding?.instanceId === reservation.row.id) {
-          if (reservation.previousInstanceId) {
-            await tx.update(workspaceBotBindings).set({ instanceId: reservation.previousInstanceId, updatedAt: new Date() })
-              .where(and(eq(workspaceBotBindings.userId, userId), eq(workspaceBotBindings.botId, input.botId)));
-          } else {
-            await tx.delete(workspaceBotBindings).where(and(eq(workspaceBotBindings.userId, userId), eq(workspaceBotBindings.botId, input.botId)));
-          }
-        }
         const [account] = await tx.select({ disabled: users.disabled }).from(users).where(eq(users.id, userId));
         if (account?.disabled) {
           const deadline = new Date(Date.now() + latestSettings.deleteAfterDays * 86_400_000);
@@ -246,6 +183,11 @@ export async function assignTemplate(input: {
         eq(workspaceInstances.id, reservation.row.id),
       )).returning();
       if (!ready) return { ok: false as const, error: new HttpError(409, "The reserved workspace is no longer available.") };
+      await tx.insert(workspaceBotBindings).values({ userId, botId: input.botId, instanceId: ready.id })
+        .onConflictDoUpdate({
+          target: [workspaceBotBindings.userId, workspaceBotBindings.botId],
+          set: { instanceId: ready.id, updatedAt: new Date() },
+        });
       return {
         ok: true as const,
         instance: view({ ...ready, templateName: reservation.templateName }),

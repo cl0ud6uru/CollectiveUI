@@ -79,7 +79,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
       CREATE TABLE sandboxes(user_id text PRIMARY KEY REFERENCES users(id), ref text UNIQUE NOT NULL,
         last_used_at timestamptz, delete_after timestamptz, created_at timestamptz NOT NULL);
       INSERT INTO users VALUES ('alice'), ('bob');
-      INSERT INTO bots VALUES ('shared-bot','alice'), ('alice-bot','alice'), ('unbound-bot','alice'), ('alice-revoked-bot','alice'), ('bob-unbound-bot','bob'), ('bob-reservation-bot','bob');
+      INSERT INTO bots VALUES ('shared-bot','alice'), ('alice-bot','alice'), ('unbound-bot','alice'), ('alice-revoked-bot','alice'), ('alice-crash-bot','alice'), ('bob-unbound-bot','bob'), ('bob-reservation-bot','bob');
       INSERT INTO sandboxes VALUES ('alice','${aliceLegacyRef}','2026-10-01Z',NULL,'2026-09-01Z');`);
     folder = await mkdtemp(path.join(tmpdir(), "workspace-bindings-"));
     await mkdir(path.join(folder, "meta"));
@@ -99,6 +99,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     state.allowed.add("alice:alice-bot");
     state.allowed.add("alice:unbound-bot");
     state.allowed.add("alice:alice-revoked-bot");
+    state.allowed.add("alice:alice-crash-bot");
     state.allowed.add("bob:bob-unbound-bot");
     state.allowed.add("bob:bob-reservation-bot");
     state.client = fakeDaemon(volumes, unavailable);
@@ -206,7 +207,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     await db.update(users).set({ disabled: false, sessionVersion: 1 }).where(eq(users.id, "alice"));
   });
 
-  it("rechecks bot access after provisioning and removes a revoked provisional binding", async () => {
+  it("rechecks bot access after provisioning without changing the previous binding", async () => {
     const { db } = await import("@/db");
     const { workspaceBotBindings } = await import("@/db/schema");
     let announceStarted!: () => void;
@@ -240,6 +241,55 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     expect(current?.sandboxRef).not.toBe(oldRef);
     expect(replacement.templateVersionId).toBe("office-v2");
     expect(volumes.get(oldRef)?.files["project.txt"]).toBe("kept across replacement");
+  });
+
+  it("recovers after a committed reservation and process restart without switching or sharing the old binding", async () => {
+    const { db } = await import("@/db");
+    const { workspaceInstances, workspaceBotBindings } = await import("@/db/schema");
+    const before = await assignTemplate({ principal: alice, botId: "alice-crash-bot", templateVersionId: "office-v1" });
+    const beforeResolved = await resolveWorkspace({ principal: alice, botId: "alice-crash-bot", createIfMissing: false });
+    expect(beforeResolved?.instanceId).toBe(before.id);
+    const oldRef = beforeResolved!.sandboxRef;
+    volumes.get(oldRef)!.files["restart.txt"] = "kept on the previously bound instance";
+
+    // The transaction committed, then the process disappeared before sandboxd.start/finalization.
+    const crashRef = "zzzzzzzzzzzzzzzzzzzz";
+    await db.insert(workspaceInstances).values({
+      id: "crash_reservation_123",
+      ownerUserId: "alice",
+      templateVersionId: "office-v2",
+      origin: "template",
+      sandboxRef: crashRef,
+      runtimeProfileKey: "knowledge-work-v1",
+      provisionState: "provisioning",
+    });
+    volumes.set(crashRef, { profileKey: "knowledge-work-v1", files: { "partial.txt": "keep registered until normal cleanup" } });
+
+    // Reload the module to model a fresh server process with no reservation state retained in memory.
+    vi.resetModules();
+    const { WORKSPACE_PROFILES } = await import("@/sandboxd/profiles");
+    WORKSPACE_PROFILES["knowledge-work-v1"].imageRef = `sha256:${"a".repeat(64)}`;
+    const restarted = await import("@/lib/workspaces/instances");
+    assignTemplate = restarted.assignTemplate;
+    resolveWorkspace = restarted.resolveWorkspace;
+    const afterRestart = await resolveWorkspace({ principal: alice, botId: "alice-crash-bot", createIfMissing: false });
+    expect(afterRestart?.instanceId).toBe(before.id);
+    expect(afterRestart?.sandboxRef).toBe(oldRef);
+    expect(volumes.get(oldRef)?.files["restart.txt"]).toBe("kept on the previously bound instance");
+
+    const replacement = await assignTemplate({ principal: alice, botId: "alice-crash-bot", templateVersionId: "office-v2" });
+    const rebound = await resolveWorkspace({ principal: alice, botId: "alice-crash-bot", createIfMissing: false });
+    expect(rebound?.instanceId).toBe(replacement.id);
+    expect(rebound?.sandboxRef).not.toBe(crashRef);
+    expect(volumes.get(oldRef)?.files["restart.txt"]).toBe("kept on the previously bound instance");
+    expect(volumes.get(crashRef)?.files["partial.txt"]).toBe("keep registered until normal cleanup");
+    expect(await db.select().from(workspaceBotBindings).where(and(eq(workspaceBotBindings.userId, "alice"), eq(workspaceBotBindings.botId, "alice-crash-bot"))))
+      .toMatchObject([{ instanceId: replacement.id }]);
+
+    const { sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
+    const daemon = state.client as ReturnType<typeof fakeDaemon>;
+    await sweepSandboxes(new Date());
+    expect(daemon.destroy).not.toHaveBeenCalledWith(crashRef);
   });
 
   it("leaves the old binding intact when a replacement image is unavailable", async () => {
