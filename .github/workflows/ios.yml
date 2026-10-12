@@ -2,6 +2,7 @@ name: iOS
 
 on:
   push:
+    branches: [main]
     paths:
       - 'ios/**'
       - 'src/lib/voice/**'
@@ -17,6 +18,11 @@ on:
 
 permissions:
   contents: read
+
+# Keep the newest validation for each PR or branch; other PRs run independently.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
