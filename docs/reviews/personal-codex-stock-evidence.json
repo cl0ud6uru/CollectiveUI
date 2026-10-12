@@ -1,0 +1,74 @@
+{
+  "version": "0.163.0-alpha.2",
+  "authenticated": false,
+  "verified": false,
+  "cases": {
+    "missing": {
+      "protocolVersion": true,
+      "managedPolicy": true,
+      "requirementsMatch": true,
+      "containerBoundary": true,
+      "stockArtifactsMatch": true,
+      "networkControlReachable": true,
+      "nativeWorkspaceExecution": false,
+      "backingDataUnchanged": true,
+      "storageSurvivesReplacement": true,
+      "cleanupComplete": true
+    },
+    "empty": {
+      "protocolVersion": true,
+      "managedPolicy": true,
+      "requirementsMatch": true,
+      "containerBoundary": true,
+      "stockArtifactsMatch": true,
+      "networkControlReachable": true,
+      "nativeWorkspaceExecution": false,
+      "backingDataUnchanged": true,
+      "storageSurvivesReplacement": true,
+      "cleanupComplete": true
+    },
+    "populated": {
+      "protocolVersion": true,
+      "managedPolicy": true,
+      "requirementsMatch": true,
+      "containerBoundary": true,
+      "stockArtifactsMatch": true,
+      "networkControlReachable": true,
+      "nativeWorkspaceExecution": false,
+      "backingDataUnchanged": true,
+      "storageSurvivesReplacement": true,
+      "cleanupComplete": true
+    }
+  },
+  "artifacts": {
+    "requestedImage": "collectiveui/personal-codex:stock-runtime",
+    "requirementsSha256": "cd789bc4cc3345ac488fafd47b68034342da5f2ad8cb9fac08600b0448d5d768",
+    "sandboxProfile": "default-docker",
+    "imageIds": {
+      "missing": "sha256:087feda902028b7713d70f4187a4e6d5094fa620d2c7dc44e27649485e1aac71",
+      "empty": "sha256:087feda902028b7713d70f4187a4e6d5094fa620d2c7dc44e27649485e1aac71",
+      "populated": "sha256:087feda902028b7713d70f4187a4e6d5094fa620d2c7dc44e27649485e1aac71"
+    }
+  },
+  "failures": {
+    "missing": {
+      "stage": "nativeWorkspaceExecution",
+      "exitCode": 1,
+      "reason": "unprivileged-namespace-unavailable",
+      "diagnostic": "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.\n"
+    },
+    "empty": {
+      "stage": "nativeWorkspaceExecution",
+      "exitCode": 1,
+      "reason": "unprivileged-namespace-unavailable",
+      "diagnostic": "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.\n"
+    },
+    "populated": {
+      "stage": "nativeWorkspaceExecution",
+      "exitCode": 1,
+      "reason": "unprivileged-namespace-unavailable",
+      "diagnostic": "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.\n"
+    }
+  },
+  "blocker": "The protected-path native gate is incomplete or failed. Activation remains blocked."
+}

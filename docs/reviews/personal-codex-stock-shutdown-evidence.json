@@ -1,0 +1,54 @@
+{
+  "scope": "Synthetic shutdown-only filter in disposable stock-image container; not stock native namespace acceptance",
+  "authenticated": false,
+  "imageId": "sha256:087feda902028b7713d70f4187a4e6d5094fa620d2c7dc44e27649485e1aac71",
+  "fixtureSha256": "e4e5b031f2454fc50b3572108ea0cf9849e5b96216d070d1ff559a0da371d178",
+  "container": {
+    "network": "none",
+    "capDrop": [
+      "ALL"
+    ],
+    "noNewPrivileges": true,
+    "readonlyRoot": true,
+    "user": "10001:10001"
+  },
+  "reproduced": true,
+  "results": [
+    {
+      "label": "default",
+      "node": "22.23.3",
+      "uv": "1.51.0",
+      "status": 0,
+      "signal": null,
+      "error": {
+        "code": "EPERM",
+        "syscall": "spawnSync /usr/local/bin/node"
+      },
+      "stdout": "fixture-child-executed",
+      "stderr": ""
+    },
+    {
+      "label": "ignored-stdin",
+      "node": "22.23.3",
+      "uv": "1.51.0",
+      "status": 0,
+      "signal": null,
+      "error": null,
+      "stdout": "fixture-child-executed",
+      "stderr": ""
+    }
+  ],
+  "outerExitCode": 0,
+  "pythonExitCode": 0,
+  "pythonStderr": "",
+  "source": {
+    "spawn_sync.cc": {
+      "url": "https://raw.githubusercontent.com/nodejs/node/v22.23.3/src/spawn_sync.cc",
+      "sha256": "f8319b83d25a0bebdd2e0143f919c2a4b1a87766b92806528807e61594f28081"
+    },
+    "stream.c": {
+      "url": "https://raw.githubusercontent.com/nodejs/node/v22.23.3/deps/uv/src/unix/stream.c",
+      "sha256": "dac76e73caef1d01c7122f5d42f5e2d0a06b6a60bf4d83d26849d03aec805733"
+    }
+  }
+}

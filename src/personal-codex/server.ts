@@ -49,7 +49,7 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
     if (requireExecution && !session.verified) {
       try {
         const result = z.object({ exitCode: z.literal(0), stdout: z.literal('collective-codex-sandbox-ready'), stderr: z.string() }).parse(await session.client.request('command/exec', {
-          command: ['sh', '-c', 'test ! -r /codex-home/auth.json && test ! -r /proc/1/environ && probe=$(mktemp /home/agent/workspace/.collective-probe.XXXXXX) && printf collective-codex-sandbox-ready > "$probe" && cat "$probe" && rm "$probe"'],
+          command: ['sh', '-c', 'test ! -r /codex-home/auth.json && test ! -r /proc/1/root/codex-home/auth.json && probe=$(mktemp /home/agent/workspace/.collective-probe.XXXXXX) && printf collective-codex-sandbox-ready > "$probe" && cat "$probe" && rm "$probe"'],
           cwd: '/home/agent/workspace', permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 2048,
         }));
         if (result.stderr) throw new Error('Native sandbox probe failed');

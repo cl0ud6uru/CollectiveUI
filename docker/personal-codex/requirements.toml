@@ -18,16 +18,19 @@ allowed_web_search_modes = ["disabled"]
 collective-personal = true
 
 [permissions.filesystem]
-deny_read = ["/codex-home/auth.json", "/codex-home/config.toml", "/codex-home/sessions", "/codex-home/archived_sessions", "/codex-home/history.jsonl", "/codex-home/log", "/codex-home/logs", "/proc", "/sys"]
+# The private home is absent from the stock sandbox's read allowlist. Keep
+# credential masks as defense in depth without a conflicting parent mask.
+deny_read = ["/codex-home/auth.json", "/codex-home/config.toml", "/codex-home/sessions", "/codex-home/archived_sessions", "/codex-home/history.jsonl", "/codex-home/log", "/codex-home/logs", "/sys"]
 
 [permissions.collective-personal.filesystem]
-"/" = "read"
+":minimal" = "read"
+"/opt/codex" = "read"
+"/opt/collective-codex" = "read"
 "/home/agent/workspace" = "write"
 "/tmp" = "write"
-"/codex-home" = "deny"
 "/home/agent/workspace/.codex" = "deny"
-"/proc" = "deny"
-"/sys" = "deny"
+# Stock Codex grants its exact active arg0 helper read access automatically.
+# Its fresh PID namespace/procfs must pass the parent-process isolation proof.
 
 [permissions.collective-personal.network]
 enabled = false
