@@ -53,7 +53,7 @@ export function SettingsView({
   archived: { id: string; title: string; updatedAt: string }[];
   grants: { botId: string; toolName: string; botName: string }[];
   user: { name: string; upn: string; authSource: string };
-  /** Null when this person can't connect a ChatGPT plan and has no connection (the tab is hidden). */
+  /** Null when this person can't connect this model grant and has no saved connection. */
   chatgpt: ChatGPTConnectionView | null;
   /** Null when workspaces are off (the tab is hidden). */
   workspace: WorkspaceView | null;
@@ -67,7 +67,7 @@ export function SettingsView({
   const { theme, setTheme } = useTheme();
   const tabs = TABS.filter((t) => (t !== "Workspace" || workspace));
   const selected = TABS.find(t => tabSlug(t) === searchParams.get("tab")) ?? "General";
-  // A tab can disappear (e.g. Connected accounts after disconnecting): fall back instead of showing an empty pane.
+  // Optional tabs can disappear when their capability is disabled; fall back to General.
   const tab: Tab = tabs.includes(selected) ? selected : "General";
   const section = searchParams.get("section");
   const sectionsNav = useRef<HTMLElement>(null);

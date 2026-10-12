@@ -38,3 +38,11 @@ The real 0.163.0-alpha.2 binary initialized successfully and reported the expect
 Consequently, protected-file/symlink denial, tool-network denial, production proxy enforcement, real ChatGPT authentication/entitlement, paid native tools, and same-thread continuation after paid tools are unverified. Activation remains blocked, and the broker refuses sign-in when its sandbox execution probe fails. No privileged mode, additional capabilities, unconfined seccomp, or host namespaces were used to bypass the failure.
 
 Exact installation approvals, proxy reachability requirements and each caller's login steps are in [the harness contract](../codex-harness.md#validation-and-activation-approvals). Positive permission expansion, template-instance adoption, desktop, attachments, background/group runs, and additional native tools remain deferred.
+
+## CI follow-up
+
+Exact initial head `0a3cb78d8bc0e295c62f9772f9074c7ca636e254` reached terminal results: [Docker validation](https://github.com/cl0ud6uru/CollectiveUI/actions/runs/38199206815) passed both jobs; [CI](https://github.com/cl0ud6uru/CollectiveUI/actions/runs/38199206849) passed four jobs and failed the settings browser fixture. The typecheck/lint/unit job's `npm test` reported 2,584 passed and 524 skipped across all configured projects.
+
+The browser fixture had assumed zero settings requests and a disappearing Connected accounts tab. The new personal connection deliberately performs exactly one read-only status GET and keeps that tab available. The scoped fixture fix explicitly asserts that GET, permits no native mutation, and preserves all existing exact Team request/revision, stale response, and authorization assertions. It passes locally. CI now also requires the actual personal Codex connection/approval browser fixture.
+
+The [VM readiness checklist](../personal-codex-vm-readiness.md) documents automatic ordinary command/patch execution versus native approval callbacks, the candidate-host gate and individual activation approvals. The native probe's network denial requires a reachable loopback positive control; timeout or absent RPC results cannot prove enforcement. The repeated cloud probe still exits 1 with the same namespace blocker, and no host/security setting was changed.
