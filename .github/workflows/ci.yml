@@ -79,6 +79,7 @@ jobs:
           node tests/browser/provider-connections.mjs
           node tests/browser/hermes-team-builder.mjs
           node tests/browser/codex-harness.mjs
+          node tests/browser/personal-codex.mjs
           node tests/browser/voice-mode.mjs
           node tests/browser/voice-avatar.mjs
           npx playwright test --config tests/group-lead.playwright.config.ts

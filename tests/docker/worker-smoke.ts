@@ -36,6 +36,19 @@ async function main() {
   for (const directory of ["/app/tests", "/app/dev", "/app/.github"]) assert(!existsSync(directory));
   for (const name of ["tsx", "pg", "drizzle-orm"]) assert(runtimeRequire.resolve(name));
 
+  // These are dynamically reached by the worker sweeper/dispatch. The queued text reply below
+  // cannot detect a swallowed import failure, and Vitest's server-only mock would hide it too.
+  const codexImports = await Promise.all([
+    import("@/lib/codex/recovery"), import("@/lib/codex/run"), import("@/lib/codex/runtime"),
+    import("@/lib/codex/client"), import("@/personal-codex/accounts"),
+    import("@/personal-codex/approvals"), import("@/personal-codex/control"),
+  ]);
+  const codexExports = ["reconcileCodexStops", "runCodexTurn", "callerRuntime", "CodexClient", "personalAccount", "waitForApproval", "personalControl"];
+  for (let i = 0; i < codexImports.length; i++) {
+    assert.equal(typeof (codexImports[i] as Record<string, unknown>)[codexExports[i]], "function", `plain Node worker imports ${codexExports[i]}`);
+  }
+  await codexImports[0].reconcileCodexStops(); // Empty disposable fixture DB; no native run or account exists.
+
   // All data lives in the Compose fixture DB, destroyed by worker-smoke.sh even on failure.
   const userId = newId();
   await db.insert(users).values({ id: userId, upn: `${userId}@fixture.invalid`, name: "Worker fixture", authSource: "ldap" });
@@ -71,7 +84,7 @@ async function main() {
   const usage = await db.select().from(usageEvents).where(eq(usageEvents.runId, run.id));
   assert(usage.length > 0);
   assert(usage.every(event => event.userId === userId && event.messageId === run.messageId));
-  console.log("Worker image: non-root, immutable application, no dev-only packages, queued reply and usage persistence passed.");
+  console.log("Worker image: non-root, immutable application, no dev-only packages, real plain Node Codex imports, queued reply and usage persistence passed.");
 }
 
 main().catch(error => {

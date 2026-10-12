@@ -10,7 +10,8 @@ import { DockerError, type ContainerInfo, type Docker, type EngineInfo } from ".
 import type { ExitReason } from "./protocol/frames.ts";
 import type { ErrorCode, ExecRequest, Health, Isolation, Runtime, SandboxState } from "./protocol/types.ts";
 import { EXEC_ID_RE, REF_RE } from "./protocol/types.ts";
-import { containerName, containerSpec, execSpec, LABEL_INSTANCE, LABEL_KIND, LABEL_SANDBOX, LABEL_SPEC, specHash, volumeName, volumeSpec } from "./spec.ts";
+import { containerName, containerSpec, execSpec, LABEL_INSTANCE, LABEL_KIND, LABEL_PROFILE, LABEL_SANDBOX, LABEL_SPEC, specHash, volumeName, volumeSpec } from "./spec.ts";
+import { effectiveProfileLimits, getWorkspaceRuntimeProfile, LEGACY_PROFILE_KEY } from "./profiles.ts";
 import { TemplateError, killRun, workspaceExec } from "./templates.ts";
 
 const STATUS: Record<ErrorCode, number> = {
@@ -64,7 +65,9 @@ export class Manager {
   private readonly entries = new Map<string, Entry>();
   // One admission queue across all workspace refs. Hold it through Docker start, not just the count check.
   private admission: Promise<unknown> = Promise.resolve();
-  private imageId: string | null = null;
+  private readonly imageIds = new Map<string, string>();
+  /** Rebuilt from durable volume/container labels after daemon restart. */
+  private readonly refProfiles = new Map<string, string>();
   private engine: EngineInfo | null = null;
   private gvisor: { available: boolean; reason?: string; at: number } = { available: false, reason: "not checked yet", at: 0 };
   readonly warnings: string[] = [];
@@ -92,14 +95,21 @@ export class Manager {
       this.warnings.push(`SANDBOXD_CPUS (${this.config.limits.cpus}) is more than this host has (${e.NCPU}); using ${e.NCPU}.`);
       this.config.limits.cpus = e.NCPU;
     }
-    await this.resolveImage();
+    await this.resolveImage(LEGACY_PROFILE_KEY);
     await this.probeGvisor();
     if (this.config.runtime === "runsc" && !this.gvisor.available) throw new Error(`SANDBOXD_RUNTIME=runsc but gVisor isn't usable: ${this.gvisor.reason}`);
     if (!this.gvisor.available && this.config.runtime !== "runsc") this.warnings.push(`gVisor isn't available (${this.gvisor.reason}); sandboxes can only run on runc.`);
     // Running sandboxes left from before a restart: treat them as just used, the reaper stops them later.
-    for (const c of await this.docker.containerList(this.labels(), false)) {
+    for (const c of await this.docker.containerList(this.labels(), true)) {
       const ref = c.Labels[LABEL_SANDBOX];
-      if (ref && REF_RE.test(ref)) this.entry(ref).lastUsed = Date.now();
+      if (ref && REF_RE.test(ref)) {
+        this.rememberProfile(ref, c.Labels[LABEL_PROFILE] ?? LEGACY_PROFILE_KEY);
+        if (c.State === "running") this.entry(ref).lastUsed = Date.now();
+      }
+    }
+    for (const v of await this.docker.volumeList({ [LABEL_INSTANCE]: this.config.instance, [LABEL_KIND]: "workspace" })) {
+      const ref = v.Labels?.[LABEL_SANDBOX];
+      if (ref && REF_RE.test(ref)) this.rememberProfile(ref, v.Labels?.[LABEL_PROFILE] ?? LEGACY_PROFILE_KEY);
     }
   }
 
@@ -139,11 +149,44 @@ export class Manager {
     if (!REF_RE.test(ref)) throw new SandboxdError("bad_request", "Invalid sandbox reference");
   }
 
-  private async resolveImage(): Promise<string> {
-    const img = await this.docker.imageInspect(this.config.image);
-    if (!img) throw new SandboxdError("image_missing", `The sandbox image ${this.config.image} isn't on this host (build it with npm run sandbox:image)`);
-    this.imageId = img.Id;
+  private rememberProfile(ref: string, key: string) {
+    const prior = this.refProfiles.get(ref);
+    if (prior && prior !== key) {
+      this.log("workspace ref has conflicting profile labels", { ref });
+      this.refProfiles.set(ref, "__conflict__");
+      return;
+    }
+    this.refProfiles.set(ref, key);
+  }
+
+  private async resolveImage(profileKey: string): Promise<string> {
+    const cached = this.imageIds.get(profileKey);
+    if (cached) return cached;
+    const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image);
+    if (!profile) throw new SandboxdError("bad_request", "Unknown workspace runtime profile");
+    const imageRef = profile.imageRef;
+    if (!imageRef || (profileKey !== LEGACY_PROFILE_KEY && !/^sha256:[0-9a-f]{64}$/.test(imageRef))) {
+      throw new SandboxdError("image_missing", `The image for workspace profile ${profile.key} has not been built and pinned on this host`);
+    }
+    const img = await this.docker.imageInspect(imageRef);
+    if (!img) throw new SandboxdError("image_missing", `The image for workspace profile ${profile.key} (${imageRef}) isn't installed on this host`);
+    this.imageIds.set(profileKey, img.Id);
     return img.Id;
+  }
+
+  private assertProfileMatch(ref: string, requested: string, containerKey?: string, volumeKey?: string) {
+    const pinned = this.refProfiles.get(ref);
+    if (pinned === "__conflict__") throw new SandboxdError("bad_request", "The workspace has conflicting runtime profile labels");
+    const stored = containerKey ?? volumeKey;
+    const effectiveStored = stored ?? LEGACY_PROFILE_KEY;
+    if (containerKey && volumeKey && containerKey !== volumeKey) {
+      this.rememberProfile(ref, "__conflict__");
+      throw new SandboxdError("bad_request", "The workspace container and volume use different runtime profiles");
+    }
+    if ((pinned && pinned !== requested) || (stored && effectiveStored !== requested) || (!stored && pinned && pinned !== requested)) {
+      throw new SandboxdError("bad_request", "The workspace ref is pinned to another runtime profile");
+    }
+    this.refProfiles.set(ref, requested);
   }
 
   /** gVisor counts only if runsc is registered, configured sanely, and a real sandbox actually runs under it. */
@@ -171,7 +214,7 @@ export class Manager {
     const name = containerName(ref);
     try {
       await this.docker.volumeCreate(volumeSpec(ref, this.config.instance, "probe"));
-      await this.docker.containerCreate(name, containerSpec({ ref, imageId: this.imageId!, runtime: "runsc", limits: this.config.limits, kind: "probe", instance: this.config.instance }));
+      await this.docker.containerCreate(name, containerSpec({ ref, imageId: this.imageIds.get(LEGACY_PROFILE_KEY)!, runtime: "runsc", limits: this.config.limits, kind: "probe", instance: this.config.instance }));
       await this.docker.containerStart(name);
       const out = await this.collect(name, ["uname", "-r"], { timeoutMs: 20_000 });
       const kernel = out.stdout.toString().trim();
@@ -195,15 +238,32 @@ export class Manager {
   }
 
   /** Makes sure the sandbox exists, matches the current spec and runs. Returns its container id. */
-  ensure(ref: string, isolation: Isolation, callerExec?: string, callerHelper = false): Promise<string> {
+  ensure(ref: string, isolation: Isolation, callerExec?: string, callerHelper = false, runtimeProfileKey = LEGACY_PROFILE_KEY): Promise<string> {
     this.checkRef(ref);
     return this.locked(ref, () => this.admitted(async () => {
-      const runtime = this.runtimeFor(isolation);
-      const imageId = this.imageId ?? (await this.resolveImage());
-      const want = specHash({ ref, imageId, runtime, limits: this.config.limits });
+      const profile = getWorkspaceRuntimeProfile(runtimeProfileKey, this.config.image);
+      if (!profile) throw new SandboxdError("bad_request", "Unknown workspace runtime profile");
       const name = containerName(ref);
       let info = await this.docker.containerInspect(name);
       if (info && info.Config.Labels[LABEL_INSTANCE] !== this.config.instance) throw new SandboxdError("internal", "Container name clash with another sandboxd");
+      let volume = await this.docker.volumeInspect(volumeName(ref));
+      if (volume && volume.Labels?.[LABEL_INSTANCE] !== this.config.instance) throw new SandboxdError("internal", "Not this sandboxd's volume");
+      const containerProfile = info ? (info.Config.Labels[LABEL_PROFILE] ?? LEGACY_PROFILE_KEY) : undefined;
+      const volumeProfile = volume ? (volume.Labels?.[LABEL_PROFILE] ?? LEGACY_PROFILE_KEY) : undefined;
+      this.assertProfileMatch(ref, runtimeProfileKey, containerProfile, volumeProfile);
+
+      const runtime = this.runtimeFor(isolation);
+      const imageId = await this.resolveImage(runtimeProfileKey);
+      const limits = effectiveProfileLimits(this.config.limits, profile.maxLimits);
+      const want = specHash({ ref, imageId, runtime, limits });
+      // Pin the persistent volume only after a complete, immutable image is available for admission.
+      if (!volume) {
+        await this.docker.volumeCreate(volumeSpec(ref, this.config.instance, "workspace", runtimeProfileKey));
+        volume = await this.docker.volumeInspect(volumeName(ref));
+        if (!volume || volume.Labels?.[LABEL_INSTANCE] !== this.config.instance || volume.Labels?.[LABEL_PROFILE] !== runtimeProfileKey) {
+          throw new SandboxdError("internal", "The workspace volume could not be pinned to its runtime profile");
+        }
+      }
       if (info && info.Config.Labels[LABEL_SPEC] !== want) {
         // Other commands still running in the old container (not the one asking) keep it alive for now.
         const e = this.entry(ref);
@@ -218,8 +278,7 @@ export class Manager {
       }
       if (!info) {
         await this.makeRoom(ref);
-        await this.docker.volumeCreate(volumeSpec(ref, this.config.instance));
-        const created = await this.docker.containerCreate(name, containerSpec({ ref, imageId, runtime, limits: this.config.limits, instance: this.config.instance }));
+        const created = await this.docker.containerCreate(name, containerSpec({ ref, imageId, runtime, limits, instance: this.config.instance, profileKey: runtimeProfileKey }));
         if (created.Warnings?.length) {
           await this.docker.containerRemove(created.Id).catch(() => {});
           throw new SandboxdError("internal", `Docker couldn't apply the sandbox settings: ${created.Warnings.join("; ")}`);
@@ -282,12 +341,12 @@ export class Manager {
   }
 
   /** A file helper call: parses fsops' header and maps its errors. */
-  async fsCall(ref: string, isolation: Isolation, argv: string[], opts: { stdin?: Buffer; maxBytes?: number; timeoutMs?: number } = {}) {
+  async fsCall(ref: string, isolation: Isolation, argv: string[], opts: { stdin?: Buffer; maxBytes?: number; timeoutMs?: number; runtimeProfileKey?: string } = {}) {
     this.checkRef(ref);
     const e = this.entry(ref);
     e.helpers++;
     try {
-      const id = await this.ensure(ref, isolation, undefined, true);
+      const id = await this.ensure(ref, isolation, undefined, true, opts.runtimeProfileKey);
       const r = await this.collect(id, argv, { stdin: opts.stdin, maxBytes: opts.maxBytes, timeoutMs: opts.timeoutMs ?? 60_000 });
       this.entry(ref).lastUsed = Date.now();
       const nl = r.stdout.indexOf(0x0a);
@@ -329,7 +388,7 @@ export class Manager {
     e.execs.set(req.execId, { id: req.execId, kill: (reason) => (killRequested ? killRequested(reason) : (killReason ??= reason)) });
     const t0 = Date.now();
     try {
-      const containerId = await this.ensure(ref, req.isolation, req.execId);
+      const containerId = await this.ensure(ref, req.isolation, req.execId, false, req.runtimeProfileKey);
       if (killReason) throw new SandboxdError("internal", "Stopped before it started");
       const execId = await this.docker.execCreate(containerId, execSpec(argv, { stdin: true }));
 
@@ -464,9 +523,15 @@ export class Manager {
     // Deleting it would hide their activity from admission and the reaper.
   }
 
-  private toState(ref: string, info: ContainerInfo | null): SandboxState {
+  private async toState(ref: string, info: ContainerInfo | null): Promise<SandboxState> {
     const e = this.entries.get(ref);
-    const want = this.imageId ? specHash({ ref, imageId: this.imageId, runtime: this.gvisor.available ? "runsc" : "runc", limits: this.config.limits }) : null;
+    const profileKey = info?.Config.Labels[LABEL_PROFILE] ?? this.refProfiles.get(ref) ?? LEGACY_PROFILE_KEY;
+    const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image);
+    let imageId = profile ? this.imageIds.get(profileKey) : undefined;
+    if (profile && !imageId) imageId = await this.resolveImage(profileKey).catch(() => undefined);
+    const want = imageId && profile
+      ? specHash({ ref, imageId, runtime: this.gvisor.available ? "runsc" : "runc", limits: effectiveProfileLimits(this.config.limits, profile.maxLimits) })
+      : null;
     return {
       ref,
       state: !info ? "missing" : info.State.Running ? "running" : "stopped",
@@ -492,11 +557,11 @@ export class Manager {
       const ref = c.Labels[LABEL_SANDBOX];
       if (!ref || !REF_RE.test(ref)) continue;
       refs.add(ref);
-      out.push(this.toState(ref, await this.docker.containerInspect(c.Id)));
+      out.push(await this.toState(ref, await this.docker.containerInspect(c.Id)));
     }
     for (const v of await this.docker.volumeList({ [LABEL_INSTANCE]: this.config.instance, [LABEL_KIND]: "workspace" })) {
       const ref = v.Labels?.[LABEL_SANDBOX];
-      if (ref && REF_RE.test(ref) && !refs.has(ref)) out.push(this.toState(ref, null));
+      if (ref && REF_RE.test(ref) && !refs.has(ref)) out.push(await this.toState(ref, null));
     }
     return out;
   }

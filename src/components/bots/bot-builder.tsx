@@ -419,7 +419,7 @@ export function BotBuilder({
               <Field label="Bot engine" hint="Choose the engine that executes this bot. Codex uses each caller’s assigned app-server and credentials.">
                 <Select disabled={(managed && !personalNew) || service} aria-label="Bot engine" value={engine} onChange={(e) => {
                   const next = e.target.value as "native" | "hermes" | "codex";
-                  set("codex", next === "codex" ? { funding: "api", model: "", effort: "medium" } : null);
+                  set("codex", next === "codex" ? { funding: "chatgpt_subscription", model: "", effort: "medium" } : null);
                   if (next === "codex") { set("tools", []); set("delegateIds", []); set("executionMode", "caller"); }
                   setEngineChoice(next);
                   // Changing engines requires an explicit connection choice before saving.
@@ -429,7 +429,7 @@ export function BotBuilder({
                   if (!botId) set("delegatorIds", []);
                 }}>
                   <option value="native">Native · CollectiveUI</option>
-                  <option value="codex" disabled={!!botId && !initial.codex}>Codex · app-server (text pilot){botId && !initial.codex ? " · create a new bot" : ""}</option>
+                  <option value="codex" disabled={!!botId && !initial.codex}>Codex · personal agent{botId && !initial.codex ? " · create a new bot" : ""}</option>
                   <option value="hermes">{local ? "Local Hermes" : "Hermes"}</option>
                 </Select>
               </Field>

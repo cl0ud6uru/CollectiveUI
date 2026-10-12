@@ -1,5 +1,9 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    if (process.env.AGENT_BROWSER_ENABLED === "1") {
+      const { registerAgentBrowserViewerIntegration } = await import("@/lib/agent-browser/integration");
+      await registerAgentBrowserViewerIntegration();
+    }
     const { warnAboutVendorEnv } = await import("@/lib/env-guard");
     warnAboutVendorEnv("web");
     const { entraEnabled, ldapEnabled, localEnabled } = await import("@/lib/auth/config");

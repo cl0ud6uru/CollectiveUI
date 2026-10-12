@@ -7,7 +7,7 @@
  * also single-flighted in process. The re-check inside the lock is what makes the web app and worker safe together.
  */
 import { and, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type DB } from "@/db";
 import { chatgptDeviceLogins, userCredentials, users, type UserCredential } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { AAD, decrypt, encrypt, needsRewrap } from "@/lib/crypto";
@@ -266,9 +266,9 @@ export async function saveChatGPTConnection(userId: string, tokens: TokenSet, cl
   return saved;
 }
 
-/** Removes this person's connection and revokes the sign-in at OpenAI (best effort). Returns false if none. */
-export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promise<boolean> {
-  const removed = await db.transaction(async (tx) => {
+/** Remove local credentials under the caller's connection and return a closure for best-effort remote revocation. */
+export async function removeChatGPTConnection(userId: string, database: DB = db, f?: Fetch): Promise<(() => Promise<void>) | null> {
+  const removed = await database.transaction(async (tx) => {
     const [row] = await tx
       .select()
       .from(userCredentials)
@@ -278,14 +278,23 @@ export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promis
     await tx.delete(userCredentials).where(eq(userCredentials.id, row.id));
     return row;
   });
-  await db.delete(chatgptDeviceLogins).where(eq(chatgptDeviceLogins.userId, userId));
-  if (!removed) return false;
-  try {
-    const s = openCredentialSecret(removed);
-    await revokeTokens({ refreshToken: s.refresh, accessToken: s.access }, f);
-  } catch {
-    // Unreadable secret: the row is gone either way.
-  }
+  await database.delete(chatgptDeviceLogins).where(eq(chatgptDeviceLogins.userId, userId));
+  if (!removed) return null;
+  return async () => {
+    try {
+      const s = openCredentialSecret(removed);
+      await revokeTokens({ refreshToken: s.refresh, accessToken: s.access }, f);
+    } catch {
+      // Unreadable secret: the row is gone either way.
+    }
+  };
+}
+
+/** Removes this person's connection and revokes the sign-in at OpenAI (best effort). Returns false if none. */
+export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promise<boolean> {
+  const revoke = await removeChatGPTConnection(userId, db, f);
+  if (!revoke) return false;
+  await revoke();
   return true;
 }
 

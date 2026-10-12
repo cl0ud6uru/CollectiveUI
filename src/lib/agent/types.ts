@@ -32,8 +32,9 @@ export type AgentCtx = {
   nativeSearchMode?: import("@/lib/native-search-policy").NativeSearchMode | null;
   /** Usage ledger scope of the turn; each child task has its own assistant message and run. */
   usage?: UsageScope;
-  /** The acting person's workspace for this turn, shared with delegates (created by the first toolset that needs it). */
+  /** The current bot's acting-person workspace for this turn. Child bots may resolve a different private instance. */
   workspace?: PortalWorkspace;
+  workspaceBotId?: string;
 };
 
 /** What the approval policy knows about an MCP tool (from the server's accepted snapshot and admin policy). */
@@ -64,6 +65,7 @@ export type ToolEntry = {
 
 /** Built-in tool groups a bot can enable (MCP servers and delegates are added dynamically). */
 export const BUILTIN_TOOLS: { key: string; label: string; description: string; defaultApproval: ApprovalMode }[] = [
+  { key: "agent_browser", label: "Agent browser", description: "Use a private browser on public sites, with an optional read-only view of the same page.", defaultApproval: "ask" },
   { key: "openai_web_search", label: "OpenAI native search", description: "Let a supported OpenAI API model search when needed. Chats can switch it off.", defaultApproval: "auto" },
   { key: "web_search", label: "Web search (external)", description: "Search with your administrator's SearXNG, Brave or Bing provider.", defaultApproval: "auto" },
   { key: "fetch_url", label: "Read web pages", description: "Fetch and read the text of a URL.", defaultApproval: "auto" },

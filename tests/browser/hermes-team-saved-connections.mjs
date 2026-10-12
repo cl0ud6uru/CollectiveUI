@@ -26,12 +26,19 @@ createRoot(document.getElementById('root')).render(<App/>);
 const aliases=Object.fromEntries(['next/navigation','next-themes','next/link','@/app/(chat)/actions','@/components/settings/chatgpt-connection','@/components/settings/workspace-panel','@/components/start-target-select'].map(source=>[source,stubs]));
 const bundle=await build({entryPoints:[entry],write:false,bundle:true,platform:'browser',format:'iife',jsx:'automatic',nodePaths:[path.join(root,'node_modules')],alias:{'@':path.join(root,'src'),...aliases}});
 const css=await postcss([tailwind({base:root})]).process(await readFile(path.join(root,'src/app/globals.css'),'utf8'),{from:path.join(root,'src/app/globals.css')});
-let holdRead=false,releaseRead,holdDelete=false,releaseDelete,deleteFailure=0,denyList=0;const requests=[];
+let holdRead=false,releaseRead,holdDelete=false,releaseDelete,deleteFailure=0,denyList=0;const requests=[],codexStatusRequests=[];
 const server=createServer(async(req,res)=>{
  if(req.url==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(bundle.outputFiles[0].contents);return;}
  if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css.css);return;}
  if(!req.url.startsWith('/api/')){res.setHeader('Content-Type','text/html');res.end('<html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><div id="root"></div><script src="/bundle.js"></script></html>');return;}
  res.setHeader('Content-Type','application/json');
+ if(req.url==='/api/me/codex'){
+  codexStatusRequests.push({method:req.method,url:req.url});
+  res.setHeader('Cache-Control','no-store');
+  if(req.method==='GET')res.end(JSON.stringify({state:'unavailable'}));
+  else{res.statusCode=405;res.end(JSON.stringify({error:'Fixture only permits the personal connection status read.'}));}
+  return;
+ }
  if(req.method==='GET'){
   requests.push({method:'GET',url:req.url});const after=new URL(req.url,'http://localhost').searchParams.get('cursor');const available=after?rows.filter(row=>row.id>after):rows;
   const body=JSON.stringify({connections:available.slice(0,100),nextCursor:available.length>100?available[99].id:null});
@@ -53,6 +60,8 @@ try{
  await expect(page.getByText('Connection saved',{exact:true})).toBeVisible();await expect(page.getByText('Connection expired',{exact:true})).toBeVisible();
  await expect(page.getByText('Saved access does not confirm service or model availability.',{exact:true})).toBeVisible();
  await expect(page.getByRole('textbox')).toHaveCount(0);await expect(page.getByRole('combobox')).toHaveCount(0);
+ await expect(page.getByText('Personal Codex requires an approved runtime installation.',{exact:true})).toBeVisible();
+ expect(codexStatusRequests).toEqual([{method:'GET',url:'/api/me/codex'}]);
  await expect(page.getByRole('button',{name:/^(Connect|Reconnect)$/})).toHaveCount(0);expect(requests).toHaveLength(0);
  await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(100);
  await page.getByRole('button',{name:'Show more saved connections'}).click();await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(101);
@@ -79,7 +88,9 @@ try{
  denyList=401;await page.getByRole('button',{name:'Refresh saved connections'}).click();await expect(page.getByRole('alert')).toHaveText('Unauthorized');
  await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(0);await expect(page.getByRole('button',{name:'Show more saved connections'})).toHaveCount(0);
  expect(requests.every(request=>request.url.startsWith('/api/hermes-team/member-connections'))).toBe(true);expect(requests.every(request=>request.method==='GET'||request.method==='DELETE')).toBe(true);
- await page.evaluate(()=>window.fixtureShowAccounts(false));await expect(page.getByRole('button',{name:'Connected accounts',exact:true})).toHaveCount(0);await expect(page.getByRole('region',{name:'Saved Team Bot connections'})).toHaveCount(0);
+ await page.evaluate(()=>window.fixtureShowAccounts(false));await expect(page.getByRole('button',{name:'Connected accounts',exact:true})).toBeVisible();await expect(page.getByRole('region',{name:'Saved Team Bot connections'})).toHaveCount(0);
+ await expect(page.getByText('Personal Codex requires an approved runtime installation.',{exact:true})).toBeVisible();
+ expect(codexStatusRequests).toEqual([{method:'GET',url:'/api/me/codex'}]);
  expect(errors).toEqual([]);
- console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, empty tab omitted, 320–1280px actual CSS; synthetic HTTP only');
+ console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, exact read-only personal Codex status and retained central tab, 320–1280px actual CSS; synthetic HTTP only');
 }finally{if(releaseRead)releaseRead();if(releaseDelete)releaseDelete();await browser.close();server.close();await rm(dir,{recursive:true,force:true});}

@@ -53,7 +53,7 @@ xcodebuild -project ios/CollectiveUI.xcodeproj -scheme CollectiveUI \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
 ```
 
-The `iOS` GitHub Actions workflow (`.github/workflows/ios.yml`) uses the `xcode-27` runner and an iOS 27 simulator for changes under `ios/`.
+The `iOS` GitHub Actions workflow (`.github/workflows/ios.yml`) uses the `xcode-27` runner and an iOS 27 simulator. Changes to `ios/`, the shared voice code, or the workflow run validation on pull requests and pushes to `main`. Feature branches use their PR run so the same update does not launch both push and PR validation. New updates cancel older runs for the same PR or branch; other PRs run independently. Use **Run workflow** to validate a branch before opening a PR.
 
 ## Recover an interrupted reply
 

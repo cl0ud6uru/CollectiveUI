@@ -19,6 +19,10 @@ import { entraEnabled, ldapEnabled, localEnabled } from "@/lib/auth/config";
 import { authenticateLocal } from "@/lib/auth/local";
 import { allowSecurityRequest } from "@/lib/auth/throttle";
 import { sessionState, absoluteSessionDeadline } from "@/lib/auth/session-state";
+import { admitWebSession, webSessionIdentity, webSessionRegistryEnabled } from "@/lib/auth/web-sessions";
+import { commitHttpLogout, commitServerLogout, isHttpLogout } from "@/lib/auth/web-logout";
+import { headers } from "next/headers";
+import { NextRequest } from "next/server";
 export { entraEnabled } from "@/lib/auth/config";
 
 class InvalidLogin extends CredentialsSignin {
@@ -95,7 +99,7 @@ if (localEnabled()) {
   }));
 }
 
-export const { handlers, auth, signIn, signOut } = NextAuth({
+const authConfig: NextAuthConfig = {
   providers,
   session: { strategy: "jwt", maxAge: 60 * 60 * 12 },
   pages: { signIn: "/login", error: "/login" },
@@ -137,6 +141,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (!token.uid || Date.now() / 1000 >= deadline) return null;
       const state = await sessionState(String(token.uid), token.sessionVersion, token.authProvider);
       if (!state) return null;
+      if (webSessionRegistryEnabled()) {
+        const identity = webSessionIdentity({ ...token, sessionVersion: token.sessionVersion ?? 0 });
+        if (!identity || !await admitWebSession(identity)) return null;
+      }
       token.mustChangePassword = state.mustChangePassword;
       return token;
     },
@@ -148,4 +156,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return session;
     },
   },
-});
+};
+const runtime = NextAuth(authConfig); // Auth.js fills cookie/secret defaults, including rotation, on this object.
+export const auth = runtime.auth;
+/** The logout route verifies the original cookie and commits before Auth.js may clear it. */
+export const guardedHttpLogout = (req: Request) => webSessionRegistryEnabled() && isHttpLogout(req, authConfig);
+export const authSessionCookieName = (req: Request) => authConfig.cookies?.sessionToken?.name ?? `${(authConfig.useSecureCookies ?? new URL(process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? req.url).protocol === "https:") ? "__Secure-" : ""}authjs.session-token`;
+export const signIn = runtime.signIn;
+export const handlers = {
+  GET: runtime.handlers.GET,
+  POST: async (req: NextRequest) => {
+    if (!webSessionRegistryEnabled() || !isHttpLogout(req, authConfig)) return runtime.handlers.POST(req);
+    try { return await runtime.handlers.POST(new NextRequest(await commitHttpLogout(req, authConfig))); }
+    catch { return Response.json({ error: "Sign-out could not complete. Please retry." }, { status: 503, headers: { "Cache-Control": "private, no-store" } }); }
+  },
+};
+export const signOut: typeof runtime.signOut = async options => {
+  if (webSessionRegistryEnabled()) await commitServerLogout(new Headers(await headers()), authConfig);
+  return runtime.signOut(options);
+};
