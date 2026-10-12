@@ -59,7 +59,7 @@ retained start and bridge admission; failures retain storage and require operato
 reconciliation. Compiled-in pins (also tested against repository bytes):
 
 - Seccomp: `e077360ce81d54eb7acf5d15d20e7c9444a16c68ea50a38ac66cb8e3ccf13370`
-- Prepared stock-pivot AppArmor source: `f9f89ce0a645d5d90b326908d384ad1c0553b71003944a9628bd5c83e4c90d81`. Host apply/reload and matching verifier update require explicit approval; see the [VM follow-up](reviews/personal-codex-stock-vm-followup.md).
+- Prepared stock-pivot AppArmor source: `f9f89ce0a645d5d90b326908d384ad1c0553b71003944a9628bd5c83e4c90d81`. Host apply/reload and matching verifier update require explicit approval; the parent recorded approval for this exact delta at 22:09 UTC, as documented in the [VM follow-up](reviews/personal-codex-stock-vm-followup.md).
 - Previous approved source: `d0b2b0d205f15ed22d05bfe0e21a64947cab9ddff933652bfd22caab1789852b`. The new verifier rejects these bytes; use the diagnostics-only commit below when testing the existing approved profile before any host change.
 
 These policies derive from Moby defaults with nested unprivileged namespace

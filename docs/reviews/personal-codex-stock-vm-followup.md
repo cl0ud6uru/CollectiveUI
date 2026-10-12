@@ -12,7 +12,7 @@ The supplemental fixture-only RPC helper captures at most 4096 bytes of stderr, 
 
 Regression tests exercise a real `prepareWorkspace` error before any RPC response, bounded/redacted stderr and exit status, successful RPC, a live-process timeout, and a pivot failure. The bootstrap regression uses a nonexistent synthetic parent to cause `ENOENT`; it does not assert that the VM missing-case failure is `ENOENT` or change metadata initialization to guess at a fix. Preserve the updated missing-case phase/stderr/exit result before proposing a runtime change.
 
-## Exact pivot proposal, pending approval
+## Exact approved pivot source change
 
 Hermes's read-only audit supplied through the parent:
 
@@ -32,7 +32,7 @@ The minimal proposed permission delta is exactly one addition:
 
 The original complete profile SHA-256 is **`d0b2b0d205f15ed22d05bfe0e21a64947cab9ddff933652bfd22caab1789852b`**. Adding that line with the existing indentation/newline produces exactly Hermes's candidate SHA-256 **`f9f89ce0a645d5d90b326908d384ad1c0553b71003944a9628bd5c83e4c90d81`**. The corresponding source verifier pin must change to this exact value in the same reviewed change. Old profile bytes must then be rejected. Seccomp SHA-256 **`e077360ce81d54eb7acf5d15d20e7c9444a16c68ea50a38ac66cb8e3ccf13370`**, capabilities, mount/network/namespace options and all other profile rules stay unchanged. No broad `pivot_root`, wildcard path, unconfined mode, PATH helper or Rust rebuild is proposed.
 
-The supplemental branch prepares the source change for review; it does not install/reload anything. The parent is obtaining **action-time host apply/reload and verifier-pin approval**. Do not treat repository source preparation as that approval. No host profile was applied by this agent, and no loaded-policy success or native enforcement is claimed. The cloud has no AppArmor parser, so local parser/kernel acceptance is untested; Hermes must verify syntax against the VM's supported parser before an approved reload.
+The parent confirmed Jason's **22:09 UTC action-time approval** for the exact one-line addition, host reload, corresponding verifier-pin update and credential-free retest: “Yeah lets get it done.” Hermes has been instructed to perform that approved operation. This agent prepared source and tests only, did not access/apply anything on the VM, and does not claim loaded-policy success or native enforcement. The prepared commits are carried forward into PR187 for the operator checkout; the original tested head remains preserved in history. The cloud has no AppArmor parser, so local parser/kernel acceptance is untested; Hermes must verify syntax against the VM's supported parser before an approved reload.
 
 ## Bounded retest through the parent
 
@@ -40,7 +40,7 @@ Use the preserved VM image ID above; the diagnostic scripts and host policy are 
 
 Diagnostics-only head: **`f9a8c58c8b0ff08510255afbb29481bd8db6ed80`**. It retains the old `d0b2…9852b` profile and verifier and can produce the missing-case diagnostic under the existing approved policy. The following commit prepares the exact one-line profile delta, its `f9f89…90d81` verifier pin and a regression rejecting old bytes. The original cloud evidence/provenance JSON and PR187 remain unchanged.
 
-1. On the diagnostics-only commit, keep the existing approved profile and run the unchanged full-matrix command from the [handoff](personal-codex-stock-runtime.md#credential-free-hermes-handoff-through-the-parent). Record the missing case's phase, startup stderr, process exit/signal and Docker operation status. Both `verified:false` and the known pivot denial remain expected until approval; do not count them as acceptance.
+1. If diagnosing with the preserved old profile, use the diagnostics-only commit and run the unchanged full-matrix command from the [handoff](personal-codex-stock-runtime.md#credential-free-hermes-handoff-through-the-parent). Record the missing case's phase, startup stderr, process exit/signal and Docker operation status. With the old profile, both `verified:false` and the known pivot denial remain expected; do not count them as acceptance. After the approved profile/pin reconciliation, use the final PR187 head to capture any remaining missing-case failure.
 2. After explicit approval only, reconcile the exact proposed profile file and verifier pin together through Hermes's operator procedure. Verify source hash and loaded profile name, parser result and fixed seccomp hash. If either source hash disagrees, the verifier must stop. Do not infer loaded policy bytes solely from its name.
 3. Run both fixture probes against the same recorded image under the approved profile. Require all previously defined metadata/home/helper/process/network/persistence gates, every named check true, exit0 and `verified:true`. A new failure must retain its exact diagnostic and block activation. The proposal only addresses the audited second pivot; it does not prove downstream mounts or tools will pass.
 4. Return results through the parent. Credential setup, live model/history proof, immutable registry-digest publication and deployment remain separately approved work. Preserve the tested-head evidence instead of rewriting it with new results.
