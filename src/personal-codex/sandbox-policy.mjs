@@ -6,7 +6,7 @@ export const SANDBOX_PROFILE = 'collectiveui-sandbox-v1';
 export const SECCOMP_PATH = '/etc/collectiveui/security/collectiveui-seccomp-v1.json';
 export const SECCOMP_SHA256 = 'e077360ce81d54eb7acf5d15d20e7c9444a16c68ea50a38ac66cb8e3ccf13370';
 export const APPARMOR_PATH = '/etc/apparmor.d/collectiveui-sandbox-v1';
-export const APPARMOR_SHA256 = 'd0b2b0d205f15ed22d05bfe0e21a64947cab9ddff933652bfd22caab1789852b';
+export const APPARMOR_SHA256 = 'f9f89ce0a645d5d90b326908d384ad1c0553b71003944a9628bd5c83e4c90d81';
 const denied = () => new Error('Reviewed sandbox policy requires operator reconciliation.');
 
 async function pinnedFile(path, digest) {

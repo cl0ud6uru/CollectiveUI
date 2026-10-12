@@ -45,6 +45,7 @@ profile collectiveui-sandbox-v1 flags=(attach_disconnected,mediate_deleted) {
   userns,
   # The pinned bubblewrap helper pivots only inside its private /tmp mount.
   pivot_root oldroot=/tmp/oldroot/ /tmp/,
+  pivot_root oldroot=/newroot/ /newroot/,
 
   deny /sys/[^f]*/** wklx,
   deny /sys/f[^s]*/** wklx,
