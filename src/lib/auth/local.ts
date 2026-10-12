@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db, type Tx } from "@/db";
+import { db, type DB, type Tx } from "@/db";
 import { auditLog, localAuthBootstrap, localCredentials, localLoginAliases, users } from "@/db/schema";
 import { resolvePrincipal } from "./groups";
 import { localEnabled } from "./config";
@@ -90,8 +90,14 @@ async function ensureLocalAdminRemains(tx: Tx, userId: string) {
     .where(and(eq(users.identityRealm, "local"), eq(users.isAdmin, true), eq(users.disabled, false), eq(localCredentials.mustChangePassword, false), sql`${users.id} <> ${userId}`));
   if (!rows.length) throw new HttpError(400, "Keep another enabled local administrator with a permanent password before changing this account.");
 }
-export async function changeUserAccess(actor: AuthActor, userId: string, change: { isAdmin?: boolean; disabled?: boolean; revoke?: boolean }) {
-  const teamBotIds = await db.transaction(async tx => {
+export async function changeUserAccess(
+  actor: AuthActor,
+  userId: string,
+  change: { isAdmin?: boolean; disabled?: boolean; revoke?: boolean },
+  options: { database?: DB; deferTeamReconciliation?: boolean } = {},
+): Promise<string[]> {
+  const database = options.database ?? db;
+  const teamBotIds = await database.transaction(async tx => {
     await lockAccounts(tx);
     await assertActor(tx, actor);
     const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
@@ -105,10 +111,11 @@ export async function changeUserAccess(actor: AuthActor, userId: string, change:
     // Even a still-authorized actor must lose grants issued to the old session version.
     return team ? team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actor.id, userId, true) : [];
   });
-  if (teamBotIds.length) {
+  if (teamBotIds.length && !options.deferTeamReconciliation) {
     const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
     for (const botId of teamBotIds) await reconcileTeamAccess(botId);
   }
+  return teamBotIds;
 }
 export async function resetLocalPassword(actor: AuthActor | "recover-admin", userId: string, password: string) {
   enabled();

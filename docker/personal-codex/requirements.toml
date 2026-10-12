@@ -1,0 +1,44 @@
+# Immutable managed requirements; installed in the reviewed image, outside writable volumes.
+allowed_login_methods = ["chatgpt"]
+cli_auth_credentials_store = "file"
+model_provider = "openai"
+allowed_approval_policies = ["on-request"]
+allowed_approvals_reviewers = ["user"]
+allowed_sandbox_modes = ["workspace-write", "read-only"]
+default_permissions = "collective-personal"
+allow_login_shell = false
+check_for_update_on_startup = false
+allow_managed_hooks_only = true
+allow_browser_and_computer_use = false
+allow_appshots = false
+allow_remote_control = false
+allowed_web_search_modes = ["disabled"]
+
+[allowed_permission_profiles]
+collective-personal = true
+
+[permissions.filesystem]
+deny_read = ["/codex-home/auth.json", "/codex-home/config.toml", "/codex-home/sessions", "/codex-home/archived_sessions", "/codex-home/history.jsonl", "/codex-home/log", "/codex-home/logs", "/proc", "/sys"]
+
+[permissions.collective-personal.filesystem]
+"/" = "read"
+"/home/agent/workspace" = "write"
+"/tmp" = "write"
+"/codex-home" = "deny"
+"/home/agent/workspace/.codex" = "deny"
+"/proc" = "deny"
+"/sys" = "deny"
+
+[permissions.collective-personal.network]
+enabled = false
+
+[feature_requirements]
+hooks = false
+memories = false
+use_legacy_landlock = false
+plugins = false
+plugin_hooks = false
+enable_mcp_apps = false
+multi_agent = false
+multi_agent_v2 = false
+image_generation = false

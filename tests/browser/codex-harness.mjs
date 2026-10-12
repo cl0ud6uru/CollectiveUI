@@ -57,8 +57,12 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.getByRole('button', {name:'configure',exact:true}).click();
     await page.getByLabel('Bot engine', {exact:true}).click();
-    await page.getByRole('option', {name:'Codex · app-server (text pilot)',exact:true}).click();
+    await page.getByRole('option', {name:'Codex · personal agent',exact:true}).click();
     await expect(page.getByLabel('Model connection', {exact:true})).toHaveCount(0);
+    await expect(page.getByLabel('Codex funding')).toContainText('My authorized ChatGPT subscription runtime');
+    await expect(page.getByText('No authorized subscription runtime assigned to you.', {exact:true})).toBeVisible();
+    await page.getByLabel('Codex funding').click();
+    await page.getByRole('option', {name:'My API-funded runtime',exact:true}).click();
     await expect(page.getByText('No verified API runtime assigned to you.', {exact:true})).toBeVisible();
     await page.getByLabel('Codex funding').click();
     await page.getByRole('option', {name:'My authorized ChatGPT subscription runtime',exact:true}).click();

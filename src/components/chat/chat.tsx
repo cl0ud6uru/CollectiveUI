@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import { toast } from "sonner";
-import { ArrowDown, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, SquarePen } from "lucide-react";
+import { ArrowDown, Eye, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, SquarePen } from "lucide-react";
 import { grantToolForBot, setConversationLeaf, setMessageFeedback } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { replyAddress, replyContext, type ReplyContext } from "@/lib/chat/reply";
@@ -40,6 +40,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Tip } from "@/components/ui/tooltip";
 import { PetChatActivity } from "@/components/pets/pet-context";
 import { WorkspaceBrowser, useWorkspaceAccess, type WorkspaceCommandHistory } from "./workspace-browser";
+import { AgentBrowserViewer } from "./agent-browser-viewer";
 import { artifactPath } from "@/lib/chat/workspace-artifacts";
 import { WorkspaceFileContext } from "./workspace-context";
 import { hasPendingAsyncTasks } from "@/lib/delegation/policy";
@@ -111,10 +112,13 @@ export function Chat({
   const { user, branding, upsertConversation, setMobileOpen, apps, bots, setBotLive, setChatStatus, serverBots } = useShell();
   const [target, setTarget] = useState<TargetOption | null>(initialTarget);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
   const [workspaceFileRequest, setWorkspaceFileRequest] = useState<{ path: string; id: number }>();
   const workspaceToggleRef = useRef<HTMLButtonElement>(null);
+  const browserToggleRef = useRef<HTMLButtonElement>(null);
   const workspaceAllowed = useWorkspaceAccess(!embedded && !target?.hermes && !target?.hermesTeam);
   const closeWorkspace = useCallback(() => { setWorkspaceOpen(false); workspaceToggleRef.current?.focus(); }, []);
+  const closeBrowser = useCallback(() => { setBrowserOpen(false); browserToggleRef.current?.focus(); }, []);
   const [voiceActive, setVoiceActive] = useState(false);
   const [started, setStarted] = useState(!isNew);
   const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
@@ -130,7 +134,7 @@ export function Chat({
   const openWorkspaceFile = useCallback((value: string) => {
     const path = artifactPath(value);
     if (!path) return;
-    setDetailsView(null); setWorkspaceOpen(true); setWorkspaceFileRequest({ path, id: Date.now() });
+    setDetailsView(null); setBrowserOpen(false); setWorkspaceOpen(true); setWorkspaceFileRequest({ path, id: Date.now() });
   }, []);
   const detailsId = useId();
   const detailsToggleRef = useRef<HTMLButtonElement>(null);
@@ -666,7 +670,7 @@ export function Chat({
                 bots={bots}
                 locked={started && target?.kind === "bot"}
                 onChange={(t) => {
-                  if (embedded || (!started && t.kind === "app")) setTarget(t);
+                  if (embedded || (!started && t.kind === "app")) { setBrowserOpen(false); setWorkspaceOpen(false); setDetailsView(null); setTarget(t); }
                   else router.push(t.kind === "bot" ? `/?bot=${t.id}` : `/?app=${t.id}`);
                 }}
               />
@@ -682,7 +686,7 @@ export function Chat({
             {workspaceAllowed && (
               <button
                 ref={workspaceToggleRef}
-                onClick={() => { setDetailsView(null); setWorkspaceOpen(value => !value); }}
+                onClick={() => { setDetailsView(null); setBrowserOpen(false); setWorkspaceOpen(value => !value); }}
                 className={cn("rounded-lg p-2 hover:bg-hover", workspaceRunning ? "text-working" : "text-muted")}
                 aria-label={workspaceOpen ? "Hide workspace" : "Open workspace"}
                 aria-expanded={workspaceOpen}
@@ -691,12 +695,20 @@ export function Chat({
                 <Monitor className={cn("h-4 w-4", workspaceRunning && "motion-safe:animate-pulse")} />
               </button>
             )}
+            {target?.kind === "bot" && !embedded && !target.hermes && !target.hermesTeam && (
+              <button ref={browserToggleRef} onClick={() => { setDetailsView(null); setWorkspaceOpen(false); setBrowserOpen(value => !value); }}
+                className={cn("rounded-lg p-2 hover:bg-hover", browserOpen ? "text-fg" : "text-muted")}
+                aria-label={browserOpen ? "Hide agent browser" : "View agent browser"} aria-expanded={browserOpen}
+                title="View the agent browser · read only">
+                <Eye className="h-4 w-4" aria-hidden />
+              </button>
+            )}
             {started && !embedded && <ShareButton conversationId={conversationId} />}
             {target?.kind === "bot" && !embedded && (
               <Tip label={detailsLabel}>
                 <button
                   ref={detailsToggleRef}
-                  onClick={() => { setWorkspaceOpen(false); if (detailsView) closeDetails(); else openDetails(); }}
+                  onClick={() => { setWorkspaceOpen(false); setBrowserOpen(false); if (detailsView) closeDetails(); else openDetails(); }}
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-fg"
                   aria-label={detailsLabel}
                   aria-expanded={detailsView !== null}
@@ -902,6 +914,7 @@ export function Chat({
         )}
       </div>
       {workspaceAllowed && <WorkspaceBrowser open={workspaceOpen} onClose={closeWorkspace} fileRequest={workspaceFileRequest} history={workspaceHistory} onInsertPath={path => composerRef.current?.appendText(`\`${path}\``)} />}
+      {target?.kind === "bot" && !embedded && !target.hermes && !target.hermesTeam && <AgentBrowserViewer open={browserOpen} onClose={closeBrowser} conversationId={conversationId} />}
       {target?.kind === "bot" && !embedded && (
         <div id={detailsId} onFocusCapture={(event) => { detailsFocusRef.current = event.target; }} hidden={detailsView !== "desktop"}>
           {detailsView === "desktop" && <BotSidePanel bot={target} onClose={closeDetails} panelId={detailsId} />}

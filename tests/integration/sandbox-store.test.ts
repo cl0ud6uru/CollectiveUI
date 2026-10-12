@@ -112,13 +112,14 @@ run("workspace records (integration)", () => {
 
   it("the sweep destroys expired workspaces and old orphans, never a live or new one", async () => {
     const { db } = await import("@/db");
-    const { sandboxes } = await import("@/db/schema");
+    const { sandboxes, users } = await import("@/db/schema");
     const { getOrCreateRef, findSandbox } = await import("@/lib/sandbox/store");
     const { sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
     // A clock far in the past, so only this test's rows can count as expired.
     const now = new Date("2001-01-01T12:00:00Z");
     const aliceRef = await getOrCreateRef(alice);
     const bobRef = await getOrCreateRef(bob);
+    await db.update(users).set({ disabled: true }).where(eq(users.id, alice));
     await db.update(sandboxes).set({ deleteAfter: new Date("2001-01-01T00:00:00Z") }).where(eq(sandboxes.userId, alice));
     await db.update(sandboxes).set({ deleteAfter: new Date("2001-01-02T00:00:00Z") }).where(eq(sandboxes.userId, bob));
 
@@ -150,10 +151,11 @@ run("workspace records (integration)", () => {
 
   it("a failed destroy keeps the record for the next sweep", async () => {
     const { db } = await import("@/db");
-    const { sandboxes } = await import("@/db/schema");
+    const { sandboxes, users } = await import("@/db/schema");
     const { getOrCreateRef, findSandbox } = await import("@/lib/sandbox/store");
     const { sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
     await getOrCreateRef(alice);
+    await db.update(users).set({ disabled: true }).where(eq(users.id, alice));
     await db.update(sandboxes).set({ deleteAfter: new Date("2001-01-01T00:00:00Z") }).where(eq(sandboxes.userId, alice));
     stub.destroy.mockRejectedValue(new Error("docker unavailable"));
     const r = await sweepSandboxes(new Date("2001-01-01T12:00:00Z"));

@@ -1,0 +1,135 @@
+import { z } from 'zod';
+import { createServer } from 'node:http';
+import { chmod, mkdir, lstat, writeFile, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { WebSocketServer } from 'ws';
+import { PersonalCodexDriver, runtimeKey } from './docker';
+import { ownerId, pendingLogin, nativeAccount, type BrokerStatus } from './contracts';
+import { CodexClient } from '../lib/codex/client';
+import type { CodexRuntime } from '../lib/codex/runtime';
+
+/** Protected Unix socket only. Socket access grants server authority; never mount it in an agent runtime. */
+export async function startPersonalBroker(driver: PersonalCodexDriver) {
+  const socketPath = driver.config.socketPath;
+  await mkdir(dirname(socketPath), { recursive: true, mode: 0o750 });
+  // Refuse stale/symlink collisions rather than deleting someone else's socket.
+  if (await lstat(socketPath).catch(() => null)) throw new Error('Personal Codex socket already exists; reconcile the previous broker first.');
+  const parent = await lstat(dirname(socketPath));
+  if (!parent.isDirectory() || parent.isSymbolicLink() || parent.mode & 0o007 || parent.mode & 0o020)
+    throw new Error('Personal Codex socket directory must be protected from untrusted access/writes.');
+  const loginMarker = (owner: string) => join(dirname(socketPath), `codex-login-${runtimeKey(owner)}.pending`);
+  const clearMarker = (owner: string) => unlink(loginMarker(owner)).catch(() => {});
+  const hasMarker = async (owner: string) => !!await lstat(loginMarker(owner)).catch(() => null);
+  const sessions = new Map<string, { client: CodexClient; login?: ReturnType<typeof pendingLogin.parse>; until?: number; completed: Set<string>; verified: boolean }>();
+  const queue = new Map<string, Promise<unknown>>();
+  const runtime = (owner: string): CodexRuntime => ({ id: `personal:${owner}`, ownerId: owner, funding: 'chatgpt_subscription',
+    endpoint: 'ws://127.0.0.1/runtime', tokenFile: '', isolationId: driver.name(owner), credentialBinding: 'connection-management',
+    cwd: '/home/agent/workspace', isolated: true, nativeMcpDisabled: true, managed: true, socketPath });
+  async function accountClient(owner: string, requireExecution = true) {
+    let session = sessions.get(owner);
+    if (!session) {
+      // Bounded readiness wait after an explicitly requested start; no background provisioning.
+      let client: CodexClient | undefined;
+      for (let i = 0; i < 15; i++) {
+        try { client = await CodexClient.connect(runtime(owner)); break; } catch { await new Promise(r => setTimeout(r, 200)); }
+      }
+      if (!client) throw new Error('Runtime did not become ready');
+      session = { client, completed: new Set(), verified: false }; sessions.set(owner, session);
+      client.onFailure(() => { if (sessions.get(owner)?.client === client) sessions.delete(owner); });
+      client.onNotification(e => {
+        if (e.method !== 'account/login/completed') return;
+        const completed = z.object({ loginId: z.string().nullable(), success: z.boolean() }).safeParse(e.params);
+        if (!completed.success || !completed.data.loginId) return;
+        session!.completed.add(completed.data.loginId);
+        if (session!.completed.size > 32) session!.completed.delete(session!.completed.values().next().value!);
+        if (session!.login?.loginId === completed.data.loginId) { session!.login = undefined; void clearMarker(owner); }
+      });
+    }
+    if (requireExecution && !session.verified) {
+      try {
+        const result = z.object({ exitCode: z.literal(0), stdout: z.literal('collective-codex-sandbox-ready'), stderr: z.string() }).parse(await session.client.request('command/exec', {
+          command: ['sh', '-c', 'test ! -r /codex-home/auth.json && test ! -r /proc/1/environ && probe=$(mktemp /home/agent/workspace/.collective-probe.XXXXXX) && printf collective-codex-sandbox-ready > "$probe" && cat "$probe" && rm "$probe"'],
+          cwd: '/home/agent/workspace', permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 2048,
+        }));
+        if (result.stderr) throw new Error('Native sandbox probe failed');
+      } catch { throw new Error('Native sandbox probe failed; runtime cannot be connected.'); }
+      session.verified = true;
+    }
+    if (session.until && session.until <= Date.now() && session.login) {
+      await session.client.request('account/login/cancel', { loginId: session.login.loginId }); session.login = undefined; await clearMarker(owner);
+    }
+    return session;
+  }
+  async function status(owner: string): Promise<BrokerStatus> {
+    const c = await driver.inspect(owner);
+    if (!c) return { state: 'not_started' };
+    if (!c.State.Running) return { state: 'stopped' };
+    const session = await accountClient(owner, false);
+    // Explicit projection strips all unexpected fields; never relay raw errors or auth material.
+    const account = nativeAccount.parse(await session.client.request('account/read', { refreshToken: false }));
+    if (!session.login && account.account && account.workspaceRouting) await clearMarker(owner);
+    return { state: 'running', account, ...(session.login ? { login: session.login } : await hasMarker(owner) ? { loginUncertain: true } : {}) };
+  }
+  const server = createServer((req, res) => {
+    const reply = (value: unknown, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
+    void (async () => {
+      const owner = ownerId.parse(req.headers['x-collective-owner']); driver.name(owner);
+      const action = req.url?.slice(1);
+      if (req.headers['content-length'] && req.headers['content-length'] !== '0') return reply({ error: 'Unexpected body' }, 400);
+      if (!(action === 'status' && req.method === 'GET') && !(['connect', 'cancel', 'disconnect', 'start'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
+      const prior = queue.get(owner) ?? Promise.resolve();
+      const next = prior.catch(() => {}).then(async () => {
+        if (action === 'connect') await driver.ensure(owner);
+        if (action === 'start') await driver.startRetained(owner);
+        if (action === 'connect') {
+          const session = await accountClient(owner);
+          if (!session.login) {
+            const current = nativeAccount.parse(await session.client.request('account/read', { refreshToken: false }));
+            if (current.account) throw new Error('Disconnect before reconnecting');
+            if (await hasMarker(owner)) throw new Error('Previous login dispatch is uncertain. Cancel before retrying.');
+            // Non-secret durable uncertainty fence precedes native login. Lost replies are not replayed.
+            await writeFile(loginMarker(owner), 'pending native device sign-in\n', { mode: 0o600, flag: 'wx' });
+            session.login = pendingLogin.parse(await session.client.request('account/login/start', { type: 'chatgptDeviceCode' }, 15000));
+            session.until = Date.now() + 15 * 60 * 1000;
+            if (session.completed.has(session.login.loginId)) { session.login = undefined; await clearMarker(owner); }
+          }
+        } else if (action === 'cancel' || action === 'disconnect') {
+          if (action === 'disconnect') await driver.startRetained(owner);
+          const session = await accountClient(owner, false);
+          if (session.login) { await session.client.request('account/login/cancel', { loginId: session.login.loginId }); session.login = undefined; }
+          // Explicit cancel revokes any grant completed concurrently with cancellation.
+          // Completion may already have removed both the in-memory login and durable marker.
+          await session.client.request('account/logout', {});
+          await clearMarker(owner);
+        }
+        return status(owner);
+      });
+      queue.set(owner, next);
+      try { reply(await next); } finally { if (queue.get(owner) === next) queue.delete(owner); }
+    })().catch(() => reply({ error: 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' }, 503));
+  });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
+  server.on('upgrade', (req, socket, head) => {
+    void (async () => {
+      if (req.url !== '/runtime') throw new Error();
+      const owner = ownerId.parse(req.headers['x-collective-owner']);
+      const bridge = await driver.bridge(owner);
+      wss.handleUpgrade(req, socket, head, ws => {
+        bridge.stderr.resume();
+        const lines = createInterface({ input: bridge.stdout });
+        let bytes = 0;
+        // readline's unbounded internal buffer is also bounded before parsing.
+        bridge.stdout.on('data', chunk => { bytes += chunk.length; if (bytes > 2 * 1024 * 1024) bridge.kill(); if (chunk.includes(10)) bytes = 0; });
+        lines.on('line', line => { if (line.length > 1024 * 1024 || ws.bufferedAmount > 2 * 1024 * 1024) ws.terminate(); else ws.send(line); });
+        ws.on('message', data => { if (!bridge.stdin.write(`${data}\n`)) ws.pause(); });
+        bridge.stdin.on('drain', () => ws.resume());
+        bridge.stdin.on('error', () => ws.terminate()); bridge.on('error', () => ws.terminate()); bridge.on('exit', () => ws.terminate());
+        ws.on('close', () => { lines.close(); bridge.stdin.end(); bridge.kill(); }); ws.on('error', () => bridge.kill());
+      });
+    })().catch(() => { socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n'); socket.destroy(); });
+  });
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+  await chmod(socketPath, 0o660);
+  return { server, close: async () => { for (const session of sessions.values()) session.client.close(); for (const ws of wss.clients) ws.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+}

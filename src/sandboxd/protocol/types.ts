@@ -25,6 +25,8 @@ export type ErrorBody = { error: ErrorCode; message: string };
 
 export type ExecRequest = {
   isolation: Isolation;
+  /** Server-installed daemon profile key. Omission selects the legacy SANDBOXD_IMAGE profile. */
+  runtimeProfileKey?: string;
   command: string;
   /** Relative to the workspace (default: the workspace itself). */
   cwd?: string;
@@ -34,15 +36,15 @@ export type ExecRequest = {
   execId: string;
 };
 
-export type ReadRequest = { isolation: Isolation; path: string; maxBytes: number; startLine?: number; endLine?: number };
-export type WriteRequest = { isolation: Isolation; path: string; contentB64: string };
+export type ReadRequest = { isolation: Isolation; runtimeProfileKey?: string; path: string; maxBytes: number; startLine?: number; endLine?: number };
+export type WriteRequest = { isolation: Isolation; runtimeProfileKey?: string; path: string; contentB64: string };
 export type WriteResult = { bytes: number; created: boolean };
 
-export type ListRequest = { isolation: Isolation; path?: string; depth: number; maxEntries: number };
+export type ListRequest = { isolation: Isolation; runtimeProfileKey?: string; path?: string; depth: number; maxEntries: number };
 export type ListEntry = { path: string; type: "file" | "dir" | "link" | "other"; size: number };
 export type ListResult = { entries: ListEntry[]; truncated: boolean };
 
-export type GrepRequest = { isolation: Isolation; pattern: string; path?: string; glob?: string; ignoreCase?: boolean; maxMatches: number };
+export type GrepRequest = { isolation: Isolation; runtimeProfileKey?: string; pattern: string; path?: string; glob?: string; ignoreCase?: boolean; maxMatches: number };
 export type GrepMatch = { path: string; line: number; text: string };
 export type GrepResult = { matches: GrepMatch[]; truncated: boolean };
 
