@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/sandboxd/config";
 import { Docker } from "@/sandboxd/docker";
 import { Manager } from "@/sandboxd/manager";
-import { containerName, containerSpec, execSpec, volumeSpec } from "@/sandboxd/spec";
+import { containerName, containerSpec, execSpec, volumeName, volumeSpec } from "@/sandboxd/spec";
 import { enabled, newRef, run, startSandboxd } from "./harness";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -32,18 +32,50 @@ function profile(slug: string) {
   return found;
 }
 
-async function runInContainer(h: Awaited<ReturnType<typeof startSandboxd>>, containerId: string, command: string, timeoutMs = 150_000) {
+function fixtureVolumeInitializerSpec(spec: ReturnType<typeof containerSpec>) {
+  return {
+    ...spec,
+    User: "0:0",
+    Entrypoint: ["/bin/sleep"],
+    Cmd: ["infinity"],
+    HostConfig: { ...spec.HostConfig, CapAdd: ["CHOWN"] },
+  };
+}
+
+const fixtureVolumeOwnershipCommand =
+  "chown -R 1000:1000 /home/agent && test \"$(stat -c '%u:%g' /home/agent)\" = '1000:1000' && test -z \"$(find /home/agent -mindepth 1 -print -quit)\"";
+
+async function runWithDocker(
+  docker: Docker,
+  containerId: string,
+  command: string,
+  timeoutMs = 150_000,
+  user = "1000:1000",
+  workingDirectory = "/home/agent/workspace",
+) {
   let out = "";
   let err = "";
-  const execId = await h.docker.execCreate(containerId, execSpec(["/bin/sh", "-lc", `cd /home/agent/workspace && ${command}`], { stdin: false }));
-  const attached = await h.docker.execAttach(execId, (type, data) => {
+  const exec = execSpec(["/bin/sh", "-lc", `cd ${workingDirectory} && ${command}`], { stdin: false });
+  const execId = await docker.execCreate(containerId, { ...exec, User: user });
+  const attached = await docker.execAttach(execId, (type, data) => {
     if (type === 1) out += data.toString();
     else if (type === 2) err += data.toString();
   });
   const timer = setTimeout(() => attached.socket.destroy(), timeoutMs);
   await attached.ended;
   clearTimeout(timer);
-  return { code: await h.docker.execExitCode(execId, 5_000), out, err };
+  return { code: await docker.execExitCode(execId, 5_000), out, err };
+}
+
+async function runInContainer(
+  h: Awaited<ReturnType<typeof startSandboxd>>,
+  containerId: string,
+  command: string,
+  timeoutMs = 150_000,
+  user = "1000:1000",
+  workingDirectory = "/home/agent/workspace",
+) {
+  return runWithDocker(h.docker, containerId, command, timeoutMs, user, workingDirectory);
 }
 
 describe("reviewed workspace starter image definitions", () => {
@@ -122,6 +154,99 @@ describe("reviewed workspace starter image definitions", () => {
     expect(dotnet).toContain("cp -Rn /opt/workspace-template/starter/. /home/agent/workspace/");
     expect(dotnet).toContain("cp -Rn /opt/workspace-template/nuget/. /home/agent/.nuget/packages/");
   });
+
+  it("repairs only the disposable no-copy fixture volume owner without pre-seeding data", () => {
+    const spec = containerSpec({
+      ref: "fixture-volume-owner-check",
+      imageId: `sha256:${"a".repeat(64)}`,
+      runtime: "runc",
+      limits: { memoryMb: 2048, cpus: 1, pids: 256, nofile: 1024, fsizeMb: 16, tmpMb: 64, shmMb: 16 },
+      instance: "fixture-owner-test",
+    });
+    const mounts = (spec.HostConfig as { Mounts: Array<Record<string, unknown>> }).Mounts;
+    mounts[0] = { ...mounts[0], VolumeOptions: { NoCopy: true } };
+
+    const initializer = fixtureVolumeInitializerSpec(spec);
+    const host = initializer.HostConfig as typeof initializer.HostConfig & { CapAdd: string[]; Mounts: Array<Record<string, unknown>> };
+    expect(initializer.User).toBe("0:0");
+    expect(initializer.Entrypoint).toEqual(["/bin/sleep"]);
+    expect(initializer.Cmd).toEqual(["infinity"]);
+    expect(host.CapAdd).toEqual(["CHOWN"]);
+    expect(host.CapDrop).toEqual(["ALL"]);
+    expect(host.NetworkMode).toBe("none");
+    expect(host.ReadonlyRootfs).toBe(true);
+    expect(host.Privileged).toBe(false);
+    expect(host.Mounts[0].VolumeOptions).toEqual({ NoCopy: true });
+    expect(fixtureVolumeOwnershipCommand).toContain("chown -R 1000:1000 /home/agent");
+    expect(fixtureVolumeOwnershipCommand).toContain("test -z");
+  });
+});
+
+(enabled ? describe : describe.skip)("no-copy test volume ownership initializer", () => {
+  it("makes an empty no-copy volume writable as uid 1000 without pre-populating it", async () => {
+    const dockerSocket = process.env.SANDBOXD_DOCKER_SOCKET ?? process.env.DOCKER_HOST?.replace(/^unix:\/\//, "") ?? "/var/run/docker.sock";
+    const docker = new Docker(dockerSocket);
+    const ref = newRef();
+    const instance = `fixture-${ref}`;
+    const image = await docker.imageInspect(profile("dotnet-linux").baseImageRef);
+    if (!image) throw new Error(`The pinned base image ${profile("dotnet-linux").baseImageRef} must be available locally; this test never pulls images`);
+
+    let initializerName: string | undefined;
+    let workspaceName: string | undefined;
+    try {
+      await docker.volumeCreate(volumeSpec(ref, instance));
+      const spec = containerSpec({
+        ref,
+        imageId: image.Id,
+        runtime: "runc",
+        limits: { memoryMb: 256, cpus: 1, pids: 128, nofile: 1024, fsizeMb: 16, tmpMb: 64, shmMb: 16 },
+        instance,
+      });
+      const mounts = (spec.HostConfig as { Mounts: Array<Record<string, unknown>> }).Mounts;
+      mounts[0] = { ...mounts[0], VolumeOptions: { NoCopy: true } };
+
+      initializerName = `${containerName(ref)}-owner-init`;
+      const initializer = await docker.containerCreate(initializerName, fixtureVolumeInitializerSpec(spec));
+      await docker.containerStart(initializer.Id);
+      const ownership = await runWithDocker(docker, initializer.Id, fixtureVolumeOwnershipCommand, 30_000, "0:0", "/home/agent");
+      expect(ownership, ownership.out + ownership.err).toMatchObject({ code: 0 });
+      await docker.containerStop(initializer.Id);
+      await docker.containerRemove(initializer.Id);
+      initializerName = undefined;
+
+      workspaceName = `${containerName(ref)}-uid-check`;
+      const workspaceSpec = { ...spec, Entrypoint: ["/bin/sleep"], Cmd: ["infinity"] };
+      const workspace = await docker.containerCreate(workspaceName, workspaceSpec);
+      await docker.containerStart(workspace.Id);
+      const writable = await runWithDocker(
+        docker,
+        workspace.Id,
+        "id -u; mkdir -p /home/agent/workspace /home/agent/.fixture-starter && printf 'preexisting user data\\n' > /home/agent/workspace/README.md && printf 'seeded Starter.csproj\\n' > /home/agent/.fixture-starter/Starter.csproj && cp -Rn /home/agent/.fixture-starter/. /home/agent/workspace/ && stat -c '%u:%g' /home/agent && cat /home/agent/workspace/README.md && cat /home/agent/workspace/Starter.csproj",
+        30_000,
+        "1000:1000",
+        "/home/agent",
+      );
+      expect(writable, writable.out + writable.err).toMatchObject({ code: 0 });
+      expect(writable.out).toContain("1000\n1000:1000\npreexisting user data\nseeded Starter.csproj\n");
+
+      await docker.containerStop(workspace.Id);
+      await docker.containerStart(workspace.Id);
+      const persisted = await runWithDocker(
+        docker,
+        workspace.Id,
+        "cp -Rn /home/agent/.fixture-starter/. /home/agent/workspace/ && cat /home/agent/workspace/README.md && cat /home/agent/workspace/Starter.csproj",
+        30_000,
+        "1000:1000",
+        "/home/agent",
+      );
+      expect(persisted, persisted.out + persisted.err).toMatchObject({ code: 0 });
+      expect(persisted.out).toContain("preexisting user data\nseeded Starter.csproj\n");
+    } finally {
+      if (workspaceName) await docker.containerRemove(workspaceName).catch(() => {});
+      if (initializerName) await docker.containerRemove(initializerName).catch(() => {});
+      await docker.volumeRemove(volumeName(ref)).catch(() => {});
+    }
+  });
 });
 
 (enabled && profile("knowledge-work").imageRef ? describe : describe.skip)("Knowledge Work image in a read-only-rootfs sandbox", () => {
@@ -177,12 +302,20 @@ describe("reviewed workspace starter image definitions", () => {
       const spec = containerSpec({ ref, imageId: item.imageRef!, runtime: "runc", limits: h.config.limits, instance: h.config.instance });
       const mounts = (spec.HostConfig as { Mounts: Array<Record<string, unknown>> }).Mounts;
       mounts[0] = { ...mounts[0], VolumeOptions: { NoCopy: true } };
+      const initializerSpec = fixtureVolumeInitializerSpec(spec);
+      const initializer = await h.docker.containerCreate(`${containerName(ref)}-owner-init`, initializerSpec);
+      await h.docker.containerStart(initializer.Id);
+      const ownership = await runInContainer(h, initializer.Id, fixtureVolumeOwnershipCommand, 30_000, "0:0", "/home/agent");
+      expect(ownership, ownership.out + ownership.err).toMatchObject({ code: 0 });
+      await h.docker.containerStop(initializer.Id);
+      await h.docker.containerRemove(initializer.Id);
+
       const created = await h.docker.containerCreate(containerName(ref), spec);
       await h.docker.containerStart(created.Id);
 
-      const ready = await runInContainer(h, created.Id, "for i in $(seq 1 60); do if [ -s Starter.csproj ] && [ -s obj/project.assets.json ] && [ -d /home/agent/.nuget/packages/newtonsoft.json/13.0.3 ]; then break; fi; sleep 0.5; done; id -u; stat -c '%a:%u:%g' /opt/portal/run-agent; test -w Program.cs && test -w obj && touch obj/.permission-check && rm obj/.permission-check; touch /tmp/template-writable; if touch /etc/template-readonly 2>/dev/null; then exit 91; fi; rm /tmp/template-writable; dotnet --version; test -s Starter.csproj; test -s packages.lock.json; test -s obj/project.assets.json", 30_000);
+      const ready = await runInContainer(h, created.Id, "for i in $(seq 1 60); do if [ -s Starter.csproj ] && [ -s obj/project.assets.json ] && [ -d /home/agent/.nuget/packages/newtonsoft.json/13.0.3 ]; then break; fi; sleep 0.5; done; id -u; stat -c '%u:%g' /home/agent; stat -c '%a:%u:%g' /opt/portal/run-agent; test -w Program.cs && test -w obj && touch obj/.permission-check && rm obj/.permission-check; touch /tmp/template-writable; if touch /etc/template-readonly 2>/dev/null; then exit 91; fi; rm /tmp/template-writable; dotnet --version; test -s Starter.csproj; test -s packages.lock.json; test -s obj/project.assets.json", 30_000);
       expect(ready, ready.out + ready.err).toMatchObject({ code: 0 });
-      expect(ready.out).toContain("1000\n755:0:0\n10.0.112\n");
+      expect(ready.out).toContain("1000\n1000:1000\n755:0:0\n10.0.112\n");
 
       const built = await runInContainer(h, created.Id, "dotnet build Starter.csproj --no-restore --configuration Release");
       expect(built, built.out + built.err).toMatchObject({ code: 0 });
