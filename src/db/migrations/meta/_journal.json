@@ -379,6 +379,13 @@
       "when": 1791750098074,
       "tag": "0053_codex_harness",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1791771095537,
+      "tag": "0054_workspace_contract_foundation",
+      "breakpoints": true
     }
   ]
 }

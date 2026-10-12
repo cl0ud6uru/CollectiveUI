@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -1132,6 +1133,68 @@ export const sandboxes = pgTable("sandboxes", {
   createdAt: createdAt(),
 });
 
+// ---------------------------------------------------------------------------
+// Reusable workspace recipes and private instances (additive to legacy sandboxes)
+// ---------------------------------------------------------------------------
+
+export const workspaceTemplates = pgTable("workspace_templates", {
+  id: id(),
+  slug: text("slug").notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [uniqueIndex("workspace_templates_slug_idx").on(t.slug),
+  check("workspace_templates_slug_check", sql`${t.slug} ~ '^[a-z0-9]+(-[a-z0-9]+)*$' and length(${t.slug}) <= 80`)]);
+
+/** Published recipe identity/content is frozen by the migration's database trigger. */
+export const workspaceTemplateVersions = pgTable("workspace_template_versions", {
+  id: id(),
+  templateId: text("template_id").notNull().references(() => workspaceTemplates.id),
+  version: integer("version").notNull(),
+  recipe: jsonb("recipe").$type<import("../lib/workspaces/contracts").WorkspaceRecipe>().notNull(),
+  recipeHash: text("recipe_hash").notNull(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  retiredAt: timestamp("retired_at", { withTimezone: true }),
+  createdAt: createdAt(),
+}, (t) => [uniqueIndex("workspace_template_versions_number_idx").on(t.templateId, t.version),
+  check("workspace_template_versions_positive_check", sql`${t.version} > 0`),
+  check("workspace_template_versions_hash_check", sql`${t.recipeHash} ~ '^[a-f0-9]{64}$'`),
+  check("workspace_template_versions_recipe_check", sql`jsonb_typeof(${t.recipe}) = 'object' and ${t.recipe} @> '{"schemaVersion":1,"networkPolicy":"none"}'::jsonb`),
+  check("workspace_template_versions_retirement_check", sql`${t.retiredAt} is null or (${t.publishedAt} is not null and ${t.retiredAt} >= ${t.publishedAt})`)]);
+
+export const workspaceInstances = pgTable("workspace_instances", {
+  id: id(),
+  ownerUserId: text("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  templateVersionId: text("template_version_id").references(() => workspaceTemplateVersions.id),
+  origin: text("origin").$type<import("../lib/workspaces/contracts").WorkspaceInstanceOrigin>().notNull(),
+  sandboxRef: text("sandbox_ref").notNull(),
+  runtimeProfileKey: text("runtime_profile_key").notNull(),
+  provisionState: text("provision_state").$type<import("../lib/workspaces/contracts").WorkspaceProvisionState>().notNull().default("missing"),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  deleteAfter: timestamp("delete_after", { withTimezone: true }),
+  createdAt: createdAt(),
+}, (t) => [uniqueIndex("workspace_instances_ref_idx").on(t.sandboxRef),
+  uniqueIndex("workspace_instances_owner_id_idx").on(t.ownerUserId, t.id),
+  uniqueIndex("workspace_instances_legacy_owner_idx").on(t.ownerUserId).where(sql`${t.origin} = 'legacy_personal'`),
+  index("workspace_instances_retention_idx").on(t.deleteAfter),
+  check("workspace_instances_ref_check", sql`${t.sandboxRef} ~ '^[a-z0-9]{20}$'`),
+  check("workspace_instances_origin_check", sql`(${t.origin} = 'legacy_personal' and ${t.templateVersionId} is null) or (${t.origin} = 'template' and ${t.templateVersionId} is not null)`),
+  check("workspace_instances_state_check", sql`${t.provisionState} in ('missing', 'provisioning', 'ready', 'unavailable')`),
+  check("workspace_instances_profile_check", sql`${t.runtimeProfileKey} ~ '^[a-z0-9][a-z0-9._-]{0,79}$'`)]);
+
+/** Shared bots still resolve to the ACTING user's private instance. */
+export const workspaceBotBindings = pgTable("workspace_bot_bindings", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  instanceId: text("instance_id").notNull(),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [primaryKey({ columns: [t.userId, t.botId] }),
+  foreignKey({ name: "workspace_bot_bindings_owner_instance_fk",
+    columns: [t.userId, t.instanceId], foreignColumns: [workspaceInstances.ownerUserId, workspaceInstances.id] }),
+  index("workspace_bot_bindings_instance_idx").on(t.instanceId)]);
+
 export const mcpServerAccess = pgTable(
   "mcp_server_access",
   {
@@ -1714,3 +1777,8 @@ export const officialPlanTransfers=pgTable('official_plan_transfers',{
   check('official_plan_transfer_identity_check',sql`${t.sessionVersion} >= 0 and length(${t.transportId}) between 1 and 256 and length(${t.hostId}) between 1 and 256 and length(${t.clientId}) between 1 and 256 and length(${t.subject}) between 1 and 256 and (${t.workspaceId} is null or length(${t.workspaceId}) between 1 and 256) and ((${t.expectedConnectionId} is null) = (${t.expectedRevision} is null)) and (${t.expectedRevision} is null or ${t.expectedRevision} > 0)`),
   check('official_plan_transfer_receipt_check',sql`(${t.refreshHash} is null or ${t.refreshHash} ~ '^[a-f0-9]{64}$') and ${t.expiresAt} > ${t.createdAt} and ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'`),
 ]);
+
+export type WorkspaceTemplateRow = typeof workspaceTemplates.$inferSelect;
+export type WorkspaceTemplateVersionRow = typeof workspaceTemplateVersions.$inferSelect;
+export type WorkspaceInstanceRow = typeof workspaceInstances.$inferSelect;
+export type WorkspaceBotBindingRow = typeof workspaceBotBindings.$inferSelect;
