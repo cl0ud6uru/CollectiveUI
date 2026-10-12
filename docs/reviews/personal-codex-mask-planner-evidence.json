@@ -1,0 +1,27 @@
+{
+  "sourceCommit": "a6274249d5877030676db098914db686bab7c921",
+  "version": "0.163.0-alpha.2",
+  "patchSha256": "9cb0b5baecfd565a48e94f11d028a05f8d7bbc940bcc686d62ad33a62c740982",
+  "baseline": {
+    "passed": 56,
+    "failed": 2
+  },
+  "patched": {
+    "passed": 58,
+    "failed": 0
+  },
+  "regressionsReproduced": [
+    "mask_collision_explicit_metadata_deny_has_one_physical_mask",
+    "mask_collision_denied_home_covers_existing_and_missing_children"
+  ],
+  "testSelection": "bwrap::",
+  "compiler": "rustc 1.95.0",
+  "buildLimits": [
+    "Unused codex-core dev dependency omitted in the temporary library-test manifest.",
+    "Upstream Cargo.lock regenerated locally; no manifest or lockfile change is delivered.",
+    "Planner binaries executed offline with readonly public runtime-library mounts and a separate tmpfs."
+  ],
+  "nativeEnforcementVerified": false,
+  "releaseArtifactBuilt": false,
+  "authenticated": false
+}

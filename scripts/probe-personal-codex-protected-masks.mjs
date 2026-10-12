@@ -1,0 +1,180 @@
+import { spawn, execFileSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { MASK_STATES, allMaskChecksPass, maskCommands, passedProbe } from './lib/personal-codex-mask-proof.mjs';
+
+// Disposable fixtures only. No enrollment/grants are read, and diagnostics are suppressed.
+const image = process.env.PERSONAL_CODEX_NATIVE_IMAGE ?? 'collectiveui/personal-codex:protocol-fixture';
+const dockerPath = process.env.PERSONAL_CODEX_DOCKER_EXECUTABLE ?? '/usr/local/bin/docker';
+const evidence = { version: '0.163.0-alpha.2', authenticated: false, verified: false, cases: {} };
+const requirementsSha256 = createHash('sha256').update(readFileSync(new URL('../docker/personal-codex/requirements.toml', import.meta.url))).digest('hex');
+evidence.artifacts = { requestedImage: image, requirementsSha256,
+  sandboxProfile: process.env.PERSONAL_CODEX_SANDBOX_PROFILE ?? 'default-docker', imageIds: {} };
+const fixtureHome = {
+  'auth.json': 'fixture-private-auth-sentinel',
+  'config.toml': '# fixture-private-config-sentinel\n',
+  'history.jsonl': 'fixture-private-history-sentinel',
+  'sessions/fixture.json': 'fixture-private-session-sentinel',
+  'archived_sessions/fixture.json': 'fixture-private-archive-sentinel',
+  'log/fixture.txt': 'fixture-private-log-sentinel',
+  'logs/fixture.txt': 'fixture-private-logs-sentinel',
+  'unknown-sibling.txt': 'fixture-private-unknown-sibling-sentinel',
+};
+const docker = args => execFileSync(dockerPath, args, { encoding: 'utf8', timeout: 30000,
+  stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent' } });
+let security = { create: ['no-new-privileges:true'], inspect: ['no-new-privileges:true'] };
+
+try {
+  if (!/^collectiveui\/personal-codex(?::[a-z0-9-]+|@sha256:[a-f0-9]{64})$/.test(image)
+    || !['/usr/local/bin/docker', '/usr/bin/docker'].includes(dockerPath)) throw new Error('Unreviewed fixture input.');
+  if (process.env.PERSONAL_CODEX_SANDBOX_PROFILE !== undefined) {
+    // Operator commit 946723b supplies this fixed, hash-verified module.
+    // Its absence is fatal; arbitrary security-opt and policy fallback are unavailable.
+    const policy = await import('../src/personal-codex/sandbox-policy.mjs');
+    security = await policy.sandboxPolicy(process.env.PERSONAL_CODEX_SANDBOX_PROFILE);
+  }
+  for (const state of MASK_STATES) await runCase(state);
+  evidence.verified = allMaskChecksPass(evidence.cases);
+  if (!evidence.verified) evidence.blocker = 'The protected-path native gate is incomplete or failed. Activation remains blocked.';
+} catch {
+  evidence.blocker = 'Fixture setup or reviewed policy validation failed. No live account was used.';
+} finally {
+  console.log(JSON.stringify(evidence, null, 2));
+  if (!evidence.verified) process.exitCode = 1;
+}
+
+async function runCase(state) {
+  const name = 'cui-codex-mask-' + randomUUID();
+  const setupName = name + '-setup';
+  const home = name + '-home', workspace = name + '-workspace';
+  const checks = evidence.cases[state] = {};
+  let runtime;
+  const base = ['--network', 'none', '--read-only', '--cap-drop', 'ALL',
+    ...security.create.flatMap(value => ['--security-opt', value]), '--user', '10001:10001',
+    '--pids-limit', '256', '--memory', '2048m', '--memory-swap', '2048m', '--cpus', '2',
+    '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m,mode=1777',
+    '--mount', 'type=volume,src=' + home + ',dst=/codex-home',
+    '--mount', 'type=volume,src=' + workspace + ',dst=/home/agent/workspace',
+    '--env', 'NODE_VERSION', '--env', 'YARN_VERSION', '--env', 'HOME=/codex-home', '--env', 'CODEX_HOME=/codex-home',
+    '--workdir', '/home/agent/workspace'];
+  const outside = script => docker(['exec', name, 'node', '-e', script]).trim();
+  const verifyBacking = [
+    "const fs=require('node:fs'); const files=" + JSON.stringify(fixtureHome) + ";",
+    "for(const [path,value] of Object.entries(files)) if(fs.readFileSync('/codex-home/'+path,'utf8')!==value) process.exit(1);",
+    "const root='/home/agent/workspace/.codex';",
+    "if (" + JSON.stringify(state) + " === 'missing') { if(fs.existsSync(root)) process.exit(1); }",
+    "else { if(!fs.statSync(root).isDirectory()) process.exit(1); const expected=" + (state === 'populated' ? "['fixture.txt']" : '[]') + ";",
+    "if(JSON.stringify(fs.readdirSync(root).sort())!==JSON.stringify(expected)) process.exit(1);",
+    "if(" + JSON.stringify(state) + "==='populated' && fs.readFileSync(root+'/fixture.txt','utf8')!=='fixture-private-metadata-sentinel') process.exit(1); }",
+    "if(fs.existsSync(root+'-renamed')) process.exit(1); process.stdout.write('backing-fixtures-retained');",
+  ].join('\n');
+  try {
+    docker(['volume', 'create', home]); docker(['volume', 'create', workspace]);
+    docker(['run', '--rm', '--name', setupName, ...base, image, 'node', '-e', [
+      "const fs=require('node:fs'),path=require('node:path');",
+      "for(const [file,value] of Object.entries(" + JSON.stringify(fixtureHome) + ")) { const target='/codex-home/'+file;",
+      "fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,value); }",
+      "fs.writeFileSync('/home/agent/workspace/retained.txt','retained-workspace-sentinel');",
+      "if(" + JSON.stringify(state) + "!=='missing') fs.mkdirSync('/home/agent/workspace/.codex');",
+      "if(" + JSON.stringify(state) + "==='populated') fs.writeFileSync('/home/agent/workspace/.codex/fixture.txt','fixture-private-metadata-sentinel');",
+    ].join('\n')]);
+    runtime = await start();
+    const inspected = JSON.parse(docker(['inspect', name]))[0];
+    evidence.artifacts.imageIds[state] = inspected.Image;
+    checks.requirementsMatch = outside("process.stdout.write(require('node:crypto').createHash('sha256').update(require('node:fs').readFileSync('/etc/codex/requirements.toml')).digest('hex'))") === requirementsSha256;
+    checks.containerBoundary = inspected.Config.User === '10001:10001' && inspected.HostConfig.NetworkMode === 'none'
+      && inspected.HostConfig.ReadonlyRootfs === true && inspected.HostConfig.Privileged === false
+      && inspected.HostConfig.CapDrop?.join() === 'ALL' && !inspected.HostConfig.CapAdd?.length
+      && ['PidMode', 'IpcMode', 'UTSMode', 'UsernsMode'].every(key => inspected.HostConfig[key] !== 'host')
+      && JSON.stringify([...inspected.HostConfig.SecurityOpt].sort()) === JSON.stringify([...security.inspect].sort())
+      && (!security.appArmorProfile || inspected.AppArmorProfile === security.appArmorProfile)
+      && inspected.Mounts.length === 2 && inspected.Mounts.every(mount => mount.Type === 'volume'
+        && mount.RW === true && ((mount.Name === home && mount.Destination === '/codex-home')
+        || (mount.Name === workspace && mount.Destination === '/home/agent/workspace')));
+    const commands = maskCommands(state);
+    const execute = script => runtime.request('command/exec', { command: ['node', '-e', script], cwd: '/home/agent/workspace',
+      permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 2048 });
+    checks.nativeWorkspaceExecution = passedProbe(await execute(commands.nativeWorkspaceExecution), 'nativeWorkspaceExecution');
+    if (!checks.nativeWorkspaceExecution) return; // A failure/timeout never counts as denial.
+    for (const [probe, script] of Object.entries(commands)) {
+      if (probe !== 'nativeWorkspaceExecution' && probe !== 'nativeNetworkDenied') checks[probe] = passedProbe(await execute(script), probe);
+    }
+    docker(['exec', '-d', name, 'node', '-e', 'require("node:net").createServer(socket=>socket.end()).listen(4500,"127.0.0.1")']);
+    const connect = "const net=require('node:net');let attempts=0;const probe=()=>{const socket=net.connect(4500,'127.0.0.1');"
+      + "socket.on('connect',()=>{socket.destroy();process.stdout.write('fixture-network-reachable');process.exit(0)});"
+      + "socket.on('error',()=>{if(++attempts<20)setTimeout(probe,50);else process.exit(1)});};probe();setTimeout(()=>process.exit(1),3000);";
+    checks.networkControlReachable = outside(connect) === 'fixture-network-reachable';
+    checks.nativeNetworkDenied = checks.networkControlReachable && passedProbe(await execute(commands.nativeNetworkDenied), 'nativeNetworkDenied');
+    checks.networkControlReachable &&= outside(connect) === 'fixture-network-reachable';
+    checks.nativeNetworkDenied &&= checks.networkControlReachable;
+    checks.backingDataUnchanged = outside(verifyBacking) === 'backing-fixtures-retained';
+    await stop();
+    runtime = await start();
+    checks.storageSurvivesReplacement = outside(verifyBacking) === 'backing-fixtures-retained'
+      && outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/retained.txt','utf8'))") === 'retained-workspace-sentinel';
+    checks.nativeFileSurvivesReplacement = outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/native-" + state + ".txt','utf8'))") === 'native-mask-fixture';
+    checks.replacementExecution = passedProbe(await execute(commands.nativeWorkspaceExecution), 'nativeWorkspaceExecution');
+    checks.backingDataUnchanged &&= outside(verifyBacking) === 'backing-fixtures-retained';
+    outside("const fs=require('node:fs');const root='/home/agent/workspace/.codex';if(fs.existsSync(root))fs.renameSync(root,root+'-saved');fs.symlinkSync('/codex-home',root);");
+    const rejected = await execute("require('node:fs').writeFileSync('/home/agent/workspace/symlink-command-ran','unexpected')");
+    const diagnostic = (rejected.error?.message ?? '') + (rejected.result?.stderr ?? '');
+    checks.metadataSymlinkFailsClosed = checks.replacementExecution
+      && /cannot enforce sandbox (deny-read|read-only) path/.test(diagnostic) && /crosses writable symlink/.test(diagnostic)
+      && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/symlink-command-ran')))") === 'false';
+    checks.fixtureCompleted = true;
+  } catch {
+    checks.fixtureCompleted = false;
+  } finally {
+    checks.cleanupComplete = await stop();
+    const setupRemoved = removeContainer(setupName);
+    checks.cleanupComplete = setupRemoved && checks.cleanupComplete;
+    for (const volume of [home, workspace]) {
+      try { docker(['volume', 'rm', volume]); } catch { checks.cleanupComplete = false; }
+    }
+  }
+
+  async function start() {
+    const child = spawn(dockerPath, ['run', '-i', '--name', name, ...base, image, 'codex',
+      '-c', 'projects={"/home/agent/workspace"={trust_level="untrusted"}}', '-c', 'notify=[]',
+      '-c', 'web_search="disabled"', 'app-server', '--listen', 'stdio://'], { stdio: 'pipe',
+      env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent' } });
+    child.stderr.resume();
+    let next = 0; const pending = new Map();
+    createInterface({ input: child.stdout }).on('line', line => {
+      let message; try { message = JSON.parse(line); } catch { return; }
+      if (message.id !== undefined && pending.has(message.id)) {
+        const entry = pending.get(message.id); clearTimeout(entry.timer); pending.delete(message.id); entry.resolve(message);
+      }
+    });
+    child.on('error', finish); child.on('exit', finish); child.stdin.on('error', finish);
+    function finish() { for (const entry of pending.values()) { clearTimeout(entry.timer); entry.resolve({ error: { message: 'Fixture process unavailable.' } }); } pending.clear(); }
+    const request = (method, params) => new Promise(resolve => {
+      const id = ++next, timer = setTimeout(() => { pending.delete(id); resolve({ error: { message: 'Fixture RPC timed out.' } }); }, 15000);
+      pending.set(id, { resolve, timer }); child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
+    });
+    runtime = { child, request }; // Register cleanup before initialize can fail.
+    const initialized = await request('initialize', { clientInfo: { name: 'collective_mask_probe', version: 'fixture' }, capabilities: { experimentalApi: true } });
+    const version = initialized.result?.userAgent?.includes('/0.163.0-alpha.2 ') === true;
+    checks.protocolVersion = checks.protocolVersion === undefined ? version : checks.protocolVersion && version;
+    child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
+    const policy = await request('configRequirements/read', {});
+    const managed = policy.result?.requirements?.defaultPermissions === 'collective-personal'
+      && policy.result.requirements.allowedLoginMethods?.join() === 'chatgpt';
+    checks.managedPolicy = checks.managedPolicy === undefined ? managed : checks.managedPolicy && managed;
+    return runtime;
+  }
+  async function stop() {
+    runtime?.child.stdin.end();
+    const removed = removeContainer(name);
+    runtime?.child.kill(); runtime = undefined;
+    return removed;
+  }
+  function removeContainer(target) {
+    try {
+      const exists = docker(['container', 'ls', '-a', '--filter', 'name=^/' + target + '$', '--format', '{{.ID}}']).trim();
+      if (exists) docker(['rm', '-f', target]);
+      return true;
+    } catch { return false; }
+  }
+}
