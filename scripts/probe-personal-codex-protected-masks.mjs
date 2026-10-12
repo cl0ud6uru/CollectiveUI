@@ -2,7 +2,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { MASK_STATES, allStockChecksPass, stockCommands, passedProbe, networkCommand } from './lib/personal-codex-stock-proof.mjs';
-import { fixtureRpc, fixtureFailure } from './lib/personal-codex-fixture-rpc.mjs';
+import { fixtureRpc, fixtureFailure, redactFixtureText } from './lib/personal-codex-fixture-rpc.mjs';
+import { commandEvidence, collectCommandEvidence, traceFixtureCommand } from './lib/personal-codex-command-evidence.mjs';
 
 // Disposable fixtures only. No enrollment/grants are read. Only synthetic command
 // failures produce bounded diagnostics; production native logs stay suppressed.
@@ -11,7 +12,9 @@ const dockerPath = process.env.PERSONAL_CODEX_DOCKER_EXECUTABLE ?? '/usr/local/b
 const evidence = { version: '0.163.0-alpha.2', authenticated: false, verified: false, cases: {} };
 const requirementsSha256 = createHash('sha256').update(readFileSync(new URL('../docker/personal-codex/requirements.toml', import.meta.url))).digest('hex');
 evidence.artifacts = { requestedImage: image, requirementsSha256,
-  sandboxProfile: process.env.PERSONAL_CODEX_SANDBOX_PROFILE ?? 'default-docker', imageIds: {} };
+  sandboxProfile: process.env.PERSONAL_CODEX_SANDBOX_PROFILE ?? 'default-docker', imageIds: {},
+  probeSha256: createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex'),
+  commandEvidenceSha256: createHash('sha256').update(readFileSync(new URL('./lib/personal-codex-command-evidence.mjs', import.meta.url))).digest('hex') };
 const fixtureHome = {
   'auth.json': 'fixture-private-auth-sentinel',
   'config.toml': '# fixture-private-config-sentinel\n',
@@ -103,8 +106,16 @@ async function runCase(state) {
     checks.stockArtifactsMatch = outside("const fs=require('node:fs'),crypto=require('node:crypto');for(const path of ['/opt/codex/bin/codex','/opt/codex/codex-resources/bwrap']) console.log(crypto.createHash('sha256').update(fs.readFileSync(path)).digest('hex'));") === lock.nativeSha256 + '\n' + lock.bundledBubblewrapSha256
       && outside("process.stdout.write(String(!require('node:fs').existsSync('/usr/bin/bwrap')&&!require('node:fs').existsSync('/usr/local/bin/bwrap')))") === 'true';
     const commands = stockCommands(state);
-    const execute = script => runtime.request('command/exec', { command: ['node', '-e', script], cwd: '/home/agent/workspace',
-      permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 2048 });
+    const execute = (script, check) => {
+      const traced = traceFixtureCommand(script, check);
+      return runtime.request('command/exec', { command: ['node', '-e', traced], cwd: '/home/agent/workspace',
+        permissionProfile: 'collective-personal', timeoutMs: 5000, outputBytesCap: 16384 });
+    };
+    const recordReply = (check, script, reply, expectedProbe = check) => {
+      evidence.failedCommands ??= {};
+      return collectCommandEvidence(evidence.failedCommands, state, { check, phase: stage,
+        commandSha256: createHash('sha256').update(traceFixtureCommand(script, check)).digest('hex') }, reply, expectedProbe);
+    };
     stage = 'networkPositiveControl';
     docker(['exec', '-d', name, 'node', '-e', "const net=require('node:net'),udp=require('node:dgram').createSocket('udp4');net.createServer(socket=>socket.end()).listen(4500,'127.0.0.1');net.createServer(socket=>socket.end()).listen('/home/agent/workspace/fixture-network.sock');udp.on('message',(bytes,remote)=>udp.send('fixture-udp-control',remote.port,remote.address));udp.bind(4501,'127.0.0.1');"]);
     const connect = networkCommand(false);
@@ -112,14 +123,14 @@ async function runCase(state) {
     for (let i=0; i<30 && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/fixture-network.sock')))")!=='true'; i++) await new Promise(resolve=>setTimeout(resolve,50));
     checks.networkControlReachable = control();
     stage = 'nativeWorkspaceExecution';
-    const workspaceReply = await execute(commands.nativeWorkspaceExecution);
-    checks.nativeWorkspaceExecution = passedProbe(workspaceReply, 'nativeWorkspaceExecution');
+    const workspaceReply = await execute(commands.nativeWorkspaceExecution, 'nativeWorkspaceExecution');
+    checks.nativeWorkspaceExecution = recordReply('nativeWorkspaceExecution', commands.nativeWorkspaceExecution, workspaceReply);
     if (!checks.nativeWorkspaceExecution) {
       const detail = workspaceReply.error?.message ?? workspaceReply.result?.stderr ?? '';
       evidence.failures ??= {};
       evidence.failures[state] = { stage: 'nativeWorkspaceExecution', exitCode: workspaceReply.result?.exitCode ?? null,
         reason: /pivot_root|pivotroot/i.test(detail) ? 'pivot-root-denied' : /namespace/i.test(detail) ? 'unprivileged-namespace-unavailable' : /Read-only file system|Is a directory/.test(detail) ? 'mount-planner-conflict' : 'native-command-unavailable',
-        diagnostic: detail.slice(0, 2000) }; // Only this synthetic fixture can emit bounded diagnostics.
+        diagnostic: redactFixtureText(detail).slice(0, 2000) }; // Only this synthetic fixture can emit bounded diagnostics.
     }
     if (!checks.nativeWorkspaceExecution) {
       // Volume persistence is independently testable; no sandbox denial is credited.
@@ -135,10 +146,17 @@ async function runCase(state) {
     stage = 'nativeProtectionMatrix';
     outside("const cp=require('node:child_process');const child=cp.spawn('node',['-e',\"const fs=require('node:fs');process.chdir('/codex-home');const fd=fs.openSync('/codex-home/unknown-sibling.txt','r');fs.writeFileSync('/home/agent/workspace/fixture-parent.json',JSON.stringify({pid:process.pid,fd,pidNamespace:fs.readlinkSync('/proc/self/ns/pid')}));setInterval(()=>{},1000)\"],{detached:true,stdio:'ignore',env:{PATH:process.env.PATH,CUI_PRIVATE_PARENT:'fixture-parent-process-sentinel'}});child.unref();");
     for (let i=0; i<30 && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/fixture-parent.json')))")!=='true'; i++) await new Promise(resolve=>setTimeout(resolve,50));
+    evidence.processControls ??= {};
+    evidence.processControls[state] = JSON.parse(outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/fixture-parent.json','utf8'))"));
     for (const [probe, script] of Object.entries(commands)) {
-      if (probe !== 'nativeWorkspaceExecution' && probe !== 'nativeNetworkDenied') checks[probe] = passedProbe(await execute(script), probe);
+      if (probe === 'nativeWorkspaceExecution' || probe === 'nativeNetworkDenied') continue;
+      stage = `nativeProtectionMatrix.${probe}`;
+      checks[probe] = recordReply(probe, script, await execute(script, probe));
     }
-    checks.nativeNetworkDenied = checks.networkControlReachable && passedProbe(await execute(commands.nativeNetworkDenied), 'nativeNetworkDenied');
+    stage = 'nativeNetworkDenied';
+    const networkReply = await execute(commands.nativeNetworkDenied, 'nativeNetworkDenied');
+    const networkPassed = recordReply('nativeNetworkDenied', commands.nativeNetworkDenied, networkReply);
+    checks.nativeNetworkDenied = checks.networkControlReachable && networkPassed;
     checks.networkControlReachable &&= control();
     checks.nativeNetworkDenied &&= checks.networkControlReachable;
     checks.backingDataUnchanged = outside(verifyBacking) === 'backing-fixtures-retained';
@@ -148,14 +166,30 @@ async function runCase(state) {
     checks.storageSurvivesReplacement = outside(verifyBacking) === 'backing-fixtures-retained'
       && outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/retained.txt','utf8'))") === 'retained-workspace-sentinel';
     checks.nativeFileSurvivesReplacement = outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/native-" + state + ".txt','utf8'))") === 'native-mask-fixture';
-    checks.replacementExecution = passedProbe(await execute(commands.nativeWorkspaceExecution), 'nativeWorkspaceExecution');
+    checks.replacementExecution = recordReply('replacementExecution', commands.nativeWorkspaceExecution,
+      await execute(commands.nativeWorkspaceExecution, 'replacementExecution'), 'nativeWorkspaceExecution');
     checks.backingDataUnchanged &&= outside(verifyBacking) === 'backing-fixtures-retained';
+    stage = 'metadataSymlinkFixtureSetup';
     outside("const fs=require('node:fs');const root='/home/agent/workspace/.codex';if(fs.existsSync(root))fs.renameSync(root,root+'-saved');fs.symlinkSync('/codex-home',root);");
-    const rejected = await execute("require('node:fs').writeFileSync('/home/agent/workspace/symlink-command-ran','unexpected')");
+    stage = 'metadataSymlinkFailsClosed';
+    const rejectionScript = "require('node:fs').writeFileSync('/home/agent/workspace/symlink-command-ran','unexpected')";
+    const rejected = await execute(rejectionScript, 'metadataSymlinkFailsClosed');
     const diagnostic = (rejected.error?.message ?? '') + (rejected.result?.stderr ?? '');
-    checks.metadataSymlinkFailsClosed = checks.replacementExecution
-      && /cannot enforce sandbox (deny-read|read-only) path/.test(diagnostic) && /crosses writable symlink/.test(diagnostic)
-      && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/symlink-command-ran')))") === 'false';
+    const cannotEnforcePath = /cannot enforce sandbox (deny-read|read-only) path/.test(diagnostic);
+    const crossesWritableSymlink = /crosses writable symlink/.test(diagnostic);
+    const sideEffectCreated = outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/symlink-command-ran')))");
+    checks.metadataSymlinkFailsClosed = checks.replacementExecution && cannotEnforcePath && crossesWritableSymlink && sideEffectCreated === 'false';
+    if (!checks.metadataSymlinkFailsClosed) {
+      const observation = commandEvidence(rejected, 'metadataSymlinkFailsClosed');
+      evidence.failedCommands ??= {}; evidence.failedCommands[state] ??= [];
+      evidence.failedCommands[state].push({ check: 'metadataSymlinkFailsClosed', phase: stage,
+        commandSha256: createHash('sha256').update(traceFixtureCommand(rejectionScript, 'metadataSymlinkFailsClosed')).digest('hex'), ...observation,
+        passed: false, expected: { rejection: 'cannot enforce sandbox deny-read or read-only path; crosses writable symlink', sideEffectCreated: false },
+        actual: { ...observation.actual, replacementExecution: checks.replacementExecution, cannotEnforcePath, crossesWritableSymlink,
+          sideEffectCreated: sideEffectCreated === 'true' ? true : sideEffectCreated === 'false' ? false : sideEffectCreated },
+        mismatches: [!checks.replacementExecution && 'replacement-execution-failed', !cannotEnforcePath && 'missing-cannot-enforce-path-rejection',
+          !crossesWritableSymlink && 'missing-writable-symlink-rejection', sideEffectCreated !== 'false' && 'side-effect-check-not-false'].filter(Boolean) });
+    }
     checks.fixtureCompleted = true;
   } catch (error) {
     checks.fixtureCompleted = false;

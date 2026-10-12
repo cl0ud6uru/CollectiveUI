@@ -2,14 +2,19 @@ import { createInterface } from 'node:readline';
 import { stripVTControlCharacters } from 'node:util';
 
 const LIMIT = 4096;
-const bounded = value => Array.from(stripVTControlCharacters(String(value ?? '')))
-  .filter(char => char === '\n' || char === '\t' || (char.codePointAt(0) >= 32 && char.codePointAt(0) !== 127))
-  .join('')
-  .replace(/("(?:access_token|refresh_token|id_token|api_key)"\s*:\s*")[^"]*(")/gi, '$1[redacted]$2')
-  .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [redacted]')
-  .replace(/\bsk-[a-zA-Z0-9_-]{6,}\b/g, '[redacted]')
-  .replace(/\bOPENAI_API_KEY=[^\s"']+/g, 'OPENAI_API_KEY=[redacted]')
-  .slice(-LIMIT);
+export const FIXTURE_REDACTION_RULES = [
+  { source: String.raw`("(?:access_?token|refresh_?token|id_?token|api_?key|authorization)"\s*:\s*")[^"]*("|$)`, flags: 'gi', replacement: '$1[redacted]$2' },
+  { source: String.raw`\bBearer\s+[^\s"']+`, flags: 'gi', replacement: 'Bearer [redacted]' },
+  { source: String.raw`\bsk-[a-zA-Z0-9_-]{6,}\b`, flags: 'g', replacement: '[redacted]' },
+  { source: String.raw`\bOPENAI_API_KEY=[^\s"']+`, flags: 'g', replacement: 'OPENAI_API_KEY=[redacted]' },
+];
+export function redactFixtureText(value) {
+  const plain = Array.from(stripVTControlCharacters(String(value ?? '')))
+    .filter(char => char === '\n' || char === '\t' || (char.codePointAt(0) >= 32 && char.codePointAt(0) !== 127))
+    .join('');
+  return FIXTURE_REDACTION_RULES.reduce((text, rule) => text.replace(new RegExp(rule.source, rule.flags), rule.replacement), plain);
+}
+const bounded = value => redactFixtureText(value).slice(-LIMIT);
 
 /** Only for disposable fixtures with synthetic credentials, never production logs. */
 export function fixtureRpc(child, { timeoutMs = 15000 } = {}) {
