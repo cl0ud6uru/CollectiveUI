@@ -48,11 +48,11 @@ describe('pinned operator sandbox policy', () => {
   });
   it('rejects unsupported probe executable before invoking Docker', async () => {
     const { execFileSync } = await import('node:child_process');
-    expect(() => execFileSync(process.execPath, ['scripts/probe-personal-codex.mjs'], { cwd: process.cwd(), env: { PERSONAL_CODEX_DOCKER_EXECUTABLE: '/tmp/docker' }, stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, ['scripts/probe-personal-codex.mjs'], { cwd: process.cwd(), env: { NODE_ENV: 'test', PERSONAL_CODEX_DOCKER_EXECUTABLE: '/tmp/docker' }, stdio: 'pipe' })).toThrow();
   });
   it('rejects unconfined probe policy before invoking Docker', async () => {
     const { execFileSync } = await import('node:child_process');
-    expect(() => execFileSync(process.execPath, ['scripts/probe-personal-codex.mjs'], { cwd: process.cwd(), env: { PERSONAL_CODEX_SANDBOX_PROFILE: 'unconfined' }, stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(process.execPath, ['scripts/probe-personal-codex.mjs'], { cwd: process.cwd(), env: { NODE_ENV: 'test', PERSONAL_CODEX_SANDBOX_PROFILE: 'unconfined' }, stdio: 'pipe' })).toThrow();
   });
   it('admits only the reviewed profile and fixed executable choices', () => {
     expect(BrokerConfig.parse({ ...base, sandboxProfile: 'collectiveui-sandbox-v1', dockerExecutable: '/usr/bin/docker' }).sandboxProfile).toBe('collectiveui-sandbox-v1');
