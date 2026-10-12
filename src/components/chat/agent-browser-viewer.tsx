@@ -48,7 +48,7 @@ export function AgentBrowserViewer({ open, onClose, conversationId }: { open: bo
   const status = statusSnapshot?.conversationId === conversationId ? statusSnapshot.value : null;
   const [errorSnapshot, setErrorSnapshot] = useState<{ conversationId: string; message: string } | null>(null);
   const error = errorSnapshot?.conversationId === conversationId ? errorSnapshot.message : "";
-  const [frame, setFrame] = useState<{ conversationId: string; url: string } | null>(null);
+  const [frame, setFrame] = useState<{ conversationId: string; url: string; sequence: number } | null>(null);
   const [width, setWidth] = useState(560);
   const [mobile, setMobile] = useState(false);
   const [clock, setClock] = useState(Date.now());
@@ -126,7 +126,7 @@ export function AgentBrowserViewer({ open, onClose, conversationId }: { open: bo
       sequenceRef.current = frame.sequence;
       const nextUrl = URL.createObjectURL(blob);
       if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current);
-      frameUrlRef.current = nextUrl; setFrame({ conversationId, url: nextUrl });
+      frameUrlRef.current = nextUrl; setFrame({ conversationId, url: nextUrl, sequence: frame.sequence });
       setStatusSnapshot(previous => ({ conversationId, value: { state: previous?.conversationId === conversationId && previous.value.state === "idle" ? "idle" : "active", viewOnly: true, lastFrameAt: frame.capturedAt } }));
       setErrorSnapshot(null);
     };
@@ -205,7 +205,7 @@ export function AgentBrowserViewer({ open, onClose, conversationId }: { open: bo
       {visibleFrameUrl ? <>
         {/* A Blob URL is produced from the bounded, authenticated JPEG stream and cannot use next/image loaders. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className={styles.frame} src={visibleFrameUrl} alt="Current frame from the agent’s browser session" />
+        <img className={styles.frame} src={visibleFrameUrl} data-frame-sequence={frame?.sequence} alt="Current frame from the agent’s browser session" />
       </> :
         <div className={styles.empty}>
           {!status && <Loader2 size={24} className="animate-spin" aria-hidden />}

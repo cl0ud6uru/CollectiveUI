@@ -16,6 +16,7 @@ const entry = path.join(dir, 'entry.tsx');
 let mode = 'active';
 const sequences = new Map();
 let subscribers = 0;
+let streamRequests = 0;
 let rolloverPending = false;
 const activeFixtureStreams = new Set();
 let browser;
@@ -64,6 +65,7 @@ const server = createServer(async (req, res) => {
       res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ state, viewOnly: true, lastFrameAt })); return;
     }
     if (url.pathname.endsWith('/stream')) {
+      streamRequests++;
       const conversationId = url.searchParams.get('conversationId') ?? 'missing';
       const rollover = rolloverPending; rolloverPending = false;
       if (rollover) sequences.set(conversationId, 0);
@@ -115,8 +117,11 @@ try {
   await expect(frameImage).toBeVisible();
   await page.waitForTimeout(2200); // Let this synthetic session advance beyond sequence 1.
   const previousFrame = await frameImage.getAttribute('src');
+  const previousStreamRequests = streamRequests;
   await page.getByRole('button', { name: 'Rotate run in this chat' }).click();
+  await expect.poll(() => streamRequests).toBeGreaterThan(previousStreamRequests);
   await expect.poll(() => frameImage.getAttribute('src'), { timeout: 1000 }).not.toBe(previousFrame);
+  await expect(frameImage).toHaveAttribute('data-frame-sequence', '1');
   await page.getByRole('button', { name: 'Stale fixture' }).click();
   await expect(page.getByText('Disconnected')).toBeVisible();
   await expect(page.getByRole('img', { name: 'Current frame from the agent’s browser session' })).toHaveCount(0);
