@@ -109,6 +109,20 @@ describe("browser egress policy", () => {
 });
 
 describe("authenticated broker and read-only provider", () => {
+  it("discards an in-flight private frame when logout commits before its response arrives", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "browser-revoke-")); const socket = join(dir, "broker.sock");
+    const id = "a".repeat(32); let revoked = false;
+    const fake = { find: () => ({ sessionId: id }), subscribe: () => ({ leaseId: "b".repeat(32) }),
+      frame: async () => { revoked = true; return { sequence: 1, capturedAt: new Date().toISOString(), width: 1024, height: 640, bytes: new Uint8Array([255,216,255,217]) }; },
+      unsubscribe: () => {},
+    } as unknown as BrowserRuntime;
+    const server = createBrowserServer(fake, secret); await new Promise<void>(done => server.listen(socket, done));
+    try {
+      const viewer = new PrivateBrowserProvider(socket, secret, async () => { if (revoked) throw new BrowserError("denied"); }, "view");
+      await viewer.find(scope);
+      await expect(viewer.subscribeFrames(id, new AbortController().signal)[Symbol.asyncIterator]().next()).rejects.toThrow(BrowserError);
+    } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); await rm(dir, { recursive: true, force: true }); }
+  });
   it("rejects unsigned/tampered/replayed and spoofed scope; read-only calls never open a browser", async () => {
     const dir = await mkdtemp(join(tmpdir(), "browser-unit-")); const socket = join(dir, "broker.sock");
     const id = "a".repeat(32); let current = false;

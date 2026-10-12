@@ -17,6 +17,11 @@ export class PrivateBrowserProvider implements AgentBrowserProvider {
     if (permission === "execute" && this.mode === "view") throw new BrowserError("denied");
     await this.authorize(scope, permission);
     const result = await signedCall(this.socketPath, this.secret, path, { scope, ...extra }, BROWSER_LIMITS.frameBytes + 128 * 1024, signal);
+    if (permission === "view") {
+      signal?.throwIfAborted();
+      // Logout/binding changes may commit while a screenshot or status request is in flight.
+      await this.authorize(scope, permission);
+    }
     if (result.status !== 200) {
       let code: BrowserError["code"] = "unavailable";
       if (result.status === 403 || result.status === 404) code = "denied";
