@@ -112,6 +112,50 @@ Docker arguments, network overrides, mounts, capabilities or host paths from req
 Resolve/cache images per profile and include profile/image in drift checks. Existing ref remains
 legacy profile; a new assignment gets a new ref. Profiles never raise daemon resource/runtime limits.
 
+## Frozen starter identifier mapping (W1/W2/W3 integration decision)
+
+The following exact mapping is authoritative. Profile keys and seed keys are separate
+namespaces; their matching versioned spelling is intentional. No W0 type/schema changes.
+
+| Catalog slug / build selector | Display name | Recipe runtimeProfileKey / daemon profile key / manifest profiles[].key | Recipe seedBundleKey / manifest seedBundle.key | Image recipe version |
+| --- | --- | --- | --- | --- |
+| `knowledge-work` | Knowledge Work | `knowledge-work-v1` | `knowledge-work-v1` | 1 |
+| `dotnet-linux` | .NET Linux | `dotnet-linux-v1` | `dotnet-linux-v1` | 1 |
+
+`legacy` is reserved for existing personal workspaces and the omitted daemon profile field
+using the existing SANDBOXD_IMAGE fallback. It has no selectable starter catalog entry or
+seed bundle. Do not rename existing refs/volumes or map them automatically to Knowledge Work.
+
+Owner changes:
+
+- W1: keep versioned runtime keys; change seedBundleKeys to exactly
+  `["knowledge-work-v1"]` and `["dotnet-linux-v1"]`, including forms/fixtures/tests.
+- W2: admit only server-installed exact versioned profile keys; resolve recipe seed keys
+  through this exact allowlist. Reject mismatched profile/seed combinations and all bare slug
+  aliases at the runtime/binding boundary. Client assignment stays `{botId, templateVersionId}`;
+  image/profile/seed selection is derived server-side from the stored version. A recipe may
+  have null seedBundleKey only if that installed profile supports an unseeded instance;
+  these v1 prebuilt images seed unconditionally, so W1/W2 should require their specified v1 bundle.
+- W3: change manifest profiles[].key to versioned keys above; existing seedBundle.key values
+  already match. Update Knowledge Work Dockerfile manifest lookup to `knowledge-work-v1`.
+  Keep templateSlug, Dockerfile directories, `--only knowledge-work|dotnet-linux` selectors,
+  and display names stable. Build selectors map by templateSlug to exactly one reviewed manifest
+  entry, record refs against the canonical versioned key, and derive tags/version from that entry.
+  Script output names canonical profile keys. Update tests for versioned keys.
+
+An installed profile key permanently pins one immutable image ID and seed bundle identity.
+Never replace the image behind an admitted v1 key to upgrade existing instances. SDK/package,
+helper, seed, or image-content changes require a reviewed v2 profile/bundle and new template
+version. Rebuilds may verify the same digest; a different digest requires a new profile revision
+before admission. Template recipe revisions can reuse a previously admitted immutable profile
+when its image/seed content is unchanged. W2 validates capability subsets against that profile.
+
+Catalog publication shares an immutable recipe; it does not establish runtime readiness.
+W3 null refs / build_required are not eligible for daemon admission. W2 must verify a trusted
+installed immutable image plus successful required runtime tests before allocating a new binding;
+fail without changing an existing binding. Neither clients nor catalog authors can supply images,
+endpoint URLs, mounts, network overrides, profile aliases or installation status.
+
 ## Bounded durable tasks and ownership
 
 Each task gets its own branch based on current main plus accepted common foundation.
