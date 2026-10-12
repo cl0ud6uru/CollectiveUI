@@ -121,7 +121,7 @@ availability: `agentBrowserView` template capability stays false pending provide
 
 ## Verified evidence and remaining gates
 
-- Full unit suite passes: 222 files, 2,676 tests; four files / 16 tests skip under their existing gates.
+- Full unit suite passes: 222 files, 2,677 tests; four files / 16 tests skip under their existing gates.
   Full TypeScript check passes after a clean locked `npm ci`; changed-file ESLint passes.
 - Provider/admission tests cover scope spoofing, current principal/version/bot/tool/workspace policy,
   cancellation, signed transport, pinned DNS and blocked redirect/network policy.
