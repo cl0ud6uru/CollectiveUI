@@ -61,26 +61,56 @@ for (const path of ${JSON.stringify([...privatePaths, 'unknown-sibling.txt'])}) 
   // the independently executed backing-data check is mandatory for acceptance.
   commands.homeWriteDenied = program('homeWriteDenied', `
 for (const path of ${JSON.stringify(privatePaths)}) deny(() => fs.writeFileSync('/codex-home/' + path, 'fixture-overwrite'));`);
-  commands.metadataProtected = maskCommands(state === 'missing' ? 'empty' : state).metadataProtected;
+  // The stock bootstrap always materializes a directory. Structural errors on
+  // that directory are not permission proof: meaningful child mutations below
+  // must be denied, and the outer backing-data check remains mandatory.
+  commands.metadataProtected = program('metadataProtected', `
+const root = '/home/agent/workspace/.codex';
+const denyRootOperation = (action, structuralCodes) => {
+  try { action(); } catch (error) {
+    if (['EACCES','EPERM','EROFS','ENOENT','ENOTDIR',...structuralCodes].includes(error.code)) return;
+    throw error;
+  }
+  throw new Error('Protected root mutation succeeded.');
+};
+deny(() => fs.readdirSync(root));
+${state === 'populated' ? "deny(() => fs.readFileSync(root + '/fixture.txt'));\ndeny(() => fs.writeFileSync(root + '/fixture.txt', 'fixture-overwrite'));" : ''}
+deny(() => fs.writeFileSync(root + '/new-fixture.txt', 'fixture-overwrite'));
+deny(() => fs.mkdirSync(root + '/new-fixture-directory'));
+denyRootOperation(() => fs.writeFileSync(root, 'fixture-overwrite'), ['EISDIR']);
+denyRootOperation(() => fs.mkdirSync(root), ['EEXIST']);
+denyRootOperation(() => fs.renameSync(root, root + '-renamed'), ['EBUSY']);
+denyRootOperation(() => fs.unlinkSync(root), ['EISDIR']);
+denyRootOperation(() => fs.rmdirSync(root), ['EBUSY']);`);
   commands.defaultMetadataReadOnly = program('defaultMetadataReadOnly', `
 for (const name of ['.git', '.agents']) {
   const root = '/home/agent/workspace/' + name;
   if (fs.readFileSync(root + '/fixture.txt', 'utf8') !== 'fixture-public-metadata') throw new Error('Read-only metadata unavailable.');
   deny(() => fs.writeFileSync(root + '/fixture.txt', 'fixture-overwrite'));
   deny(() => fs.writeFileSync(root + '/new-fixture.txt', 'fixture-overwrite'));
-  deny(() => fs.renameSync(root, root + '-renamed'));
+  try { fs.renameSync(root, root + '-renamed'); throw new Error('Protected metadata rename succeeded.'); }
+  catch (error) { if (!['EACCES','EPERM','EROFS','ENOENT','ENOTDIR','EBUSY'].includes(error.code)) throw error; }
 }`);
+  // These no-input commands do not need a stdin socketpair. Restricted stock
+  // seccomp denies shutdown(), which Node uses to close default piped stdin.
+  // Keep rejecting every spawn error, even when a child also reports status0.
+  commands.activeHelperExecution = commands.activeHelperExecution.replace("{ encoding: 'utf8' }", "{ encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }");
   delete commands.kernelPathsDenied;
   commands.nativeNetworkDenied = networkCommand();
   commands.processIsolation = program('processIsolation', `
 const parent = JSON.parse(fs.readFileSync('/home/agent/workspace/fixture-parent.json', 'utf8'));
-if (fs.readlinkSync('/proc/self/ns/pid') === parent.pidNamespace) throw new Error('Parent PID namespace inherited.');
+// Under :minimal, stock's no-proc fallback omits /proc entirely. The outer
+// fixture must independently observe this live command's distinct PID namespace.
+try { const namespace=fs.readlinkSync('/proc/self/ns/pid');if(!/^pid:\\[[1-9][0-9]*\\]$/.test(namespace)||namespace === parent.pidNamespace) throw new Error('Private PID namespace invalid or inherited.'); }
+catch(error) { if(error.code !== 'ENOENT') throw error; }
+process.kill(process.pid, 0); // Positive control: signaling self is available.
 for (const path of ['environ', 'mem', 'root/codex-home/auth.json', 'cwd/auth.json', 'fd/' + parent.fd]) {
   deny(() => fs.readFileSync('/proc/' + parent.pid + '/' + path));
 }
 for (const path of ['/proc/self/root/codex-home/auth.json', '/proc/1/root/codex-home/auth.json']) deny(() => fs.readFileSync(path));
 deny(() => fs.readdirSync('/sys'));
-if (!fs.readFileSync('/proc/self/status', 'utf8').includes('Pid:')) throw new Error('Private procfs unavailable.');`);
+try { if (!fs.readFileSync('/proc/self/status', 'utf8').includes('Pid:')) throw new Error('Private procfs invalid.'); }
+catch(error) { if(error.code !== 'ENOENT') throw error; }`);
   commands.shadowWriteIntegrity = program('shadowWriteIntegrity', `
 try {
   fs.writeFileSync('/codex-home/unknown-sibling.txt', 'fixture-private-shadow');
@@ -90,10 +120,11 @@ try {
 const cp = require('node:child_process');
 const root = fs.mkdtempSync('/home/agent/workspace/git-fixture-');
 for (const args of [['init', '-q', root], ['-C', root, 'status', '--porcelain']]) {
-  const result = cp.spawnSync('git', args, { encoding: 'utf8' });
-  if (result.error || result.status !== 0 || result.stderr) throw new Error('Git execution failed.');
+  const result = cp.spawnSync('git', args, { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] });
+  if (result.error || result.status !== 0 || result.stderr || (args.includes('status') && result.stdout !== '')) throw new Error('Git execution failed.');
 }
-const python = cp.spawnSync('python3', ['-c', 'print("fixture-python")'], { encoding: 'utf8' });
+if(!fs.readFileSync(root + '/.git/HEAD','utf8').startsWith('ref: refs/heads/')) throw new Error('Git initialization did not create a repository.');
+const python = cp.spawnSync('python3', ['-c', 'print("fixture-python")'], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] });
 if (python.error || python.status !== 0 || python.stdout.trim() !== 'fixture-python') throw new Error('Python execution failed.');`);
   return commands;
 }

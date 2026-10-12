@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { MASK_STATES, allStockChecksPass, stockCommands, passedProbe, networkCommand } from './lib/personal-codex-stock-proof.mjs';
 import { fixtureRpc, fixtureFailure, redactFixtureText } from './lib/personal-codex-fixture-rpc.mjs';
 import { commandEvidence, collectCommandEvidence, traceFixtureCommand } from './lib/personal-codex-command-evidence.mjs';
+import { heldProcessCommand, observeProcessCommand, passedProcessObservation } from './lib/personal-codex-process-proof.mjs';
 
 // Disposable fixtures only. No enrollment/grants are read. Only synthetic command
 // failures produce bounded diagnostics; production native logs stay suppressed.
@@ -14,6 +15,7 @@ const requirementsSha256 = createHash('sha256').update(readFileSync(new URL('../
 evidence.artifacts = { requestedImage: image, requirementsSha256,
   sandboxProfile: process.env.PERSONAL_CODEX_SANDBOX_PROFILE ?? 'default-docker', imageIds: {},
   probeSha256: createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex'),
+  processProofSha256: createHash('sha256').update(readFileSync(new URL('./lib/personal-codex-process-proof.mjs', import.meta.url))).digest('hex'),
   commandEvidenceSha256: createHash('sha256').update(readFileSync(new URL('./lib/personal-codex-command-evidence.mjs', import.meta.url))).digest('hex') };
 const fixtureHome = {
   'auth.json': 'fixture-private-auth-sentinel',
@@ -151,7 +153,24 @@ async function runCase(state) {
     for (const [probe, script] of Object.entries(commands)) {
       if (probe === 'nativeWorkspaceExecution' || probe === 'nativeNetworkDenied') continue;
       stage = `nativeProtectionMatrix.${probe}`;
-      checks[probe] = recordReply(probe, script, await execute(script, probe));
+      if(probe !== 'processIsolation') { checks[probe] = recordReply(probe, script, await execute(script, probe)); continue; }
+      const nonce=randomUUID(),held=heldProcessCommand(script,nonce);
+      const pending=execute(held,probe);
+      await new Promise(resolve=>setImmediate(resolve)); // Flush RPC before the synchronous Docker observation.
+      let observation;
+      try { observation=JSON.parse(outside(observeProcessCommand(nonce))); }
+      catch(error) { observation={error:fixtureFailure(error,'outerPidNamespaceObservation')}; }
+      evidence.processObservations ??= {}; evidence.processObservations[state]=observation;
+      const reply=await pending,commandPassed=recordReply(probe,held,reply);
+      const namespacePassed=passedProcessObservation(observation,evidence.processControls[state],nonce);
+      checks[probe]=commandPassed&&namespacePassed;
+      if(commandPassed&&!namespacePassed){
+        evidence.failedCommands ??= {};evidence.failedCommands[state] ??= [];
+        evidence.failedCommands[state].push({check:probe,phase:stage,
+          commandSha256:createHash('sha256').update(traceFixtureCommand(held,probe)).digest('hex'),...commandEvidence(reply,probe),passed:false,
+          expected:{nativeCommandProof:true,parentAlive:true,parentAndObserverNamespaceEqual:true,toolPidNamespaceDifferent:true},
+          actual:{...commandEvidence(reply,probe).actual,namespaceObservation:observation},mismatches:['pid-namespace-observation-incomplete-or-inherited']});
+      }
     }
     stage = 'nativeNetworkDenied';
     const networkReply = await execute(commands.nativeNetworkDenied, 'nativeNetworkDenied');

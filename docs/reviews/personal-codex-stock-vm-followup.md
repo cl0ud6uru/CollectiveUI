@@ -86,3 +86,46 @@ node scripts/probe-personal-codex-protected-masks.mjs > stock-native-command-evi
 ```
 
 Return the exact checkout/image/policy hashes, exit status, every case boolean, `failedCommands` and `processControls`, plus `failures`/`secondaryFailures` if present. Preserve the c4 retest separately. Diagnose the five failures from their actual operations and replies before proposing any assertion/runtime/policy change. Require the unchanged full matrix's exit0, all checks true and `verified:true` for native acceptance; credentialed account proof and rollout remain separate work.
+
+## Diagnostic result at 32f3789 and smallest source-only corrections
+
+The parent reports the full diagnostic matrix at **`32f3789e515275dd5cbb28bf0115def5681a3f88`** still had 20/25 true in each state. The command replies resolve the earlier unknowns:
+
+- `.codex` listing and the populated file read were denied with `EACCES`. An invalid attempt to write file contents directly to that directory returned `EISDIR`, triggering the generic assertion before meaningful child-write probes completed.
+- The exact active arg0 helper returned valid help, nested status0 and empty stderr, but Node also returned a `spawnSync EPERM` error. That error correctly kept the check false.
+- `.git/fixture.txt` was readable; existing/new file writes returned `EROFS`. Renaming the mounted `.git` directory returned `EBUSY`, stopping the check before `.agents`.
+- `/proc/self/ns/pid` returned `ENOENT`, stopping before parent-process accesses were tested.
+- Git init returned status0 and empty streams together with `spawnSync EPERM`. Git status and Python were not reached.
+
+The parent also reports Hermes found no matching AppArmor/seccomp audit records in the reviewed time window. The outer profile permits the relevant process/readlink/socketpair calls; its seccomp returns errors without logging. These are parent-provided VM results, not newly run VM tests by this agent. Preserve the original raw 32f3789 receipt; the old cloud evidence/provenance files and all previous commits are unchanged.
+
+### Subprocess EPERM: isolated mechanism, no security relaxation
+
+Pinned stock [restricted-network seccomp](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/linux-sandbox/src/landlock.rs#L200) unconditionally denies `shutdown()` with `EPERM`. Node [starts closing piped child stdin via uv_shutdown](https://github.com/nodejs/node/blob/v22.23.3/src/spawn_sync.cc#L144), and [libuv invokes shutdown on that stream](https://github.com/nodejs/node/blob/v22.23.3/deps/uv/src/unix/stream.c#L651). Node retains a pipe error separately from the child's exit status, so status0 and valid output can coexist with a spawn error. This is an input-stream close failure, not evidence that Git/helper execution was forbidden.
+
+A disposable container using the preserved cloud stock image, Node **22.23.3**, libuv **1.51.0**, zero capabilities and no network reproduced exactly that combination by installing a **shutdown-only** error filter in the synthetic Python/Node process. Default stdin: status0, valid child marker, error `EPERM`; ignored stdin: status0, same marker, error null, empty stderr. This process-local filter only tightens a disposable fixture; no host or saved policy was changed. [Actual reproduction evidence](personal-codex-stock-shutdown-evidence.json) records image/input/source hashes and both replies. It proves the mechanism in isolation; the VM syscall was not traced. The next native VM run must confirm the correction under its complete stock filter.
+
+The small fix is `stdio: ['ignore','pipe','pipe']` for the helper help, Git init/status and Python-print commands: all are explicitly no-input fixtures. Every spawn error remains fatal even with status0. Helper output must still contain its help marker; Git must create a real `.git/HEAD`, return clean status with empty stderr, and Python must print its exact marker. Production adapters and user command handling are unchanged. General Node code that requires piped stdin can still encounter the stock restriction; this task does not claim to fix that upstream compatibility limitation.
+
+To reproduce without building an image (cloud uses `/usr/local/bin/docker`; use the reviewed operator executable on the VM):
+
+```sh
+/usr/local/bin/docker run --rm -i --network none --cap-drop ALL \
+  --security-opt no-new-privileges:true --read-only --user 10001:10001 \
+  collectiveui/personal-codex:stock-runtime python3 - \
+  < tests/fixtures/personal-codex/shutdown-only.py
+```
+
+### Metadata corrections retain meaningful writes and backing integrity
+
+Only structural errors on the actual root directory are scoped exceptions: `EISDIR` for file-write/unlink on a directory, `EEXIST` for recreating it, and `EBUSY` for removing/renaming its mount root. None is credited as a permission or confidentiality proof. `.codex` must still deny listing, populated-file reading/overwriting, new-file writing and new-directory creation. Both `.git` and `.agents` must remain publicly readable while existing/new file writes are denied; `EBUSY` is accepted only for renaming their mount roots. The original independent, byte-for-byte backing sentinel/listing check remains a mandatory acceptance gate before and after replacement. A successful meaningful write or directory rename still fails immediately. The old custom-mask proof is untouched; the correction applies to the prepared stock directory representation.
+
+### Absent procfs: independently observe the actual native PID namespace
+
+The pinned `:minimal` [mount builder starts from an empty root](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/linux-sandbox/src/bwrap.rs#L538), whose Linux default readable roots omit `/proc`. When the fresh-proc preflight fails, [stock disables that mount](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/linux-sandbox/src/linux_run_main.rs#L422); it still [requests user and PID namespaces](https://github.com/openai/codex/blob/a6274249d5877030676db098914db686bab7c921/codex-rs/linux-sandbox/src/bwrap.rs#L377). In this profile the fallback therefore leaves procfs absent, rather than binding the parent procfs. No new proc read grant or inherited PID mode is needed.
+
+The process check briefly holds the exact native Node command with a random synthetic nonce. A same-UID observer in the disposable outer container matches its live command line and reads its actual `/proc/<outer-pid>/ns/pid`. Acceptance requires exactly one matched process, a live parent, parent/observer namespace equality, and a distinct native-command PID namespace. Observation errors, inherited namespace, missing/multiple matches or timeout all keep the check false. The inner command still performs every parent environ/memory/fd/cwd/root and proc-root credential access denial, tests `/sys` denial and verifies that signal0 to self is available. Existing backing-home checks remain mandatory. Native stdout proof alone cannot qualify this check: the parent combines it with the independently observed namespace result in `processObservations.<state>`.
+
+This changes how the guarantee is measured, not the process boundary: private PID/user isolation and confidential parent data remain required. Procfs availability was an invalid positive-control assumption under this restricted stock profile. A mounted private procfs must still have a valid self namespace/status; only `ENOENT` permits the absent representation, and only with independent live namespace proof. No security policy/image/runtime inputs changed.
+
+The local tests observe and release a real held synthetic process in the inherited namespace and explicitly reject it. This validates observation mechanics and the negative control, not a native isolated namespace in the cloud. The cloud native namespace blocker remains unchanged. Rerun the full matrix on the same VM image and approved profile, returning `processObservations` as well as failed command replies. No new host-policy approval is requested; if observation fails, preserve that exact result and keep activation blocked rather than broaden access.
