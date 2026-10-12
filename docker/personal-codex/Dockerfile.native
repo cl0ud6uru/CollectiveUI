@@ -14,6 +14,7 @@ LABEL org.opencontainers.image.source="https://github.com/openai/codex" \
       io.collectiveui.codex.bwrap-sha256="${CODEX_BWRAP_SHA256}" \
       io.collectiveui.codex.fixture-base-image-id="${CODEX_FIXTURE_IMAGE_ID}" \
       io.collectiveui.codex.cli-lto="off" \
+      io.collectiveui.codex.linker-threads="1" \
       io.collectiveui.codex.version="0.163.0-alpha.2"
 
 USER 0:0
