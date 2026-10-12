@@ -7,8 +7,8 @@
       "name": "Knowledge Work",
       "description": "Offline document work with the existing headless LibreOffice conversion and Python helpers.",
       "version": 1,
-      "imageRef": null,
-      "imageRefStatus": "build_required",
+      "imageRef": "sha256:5c05a7f804741305a56564c430e78133caded949482d6d02922e0978b26fca50",
+      "imageRefStatus": "recorded",
       "baseImageRef": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
       "dockerfile": "docker/workspace-templates/knowledge-work/Dockerfile",
       "seedBundle": {
@@ -34,8 +34,8 @@
       "name": ".NET Linux",
       "description": "A Linux-only .NET 10 SDK workspace with a locked starter package graph pre-restored for offline builds.",
       "version": 1,
-      "imageRef": null,
-      "imageRefStatus": "build_required",
+      "imageRef": "sha256:a379d6bded11bfd5c947d8c92d0aef2e0a1d49069525055478d976597392c5ac",
+      "imageRefStatus": "recorded",
       "baseImageRef": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
       "dockerfile": "docker/workspace-templates/dotnet-linux/Dockerfile",
       "sdk": {

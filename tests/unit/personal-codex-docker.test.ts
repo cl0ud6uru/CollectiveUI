@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+const policy = vi.hoisted(() => ({ load: vi.fn() }));
+vi.mock('@/personal-codex/sandbox-policy.mjs', () => ({ sandboxPolicy: policy.load }));
+beforeEach(() => { policy.load.mockReset().mockResolvedValue({ create: ['no-new-privileges:true'], inspect: ['no-new-privileges:true'] }); });
 import { BrokerConfig, PersonalCodexDriver, runtimeKey } from '@/personal-codex/docker';
 
 const OWNER = 'member-101';
@@ -16,7 +19,7 @@ const config = (owners = [OWNER]) => BrokerConfig.parse({
 function containerFixture(owner = OWNER) {
   const name = `${NAMESPACE}-${runtimeKey(owner)}`;
   return {
-    Name: `/${name}`,
+    Name: `/${name}`, AppArmorProfile: 'docker-default',
     Config: {
       Labels: labels(owner), Image: IMAGE, User: '10001:10001', WorkingDir: '/home/agent/workspace',
       Cmd: ['node', '/opt/collective-codex/server.mjs'], Entrypoint: [],
@@ -68,7 +71,7 @@ class FakeDockerDriver extends PersonalCodexDriver {
   peer: unknown = null;
   imageExists = true;
 
-  constructor(owners = [OWNER]) { super(config(owners)); }
+  constructor(owners = [OWNER], sandboxProfile?: 'collectiveui-sandbox-v1') { super({ ...config(owners), sandboxProfile }); }
 
   protected override async command(args: string[]) {
     this.calls.push([...args]);
@@ -106,7 +109,13 @@ class FakeDockerDriver extends PersonalCodexDriver {
     if (args[0] === 'create') {
       const name = args[args.indexOf('--name') + 1];
       const owner = this.config.owners.find(candidate => this.name(candidate) === name)!;
-      if (owner === OWNER) this.container = containerFixture(owner);
+      if (owner === OWNER) {
+        this.container = containerFixture(owner);
+        if (this.config.sandboxProfile) {
+          this.container.AppArmorProfile = this.config.sandboxProfile;
+          this.container.HostConfig.SecurityOpt = ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'];
+        }
+      }
       else this.otherContainers.set(name, containerFixture(owner));
       return 'container-id';
     }
@@ -142,6 +151,28 @@ class FakeDockerDriver extends PersonalCodexDriver {
 const unavailable = /configuration or storage needs operator reconciliation/i;
 
 describe('personal Codex Docker isolation', () => {
+  it('applies and revalidates the pinned policy at creation and inspection', async () => {
+    policy.load.mockResolvedValue({ create: ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp=/etc/collectiveui/security/collectiveui-seccomp-v1.json'], inspect: ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'], appArmorProfile: 'collectiveui-sandbox-v1' });
+    const driver = new FakeDockerDriver([OWNER], 'collectiveui-sandbox-v1');
+    await driver.ensure(OWNER);
+    expect(policy.load).toHaveBeenCalledWith('collectiveui-sandbox-v1');
+    const create = driver.calls.find(args => args[0] === 'create')!;
+    expect(create).toContain('apparmor=collectiveui-sandbox-v1');
+    expect(create).toContain('seccomp=/etc/collectiveui/security/collectiveui-seccomp-v1.json');
+    policy.load.mockImplementation(() => { throw new Error('policy drift'); });
+    driver.calls.length = 0;
+    const failure = await driver.startRetained(OWNER).then(() => 'unexpected success', error => error.message);
+    expect(failure).toMatch(unavailable);
+    expect(driver.calls).toEqual([]);
+  });
+  it.each(['unconfined', 'foreign-profile'])('rejects AppArmor drift: %s', async profile => {
+    const driver = new FakeDockerDriver();
+    driver.container = containerFixture();
+    driver.container.AppArmorProfile = profile;
+    driver.seedVolumes();
+    await expect(driver.inspect(OWNER)).rejects.toThrow(unavailable);
+  });
+
   it('creates a container only with fixed, bounded argv and exact enrolled resources', async () => {
     const driver = new FakeDockerDriver();
     await driver.ensure(OWNER);
@@ -205,6 +236,9 @@ describe('personal Codex Docker isolation', () => {
   });
 
   it.each([
+    ['unconfined seccomp', (c: ReturnType<typeof containerFixture>) => { c.HostConfig.SecurityOpt.push('seccomp=unconfined'); }],
+    ['missing no-new-privileges', (c: ReturnType<typeof containerFixture>) => { c.HostConfig.SecurityOpt = []; }],
+    ['unexpected named profile', (c: ReturnType<typeof containerFixture>) => { c.HostConfig.SecurityOpt.push('apparmor=foreign'); }],
     ['host Docker socket or other bind mount', (c: ReturnType<typeof containerFixture>) => { c.HostConfig.Binds = ['/var/run/docker.sock:/var/run/docker.sock']; }],
     ['extra volume mount', (c: ReturnType<typeof containerFixture>) => { c.Mounts.push({ Type: 'volume', Name: 'foreign', Destination: '/extra', RW: true }); }],
     ['privileged mode', (c: ReturnType<typeof containerFixture>) => { c.HostConfig.Privileged = true; }],
