@@ -4,10 +4,12 @@ import { describe, expect, it } from "vitest";
 const account = readFileSync("src/components/settings/chatgpt-connection.tsx", "utf8");
 const legacy = readFileSync("src/components/settings/personal-codex-connection.tsx", "utf8");
 const settings = readFileSync("src/components/settings-view.tsx", "utf8");
+const page = readFileSync("src/app/(chat)/settings/page.tsx", "utf8");
 
 describe("unified ChatGPT account settings", () => {
   it("always mounts a single API-backed account entry for all account states", () => {
     expect(settings).toContain('<ChatGPTConnection />');
+    expect(page).toContain('key={`${p.user.id}:${p.user.sessionVersion}`}');
     expect(settings).not.toContain("chatgpt && <ChatGPTConnection");
     expect(account).toContain('fetch("/api/me/chatgpt"');
     expect(account).toContain('action: "start"');

@@ -50,6 +50,7 @@ export default async function SettingsPage() {
   return (
     <PageFrame title="Settings">
       <SettingsView
+        key={`${p.user.id}:${p.user.sessionVersion}`}
         prefs={p.user.prefs ?? {}}
         apps={apps.map((a) => ({ id: a.id, name: a.name }))}
         bots={startBots.map((b) => ({ id: b.id, name: b.name }))}
