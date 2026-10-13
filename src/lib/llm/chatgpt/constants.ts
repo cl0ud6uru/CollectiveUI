@@ -13,8 +13,8 @@ export const DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback"
 /** Device codes expire after 15 minutes upstream. */
 export const DEVICE_CODE_TTL_MS = 15 * 60_000;
 
-export const ORIGINATOR = "ai_portal";
-export const USER_AGENT = "AIPortal/1.0 (+Sign in with ChatGPT)";
+export const ORIGINATOR = "collective_ui";
+export const USER_AGENT = "CollectiveUI/0.1.0";
 
 /** Refresh when the access token has less than this left. */
 export const REFRESH_WINDOW_MS = 5 * 60_000;

@@ -41,8 +41,8 @@ describe("SIWC public API transport", () => {
     const call = calls[0];
     expect(call.url).toBe(`${OPENAI_API_BASE_URL}/responses`);
     expect(call.headers.get("authorization")).toBe("Bearer tok-1");
-    expect(call.headers.get("originator")).toBe("ai_portal");
-    expect(call.headers.get("user-agent")).toMatch(/^AIPortal\//);
+    expect(call.headers.get("originator")).toBe("collective_ui");
+    expect(call.headers.get("user-agent")).toBe("CollectiveUI/0.1.0");
     for (const h of ["chatgpt-account-id", "session-id", "x-codex-turn-state", "x-openai-internal-codex-residency", "x-openai-fedramp"]) expect(call.headers.get(h)).toBeNull();
     expect(call.cache).toBe("no-store");
     expect(JSON.parse(call.body!)).toMatchObject({ store: false, stream: true });

@@ -52,7 +52,7 @@ describe('local SIWC credential helper', () => {
       expect(authUrl.origin).toBe('https://auth.openai.com');
       expect(authUrl.searchParams.get('client_id')).toBe('dynamic_agent_client');
       expect(authUrl.searchParams.get('ext_agent_host_id')).toBe(hostId);
-      expect(authUrl.searchParams.get('agent_name_hint')).toBe('CollectiveUI');
+      expect(authUrl.searchParams.get('agent_name_hint')).toBe('collective_ui');
       expect(authUrl.searchParams.get('scope')).toBe(scopes);
       expect(authUrl.searchParams.get('code_challenge_method')).toBe('S256');
       const callback = new URL(authUrl.searchParams.get('redirect_uri')!);

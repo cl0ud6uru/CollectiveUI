@@ -137,7 +137,7 @@ export async function signInSIWC(options: { hostId?: string; existing?: unknown;
         for (const [key, value] of Object.entries({ client_id: existing?.clientId ?? 'dynamic_agent_client', response_type: 'code', redirect_uri: redirectUri,
           scope: SCOPE_LIST.join(' '), resource: RESOURCE, state, nonce, code_challenge_method: 'S256',
           code_challenge: createHash('sha256').update(verifier).digest('base64url'), ext_agent_host_id: hostId,
-          ...(!existing ? { agent_name_hint: 'CollectiveUI' } : {}) })) url.searchParams.set(key, value);
+          ...(!existing ? { agent_name_hint: 'collective_ui' } : {}) })) url.searchParams.set(key, value);
         try { void Promise.resolve(options.openBrowser(url.href)).catch(() => rejectResult(fail())); } catch { rejectResult(fail()); }
       });
     });
