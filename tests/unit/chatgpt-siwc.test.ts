@@ -13,11 +13,11 @@ async function signed(payload: Record<string, unknown>, aud: string) {
   return new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid: 'unit-kid', typ: 'JWT' })
     .setIssuer('https://auth.openai.com').setAudience(aud).setSubject(subject).setIssuedAt().setNotBefore('0s').setExpirationTime('1h').sign(privateKey);
 }
-async function tokenReply(nonce: string) {
+async function tokenReply(nonce: string, accessScopes = scopes) {
   const common = { scope: scopes, client_id: clientId };
   return { token_type: 'Bearer', expires_in: 3600, scope: scopes,
     id_token: await signed({ nonce, email }, clientId),
-    access_token: await signed({ ...common, nbf: Math.floor(Date.now() / 1000), scope: scopes }, 'https://api.openai.com/v1'),
+    access_token: await signed({ ...common, nbf: Math.floor(Date.now() / 1000), scope: accessScopes }, 'https://api.openai.com/v1'),
     refresh_token: 'synthetic-refresh' };
 }
 function json(data: unknown, mime = 'application/json') { return new Response(JSON.stringify(data), { headers: { 'content-type': mime } }); }
@@ -30,7 +30,7 @@ beforeAll(async () => {
 afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
 
 describe('local SIWC credential helper', () => {
-  it('uses the documented dynamic registration and saves validated tokens privately', async () => {
+  it('uses dynamic registration and accepts resource-scoped API claims with the full authorized response grant', async () => {
     const output = join(directory, 'credential.json'); let authUrl: URL | undefined;
     let nonce = '';
     const fetcher: typeof fetch = async (input, init) => {
@@ -39,7 +39,7 @@ describe('local SIWC credential helper', () => {
         const form = new URLSearchParams(String(init?.body));
         expect(form.get('client_id')).toBe(clientId); expect(form.get('resource')).toBe('https://api.openai.com/v1');
         expect(form.get('code_verifier')).toBeTruthy(); expect(form.get('redirect_uri')).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/);
-        return json(await tokenReply(nonce));
+        return json(await tokenReply(nonce, 'resource.invoke chatgpt.tokens.use.direct'));
       }
       if (url === 'https://auth.openai.com/.well-known/openid-configuration') return json({ issuer: 'https://auth.openai.com',
         authorization_endpoint: 'https://auth.openai.com/api/accounts/authorize', token_endpoint: 'https://auth.openai.com/api/accounts/oauth/token',
@@ -108,7 +108,7 @@ describe('local SIWC credential helper', () => {
 
   it('refreshes with the issued client ID and required resource without a scope parameter', async () => {
     let form: URLSearchParams | undefined;
-    const accessToken = await signed({ client_id: clientId, scope: scopes, nbf: Math.floor(Date.now() / 1000) }, 'https://api.openai.com/v1');
+    const accessToken = await signed({ client_id: clientId, scope: 'resource.invoke chatgpt.tokens.use.direct', nbf: Math.floor(Date.now() / 1000) }, 'https://api.openai.com/v1');
     const idToken = await signed({ email }, clientId);
     const fetcher: typeof fetch = async (input, init) => {
       const url = String(input);

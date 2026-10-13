@@ -13,6 +13,7 @@ const ISSUER = 'https://auth.openai.com';
 const RESOURCE = 'https://api.openai.com/v1';
 const TOKEN_URL = `${ISSUER}/api/accounts/oauth/token`;
 const SCOPE_LIST = ['openid', 'profile', 'email', 'offline_access', 'resource.invoke', 'chatgpt.tokens.use.direct'] as const;
+const API_SCOPES = ['resource.invoke', 'chatgpt.tokens.use.direct'] as const;
 const HOST_ID = z.string().max(256).regex(/^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
 const TOKEN_REPLY = z.object({ access_token: z.string().min(1).max(16_000), refresh_token: z.string().min(1).max(16_000).optional(),
   id_token: z.string().min(1).max(16_000).optional(), token_type: z.string().refine(v => v.toLowerCase() === 'bearer'),
@@ -46,7 +47,7 @@ export async function validateSIWCCredential(raw: unknown, options: { hostId: st
     const expectedSubject = options.subject ?? subject;
     const id = await verifier.verifyIdToken(credential.idToken, options.nonce ? { clientId: credential.clientId, nonce: options.nonce, ...(options.subject ? { subject: options.subject } : {}) } : { clientId: credential.clientId, subject: expectedSubject });
     const access = await verifier.verifyAccessToken(credential.accessToken);
-    if (access.clientId !== credential.clientId || access.subject !== id.subject || SCOPE_LIST.some(scope => !access.scopes.includes(scope))) throw fail();
+    if (access.clientId !== credential.clientId || access.subject !== id.subject || API_SCOPES.some(scope => !access.scopes.includes(scope))) throw fail();
     const email = decodeJwt(credential.idToken).email;
     if (typeof email !== 'string' || !email.trim()) throw fail();
     return { subject: id.subject, email, clientId: credential.clientId, expiresAt: new Date(access.expiresAt) };
@@ -171,7 +172,7 @@ export async function refreshSIWCTokens(refreshToken: string, clientId: string, 
     }
     try {
       const verifier = createOfficialPlanVerifier(fetcher), access = await verifier.verifyAccessToken(parsed.data.access_token);
-      if (access.clientId !== clientId || SCOPE_LIST.some(scope => !access.scopes.includes(scope))) throw fail();
+      if (access.clientId !== clientId || API_SCOPES.some(scope => !access.scopes.includes(scope))) throw fail();
       if (parsed.data.id_token) {
         const tokenSubject = decodeJwt(parsed.data.id_token).sub;
         if (typeof tokenSubject !== 'string' || (expectedSubject && tokenSubject !== expectedSubject)) throw fail();
