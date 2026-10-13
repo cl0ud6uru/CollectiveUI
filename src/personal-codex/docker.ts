@@ -10,7 +10,9 @@ import { sandboxPolicy } from './sandbox-policy.mjs';
 const absolute = z.string().refine(v => isAbsolute(v) && !/[\x00-\x1f,]/.test(v));
 export const BrokerConfig = z.object({
   socketPath: absolute,
-  image: z.string().regex(/^collectiveui\/personal-codex@sha256:[a-f0-9]{64}$/),
+  // Registry manifest references and complete local config IDs are distinct
+  // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
+  image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   namespace: z.string().regex(/^cui-codex-[a-z0-9-]{1,20}$/),
   // Admission is installed by an operator, never supplied by an HTTP caller.
   owners: z.array(ownerId).min(1).max(1000),
@@ -76,6 +78,7 @@ export class PersonalCodexDriver {
     const [c] = JSON.parse(await this.command(['inspect', name]));
     const h = c.HostConfig;
     if (!this.labels(owner, c.Config.Labels) || c.Config.Image !== this.config.image || c.Config.User !== '10001:10001' ||
+      (this.config.image.startsWith('sha256:') && c.Image !== this.config.image) ||
       c.Config.WorkingDir !== PERSONAL_CODEX_WORKSPACE || JSON.stringify(c.Config.Cmd) !== JSON.stringify(['node', '/opt/collective-codex/server.mjs']) ||
       c.Config.Entrypoint?.length || h.Privileged || !h.ReadonlyRootfs || h.PidMode || h.UTSMode || h.UsernsMode ||
       !['private', ''].includes(h.IpcMode ?? '') || h.Binds?.length || h.Devices?.length || h.DeviceRequests?.length || h.ExtraHosts?.length ||
@@ -101,7 +104,11 @@ export class PersonalCodexDriver {
     const policy = await this.policy();
     const network = await this.network(owner);
     // No auto-pull/build. Operator must review/install this exact image before enrollment.
-    await this.command(['image', 'inspect', this.config.image]);
+    const inspectedImage = await this.command(['image', 'inspect', this.config.image]);
+    if (this.config.image.startsWith('sha256:')) {
+      const images = JSON.parse(inspectedImage);
+      if (!Array.isArray(images) || images.length !== 1 || images[0]?.Id !== this.config.image) throw unavailable();
+    }
     let c = await this.inspect(owner);
     if (!c) {
       const home = await this.volume(owner, 'home', true), workspace = await this.volume(owner, 'workspace', true);
