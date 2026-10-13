@@ -2,6 +2,7 @@
 import { useEffect, useState, useTransition } from 'react';
 import { AdminHeader, Card, Stat, Table, Td } from './ui';
 import { Button } from '@/components/ui/button';
+import { AdminTimestamp } from './timestamp';
 import { saveBillingConfiguration } from '@/app/admin/spending/actions';
 import { applicableRemaining, moneyText, remaining, snapshotStale, type BillingAccountView, type Money, type SpendLimit } from '@/lib/billing/contracts';
 
@@ -48,11 +49,11 @@ export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }
     </div>
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}{notice && <p role="status" className="text-sm">{notice}</p>}
     {!account && <Card>Provider spending is off by default. An authorized administrator can configure a separate billing account below.</Card>}
-    {account && <p className="break-words text-xs text-muted">Organization: {account.organization} · {account.enabled ? 'Enabled' : 'Off'} · Last refresh attempt: {account.lastAttemptAt ? new Date(account.lastAttemptAt).toLocaleString() : 'Never'}</p>}
+    {account && <p className="break-words text-xs text-muted">Organization: {account.organization} · {account.enabled ? 'Enabled' : 'Off'} · Last refresh attempt: {account.lastAttemptAt ? <AdminTimestamp value={account.lastAttemptAt} /> : 'Never'}</p>}
     {account?.lastError && <p role="alert" className="text-sm text-danger">{account.lastError}</p>}
     {account && !snapshot && <Card>{account.enabled ? 'No successful provider snapshot yet. Refresh to read costs and limits.' : 'Provider spending is disabled. No billing reads are made.'}</Card>}
     {snapshot && <>
-      <p className="text-sm text-muted">{snapshot.month} UTC · Provider data requested through {new Date(snapshot.through * 1000).toLocaleString()} · Last successful refresh: {new Date(snapshot.refreshedAt).toLocaleString()}</p>
+      <p className="text-sm text-muted">{snapshot.month} UTC · Provider data requested through <AdminTimestamp value={snapshot.through * 1000} /> · Last successful refresh: <AdminTimestamp value={snapshot.refreshedAt} /></p>
       {(stale || account?.lastError) && <p role="status" className="rounded-lg bg-surface-2 p-3 text-sm">{stale ? 'Stale snapshot. ' : ''}Historical reported costs are shown; current allowance is unknown until a successful refresh.</p>}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <Stat label={project ? 'Project month-to-date costs' : 'Organization month-to-date costs'} value={amountsText(ownCosts, !!costsKnown)} sub="Actual provider-reported costs; reporting may be delayed" />

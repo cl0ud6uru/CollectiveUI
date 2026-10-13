@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Loader2, Plug, Plus, Trash2 } from "lucide-react";
 import { deleteApp, saveApp, testAppConnection, type AppInput } from "@/app/admin/actions";
@@ -94,6 +94,7 @@ function AppDialog({
   const [credentials, setCredentials] = useState<CredentialsInput>({});
   const [models, setModels] = useState<string[]>([]);
   const [testing, setTesting] = useState(false);
+  const testInFlight = useRef(false);
   const [pending, start] = useTransition();
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((x) => ({ ...x, [k]: v }));
   const setConfig = (k: string, v: unknown) => setF((x) => ({ ...x, config: { ...x.config, [k]: v } }));
@@ -151,6 +152,8 @@ function AppDialog({
     }) as AppInput;
 
   async function test() {
+    if (testInFlight.current) return;
+    testInFlight.current = true;
     setTesting(true);
     try {
       const r = await testAppConnection({
@@ -169,7 +172,10 @@ function AppDialog({
         if (agent && r.models.length === 1 && !f.model) set("model", r.models[0]);
         toast.success(r.models.length ? `Connected — ${r.models.length} model(s)` : `Connected — ${r.note ?? "the model answered"}`);
       } else toast.error(`Connection failed: ${r.error}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not test the connection. Try again.");
     } finally {
+      testInFlight.current = false;
       setTesting(false);
     }
   }
@@ -406,6 +412,24 @@ function AppDialog({
 export function AppsAdmin({ apps, groups, chatgptEnabled, connections = [] }: { connections?: ProviderConnectionView[]; apps: AppRow[]; groups: { id: string; name: string }[]; chatgptEnabled: boolean }) {
   const router = useRouter();
   const [edit, setEdit] = useState<FormState | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const deleteInFlight = useRef(false);
+
+  async function remove(app: AppRow) {
+    if (deleteInFlight.current || !confirm(`Delete ${app.name}? Existing chats keep their history.`)) return;
+    deleteInFlight.current = true;
+    setDeleting(app.id);
+    try {
+      await deleteApp(app.id);
+      toast.success("Connection deleted");
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not delete connection. Try again.");
+    } finally {
+      deleteInFlight.current = false;
+      setDeleting(null);
+    }
+  }
   return (
     <div>
       {([false, true] as const).map((agent) => {
@@ -426,7 +450,7 @@ export function AppsAdmin({ apps, groups, chatgptEnabled, connections = [] }: { 
               <tr key={a.id} className="hover:bg-hover/50">
                 <Td><AppIcon icon={a.icon} /></Td>
                 <Td>
-                  <button onClick={() => setEdit(a)} className="text-left font-medium underline-offset-4 hover:underline" aria-label={`Edit ${a.name}`}>{a.name}</button>
+                  <button type="button" onClick={() => setEdit(a)} disabled={deleting === a.id} className="text-left font-medium underline-offset-4 hover:underline" aria-label={`Edit ${a.name}`}>{a.name}</button>
                   {!a.enabled && <Badge tone="red">disabled</Badge>}
                 </Td>
                 <Td><Badge>{CATALOG[a.provider].label}</Badge></Td>
@@ -441,11 +465,8 @@ export function AppsAdmin({ apps, groups, chatgptEnabled, connections = [] }: { 
                 </Td>
                 <Td>{a.isPublic ? <Badge tone="green">everyone</Badge> : <Badge tone="amber">{a.groupIds.length} group(s)</Badge>}</Td>
                 <Td>
-                  <button onClick={async () => {
-                    if (!confirm(`Delete ${a.name}? Existing chats keep their history.`)) return;
-                    await deleteApp(a.id); router.refresh();
-                  }} className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger" aria-label={`Delete ${a.name}`}>
-                    <Trash2 className="h-4 w-4" />
+                  <button type="button" onClick={() => remove(a)} disabled={deleting !== null} aria-busy={deleting === a.id} className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger disabled:opacity-50" aria-label={`Delete ${a.name}`}>
+                    {deleting === a.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                   </button>
                 </Td>
               </tr>

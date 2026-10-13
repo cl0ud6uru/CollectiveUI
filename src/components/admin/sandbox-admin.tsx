@@ -12,6 +12,7 @@ import type { WorkspaceSetupReport } from "@/lib/sandbox/setup";
 import { GroupPicker } from "./group-picker";
 import { Badge, Card, Table, Td } from "./ui";
 import { WorkspaceSetup } from "./workspace-setup";
+import { AdminTimestamp } from "./timestamp";
 
 export type SandboxRowView = {
   id: string;
@@ -185,7 +186,7 @@ export function SandboxAdmin({
               </div>
             </Td>
             <Td className="text-xs text-muted">{r.runtime === "runsc" ? "gVisor" : r.runtime === "runc" ? "standard" : "—"}</Td>
-            <Td className="text-xs text-muted">{r.lastUsedAt ? new Date(r.lastUsedAt).toLocaleString() : "never"}</Td>
+            <Td className="text-xs text-muted">{r.lastUsedAt ? <AdminTimestamp value={r.lastUsedAt} /> : "never"}</Td>
             <Td className="whitespace-nowrap">
               <Button size="sm" variant="ghost" disabled={pending || r.state !== "running"} onClick={() => run(() => adminStopWorkspaceInstance(r.id), "Stopped")}>
                 Stop

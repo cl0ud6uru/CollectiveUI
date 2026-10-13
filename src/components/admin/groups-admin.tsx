@@ -2,9 +2,9 @@
 
 import { UserPicker, type UserOption } from "@/components/user-picker";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, X } from "lucide-react";
+import { Loader2, Plus, Trash2, X } from "lucide-react";
 import { deleteGroup, type GroupInput } from "@/app/admin/actions";
 import { findLdapUserForGroup, saveGroupWithFeedback, type LdapGroupMember } from "@/app/admin/groups/ldap-actions";
 import { Button } from "@/components/ui/button";
@@ -87,6 +87,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
                 <option value="entra">Entra</option>
               </Select>
               <Input
+                aria-label="Directory group ID"
                 list="known-groups"
                 value={ext}
                 onChange={(e) => setExt(e.target.value)}
@@ -166,6 +167,24 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
 export function GroupsAdmin({ groups, known, users, ldapEnabled = false }: { groups: Group[]; known: Mapping[]; users: UserOption[]; ldapEnabled?: boolean }) {
   const router = useRouter();
   const [edit, setEdit] = useState<Partial<Group> | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const deleteInFlight = useRef(false);
+
+  async function remove(group: Group) {
+    if (deleteInFlight.current || !confirm(`Delete group ${group.name}?`)) return;
+    deleteInFlight.current = true;
+    setDeleting(group.id);
+    try {
+      await deleteGroup(group.id);
+      toast.success("Group deleted");
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not delete group. Try again.");
+    } finally {
+      deleteInFlight.current = false;
+      setDeleting(null);
+    }
+  }
   return (
     <div>
       <div className="mb-4 flex justify-end">
@@ -175,9 +194,9 @@ export function GroupsAdmin({ groups, known, users, ldapEnabled = false }: { gro
       </div>
       <Table head={["Name", "Directory groups", "Individual users", "Permissions", ""]}>
         {groups.map((g) => (
-          <tr key={g.id} className="cursor-pointer hover:bg-hover/50" onClick={() => setEdit(g)}>
+          <tr key={g.id} className="hover:bg-hover/50">
             <Td>
-              <div className="font-medium">{g.name}</div>
+              <button type="button" onClick={() => setEdit(g)} disabled={deleting === g.id} className="text-left font-medium underline-offset-4 hover:underline focus-visible:underline" aria-label={`Edit ${g.name}`}>{g.name}</button>
               <div className="text-xs text-muted">{g.description}</div>
             </Td>
             <Td className="text-xs text-muted">
@@ -190,16 +209,14 @@ export function GroupsAdmin({ groups, known, users, ldapEnabled = false }: { gro
             </Td>
             <Td>
               <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!confirm(`Delete group ${g.name}?`)) return;
-                  await deleteGroup(g.id);
-                  router.refresh();
-                }}
-                className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger"
+                type="button"
+                onClick={() => remove(g)}
+                disabled={deleting !== null}
+                aria-busy={deleting === g.id}
+                className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger disabled:opacity-50"
                 aria-label={`Delete ${g.name}`}
               >
-                <Trash2 className="h-4 w-4" />
+                {deleting === g.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
               </button>
             </Td>
           </tr>
