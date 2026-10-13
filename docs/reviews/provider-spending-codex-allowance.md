@@ -1,5 +1,7 @@
 # Provider spending and Codex allowance implementation
 
+Historical delivery and review record for the 2026-10-08 commits below. Branch/PR states, test totals and temporary logs describe that checkpoint. Current behavior and activation requirements are maintained in [provider spending](../architecture/provider-spending.md) and [Codex allowance](../architecture/codex-allowance.md); the later [Codex text pilot](../codex-harness.md) is a separate runtime integration.
+
 ## Delivery
 
 Local branch: `feat/provider-spending-codex-allowance`, based on current main `73ee97f8dee17b04e59acf52bae85673d6cdb5f0` (re-fetched and unchanged on 2026-10-08). No branch was pushed, PR published, merge performed, deployment made, real credential created/collected, or live account connected.

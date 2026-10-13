@@ -1,8 +1,8 @@
 # Models, agent backends and bots
 
-**Models** power ordinary New Chat and the native CollectiveUI bot engine. A model connection selects one provider model or deployment; the provider may advertise many models. **Agent backends** execute bots with their own tools and model routing. Hermes is the only implemented external agent backend. **Bots** are configured assistants using either engine.
+**Models** power ordinary New Chat and the native CollectiveUI bot engine. A model connection selects one provider model or deployment; the provider may advertise many models. **Agent backends** execute bots through their own runtime. Hermes supports backend-owned tools and model routing. The [Codex personal-agent pilot](../codex-harness.md) uses the caller's private Docker runtime and own ChatGPT connection for direct chat with native command/file tools and thread continuation. Legacy manifest runtimes retain text-only behavior. **Bots** are configured assistants using one of these engines.
 
-Admin → **Connections** separates Models from Agent backends. The existing `/admin/apps` URL, connection IDs, API fields and database names stay compatible. Admin → **Managed Hermes** retains per-user runtime provisioning. This change needs no schema migration.
+Admin → **Connections** separates Models from Hermes agent backend connections. The existing `/admin/apps` URL, connection IDs, API fields and database names stay compatible. Admin → **Managed Hermes** retains per-user runtime provisioning. Codex is selected in the bot editor; personal runtime enrollment is operator-controlled, and each caller connects from Settings rather than creating a model or Hermes connection. The original Models/Agent backends terminology change required no schema migration; the Codex foundation uses `0053_codex_harness`, personal runtimes add 0054/0055, and the current complete journal runs through `0056_web_sessions`. Apply all migrations with matching web and worker code.
 
 ## Existing Hermes conversations
 

@@ -1,5 +1,7 @@
 # Review fixes and combined integration verification
 
+Historical verification record. The commit IDs, test totals and migration checkpoints below describe the 2026-10-02 review; they are not results for the current checkout. Current installations should follow [operations](../operations.md) and apply the complete migration chain.
+
 Verified locally on 2026-10-02 using synthetic data and isolated PostgreSQL, LDAP, model and Hermes fixtures. The five findings were reproduced against the starting main history (`d5abf74`); none was already fixed. The implementation checkpoint was `21c5696`. Integration incorporates current main `b2a0205` (including PR11) and Hermes provisioning `db34aa3` through `9cb2baf`.
 
 ## Corrected behavior

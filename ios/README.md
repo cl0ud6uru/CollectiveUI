@@ -8,7 +8,11 @@ ios/
                             UI message stream reducer, PKCE. Unit tested with `swift test`.
   CollectiveUI.xcodeproj    App project (the CollectiveUI/ folder is a synchronized group, so
                             new files are picked up without editing the project)
-  CollectiveUI/             App sources: App/, Auth/, Views/, Chat/, Support/, Assets.xcassets
+  CollectiveUI/             App sources: App/, Auth/, Views/, Chat/, Voice/, LiveActivities/,
+                            Support/, Demo/, Assets.xcassets
+  VoiceEngine/              Shared React/WebRTC voice engine source
+  scripts/                  Voice bundler, source-contract checks and simulator QA scripts
+  CollectiveLiveActivity/    Widget extension; shared activity views are in LiveActivityShared/
   CollectiveUITests/        App unit tests: draft lifecycle, session isolation, Stop and contrast
   UITests/                 Offline simulator regressions and standalone UI test project
   Config/Info.plist         Extra Info.plist keys (local-network ATS exception)
@@ -98,13 +102,13 @@ never call a model or modify a production chat.
 
 ## Run on a device (bundle ID and team)
 
-The project ships with `PRODUCT_BUNDLE_IDENTIFIER = io.collectiveui.app` and no development team.
+The project defaults to `COLLECTIVE_BUNDLE_ID = io.collectiveui.app` and has no development team. The app uses that identifier; the embedded widget adds `.liveactivity`.
 
-1. In Xcode select the **CollectiveUI** target, then **Signing & Capabilities**.
-2. Choose your **Team**. Signing is automatic.
-3. Change **Bundle Identifier** to one you own, for example `com.yourcompany.collectiveui`.
+1. Set the project build setting `COLLECTIVE_BUNDLE_ID` to an identifier you own, for example `com.yourcompany.collectiveui`.
+2. Select the **CollectiveUI** and **CollectiveLiveActivity** targets, then **Signing & Capabilities**.
+3. Choose the same **Team** for both targets. Signing is automatic.
 
-You can also set `DEVELOPMENT_TEAM` and `PRODUCT_BUNDLE_IDENTIFIER` in the target's build settings, or pass them to `xcodebuild`.
+You can also pass `DEVELOPMENT_TEAM` and `COLLECTIVE_BUNDLE_ID` to `xcodebuild`; the widget identifier is derived automatically.
 
 ## Point the app at a server
 
@@ -217,7 +221,7 @@ message so the user can use keyboard dictation instead; no transcription service
 
 The mobile shell optionally includes display-only `pets` metadata. Updated servers provide authenticated
 artwork through `GET /api/mobile/v1/bots/[id]/pet/avatar`; older servers continue to use blob/emoji avatars.
-Built-in pets use native vector artwork. Custom avatars also require these server changes to be deployed; an app-only rebuild against an older server cannot supply the missing metadata/endpoint. Imported atlases honor the user's still-motion preference,
+Moss and Ember use native vector artwork; the four bundled catalog pets and imported pets use raster atlases. Custom avatars also require these server changes to be deployed; an app-only rebuild against an older server cannot supply the missing metadata/endpoint. Imported atlases honor the user's still-motion preference,
 Reduce Motion and app backgrounding; compact roster avatars remain still. Pet editing stays on the website.
 
 - **CollectiveKit** (`CollectiveKit/Sources/CollectiveKit`)
@@ -245,7 +249,7 @@ Launch arguments (Xcode: **Product → Scheme → Edit Scheme → Run → Argume
 | `--demo` | Start signed in as the demo user "Jordan Lee" without reading real credentials. Fixture sessions never touch the Keychain; a real server login reached later uses normal credential persistence. |
 | `--demo-open <conversationId>` | Open a conversation, e.g. `demo-research`, `demo-approval`, `demo-image`, or a bot home chat such as `home-bot-atlas` |
 | `--demo-send "<text>"` | About 1 s after opening, type and send this message in that chat, then stream the reply |
-| `--demo-screen <name>` | Show `inbox`, `settings`, `newchat`, `search`, `setup` or `signin` |
+| `--demo-screen <name>` | Show `welcome`, `inbox`, `settings`, `newchat`, `search`, `setup`, `signin` or `liveactivity` |
 | `--demo-sidebar-collapsed` | On iPad, show only the chat column |
 | `--demo-stream-scenario long` | Stream 600 deterministic offline lines over about 120 seconds for scroll regressions; Stop ends the fixture early |
 | `--demo-stream-scenario delayed` | Wait six seconds before visible output for immediate Stop regressions |
@@ -309,11 +313,11 @@ by this implementation.
 
 ## Fullscreen voice (iOS 27)
 
-Tap the waveform in a chat header to talk to that same bot. The fullscreen view uses native SwiftUI controls, the shared 3D GLB avatar, and a microphone activity waveform. Transcripts stay in the saved chat; they are not shown on the voice screen. Minimize to type or answer approval cards without changing conversations. Ending voice stops microphone capture immediately. Backgrounding, changing chats, signing out, or an audio interruption ends capture as well.
+Tap the waveform in a chat header to talk to that same bot. The fullscreen view uses native SwiftUI controls, the current pet or bot icon (or a configured 3D GLB avatar), and a microphone activity waveform. Transcripts stay in the saved chat; they are not shown on the voice screen. Minimize to type or answer approval cards without changing conversations. Ending voice stops microphone capture immediately. Backgrounding, changing chats, signing out, or an audio interruption ends capture as well.
 
 The administrator configures **Bots & tools → Voice & avatar** on the server. The same company OpenAI transport supports native and Hermes bots; existing iOS restrictions on group, delegated, and Hermes Team chats remain. Device tokens call only `/api/mobile/v1/voice/*`; neither device tokens nor OpenAI keys enter the embedded engine. iOS uses SwiftUI `WebView` / `WebPage` for the bundled WebRTC and GLB engine, with no new third-party native SDK.
 
-For custom avatars, export a **self-contained GLB** with embedded textures (maximum 25 MB). External GLB texture URLs are blocked in the iOS engine. The web animation names and mouth morph contract also apply on iOS; see `../docs/voice.md`.
+For custom avatars, export a **self-contained GLB** with embedded textures (maximum 25 MiB). External GLB texture URLs are blocked in the iOS engine. The web animation names and mouth morph contract also apply on iOS; see [the voice guide](../docs/voice.md).
 
 After changing the shared voice bridge, avatar, or `ios/VoiceEngine/index.tsx`, regenerate and commit the offline resource:
 
@@ -326,4 +330,4 @@ The generated HTML contains the existing React and Three.js runtime and license 
 
 If final speech cannot save, the view keeps **Retry save** available. Keep the app open and retry before leaving; force-quitting can lose unsaved final speech. Live tool work admitted before End continues in the saved chat.
 
-Visual QA and screenshot comparisons are recorded in the repository-root `design-qa.md`; final captures are under `docs/screenshots/ios-voice/`. CI uses the `xcode-27` runner with Xcode 27.0 and checks that the bundled voice engine matches its sources.
+Visual QA and screenshot comparisons are recorded in the repository-root `design-qa.md`; final captures are under `docs/screenshots/ios-voice/`. CI uses the `xcode-27` runner and checks that the bundled voice engine matches its sources.

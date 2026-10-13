@@ -1,6 +1,6 @@
 # Local passkeys/TOTP and LDAP passkeys
 
-Implemented on a draft branch, verified 2026-10-03. Base: `659eb856c21acff3a7ef9be34e7d8e25ffd26fe4`.
+The implementation supports local passkeys/TOTP and LDAP passkeys. The original local-factor verification below was recorded on 2026-10-03 against base `659eb856c21acff3a7ef9be34e7d8e25ffd26fe4`; the LDAP extension was recorded on 2026-10-06. Historical PR states, audit results and test totals are retained as checkpoint evidence, not current-run results.
 
 ## Coverage and assurance
 
@@ -42,7 +42,7 @@ When enabling Entra, matching UPNs reach the existing directory account. Entra p
 
 The dedicated browser fixture uses real OpenLDAP password binds, PostgreSQL and Chromium WebAuthn, with local authentication also enabled to test provider isolation. It requires `LDAP_PASSKEY_BROWSER=1`, `DATABASE_URL` ending in `/collective_ldap_passkey_browser_test`, `LDAP_URL=ldap://localhost:13899`, and a separately running app at `BASE_URL` (default `http://localhost:3109`). The directory uses `dev/ldap/seed.ldif`, `LDAP_GROUP_MODE=member`, a uid-based user filter and `LDAP_UPN_SUFFIX=corp.local`. Run `npx playwright test --config tests/browser/ldap-passkeys.config.ts`. The fixture mutates only its explicitly disposable directory/database and tests enrollment, passwordless login, recovery, direct-callback denial, provider isolation, group refresh and deletion/recreation rejection. Validation for this update: 822 unit tests, ten local-factor database tests, two migration upgrade tests, and the dedicated LDAP browser scenario passed. Type checking, full lint, production build and diff checks passed. Real AD and Entra tenant validation remain installation checks.
 
-## Validation and handoff
+## Historical local-factor validation and handoff (2026-10-03)
 
 Draft PR: [#29](https://github.com/cl0ud6uru/CollectiveUI/pull/29). All account/credential fixtures are synthetic, in explicitly named disposable databases. No deployment, merge, real enrollment or live credential changes were performed.
 
@@ -55,7 +55,7 @@ Draft PR: [#29](https://github.com/cl0ud6uru/CollectiveUI/pull/29). All account/
 
 Browser fixture server: local-only Next development server on `http://localhost:3100`, disposable DB, synthetic `AUTH_SECRET` and a synthetic 32-byte base64 `ENCRYPTION_KEY`. The test config uses `/usr/bin/chromium` by default or `PLAYWRIGHT_CHROMIUM_PATH`. No actual keys or provider credentials are used. Test files enforce their disposable database names before mutation. Do not point these tests at an installation database. The migration test owns and rebuilds its named disposable schema.
 
-Apply final migration `0021_local_factors` before running this application version. No UI admin policy forces enrollment. The operator must configure the stable HTTPS origin, encryption keyring, trusted-proxy policy and synchronized server clocks before voluntary enrollment. Account/source budgets are persistent: password limits remain 10 per account and 30 per source per 15 minutes; factor attempts are 5 per account per 5 minutes, security requests (including Auth.js ticket exchanges) 60 per source per 5 minutes and 120 globally per minute. Expired state and throttle rows are pruned during these requests. The existing shared local-account transaction lock serializes lifecycle changes and factor verification; this is intentionally conservative and should be measured before high-volume use.
+Migration `0021_local_factors` introduced local factors; `0034_ldap_passkeys` extends their storage for directory users. Current deployments must apply the complete checked-in migration chain with matching web and worker code. No UI admin policy forces enrollment. The operator must configure the stable HTTPS origin, encryption keyring, trusted-proxy policy and synchronized server clocks before voluntary enrollment. Account/source budgets are persistent: password limits remain 10 per account and 30 per source per 15 minutes, plus 120 globally per minute; factor attempts are 5 per account per 5 minutes, security requests (including Auth.js ticket exchanges) 60 per source per 5 minutes and 120 globally per minute. Expired state and throttle rows are pruned during these requests. The existing shared local-account transaction lock serializes lifecycle changes and factor verification; this is intentionally conservative and should be measured before high-volume use.
 
 Lost-all-factor recovery remains a separate operator procedure requiring authorization and strong identity verification. There is deliberately no web/CLI MFA-reset escape hatch. An already authorized in-flight response cannot be recalled. Physical Android/iOS/security-key compatibility and a real Entra/LDAP deployment round trip were not exercised; Chromium virtual authenticators verify standards-based support, not a physical-device compatibility matrix. FIDO conformance of the library is not certification of this application.
 

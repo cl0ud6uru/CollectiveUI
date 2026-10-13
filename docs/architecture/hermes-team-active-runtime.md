@@ -69,5 +69,6 @@ or uncertain children become attention receipts and are not automatically replay
 The synthetic broker regression suite exercises startup, stream admission, history
 scope, expiry, shared-admin revocation, sibling refusal, delayed startup and retirement
 replay. Actual pinned-source lifecycle fixtures provide distinct native source
-evidence. Original-image active gateway execution and live model/auth/pilot verification
-are separate checks; none are claimed by synthetic wire or pinned-source tests.
+evidence. The [official-image active fixture](hermes-team-active-image-fixture.md)
+separately exercises gateway execution and synthetic HTTPS. Live model/auth/pilot
+verification remains separate; it is not established by these fixtures.

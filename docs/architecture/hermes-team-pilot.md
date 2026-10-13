@@ -7,8 +7,10 @@ pinned integrations pass verification. A successful native login alone is not
 model-access evidence.
 
 The application gate is `HERMES_TEAM_BOTS_ENABLED`; the protected Docker broker
-has a separate `teamBotsEnabled` configuration value. Enabling either gate does
-not make an unverified model route available. Current native iOS presents the
+has a separate `teamBotsEnabled` configuration value. Active execution additionally
+requires application `HERMES_TEAM_CANDIDATE_RUNTIME_ENABLED=1` and broker
+`teamCandidateRuntimeEnabled: true`. Enabling flags does not populate the verified
+model/tool inventories or make an unverified route available. Current native iOS presents the
 compatible web flow for Team Bots and prevents inference or approval fallback.
 
 ## Repeatable synthetic checks
@@ -40,11 +42,15 @@ idle profiles, then two active synthetic profiles to check maintenance refusal
 and the documented runtime-wide Stop behavior. Do not adopt, modify or delete an
 existing personal volume during this test.
 
-The saved environment's VFS Docker storage cannot fit the pinned image's
-expanded layer prefixes in its available disk. An efficient supported storage
-driver or a larger isolated cloud test environment is needed for this smoke
-test. Native-image execution remains an explicit gate; successful application
-Docker CI and filesystem helper tests do not substitute for it.
+The repository now defines the GitHub-hosted `hermes-team-image` job in
+`.github/workflows/ci.yml`. It pulls the exact official amd64 image on Linux
+`overlay2`/`overlayfs`, runs the offline helper smoke and the
+[active native image fixture](hermes-team-active-image-fixture.md) with synthetic
+HTTPS. Local opt-in tests require the image already cached and refuse VFS.
+Earlier VFS storage failures are historical environment evidence, not a claim
+that these fixtures are absent. Check the actual job result for the revision
+being deployed; source tests or CI configuration alone do not prove it passed.
+Deployment-host checks and live model/auth verification remain separate gates.
 
 ## Model and connector verification
 

@@ -4,7 +4,7 @@ The existing `ask_*` tools accept `{ task, mode: "sync" | "async" }` in durable 
 
 While the parent waits, its header says **Waiting for delegated tasks…** and Stop cancels the parent and descendants. The parent keeps its conversation slot but releases its worker slot, so other chats and tasks can run. The receiver has its own queue and worker slots (`TASK_RUN_CONCURRENCY`, default 4). Closing either page does not cancel work. The saved result returns to the original assistant message; its next segment continues automatically. Each finished async task also creates one local Inbox item. Browser status comes from authorized run/task state, not a simulated activity timer.
 
-Task conversations retain read-only assignment transcripts and provide owner-only workspace approval controls. Start a side chat for follow-up, or ask for another attempt in a new human message in the originating chat. Interrupted/failed tasks do not restart automatically. Actions already dispatched may have run; retrying a request may repeat their effects.
+Task conversations retain assignment transcripts and provide owner-only workspace approval controls. Ask for a related follow-up in a new human message in the originating chat: a durable native coordinator can call `continue_*({ taskId, task })` to queue a new immutable turn in the same child conversation. The prior task ID selects authorized context; it does not reuse execution authority or reset budgets. New or unrelated assignments use `ask_*`; independent direct work can use a side chat. Interrupted/failed tasks do not restart automatically. Actions already dispatched may have run; retrying a request may repeat their effects. See [related delegated task turns](../testing/delegation-followups.md).
 
 ## Lifecycle and recovery
 

@@ -12,7 +12,7 @@ The report contains numeric metrics and fixed enum labels only. It excludes raw 
 - Inbound counters are interval deltas. The first sample, replaced streams, reset counters, and unsupported fields omit the corresponding delta. `packetsLostDelta` may be negative when the browser revises packet loss. `jitterMs` is the maximum across observed audio streams. `meanJitterBufferMs` is the change in summed buffer delay divided by the change in emitted samples, in milliseconds.
 - Optional `media-playout` counters describe locally synthesized playout samples and delay. These are not implemented by every browser. Their absence does not establish that playback is healthy. Stats failures/timeouts produce `stats: unavailable`; absence of a peer produces `no-peer`. Failed reads never export error strings. Stats reads time out after 750 ms and never overlap within a capture.
 - Context state, sample rate, and available latency estimates are read from the existing input/output analysis contexts. They do not measure the HTMLAudioElement's actual hardware buffer.
-- `renderer` aggregates rendered-frame gaps and JavaScript/render submission work each sampling interval. Gaps above 50 ms are counted. `meanWorkMs`/`maxWorkMs` do not measure GPU completion or audio underruns. Minimization suspends frame work but leaves the audio analysis contexts alive.
+- `renderer` aggregates rendered-frame gaps and JavaScript/render submission work each sampling interval. Gaps above 50 ms are counted. `meanWorkMs`/`maxWorkMs` do not measure GPU completion or audio underruns. Minimization suspends frame work. The 3D renderer keeps its analysis context alive until disposal; the 2D renderer releases its output analyser when hidden, stopped or reduced. The 2D renderer currently does not report renderer/output-context metrics to this collector.
 - `avatar-fetch` measures the native asset reply; `avatar-decode` covers synchronous base64/byte/Blob work; `avatar-load` covers GLTFLoader loading and parsing. If capture starts after loading, those events are absent.
 - Native route metrics read AVAudioSession without activating or configuring it. Native and browser samples are taken sequentially and are not sample-accurate. Category/mode/port codes below describe the current session, not proof of the source of a click.
 
@@ -26,80 +26,14 @@ A useful comparison keeps speaker volume and the ongoing reply constant: mute/un
 
 ## Session integration
 
-The shared web/native session code connects these hooks to one collector per voice surface. Capture starts only from the diagnostic controls; it never starts from the voice start path. The snippets document the integration contract.
+The hooks are implemented in the shared web/native session code, with one collector per voice surface. Capture starts only from the diagnostic controls, never from the voice start path.
 
-### `ios/VoiceEngine/index.tsx`
+- `ios/VoiceEngine/index.tsx` owns the browser collector, passes it to `VoiceAvatar`, registers the input context, and exposes `window.voice.diagnostics.start/sample/stop/clear/report`. Native capture supplies the one-second sampling clock. Asset fetch and decode are timed without changing their order. Release stops diagnostics before closing the existing input context.
+- `ios/CollectiveUI/Voice/VoiceSessionModel.swift` owns a stable `VoiceAudioDiagnostics` child and connects it to the bundled page through a weak closure. End shuts down microphone capture and pauses playback before stopping diagnostics. Disposal disconnects capture before stopping the page.
+- `ios/CollectiveUI/Voice/VoiceModeView.swift` keeps `VoiceAudioDiagnosticsView` in the scrollable voice surface. Its active-state hook stops capture on disconnect; the session model also owns cleanup.
+- `src/components/chat/voice-control.tsx` owns the web collector, connects the current peer/audio sources, passes diagnostics to the avatar and renders the capture controls. End and current-session cleanup stop capture; stale resource cleanup cannot stop a newer session's capture.
 
-Import `VoiceAudioDiagnostics` from `../../src/lib/voice/audio-diagnostics`. After the peer/audio/input declarations, instantiate:
-
-```ts
-const audioDiagnostics = new VoiceAudioDiagnostics({ peer: () => pc, audio: () => audio });
-```
-
-Pass `diagnostics={audioDiagnostics}` to VoiceAvatar in `render()`. Immediately after creating `inputAudio` in `monitorInput`, call `audioDiagnostics.setContext("input", inputAudio)`. In `release()`, call `audioDiagnostics.stop()` and `audioDiagnostics.setContext("input", null)` before closing the existing context. In `end()`, stop diagnostics after the existing immediate mute/pause/physical track-stop statements; do not add any awaited diagnostic operation ahead of microphone shutdown.
-
-Add this property to `window.voice`:
-
-```ts
-diagnostics: {
-  start: () => audioDiagnostics.start(false), // Native provides the one-second clock.
-  sample: () => audioDiagnostics.sample(),
-  stop: () => audioDiagnostics.stop(),
-  clear: () => audioDiagnostics.clear(),
-  report: () => audioDiagnostics.report(),
-},
-```
-
-Around the existing avatar request and base64 decode, insert timings without changing the request/decode/order:
-
-```ts
-const avatarFetchTiming = audioDiagnostics.beginTiming();
-// existing voiceAPI.postMessage(...).then(result => {
-// existing abort/status guard first
-audioDiagnostics.endTiming("avatar-fetch", avatarFetchTiming);
-const avatarDecodeTiming = audioDiagnostics.beginTiming();
-// existing Uint8Array.from(atob(...)), revoke old URL, and create Blob URL
-audioDiagnostics.endTiming("avatar-decode", avatarDecodeTiming);
-// existing render()
-```
-
-### `ios/CollectiveUI/Voice/VoiceSessionModel.swift`
-
-Add `let audioDiagnostics = VoiceAudioDiagnostics()` as a stable observed child. After creating `page` and setting the handler's model in `init`, connect a weak closure:
-
-```swift
-audioDiagnostics.connect { [weak self] operation in
-    guard let self else { return nil }
-    return try await self.page.callJavaScript(
-        "return await window.voice.diagnostics[operation]()",
-        arguments: ["operation": operation])
-}
-```
-
-In `end()`, **after** the existing native microphone shutdown and `pauseAllMediaPlayback`, call `await audioDiagnostics.stop()` while the page is still available. In the valid `dismiss()` disposal branch, call `audioDiagnostics.disconnect()` before `page.stopLoading()`. The latter is synchronous and cancels capture without delaying page disposal. Apply the same disconnect when a lifecycle fix discards/replaces the model without using `dismiss()`.
-
-### `ios/CollectiveUI/Voice/VoiceModeView.swift`
-
-Insert `VoiceAudioDiagnosticsView(diagnostics: model.audioDiagnostics, active: model.status == "connected")` in the scrollable content. Keep the child mounted with the voice surface when minimized. Its active-state hook stops capture when disconnected; the model end/disposal hooks still own cleanup if the view disappears.
-
-### `src/components/chat/voice-control.tsx`
-
-Import `VoiceAudioDiagnostics` and `VoiceAudioDiagnosticsControls`. After the resource and audio refs, create the stable collector:
-
-```tsx
-const [audioDiagnostics] = useState(() => new VoiceAudioDiagnostics({
-  peer: () => null,
-  audio: () => null,
-}));
-useEffect(() => {
-  audioDiagnostics.setSources({ peer: () => resources.current?.pc ?? null, audio: () => audioRef.current });
-  return () => audioDiagnostics.dispose();
-}, [audioDiagnostics]);
-```
-
-Pass `diagnostics={audioDiagnostics}` to VoiceAvatar. Place `<VoiceAudioDiagnosticsControls diagnostics={audioDiagnostics} active={status === "connected"} />` in the voice dialog's scrollable content. This is the only web start control. In `end()`, stop diagnostics after the existing immediate microphone mute and playback pause. Stop it in current-session cleanup, including failures and aborted startup. Avoid letting a stale resource's cleanup stop a newer session's capture. Include the collector in changed hook dependency lists.
-
-Finally regenerate `ios/CollectiveUI/Voice/Resources/voice-engine.html` once from the combined sources with `node ios/scripts/build-voice-engine.mjs`, then run its `--check`. The checked-in resource includes the combined lifecycle and diagnostics sources.
+After changing these sources, regenerate `ios/CollectiveUI/Voice/Resources/voice-engine.html` with `node ios/scripts/build-voice-engine.mjs`, then run `node ios/scripts/build-voice-engine.mjs --check`.
 
 ## Offline verification
 

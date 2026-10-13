@@ -1,6 +1,6 @@
 # Office Bot
 
-Office Bot is a shared native caller bot for uploaded `.docx`, `.xlsx`, `.csv`, `.pptx`, and text PDF files. It creates and edits Word documents, Excel formulas/tables/charts, and PowerPoint presentations; it reads PDF text/tables, creates PDFs, merges/splits pages, and exports Office files to PDF. Results are downloadable copies in the person's own workspace. Every workspace command retains the existing enforced approval.
+Office Bot is a shared native caller bot for uploaded `.docx`, `.xlsx`, `.csv`, `.pptx`, and text PDF files. It creates and edits Word documents, Excel formulas/tables/charts, and PowerPoint presentations; it reads PDF text/tables, creates PDFs, merges/splits pages, and exports Office files to PDF. Results are downloadable copies in the person's own workspace. Its installed defaults ask before commands and file changes. An authorized bot editor can set individual workspace permissions to **Runs automatically**, or choose **Allow office work automatically** for all four permission groups; organization-enforced approval and hard-denied commands still take precedence. Commands never offer an **Always allow** grant on an approval card.
 
 ## Install
 

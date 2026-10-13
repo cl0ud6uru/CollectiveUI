@@ -31,6 +31,7 @@ The actual database fixtures cover private encryption, one-source uniqueness,
 terminal-token denial, separate child attribution, lost enqueue, ambiguous
 execution, stale session/revision/binding/route/expiry, scoped revocation, lease
 changes during startup, streaming renewal, and retained uncertain-dispatch
-fences. Actual pinned full native learning scheduling and active Stop tests are
-coordinated with the runtime increment; these database fixtures do not claim a
-live model or OAuth verification. Normal personal Hermes startup is unaffected.
+fences. Actual pinned native learning scheduling and active Stop are exercised by the
+[source lifecycle](hermes-team-native-lifecycle.md), [official-plan native](hermes-team-official-native-fixture.md)
+and [official-image active](hermes-team-active-image-fixture.md) fixtures. These
+remain synthetic-provider checks, not live model or OAuth verification. Normal personal Hermes startup is unaffected.

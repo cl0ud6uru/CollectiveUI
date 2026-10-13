@@ -48,6 +48,7 @@ Before enabling push, the operator must approve and complete all of these steps:
    the following environment variables in both server services. `APNS_BUNDLE_ID` is the **app**, not widget, identifier.
 
    ```text
+   MOBILE_APP_ENABLED=true
    LIVE_ACTIVITIES_ENABLED=true
    APNS_TEAM_ID=<10-character team identifier>
    APNS_KEY_ID=<10-character authentication-key identifier>
@@ -55,6 +56,8 @@ Before enabling push, the operator must approve and complete all of these steps:
    APNS_ENVIRONMENT=sandbox
    APNS_KEY_FILE=<read-only mounted .p8 path>
    ```
+
+   The worker also requires `MOBILE_APP_ENABLED=true`: delivery rechecks mobile access and deletes registrations when that switch is off.
 
 5. Apply migration `0029_live_activities` to a separately approved environment; restart the worker and web service.
    Allow verified TLS HTTP/2 egress to `api.sandbox.push.apple.com:443` or `api.push.apple.com:443`, matching the

@@ -14,6 +14,8 @@ The official [app-server authentication documentation](https://learn.chatgpt.com
 
 Experimental API capability is explicitly enabled for named native permissions, actual `account/read.workspaceRouting.chatgptAccountId`, and permission provenance. The selected native workspace ID and normalized account email are bound to a server-generated account revision. This metadata and a catalog entry are not entitlement proof. Native model access still needs a successful authorized turn.
 
+Apply the complete checked-in migration journal through `0056_web_sessions` before starting the matching web and worker code. The Codex foundation and personal runtime use migrations 0053–0055; migration 0056 adds the later durable web-session registry. Migrations do not connect an account or activate a runtime.
+
 ## Personal connection and storage
 
 1. A valid CollectiveUI caller starts connection from Settings. The protected broker admits only an operator-enrolled owner, provisions their dedicated runtime, validates its actual Docker configuration, and probes native sandbox execution before asking OpenAI for a device code.

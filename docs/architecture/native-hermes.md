@@ -6,7 +6,7 @@ Native remote command discovery, supported commands and approval boundaries are 
 
 Personal remote connections belong to the signed-in user. Admin-managed shared backends and isolated managed/local runtimes remain separate. Administrators can disable personal remote access while retaining saved connections and allowing admitted turns to finish, receive prompt answers and stop. New work and new sign-ins are blocked. Cloudflare Access and a connection wizard are deferred.
 
-This first delivery provides a native **remote dashboard workspace**. It does not replace the existing Runs API chat or the managed/local controller. Further managed/local integration and native administration panels remain follow-up work, rather than exposing arbitrary dashboard endpoints through the portal.
+This integration provides a native **remote dashboard workspace**, separate from Runs API chats and the managed/local controller. [Native settings and MCP administration](native-hermes-settings-mcp.md) and [read-only workspace inspection](native-hermes-workspace.md) are implemented as scoped panels. [Managed/local native chat controls](hermes-managed-local-parity.md) provide attachments and active-turn controls in ordinary bot chats; they do not share the remote dashboard workspace or its credentials.
 
 ## Available now
 
@@ -72,9 +72,9 @@ Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac0853
 
 ## Remaining work
 
-- Extend managed/local RPC and shared chat controls where the pinned runtime supports attachments, clarification, protected prompts, steering, queues and snapshots. Preserve process/filesystem isolation, approval semantics and profile identity checks.
-- Add native profile settings and MCP administration with explicit secret handling and negotiated capabilities.
-- Add authorized native workspace/files/projects and schedule/plugin/system panels. Profile names must not become tenant security boundaries.
+- Extend the implemented managed/local controls to additional native command/settings/MCP/workspace operations where supported; shared remote Runs backends retain their separate behavior.
+- Extend the existing remote settings/MCP panel to model/provider selection, credential pools, OAuth and further MCP lifecycle operations.
+- Extend read-only workspace inspection to authorized file content and mutating project/schedule/plugin operations. Existing project, directory, schedule, plugin and system panels remain metadata-only. Profile names are not tenant security boundaries.
 - Implement distributed hub ownership before multi-instance deployment; the sidebar roster and paged remote history are now implemented. Native remote chats remain distinct from Runs API conversation records and bot homes.
 
 References reviewed: Vory `622c9b41d1fcb2cee3564a328c11cd72cff7ee18` and Hermes native contracts at `79af3f6cea8067284a7ea5725078578b3f790adb`. No real credentials or private deployment configuration are included.

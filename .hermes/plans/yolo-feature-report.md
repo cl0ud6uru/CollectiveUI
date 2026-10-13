@@ -1,5 +1,7 @@
 # Session-scoped Runs API YOLO feature report
 
+Historical implementation report for the branch/base below. Its initial bare `/yolo` status behavior and Local Hermes exclusion were superseded: current bare `/yolo` toggles session mode, `/yolo status` reads it, and supported Local Hermes chats also have controller-owned enforcement. See [current connection guidance](../../docs/connections.md#hermes-agent-bots-from-your-hermes-profiles). Test totals, environment paths and handoff actions below remain historical evidence.
+
 ## Delivery
 
 Branch: architect/yolo-diagnostics-20261009

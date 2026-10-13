@@ -22,7 +22,7 @@ Add a model connection in **Admin → Connections → Models**: pick a provider,
 
 | Provider | What you enter | Notes |
 |---|---|---|
-| OpenAI-compatible | Base URL (ending in `/v1`), optional API key, model | vLLM (with tool parsing), LiteLLM, Ollama, your own service |
+| OpenAI-compatible | API base URL, optional API key, model | vLLM (with tool parsing), LiteLLM, Ollama, your own service; use the provider's actual base path (often `/v1`) |
 | OpenAI | API key, optional organization/project | Responses API; responses aren't stored at OpenAI unless you switch it on |
 | Azure OpenAI | Resource endpoint, API key, deployment name | v1 Responses API; turn on "Reasoning model" for reasoning deployments |
 | Anthropic (Claude) | API key (Claude Console), optional base URL | For Claude on Microsoft Foundry use `https://<resource>.services.ai.azure.com/anthropic` |
@@ -60,7 +60,7 @@ Claude subscriptions can't be connected in the portal itself (Anthropic doesn't 
 
 ### Hermes Agent (bots from your Hermes profiles)
 
-Hermes is an **agent backend**, available only through bots. In the bot builder, choose **Bot engine → Hermes**, then an **Agent backend connection**; choose **Native · CollectiveUI** and a **Model connection** for the built-in engine. No additional agent runtimes are implemented.
+Hermes is an **agent backend**, available only through bots. In the bot builder, choose **Bot engine → Hermes**, then an **Agent backend connection**; choose **Native · CollectiveUI** and a **Model connection** for the built-in engine. The separate [Codex personal-agent pilot](codex-harness.md) is also selected in the bot editor and uses operator-enrolled private runtimes with each caller’s own ChatGPT connection. Legacy manifest assignments retain their separate text-only contract. It is not configured as a provider connection here.
 
 Existing direct Hermes conversations remain readable but cannot start another turn, retry or run commands. Choose or create the intended Hermes bot and start a new bot conversation; the old session and profile are never silently reassigned. New Chat, user/organization defaults and utility models exclude Hermes. If a saved default still points to Hermes or another unavailable connection, choose a model explicitly or update Settings; the portal does not switch billing to another provider. An invalid configured utility model disables background model work until an admin chooses an eligible connection.
 
