@@ -1,3 +1,4 @@
+export const SIWC_NODE_EXECUTABLE: '/usr/local/bin/node';
 export function siwcChildCommand(token: string): string;
 export function siwcToolCommand(token: string, appServerPid: number, socketPath?: string): string;
 export function passedSiwcChild(value: unknown, token: string, parentPid: number): boolean;

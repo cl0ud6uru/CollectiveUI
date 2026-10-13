@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fixtureRpc, fixtureFailure } from './lib/personal-codex-fixture-rpc.mjs';
 import { isReviewedFixtureImage } from './lib/personal-codex-fixture-image.mjs';
 import { sandboxPolicy, dockerExecutable } from '../src/personal-codex/sandbox-policy.mjs';
-import { siwcToolCommand, siwcToolEvidence, siwcAppServerObservation, passedSiwcAppServerObservation,
+import { SIWC_NODE_EXECUTABLE, siwcToolCommand, siwcToolEvidence, siwcAppServerObservation, passedSiwcAppServerObservation,
   siwcSocketPositiveControl } from './lib/personal-codex-siwc-proof.mjs';
 
 // Operator-only disposable proof. No accounts, enrollments, grants, host mounts,
@@ -96,7 +96,7 @@ try {
   stage = 'nativeParentAndChildIsolation';
   const command = siwcToolCommand(toolNonce, bearing.appServerPid);
   evidence.artifacts.commandSha256 = createHash('sha256').update(command).digest('hex');
-  const reply = await runtime.request('command/exec', { command: ['node','-e',command], cwd: '/home/agent/workspace',
+  const reply = await runtime.request('command/exec', { command: [SIWC_NODE_EXECUTABLE,'-e',command], cwd: '/home/agent/workspace',
     permissionProfile: 'collective-personal', timeoutMs: 7000, outputBytesCap: 16384 });
   const proof = siwcToolEvidence(reply, toolNonce);
   evidence.observations.nativeCommand = proof;

@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Script } from 'node:vm';
-import { siwcChildCommand, siwcToolCommand, siwcToolEvidence, passedSiwcChild, siwcAppServerObservation,
+import { SIWC_NODE_EXECUTABLE, siwcChildCommand, siwcToolCommand, siwcToolEvidence, passedSiwcChild, siwcAppServerObservation,
   passedSiwcAppServerObservation, siwcSocketPositiveControl } from '../../scripts/lib/personal-codex-siwc-proof.mjs';
 
 const proof = (nonce: string) => ({ probe: 'siwcToolIsolation', nonce, pid: 20, accessTokenPresent: false,
-  child: { status: 0, signal: null, spawnError: false, stderrEmpty: true, stdoutJsonExact: true,
+  child: { status: 0, signal: null, spawnError: false, spawnErrorCode: null, spawnErrorSyscall: null, spawnExecutable: SIWC_NODE_EXECUTABLE, stderrEmpty: true, stdoutJsonExact: true,
     proof: { probe: 'siwcChildEnvironment', nonce, pid: 21, accessTokenPresent: false } },
   parentEnvironDenied: true, parentEnvironError: 'ENOENT', socketDenied: true, socketError: 'EACCES' });
 const reply = (value: unknown) => ({ result: { exitCode: 0, stderr: '', stdout: JSON.stringify(value) } });
@@ -20,6 +20,7 @@ describe('synthetic SIWC parent and child observations', () => {
       expect(passedSiwcChild({ ...valid.child.proof, ...patch }, nonce, 20)).toBe(false);
     }
     for (const patch of [{ status: null }, { status: 1 }, { signal: 'SIGSYS' }, { spawnError: true },
+      { spawnErrorCode: 'ENOENT' }, { spawnErrorSyscall: 'spawnSync node' }, { spawnExecutable: 'node' },
       { stderrEmpty: false }, { stdoutJsonExact: false }, { proof: null }, { proof: { passed: true } }]) {
       expect(siwcToolEvidence(reply({ ...valid, child: { ...valid.child, ...patch } }), nonce).passed).toBe(false);
     }
@@ -62,14 +63,15 @@ describe('synthetic SIWC parent and child observations', () => {
       const fixtureRequire = (module: string) => {
         if (module === 'node:fs') return { readFileSync() { throw Object.assign(new Error('absent synthetic PID'), { code: 'ENOENT' }); } };
         if (module === 'node:net') return { connect: () => socket };
-        if (module === 'node:child_process') return { spawnSync(_file: string, _args: string[], options: Record<string, unknown>) {
+        if (module === 'node:child_process') return { spawnSync(file: string, _args: string[], options: Record<string, unknown>) {
+          expect(file).toBe(SIWC_NODE_EXECUTABLE);
           expect(options.stdio).toEqual(['ignore','pipe','pipe']); expect(options).not.toHaveProperty('env');
           return { status: 0, signal: null, stdout: '', stderr };
         } };
         throw new Error('Unexpected fixture module');
       };
       new Script(siwcToolCommand(nonce, 30)).runInNewContext({ require: fixtureRequire,
-        process: { execPath: '/fixture/node', pid: 20, env: {}, stdout: { write(value: string) { output += value; } } } });
+        process: { execPath: 'node', pid: 20, env: {}, stdout: { write(value: string) { output += value; } } } });
       const generated = JSON.parse(output);
       expect(generated.child.status).toBe(0); expect(generated.child.proof).toBeNull();
       expect(generated.child.stdoutJsonExact).toBe(false);
@@ -82,9 +84,15 @@ describe('synthetic SIWC parent and child observations', () => {
     // These are synthetic local observation checks, not a runtime isolation proof:
     // the deliberately absent parent PID/socket cannot establish a denial boundary.
     for (const present of [false, true]) {
-      const run = spawnSync(process.execPath, ['-e', siwcToolCommand(nonce, 2147483000)], {
+      // Test-only adapter asserts the production image pin, then runs this host's
+      // Node with precisely the same options and inherited environment.
+      const adapter = `const fixtureCp=require('node:child_process'),fixtureSpawn=fixtureCp.spawnSync;
+        fixtureCp.spawnSync=(file,args,options)=>{if(file!==${JSON.stringify(SIWC_NODE_EXECUTABLE)})throw new Error('Child executable was not pinned');
+          if(Object.prototype.hasOwnProperty.call(options,'env'))throw new Error('Child environment was replaced');
+          return fixtureSpawn(process.execPath,args,options);};`;
+      const run = spawnSync(process.execPath, ['-e', adapter + siwcToolCommand(nonce, 2147483000)], {
         encoding: 'utf8', timeout: 5000, stdio: ['ignore','pipe','pipe'],
-        env: { NODE_ENV: 'test', PATH: '/usr/bin:/bin', ...(present ? { ACCESS_TOKEN: 'fixture-only-parent-positive-control' } : {}) },
+        env: { NODE_ENV: 'test', ...(present ? { ACCESS_TOKEN: 'fixture-only-parent-positive-control' } : {}) },
       });
       expect(run.error).toBeUndefined(); expect(run.status).toBe(0); expect(run.signal).toBeNull(); expect(run.stderr).toBe('');
       const observed = JSON.parse(run.stdout);
@@ -103,6 +111,21 @@ describe('synthetic SIWC parent and child observations', () => {
     const observation = siwcToolEvidence(reply({ ...valid, child: { ...valid.child, proof: { token: 'fixture-only-secret' } } }), nonce);
     expect(observation.passed).toBe(false);
     expect(JSON.stringify(observation)).not.toContain('fixture-only-secret');
+  });
+
+  it('keeps bounded executable and spawn diagnostics while rejecting every spawn error', () => {
+    const nonce = randomUUID(), valid = proof(nonce);
+    const failed = { ...valid, child: { ...valid.child, spawnError: true, spawnErrorCode: 'ENOENT',
+      spawnErrorSyscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE } };
+    const observed = siwcToolEvidence(reply(failed), nonce);
+    expect(observed.passed).toBe(false);
+    expect(observed.observed).toMatchObject({ childSpawnError: true, childSpawnExecutable: SIWC_NODE_EXECUTABLE,
+      childSpawnErrorCode: 'ENOENT', childSpawnErrorSyscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE });
+    const arbitrary = siwcToolEvidence(reply({ ...failed, child: { ...failed.child,
+      spawnErrorCode: 'fixture-only-secret', spawnErrorSyscall: 'fixture-only-secret', spawnExecutable: 'fixture-only-secret' } }), nonce);
+    expect(arbitrary.passed).toBe(false);
+    expect(arbitrary.observed).toMatchObject({ childSpawnErrorCode: 'UNKNOWN', childSpawnErrorSyscall: 'other', childSpawnExecutable: null });
+    expect(JSON.stringify(arbitrary)).not.toContain('fixture-only-secret');
   });
 
   it('requires complete outside-token scans and clear with a different live app-server PID', () => {
