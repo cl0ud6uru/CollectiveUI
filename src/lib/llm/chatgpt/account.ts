@@ -8,7 +8,8 @@ import { getSetting } from '@/lib/settings';
 import { assertNoCodexWork, lockPersonalOwner } from '@/personal-codex/accounts';
 import { personalControl } from '@/personal-codex/control';
 import { accountRejection, userMayUseChatGPT } from './policy';
-import { getChatGPTAuth, getChatGPTCredential, openCredentialSecret, removeChatGPTConnection, revokeCredentialSecret, saveChatGPTConnection, type ChatGPTSecret } from './store';
+import { getChatGPTAuth, getChatGPTCredential, openCredentialSecret, revokeCredentialSecret, saveChatGPTConnection, type ChatGPTSecret } from './store';
+import { invalidateChatGPTConnectionLocked } from './invalidation';
 import { SIWCCredentialSchema, validateSIWCCredential } from './siwc';
 
 const hostId = () => process.env.CHATGPT_SIWC_HOST_ID?.trim();
@@ -77,14 +78,7 @@ export async function changeUnifiedAccount(p: Principal, action: 'start' | 'disc
     await db.transaction(async tx => {
       const person = await lockPersonalOwner(p.user.id, tx);
       if (person.disabled || person.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, 'Sign in to CollectiveUI again.');
-      await assertNoCodexWork(person.id, tx);
-      const [personal] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, person.id));
-      if (process.env.PERSONAL_CODEX_SOCKET && personal) {
-        // A live runtime must stop using the grant before the local row is removed.
-        await personalControl(person.id, 'disconnect');
-      }
-      await tx.update(personalCodexAccounts).set({ connected: false, credentialBinding: randomUUID(), updatedAt: new Date() }).where(eq(personalCodexAccounts.userId, person.id));
-      revoke = await removeChatGPTConnection(person.id, tx);
+      revoke = await invalidateChatGPTConnectionLocked(person.id, tx);
     });
     const revocationConfirmed = revoke ? await (revoke as () => Promise<boolean>)() : true;
     return { disconnected: true, revocationConfirmed };

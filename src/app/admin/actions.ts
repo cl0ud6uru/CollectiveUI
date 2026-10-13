@@ -36,7 +36,8 @@ import { acceptMcpDrift, refreshMcpServer } from "@/lib/mcp/servers";
 import { checkMcpUrl } from "@/lib/mcp/url";
 import { parseHeadersInput } from "@/lib/secret-input";
 import { requireAdmin } from "@/lib/session";
-import { deleteAllChatGPTConnections, removeChatGPTConnection } from "@/lib/llm/chatgpt/store";
+import { deleteAllChatGPTConnections } from "@/lib/llm/chatgpt/store";
+import { invalidateChatGPTConnection } from "@/lib/llm/chatgpt/invalidation";
 import { sandboxd } from "@/lib/sandbox/client";
 import { onUserDisabledLocked, onUserEnabledLocked } from "@/lib/sandbox/lifecycle";
 import { withWorkspaceUserLock } from "@/lib/workspaces/locks";
@@ -246,16 +247,20 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
   const targetUserId = z.string().min(1).max(100).parse(userId);
   const targetDisabled = z.boolean().parse(disabled);
   const result = await withWorkspaceUserLock(targetUserId, async (lockedDb) => {
-    const teamBotIds = await changeUserAccess(p.user, targetUserId, { disabled: targetDisabled }, {
-      database: lockedDb,
-      deferTeamReconciliation: true,
+    const changed = await lockedDb.transaction(async tx => {
+      const teamBotIds = await changeUserAccess(p.user, targetUserId, { disabled: targetDisabled }, {
+        database: tx,
+        deferTeamReconciliation: true,
+      });
+      // The owner row lock fences dispatch and reconnect; a failed clear rolls back the access change too.
+      const revokeChatGPT = targetDisabled ? await invalidateChatGPTConnection(targetUserId, tx) : null;
+      return { teamBotIds, revokeChatGPT };
     });
     // Keep account changes and credential removal on the owner's lock connection. Remote token revocation and
     // team runtime reconciliation happen after the owner lock releases, so neither can wait on its own pool slot.
-    const revokeChatGPT = targetDisabled ? await removeChatGPTConnection(targetUserId, lockedDb) : null;
     if (targetDisabled) await onUserDisabledLocked(targetUserId, p.user.id, lockedDb);
     else await onUserEnabledLocked(targetUserId, lockedDb);
-    return { teamBotIds, revokeChatGPT };
+    return changed;
   });
   if (result.revokeChatGPT) await result.revokeChatGPT();
   if (result.teamBotIds.length) {

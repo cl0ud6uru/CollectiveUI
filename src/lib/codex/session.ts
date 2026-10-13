@@ -53,6 +53,8 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         const status = await personalControl(runtime.ownerId, 'status');
         if (!runtime.managed || !runtime.tokenFingerprint || status.state !== 'running' || !status.siwc?.available || status.siwc.credentialBinding !== runtime.tokenFingerprint)
           throw new Error('Stock Codex is not synchronized with your verified ChatGPT connection. Enable it in Settings → Connected accounts.');
+        const { assertCurrentSIWCConnection } = await import('@/lib/llm/chatgpt/invalidation');
+        await assertCurrentSIWCConnection(runtime.ownerId, runtime.credentialBinding, runtime.tokenFingerprint);
         await hooks.authorizeAccount?.(null);
         if (epoch === accountEpoch) { verifiedEpoch = epoch; return; }
         continue;

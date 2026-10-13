@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PGlite } from '@electric-sql/pglite';
+import type { Principal } from '@/lib/auth/groups';
 import { eq } from 'drizzle-orm';
 
 const fixture = vi.hoisted(() => ({
@@ -8,10 +9,23 @@ const fixture = vi.hoisted(() => ({
   control: vi.fn(),
   refresh: vi.fn(),
   revoke: vi.fn(),
+  admin: null as Principal | null,
+  ownerLocked: false,
   identity: { subject: 'siwc-subject', email: 'alice@test.invalid', clientId: 'issued-client-id', expiresAt: new Date(Date.now() + 3_600_000) },
 }));
 vi.mock('server-only', () => ({}));
-vi.mock('@/personal-codex/control', () => ({ personalControl: fixture.control }));
+vi.mock('@/lib/session', () => ({ requireAdmin: async () => fixture.admin }));
+vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
+vi.mock('next/headers', () => ({ headers: async () => new Headers({ origin: 'https://portal.test.invalid' }) }));
+vi.mock('@/lib/sandbox/lifecycle', () => ({ onUserDisabledLocked: vi.fn(), onUserEnabledLocked: vi.fn() }));
+vi.mock('@/lib/workspaces/locks', () => ({ withWorkspaceUserLock: async (_owner: string, run: (q: unknown) => Promise<unknown>) => {
+  const { db } = await import('@/db');
+  fixture.ownerLocked = true;
+  try { return await run(db); } finally { fixture.ownerLocked = false; }
+} }));
+vi.mock('@/personal-codex/control', async importOriginal => ({
+  ...await importOriginal<typeof import('@/personal-codex/control')>(), personalControl: fixture.control,
+}));
 vi.mock('@/lib/llm/chatgpt/oauth', () => ({ revokeTokens: vi.fn(async () => undefined), refreshTokens: vi.fn() }));
 vi.mock('@/lib/llm/chatgpt/siwc', async () => {
   const actual = await vi.importActual<typeof import('@/lib/llm/chatgpt/siwc')>('@/lib/llm/chatgpt/siwc');
@@ -32,8 +46,12 @@ vi.mock('@/db', async () => {
 
 import { db, schema } from '@/db';
 import { loadPrincipal } from '@/lib/auth/groups';
-import { getChatGPTAuth, openCredentialSecret, sealCredentialSecret } from '@/lib/llm/chatgpt/store';
+import { deleteAllChatGPTConnections, getChatGPTAuth, openCredentialSecret, sealCredentialSecret } from '@/lib/llm/chatgpt/store';
 import { changeUnifiedAccount, importSIWCProfile, unifiedAccountView } from '@/lib/llm/chatgpt/account';
+import { assertCurrentSIWCConnection } from '@/lib/llm/chatgpt/invalidation';
+import { tokenFingerprint } from '@/personal-codex/contracts';
+import { PersonalControlError } from '@/personal-codex/control';
+import { disconnectAllChatGPT, setUserDisabled } from '@/app/admin/actions';
 import { validateSIWCCredential } from '@/lib/llm/chatgpt/siwc';
 
 const HOST_ID = 'urn:uuid:123e4567-e89b-42d3-a456-426614174000';
@@ -73,6 +91,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   vi.stubEnv('CHATGPT_SIWC_HOST_ID', HOST_ID);
+  vi.stubEnv('AUTH_URL', 'https://portal.test.invalid');
+  vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '');
   vi.stubEnv('PERSONAL_CODEX_SOCKET', '/tmp/unified-chatgpt-test.sock');
   fixture.identity = { subject: 'siwc-subject', email: 'alice@test.invalid', clientId: 'issued-client-id', expiresAt: new Date(Date.now() + 3_600_000) };
   fixture.control.mockReset().mockImplementation(async (_owner: string, action: string) => {
@@ -85,9 +105,10 @@ beforeEach(async () => {
   await db.insert(schema.users).values([
     { id: 'alice', upn: 'alice@test.invalid', email: 'alice@test.invalid', name: 'Alice', authSource: 'local', identityRealm: 'local' },
     { id: 'bob', upn: 'bob@test.invalid', email: 'bob@test.invalid', name: 'Bob', authSource: 'local', identityRealm: 'local' },
-    { id: 'admin', upn: 'admin@test.invalid', email: 'admin@test.invalid', name: 'Admin', authSource: 'local', identityRealm: 'local', isAdmin: true },
+    { id: 'admin', upn: 'admin@test.invalid', email: 'admin@test.invalid', name: 'Admin', authSource: 'ldap', identityRealm: 'directory', isAdmin: true },
   ]);
   alice = await loadPrincipal('alice'); bob = await loadPrincipal('bob');
+  fixture.admin = await loadPrincipal('admin');
   await permitChatGPT();
 });
 
@@ -234,4 +255,105 @@ describe('unified ChatGPT account', () => {
     expect(fixture.control).toHaveBeenCalledWith('alice', 'disconnect');
     expect(fixture.revoke).toHaveBeenCalledWith({ refreshToken: 'synthetic-refresh-token', accessToken: 'synthetic-access-token', clientId: 'issued-client-id' }, undefined);
   }, 15000);
+
+  async function retainedBinding(owner = 'alice') {
+    await db.insert(schema.personalCodexAccounts).values({ userId: owner, credentialBinding: `old-${owner}-binding`,
+      email: `${owner}@test.invalid`, workspaceId: owner === 'alice' ? 'siwc:issued-client-id' : 'retained-workspace', planType: 'unknown', connected: true });
+  }
+
+  it('admin bulk disconnect clears each broker, invalidates retained bindings even without credentials, and revokes after deletion', async () => {
+    await importOwnProfile(); await retainedBinding(); await retainedBinding('bob');
+    fixture.control.mockImplementation(async (owner: string, action: string) => {
+      expect(action).toBe('disconnect');
+      if (owner === 'alice') expect(fixture.revoke).not.toHaveBeenCalled();
+      return { state: 'running', siwc: { available: true } };
+    });
+    fixture.revoke.mockImplementation(async () => { expect(await savedCredential()).toBeUndefined(); return true; });
+    await expect(disconnectAllChatGPT()).resolves.toEqual({ disconnected: 1 });
+    expect(fixture.control.mock.calls).toEqual([['alice', 'disconnect'], ['bob', 'disconnect']]);
+    const accounts = await db.select().from(schema.personalCodexAccounts);
+    expect(accounts).toHaveLength(2);
+    for (const account of accounts) {
+      expect(account.connected).toBe(false);
+      expect(account.credentialBinding).not.toBe(`old-${account.userId}-binding`);
+    }
+    expect(fixture.revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('bulk disconnect fails explicitly on active or unconfirmed work and preserves the credential and binding', async () => {
+    await importOwnProfile(); await retainedBinding();
+    await db.insert(schema.codexRuns).values({ runId: 'unconfirmed-stop', userId: 'alice', runtimeId: 'runtime', binding: 'binding', funding: 'chatgpt_subscription', phase: 'stop_unconfirmed' });
+    await expect(deleteAllChatGPTConnections()).rejects.toMatchObject({ status: 409 });
+    expect(await savedCredential()).toBeDefined();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: true, credentialBinding: 'old-alice-binding' });
+    expect(fixture.control).not.toHaveBeenCalled(); expect(fixture.revoke).not.toHaveBeenCalled();
+  });
+
+  it('admin disable clears runtime auth and rotates the binding on its lock connection, with revocation after lock release', async () => {
+    await importOwnProfile(); await retainedBinding();
+    fixture.control.mockImplementation(async () => {
+      expect(fixture.ownerLocked).toBe(true);
+      expect(fixture.revoke).not.toHaveBeenCalled();
+      return { state: 'running', siwc: { available: true } };
+    });
+    fixture.revoke.mockImplementation(async () => { expect(fixture.ownerLocked).toBe(false); return true; });
+    await setUserDisabled('alice', true);
+    expect((await db.select().from(schema.users).where(eq(schema.users.id, 'alice')))[0]).toMatchObject({ disabled: true, sessionVersion: 1 });
+    expect(await savedCredential()).toBeUndefined();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: false });
+    expect(fixture.control).toHaveBeenCalledWith('alice', 'disconnect');
+    expect(fixture.revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['broker failure', 'active work'])('rolls back disabling and retains auth for retry after %s', async cause => {
+    await importOwnProfile(); await retainedBinding();
+    if (cause === 'broker failure') fixture.control.mockRejectedValue(new Error('broker token clear failed'));
+    else await db.insert(schema.codexRuns).values({ runId: 'active-disable', userId: 'alice', runtimeId: 'runtime', binding: 'binding', funding: 'chatgpt_subscription', phase: 'running' });
+    await expect(setUserDisabled('alice', true)).rejects.toThrow();
+    expect((await db.select().from(schema.users).where(eq(schema.users.id, 'alice')))[0]).toMatchObject({ disabled: false, sessionVersion: 0 });
+    expect(await savedCredential()).toBeDefined();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: true, credentialBinding: 'old-alice-binding' });
+    expect(fixture.revoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps owner and bulk credentials for retry when broker token clearing fails', async () => {
+    await importOwnProfile(); await retainedBinding();
+    fixture.control.mockRejectedValue(new Error('broker token clear failed'));
+    await expect(changeUnifiedAccount(alice!, 'disconnect')).rejects.toThrow('broker token clear failed');
+    await expect(disconnectAllChatGPT()).rejects.toThrow('broker token clear failed');
+    expect(await savedCredential()).toBeDefined();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: true, credentialBinding: 'old-alice-binding' });
+    expect(fixture.revoke).not.toHaveBeenCalled();
+  });
+
+  it('clears broker auth even without a portal binding and accepts only a confirmed unenrolled owner', async () => {
+    await importOwnProfile();
+    await changeUnifiedAccount(alice!, 'disconnect');
+    expect(fixture.control).toHaveBeenCalledWith('alice', 'disconnect');
+    await importOwnProfile();
+    fixture.control.mockRejectedValue(new PersonalControlError(403, 'not enrolled', 'not_enrolled'));
+    await expect(changeUnifiedAccount(alice!, 'disconnect')).resolves.toMatchObject({ disconnected: true });
+    expect(await savedCredential()).toBeUndefined();
+    await importOwnProfile(); await retainedBinding();
+    await expect(changeUnifiedAccount(alice!, 'disconnect')).rejects.toMatchObject({ code: 'not_enrolled' });
+    expect(await savedCredential()).toBeDefined();
+  });
+
+  it('retains auth when a retained personal account has lost its broker configuration', async () => {
+    await importOwnProfile(); await retainedBinding();
+    vi.stubEnv('PERSONAL_CODEX_SOCKET', '');
+    await expect(changeUnifiedAccount(alice!, 'disconnect')).rejects.toMatchObject({ status: 503 });
+    expect(await savedCredential()).toBeDefined();
+    expect(fixture.control).not.toHaveBeenCalled(); expect(fixture.revoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['disabled', 'deleted credential', 'invalidated binding'])('rejects stale SIWC runtime readiness when the portal has %s', async cause => {
+    await importOwnProfile(); await retainedBinding();
+    const verify = () => assertCurrentSIWCConnection('alice', 'old-alice-binding', tokenFingerprint(PROFILE.accessToken));
+    await expect(verify()).resolves.toBeUndefined();
+    if (cause === 'disabled') await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, 'alice'));
+    else if (cause === 'deleted credential') await db.delete(schema.userCredentials).where(eq(schema.userCredentials.userId, 'alice'));
+    else await db.update(schema.personalCodexAccounts).set({ connected: false }).where(eq(schema.personalCodexAccounts.userId, 'alice'));
+    await expect(verify()).rejects.toMatchObject({ status: 409 });
+  });
 });

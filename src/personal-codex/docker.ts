@@ -157,7 +157,6 @@ export class PersonalCodexDriver {
   }
   async clearToken(owner: string): Promise<void> {
     this.name(owner);
-    if (!this.config.siwcSandboxVerified) return;
     if (!(await this.inspect(owner))?.State.Running) throw unavailable();
     const child = spawn(this.config.dockerExecutable, ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/server.mjs', '--clear-token'],
       { env: dockerEnv, stdio: ['ignore', 'ignore', 'ignore'] });

@@ -96,6 +96,20 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
       if (!(action === 'status' && req.method === 'GET') && !(['connect', 'cancel', 'disconnect', 'start', 'sync-token'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
       const prior = queue.get(owner) ?? Promise.resolve();
       const next = prior.catch(() => {}).then(async () => {
+        if (action === 'disconnect') {
+          // Fence readiness before any I/O: failed token clearing must never leave a trusted fingerprint.
+          tokenBindings.delete(owner);
+          if (!await driver.inspect(owner)) { await clearMarker(owner); return status(owner); }
+          // Clear retained SIWC tokens even if admission was disabled since the last synchronization.
+          // SIWC has no native account identity; clearing must never depend on account/logout.
+          try {
+            await driver.startRetained(owner);
+            await driver.clearToken(owner);
+          } finally {
+            sessions.get(owner)?.client.close(); sessions.delete(owner);
+          }
+          if (driver.config.siwcSandboxVerified) { await clearMarker(owner); return status(owner); }
+        }
         if (action === 'connect') await driver.ensure(owner);
         if (action === 'start') await driver.startRetained(owner);
         if (action === 'sync-token' && sync) {
@@ -118,17 +132,12 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
             if (session.completed.has(session.login.loginId)) { session.login = undefined; await clearMarker(owner); }
           }
         } else if (action === 'cancel' || action === 'disconnect') {
-          if (action === 'disconnect') await driver.startRetained(owner);
           const session = await accountClient(owner, false);
           if (session.login) { await session.client.request('account/login/cancel', { loginId: session.login.loginId }); session.login = undefined; }
           // Explicit cancel/disconnect revokes any grant completed concurrently with cancellation.
           // Completion may already have removed both the in-memory login and durable marker.
           await session.client.request('account/logout', {});
           await clearMarker(owner);
-          if (action === 'disconnect' && driver.config.siwcSandboxVerified) {
-            await driver.clearToken(owner); tokenBindings.delete(owner);
-            session.client.close(); sessions.delete(owner);
-          }
         }
         return status(owner);
       });

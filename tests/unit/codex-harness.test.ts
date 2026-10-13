@@ -344,6 +344,20 @@ describe('Codex native app-server harness (local protocol fixtures, no live infe
       { accountId: 'siwc:issued-client-id', userId: 'fixture-managed-subject', email: 'alice@test.invalid', planType: null, residency: null, isFedramp: false, expiresAt: new Date(Date.now() + 3_600_000) },
       undefined, { clientId: 'issued-client-id', hostId: SIWC_HOST_ID, scope: SIWC_SCOPE });
   }
+  it.each(['disabled owner', 'deleted credential', 'disconnected binding'])('never dispatches with a stale broker fingerprint after %s', async cause => {
+    await managedConnection();
+    const runtime = await callerRuntime('alice', 'chatgpt_subscription', { synchronize: true });
+    expect(fixture.siwcFingerprint).toBe(runtime.tokenFingerprint);
+    if (cause === 'disabled owner') await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, 'alice'));
+    else if (cause === 'deleted credential') await db.delete(schema.userCredentials).where(eq(schema.userCredentials.userId, 'alice'));
+    else await db.update(schema.personalCodexAccounts).set({ connected: false }).where(eq(schema.personalCodexAccounts.userId, 'alice'));
+    const client = await CodexClient.connect(runtime);
+    try {
+      await expect(executeCodexSession(client, runtime, { funding: 'chatgpt_subscription', model: 'fixture-model', effort: 'medium' }, 'hello', '',
+        { checkpoint: async () => {}, text: () => {} }, AbortSignal.timeout(2000))).rejects.toThrow('connection is no longer available');
+    } finally { client.close(); }
+    expect(seen.some(call => call.method === 'thread/start' || call.method === 'turn/start')).toBe(false);
+  });
   it('persists native tool parts and continues the same owner-bound thread through the production run adapter', async () => {
     await managedConnection(); mode = 'agent_tools';
     const first = await options('alice'); const reply = await consume(first.opts);

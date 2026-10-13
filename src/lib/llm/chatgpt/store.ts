@@ -8,7 +8,7 @@
  */
 import { and, eq } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
-import { chatgptDeviceLogins, userCredentials, users, type UserCredential } from "@/db/schema";
+import { chatgptDeviceLogins, personalCodexAccounts, userCredentials, users, type UserCredential } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { AAD, decrypt, encrypt, needsRewrap } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
@@ -307,7 +307,8 @@ export async function removeChatGPTConnection(userId: string, database: DbOrTx =
 
 /** Removes this person's connection and revokes the sign-in at OpenAI (best effort). Returns false if none. */
 export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promise<boolean> {
-  const revoke = await removeChatGPTConnection(userId, db, f);
+  const { invalidateChatGPTConnection } = await import('./invalidation');
+  const revoke = await invalidateChatGPTConnection(userId, db, f);
   if (!revoke) return false;
   await revoke();
   return true;
@@ -316,8 +317,10 @@ export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promis
 /** Admin "disconnect everyone" (and turning the feature off): deletes every connection and revokes them. */
 export async function deleteAllChatGPTConnections(f?: Fetch): Promise<number> {
   const rows = await db.select({ userId: userCredentials.userId }).from(userCredentials).where(eq(userCredentials.provider, "chatgpt"));
+  const retained = await db.select({ userId: personalCodexAccounts.userId }).from(personalCodexAccounts);
   let n = 0;
-  for (const r of rows) if (await deleteChatGPTConnection(r.userId, f)) n++;
+  // Retained bindings must be invalidated even if an older portal already removed the credential row.
+  for (const owner of new Set([...rows, ...retained].map(row => row.userId))) if (await deleteChatGPTConnection(owner, f)) n++;
   await db.delete(chatgptDeviceLogins);
   return n;
 }
