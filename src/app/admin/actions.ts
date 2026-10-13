@@ -580,7 +580,7 @@ const lines = z
 
 const ChatGPTSettingsInput = z.object({
   enabled: z.boolean(),
-  /** Required the first time it is turned on: the admin has read the "unofficial" notice. */
+  /** Required the first time it is turned on: the admin has acknowledged personal subscription usage. */
   acknowledge: z.boolean().optional(),
   access: z.enum(["everyone", "selected"]),
   allowedGroupIds: z.array(z.string().max(64)).max(500),

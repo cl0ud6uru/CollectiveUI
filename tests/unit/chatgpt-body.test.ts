@@ -1,79 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { FALLBACK_INSTRUCTIONS, rewriteCodexRequestBody } from "@/lib/llm/chatgpt/body";
+import { FALLBACK_INSTRUCTIONS, rewriteChatGPTRequestBody } from "@/lib/llm/chatgpt/body";
 
-describe("Codex backend request body", () => {
-  it("keeps only fields Codex sends, forces store:false/stream:true and fills instructions", () => {
-    const out = rewriteCodexRequestBody({
-      model: "gpt-x",
-      input: [],
-      max_output_tokens: 8192,
-      temperature: 0.2,
-      top_p: 1,
-      metadata: { a: 1 },
-      user: "u",
-      service_tier: "priority",
-      store: true,
-      previous_response_id: "resp_1",
-      prompt_cache_key: "conv-1",
-      reasoning: { effort: "high", summary: "auto" },
-      text: { format: { type: "json_object" } },
+describe("public Responses request shaping for SIWC", () => {
+  it("disables server storage, response chaining, and fields unsupported by SIWC", () => {
+    const out = rewriteChatGPTRequestBody({
+      model: "gpt-x", input: [], instructions: "Be useful", store: true, stream: false,
+      previous_response_id: "resp_private", max_output_tokens: 2048, temperature: 0.2, top_p: 1,
+      metadata: { secret: "drop" }, user: "drop", include: ["reasoning.encrypted_content"],
     });
     expect(out).toEqual({
-      model: "gpt-x",
-      input: [],
-      store: false,
-      stream: true,
-      instructions: FALLBACK_INSTRUCTIONS,
-      include: ["reasoning.encrypted_content"],
-      prompt_cache_key: "conv-1",
-      reasoning: { effort: "high", summary: "auto" },
-      text: { format: { type: "json_object" } },
+      model: "gpt-x", input: [], instructions: "Be useful", store: false, stream: true,
     });
+    for (const field of ["previous_response_id", "max_output_tokens", "temperature", "top_p"]) expect(out).not.toHaveProperty(field);
   });
 
-  it("strips item ids and references, types string content and uses developer instead of system", () => {
-    const out = rewriteCodexRequestBody({
-      instructions: "Be brief.",
-      include: ["message.output_text.logprobs"],
+  it("replays portable history and drops private references and sealed reasoning", () => {
+    const out = rewriteChatGPTRequestBody({
       input: [
-        { role: "system", content: "extra rules" },
-        { role: "user", content: [{ type: "input_text", text: "hi" }] },
-        { role: "assistant", content: "hello", id: "msg_1" },
-        { type: "item_reference", id: "rs_1" },
-        { type: "reasoning", id: "rs_2", encrypted_content: "blob", summary: [] },
-        { type: "reasoning", id: "rs_3", summary: [] },
-        { type: "function_call", id: "fc_1", call_id: "call_1", name: "t", arguments: "{}" },
-        { type: "function_call_output", call_id: "call_1", output: "ok" },
+        { role: "system", content: "extra rules", id: "msg_sys" },
+        { role: "user", content: "hi", id: "msg_user" },
+        { role: "assistant", content: "hello", id: "msg_assistant" },
+        { type: "item_reference", id: "rs_private" },
+        { type: "reasoning", encrypted_content: "private blob" },
+        { type: "function_call", id: "fc_1", call_id: "call_1", name: "math.add", namespace: "collectiveui", arguments: "{}" },
+        { type: "function_call_output", call_id: "call_1", output: "2" },
       ],
     });
-    expect(out.instructions).toBe("Be brief.");
-    expect(out.include).toEqual(["message.output_text.logprobs", "reasoning.encrypted_content"]);
+    expect(out.instructions).toBe(FALLBACK_INSTRUCTIONS);
     expect(out.input).toEqual([
       { role: "developer", content: [{ type: "input_text", text: "extra rules" }] },
       { role: "user", content: [{ type: "input_text", text: "hi" }] },
       { role: "assistant", content: [{ type: "output_text", text: "hello" }] },
-      { type: "reasoning", encrypted_content: "blob", summary: [] },
-      { type: "function_call", call_id: "call_1", name: "t", arguments: "{}" },
-      { type: "function_call_output", call_id: "call_1", output: "ok" },
+      { type: "function_call", call_id: "call_1", name: "math.add", namespace: "collectiveui", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "2" },
     ]);
   });
 
-  it("defaults function tools to strict:false and drops empty tool settings", () => {
-    const withTools = rewriteCodexRequestBody({
+  it("retains local function tools but filters hosted tools", () => {
+    const out = rewriteChatGPTRequestBody({
       tools: [
-        { type: "function", name: "a", parameters: {} },
-        { type: "function", name: "b", parameters: {}, strict: true },
-        { type: "web_search" },
-      ],
-      tool_choice: "auto",
-      parallel_tool_calls: true,
+        { type: "function", name: "math.add", parameters: { type: "object" } },
+        { type: "web_search_preview" },
+        { type: "computer" },
+      ], tool_choice: "auto", parallel_tool_calls: true,
     });
-    expect(withTools.tools).toEqual([
-      { type: "function", name: "a", parameters: {}, strict: false },
-      { type: "function", name: "b", parameters: {}, strict: true },
-      { type: "web_search" },
-    ]);
-    const without = rewriteCodexRequestBody({ tools: [], tool_choice: "auto", parallel_tool_calls: false });
+    expect(out.tools).toEqual([{
+        type: "namespace", name: "collectiveui", description: "CollectiveUI local tools",
+        tools: [{ type: "function", name: "math.add", parameters: { type: "object" } }],
+      }]);
+    const without = rewriteChatGPTRequestBody({ tools: [{ type: "web_search" }], tool_choice: "auto", parallel_tool_calls: false });
     expect(without).not.toHaveProperty("tools");
     expect(without).not.toHaveProperty("tool_choice");
     expect(without).not.toHaveProperty("parallel_tool_calls");

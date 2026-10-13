@@ -1,116 +1,90 @@
 import { streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatgptFetch, readRateLimitHeaders } from "@/lib/llm/chatgpt/fetch";
+import { chatgptFetch } from "@/lib/llm/chatgpt/fetch";
 import { chatgptMiddleware } from "@/lib/llm/chatgpt/middleware";
-import { ChatGPTPlanError, ChatGPTReauthRequiredError, ChatGPTUsageLimitError } from "@/lib/llm/chatgpt/errors";
+import { ChatGPTPlanError, ChatGPTReauthRequiredError, ChatGPTUnavailableError, ChatGPTUsageLimitError } from "@/lib/llm/chatgpt/errors";
 import type { ChatGPTAuth } from "@/lib/llm/chatgpt/store";
 import { chatgpt } from "@/lib/llm/providers/chatgpt";
 import { wrapLanguageModel } from "ai";
+import { OPENAI_API_BASE_URL } from "@/lib/llm/chatgpt/constants";
 
-const BACKEND = "https://chatgpt.com/backend-api";
 const auth = (token = "tok-1"): ChatGPTAuth => ({
-  credentialId: "cred-1",
-  accessToken: token,
-  accountId: "ws-1",
-  planType: "business",
-  residency: null,
-  isFedramp: false,
+  credentialId: "cred-1", accessToken: token, accountId: "account-1", planType: "plus", residency: null, isFedramp: false,
 });
 
-type Call = { url: string; headers: Headers; body?: string };
+type Call = { url: string; headers: Headers; body?: string; cache?: RequestCache };
 let calls: Call[] = [];
 let replies: (() => Response)[] = [];
 const base: typeof fetch = async (input, init) => {
-  calls.push({ url: String(input), headers: new Headers(init?.headers), body: init?.body as string | undefined });
+  calls.push({ url: String(input), headers: new Headers(init?.headers), body: init?.body as string | undefined, cache: init?.cache });
   const next = replies.shift();
   if (!next) throw new Error("no reply queued");
   return next();
 };
-const json = (status: number, body: unknown, headers: Record<string, string> = {}) => () =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+const json = (status: number, body: unknown) => () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-beforeEach(() => {
-  calls = [];
-  replies = [];
-  delete process.env.CHATGPT_BACKEND_URL;
-});
+beforeEach(() => { calls = []; replies = []; });
 afterEach(() => vi.restoreAllMocks());
 
-describe("ChatGPT model fetch", () => {
-  it("sends the person's token and account headers with the portal's own identity, and rewrites the body", async () => {
-    replies.push(json(200, { ok: true }, { "x-codex-turn-state": "ts-1" }), json(200, {}));
-    const onRateLimits = vi.fn();
-    const f = chatgptFetch({
-      conversationId: "conv-1",
-      getAuth: async () => ({ ...auth(), residency: "eu", isFedramp: true }),
-      baseFetch: base,
-      onRateLimits,
-    });
-    await f(`${BACKEND}/codex/responses`, {
+describe("SIWC public API transport", () => {
+  it("uses only the fixed public Responses endpoint, attaches the OAuth token, and removes private headers", async () => {
+    replies.push(json(200, { ok: true }));
+    const f = chatgptFetch({ conversationId: "conv-1", getAuth: async () => auth(), baseFetch: base });
+    await f(`${OPENAI_API_BASE_URL}/responses`, {
       method: "POST",
-      headers: { authorization: "Bearer chatgpt-connection", "OpenAI-Organization": "org-x" },
-      body: JSON.stringify({ model: "m", input: [], max_output_tokens: 10, store: true }),
+      headers: {
+        authorization: "Bearer attacker", "chatgpt-account-id": "private", "session-id": "private",
+        "x-codex-turn-state": "private", "x-openai-internal-codex-residency": "eu", "x-openai-fedramp": "true",
+      },
+      body: JSON.stringify({ model: "m", input: [], store: true, previous_response_id: "prior" }),
     });
-    const h = calls[0].headers;
-    expect(h.get("authorization")).toBe("Bearer tok-1");
-    expect(h.get("chatgpt-account-id")).toBe("ws-1");
-    expect(h.get("originator")).toBe("ai_portal");
-    expect(h.get("user-agent")).toMatch(/^AIPortal\//);
-    expect(h.get("session-id")).toBe("conv-1");
-    expect(h.get("x-client-request-id")).toBe("conv-1");
-    expect(h.get("x-openai-internal-codex-residency")).toBe("eu");
-    expect(h.get("x-openai-fedramp")).toBe("true");
-    expect(h.get("openai-organization")).toBeNull();
-    expect(h.get("x-codex-turn-state")).toBeNull();
-    const body = JSON.parse(calls[0].body!);
-    expect(body).toMatchObject({ store: false, stream: true });
-    expect(body).not.toHaveProperty("max_output_tokens");
-
-    // The turn state is replayed on later requests of the same turn.
-    await f(`${BACKEND}/codex/responses`, { method: "POST", body: JSON.stringify({ model: "m", input: [] }) });
-    expect(calls[1].headers.get("x-codex-turn-state")).toBe("ts-1");
-    expect(onRateLimits).not.toHaveBeenCalled();
+    const call = calls[0];
+    expect(call.url).toBe(`${OPENAI_API_BASE_URL}/responses`);
+    expect(call.headers.get("authorization")).toBe("Bearer tok-1");
+    expect(call.headers.get("originator")).toBe("ai_portal");
+    expect(call.headers.get("user-agent")).toMatch(/^AIPortal\//);
+    for (const h of ["chatgpt-account-id", "session-id", "x-codex-turn-state", "x-openai-internal-codex-residency", "x-openai-fedramp"]) expect(call.headers.get(h)).toBeNull();
+    expect(call.cache).toBe("no-store");
+    expect(JSON.parse(call.body!)).toMatchObject({ store: false, stream: true });
+    expect(JSON.parse(call.body!)).not.toHaveProperty("previous_response_id");
   });
 
-  it("never sends the token anywhere but the ChatGPT backend", async () => {
-    const f = chatgptFetch({ conversationId: null, getAuth: async () => auth(), baseFetch: base });
-    await expect(f("https://evil.example.com/codex/responses", { method: "POST", body: "{}" })).rejects.toThrow(/outside the ChatGPT backend/);
-    await expect(f("https://chatgpt.com/backend-api.evil.com/x", { method: "GET" })).rejects.toThrow(/outside/);
+  it("refuses arbitrary origins, backend URLs, lookalike hosts, and unapproved API paths before reading auth", async () => {
+    const getAuth = vi.fn(async () => auth());
+    const f = chatgptFetch({ conversationId: null, getAuth, baseFetch: base });
+    for (const url of [
+      "https://evil.example/codex/responses", "https://chatgpt.com/backend-api/codex/responses",
+      "https://api.openai.com.evil.example/v1/responses", "https://api.openai.com/v1/admin/keys",
+      "https://api.openai.com/v1/responses?redirect=https://evil.example",
+    ]) await expect(f(url, { method: "GET" })).rejects.toThrow(/outside the public OpenAI API/);
+    expect(getAuth).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
   });
 
-  it("refreshes once after a 401 and retries; a second 401 asks the person to reconnect", async () => {
+  it("refreshes once on 401 and asks the person to reconnect after a second 401", async () => {
     const getAuth = vi.fn(async ({ rejectedToken }: { rejectedToken?: string }) => (rejectedToken ? auth("tok-2") : auth("tok-1")));
     const f = chatgptFetch({ conversationId: null, getAuth, baseFetch: base });
     replies.push(json(401, {}), json(200, { ok: true }));
-    const res = await f(`${BACKEND}/codex/responses`, { method: "POST", body: JSON.stringify({ input: [] }) });
-    expect(res.status).toBe(200);
+    expect((await f(`${OPENAI_API_BASE_URL}/responses`, { method: "POST", body: JSON.stringify({ input: [] }) })).status).toBe(200);
     expect(getAuth).toHaveBeenLastCalledWith({ rejectedToken: "tok-1" });
     expect(calls.map((c) => c.headers.get("authorization"))).toEqual(["Bearer tok-1", "Bearer tok-2"]);
     expect(calls[0].body).toBe(calls[1].body);
-
     replies.push(json(401, {}), json(401, {}));
-    await expect(f(`${BACKEND}/codex/responses`, { method: "POST", body: "{}" })).rejects.toBeInstanceOf(ChatGPTReauthRequiredError);
+    await expect(f(`${OPENAI_API_BASE_URL}/responses`, { method: "POST", body: "{}" })).rejects.toBeInstanceOf(ChatGPTReauthRequiredError);
   });
 
-  it("turns plan limits into typed errors and passes other errors to the SDK", async () => {
+  it("preserves recognized plan errors and passes ordinary API errors through", async () => {
     const f = chatgptFetch({ conversationId: null, getAuth: async () => auth(), baseFetch: base });
-    replies.push(json(429, { error: { type: "usage_limit_reached", plan_type: "plus", resets_at: 1_900_000_000 } }));
-    const err = await f(`${BACKEND}/codex/responses`, { method: "POST", body: "{}" }).catch((e) => e);
-    expect(err).toBeInstanceOf(ChatGPTUsageLimitError);
-    expect((err as ChatGPTUsageLimitError).resetsAt).toEqual(new Date(1_900_000_000_000));
-    replies.push(json(429, { error: { type: "usage_not_included" } }));
-    await expect(f(`${BACKEND}/codex/responses`, { method: "POST", body: "{}" })).rejects.toBeInstanceOf(ChatGPTPlanError);
-    replies.push(json(429, { error: { message: "slow down", type: "rate_limit_exceeded" } }));
-    const res = await f(`${BACKEND}/codex/responses`, { method: "POST", body: "{}" });
-    expect(res.status).toBe(429);
-    expect(await res.json()).toEqual({ error: { message: "slow down", type: "rate_limit_exceeded" } });
-  });
-
-  it("reads plan usage headers", () => {
-    const h = new Headers({ "x-codex-primary-used-percent": "40", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-at": "1700000000" });
-    expect(readRateLimitHeaders(h)).toEqual({ primary: { usedPercent: 40, windowMinutes: 300, resetAt: 1_700_000_000 } });
-    expect(readRateLimitHeaders(new Headers())).toBeNull();
+    replies.push(json(429, { error: { type: "subscription_sharing_usage_limit_exceeded", resets_at: 1_900_000_000 } }));
+    const limited = await f(`${OPENAI_API_BASE_URL}/responses`, { method: "POST", body: "{}" }).catch((e) => e);
+    expect(limited).toBeInstanceOf(ChatGPTUsageLimitError);
+    expect((limited as ChatGPTUsageLimitError).resetsAt).toEqual(new Date(1_900_000_000_000));
+    replies.push(json(403, { error: { type: "subscription_sharing_user_not_eligible" } }));
+    await expect(f(`${OPENAI_API_BASE_URL}/responses`, { method: "POST", body: "{}" })).rejects.toBeInstanceOf(ChatGPTPlanError);
+    replies.push(json(503, { error: { type: "subscription_sharing_usage_unavailable" } }));
+    await expect(f(`${OPENAI_API_BASE_URL}/responses`, { method: "POST", body: "{}" })).rejects.toBeInstanceOf(ChatGPTUnavailableError);
+    replies.push(json(429, { error: { type: "rate_limit_exceeded" } }));
+    expect((await f(`${OPENAI_API_BASE_URL}/responses`, { method: "POST", body: "{}" })).status).toBe(429);
   });
 });
 
@@ -119,54 +93,39 @@ function sse(events: object[]) {
   return () => new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
-describe("ChatGPT model through the AI SDK", () => {
+describe("ChatGPT model through the public Responses API", () => {
   const completed = [
     { type: "response.created", response: { id: "r1", created_at: 1, model: "m" } },
     { type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", content: [] } },
     { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, content_index: 0, delta: "hi" },
-    {
-      type: "response.output_item.done",
-      output_index: 0,
-      item: { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] },
-    },
-    {
-      type: "response.completed",
-      response: { id: "r1", created_at: 1, model: "m", status: "completed", usage: { input_tokens: 5, output_tokens: 1, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } },
-    },
+    { type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] } },
+    { type: "response.completed", response: { id: "r1", created_at: 1, model: "m", status: "completed", usage: { input_tokens: 5, output_tokens: 1 } } },
   ];
 
   async function model() {
     const f = chatgptFetch({ conversationId: "conv-1", getAuth: async () => auth(), baseFetch: base });
-    const p = await chatgpt.create({ baseURL: `${BACKEND}/codex`, fetch: f });
-    return wrapLanguageModel({ model: p.chat("gpt-codex"), middleware: chatgptMiddleware({ conversationId: "conv-1", reasoningEffort: "high" }) });
+    const p = await chatgpt.create({ baseURL: OPENAI_API_BASE_URL, fetch: f });
+    return wrapLanguageModel({ model: p.chat("gpt-4o"), middleware: chatgptMiddleware({ conversationId: "conv-1" }) });
   }
 
-  it("sends instructions at the top level with the backend's rules applied", async () => {
+  it("sends the assembled history to /v1/responses and never chains through previous_response_id", async () => {
     replies.push(sse(completed));
     const result = streamText({
-      model: await model(),
-      instructions: "You are the portal assistant.",
-      messages: [
-        { role: "user", content: "hello" },
-        { role: "assistant", content: "earlier answer" },
-        { role: "user", content: "again" },
-      ],
-      temperature: 0.3,
-      maxOutputTokens: 4000,
+      model: await model(), instructions: "You are the portal assistant.",
+      messages: [{ role: "user", content: "hello" }, { role: "assistant", content: "earlier answer" }, { role: "user", content: "again" }],
+      temperature: 0.3, maxOutputTokens: 4000,
     });
     expect(await result.text).toBe("hi");
-    expect(calls[0].url).toBe(`${BACKEND}/codex/responses`);
+    expect(calls[0].url).toBe(`${OPENAI_API_BASE_URL}/responses`);
     const body = JSON.parse(calls[0].body!);
-    expect(body.instructions).toBe("You are the portal assistant.");
-    expect(body).toMatchObject({ store: false, stream: true, prompt_cache_key: "conv-1", reasoning: { effort: "high", summary: "auto" } });
-    expect(body.include).toContain("reasoning.encrypted_content");
-    for (const k of ["max_output_tokens", "temperature", "top_p"]) expect(body).not.toHaveProperty(k);
-    expect(body.input.some((i: { role?: string }) => i.role === "system" || i.role === "developer")).toBe(false);
-    for (const item of body.input) expect(typeof item.content).not.toBe("string");
+    expect(body).toMatchObject({ instructions: "You are the portal assistant.", store: false, stream: true });
+    expect(body).not.toHaveProperty("previous_response_id");
+    expect(body.input).toHaveLength(3);
     expect(body.input[1]).toEqual({ role: "assistant", content: [{ type: "output_text", text: "earlier answer" }] });
+    for (const field of ["max_output_tokens", "temperature", "top_p"]) expect(body).not.toHaveProperty(field);
   });
 
-  it("refuses non-streaming calls (the backend only streams)", async () => {
+  it("refuses non-streaming calls", async () => {
     const { generateText } = await import("ai");
     await expect(generateText({ model: await model(), prompt: "x", maxRetries: 0 })).rejects.toThrow(/streaming chat/);
     expect(calls).toHaveLength(0);

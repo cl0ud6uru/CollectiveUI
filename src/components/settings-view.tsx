@@ -1,6 +1,5 @@
 "use client";
 
-import { PersonalCodexConnection } from "@/components/settings/personal-codex-connection";
 import { CodexAllowance } from "@/components/settings/codex-allowance";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -21,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { ChatGPTConnection, type ChatGPTConnectionView } from "@/components/settings/chatgpt-connection";
+import { ChatGPTConnection } from "@/components/settings/chatgpt-connection";
 import { WorkspacePanel } from "@/components/settings/workspace-panel";
 import { StartTargetSelect } from "@/components/start-target-select";
 import type { WorkspaceView } from "@/lib/sandbox/view";
@@ -40,7 +39,6 @@ export function SettingsView({
   archived,
   grants,
   user,
-  chatgpt,
   workspace,
   workspaceBots,
   security,
@@ -54,8 +52,6 @@ export function SettingsView({
   archived: { id: string; title: string; updatedAt: string }[];
   grants: { botId: string; toolName: string; botName: string }[];
   user: { name: string; upn: string; authSource: string };
-  /** Null when this person can't connect this model grant and has no saved connection. */
-  chatgpt: ChatGPTConnectionView | null;
   /** Null when workspaces are off (the tab is hidden). */
   workspace: WorkspaceView | null;
   workspaceBots: { id: string; name: string }[];
@@ -244,7 +240,7 @@ export function SettingsView({
           </>
         )}
 
-        {tab === "Connected accounts" && <><PersonalCodexConnection />{chatgpt && <ChatGPTConnection view={chatgpt} />}{hermes}{teamConnections}</>}
+        {tab === "Connected accounts" && <><ChatGPTConnection />{hermes}{teamConnections}</>}
         {tab === "Workspace" && workspace && <WorkspacePanel view={workspace} bots={workspaceBots} />}
         {tab === "Data controls" && (
           <>

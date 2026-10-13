@@ -141,7 +141,8 @@ describe('Personal Codex protected broker', () => {
     for (const owner of ['alice', 'bob']) {
       for (const action of ['status', 'connect', 'start', 'cancel', 'disconnect']) {
         const response = await ipc(action, owner, action === 'status' ? 'GET' : 'POST');
-        expect(response.status).toBe(503);
+        expect(response.status).toBe(403);
+        expect(await response.json()).toEqual({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' });
       }
     }
     expect(driver.ensured).toEqual([]);
@@ -161,9 +162,12 @@ describe('Personal Codex protected broker', () => {
   });
 
   it('admits only enrolled owners and does not provision on an unauthorized owner request', async () => {
+    const status = await ipc('status', 'bob', 'GET');
+    expect(status.status).toBe(403);
+    expect(await status.json()).toEqual({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' });
     const response = await ipc('connect', 'bob');
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' });
     expect(driver!.ensured).toEqual([]);
     expect(driver!.bridged).toEqual([]);
   });
