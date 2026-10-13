@@ -14,8 +14,8 @@ export const BrokerConfig = z.object({
   // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
   image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   namespace: z.string().regex(/^cui-codex-[a-z0-9-]{1,20}$/),
-  // Admission is installed by an operator, never supplied by an HTTP caller.
-  owners: z.array(ownerId).min(1).max(1000),
+  // Admission is installed by an operator; an empty list starts with all owners denied.
+  owners: z.array(ownerId).max(1000),
   sandboxProfile: z.literal('collectiveui-sandbox-v1').optional(),
   dockerExecutable: z.enum(['/usr/local/bin/docker', '/usr/bin/docker']).default('/usr/local/bin/docker'),
   memoryMb: z.number().int().min(512).max(16384).default(2048),
