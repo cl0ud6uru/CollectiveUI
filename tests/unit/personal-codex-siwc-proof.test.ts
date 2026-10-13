@@ -36,7 +36,7 @@ describe('synthetic SIWC parent and child observations', () => {
     const nonce = randomUUID();
     const execute = (token?: string) => spawnSync(process.execPath, ['-e', siwcChildCommand(nonce)], {
       encoding: 'utf8', timeout: 3000, stdio: ['ignore','pipe','pipe'],
-      env: { PATH: '/usr/bin:/bin', ...(token === undefined ? {} : { ACCESS_TOKEN: token }) },
+      env: { NODE_ENV: 'test', PATH: '/usr/bin:/bin', ...(token === undefined ? {} : { ACCESS_TOKEN: token }) },
     });
     const without = execute();
     expect(without.error).toBeUndefined(); expect(without.status).toBe(0); expect(without.signal).toBeNull(); expect(without.stderr).toBe('');
@@ -84,7 +84,7 @@ describe('synthetic SIWC parent and child observations', () => {
     for (const present of [false, true]) {
       const run = spawnSync(process.execPath, ['-e', siwcToolCommand(nonce, 2147483000)], {
         encoding: 'utf8', timeout: 5000, stdio: ['ignore','pipe','pipe'],
-        env: { PATH: '/usr/bin:/bin', ...(present ? { ACCESS_TOKEN: 'fixture-only-parent-positive-control' } : {}) },
+        env: { NODE_ENV: 'test', PATH: '/usr/bin:/bin', ...(present ? { ACCESS_TOKEN: 'fixture-only-parent-positive-control' } : {}) },
       });
       expect(run.error).toBeUndefined(); expect(run.status).toBe(0); expect(run.signal).toBeNull(); expect(run.stderr).toBe('');
       const observed = JSON.parse(run.stdout);
