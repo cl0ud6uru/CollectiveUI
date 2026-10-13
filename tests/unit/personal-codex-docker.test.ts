@@ -242,6 +242,18 @@ describe('personal Codex Docker isolation', () => {
     await expect(driver.ensure(OTHER_OWNER)).rejects.toThrow(unavailable);
     expect(driver.calls).toEqual([]);
   });
+  it('denies every owner with an empty enrollment before any Docker or bridge operation', async () => {
+    const driver = new FakeDockerDriver([]);
+    for (const owner of [OWNER, OTHER_OWNER]) {
+      expect(() => driver.name(owner)).toThrow(unavailable);
+      await expect(driver.ensure(owner)).rejects.toThrow(unavailable);
+      await expect(driver.inspect(owner)).rejects.toThrow(unavailable);
+      await expect(driver.startRetained(owner)).rejects.toThrow(unavailable);
+      await expect(driver.bridge(owner)).rejects.toThrow(unavailable);
+    }
+    expect(driver.calls).toEqual([]);
+    expect(driver.volumes.size).toBe(0);
+  });
 
   it('rejects foreign labels on the network, container, or retained volumes', async () => {
     const badNetwork = new FakeDockerDriver();
@@ -363,12 +375,18 @@ describe('BrokerConfig', () => {
       expect(() => BrokerConfig.parse({ ...config(), image })).toThrow();
     }
   });
-  it('requires operator supplied absolute socket, digest-pinned image, namespace, and enrollment', () => {
+  it('accepts an explicitly empty owner list while still requiring valid startup configuration', () => {
+    expect(config([]).owners).toEqual([]);
+    expect(() => BrokerConfig.parse({ ...config(), owners: undefined })).toThrow();
+    for (const owners of [['*'], [''], Array(1001).fill(OWNER)]) {
+      expect(() => BrokerConfig.parse({ ...config(), owners })).toThrow();
+    }
+  });
+  it('requires operator supplied absolute socket, digest-pinned image, namespace, and owner list', () => {
     expect(config().image).toBe(IMAGE);
     expect(() => BrokerConfig.parse({ socketPath: 'relative.sock', image: IMAGE, namespace: NAMESPACE, owners: [OWNER] })).toThrow();
     expect(() => BrokerConfig.parse({ socketPath: '/run/docker.sock', image: 'collectiveui/personal-codex:latest', namespace: NAMESPACE, owners: [OWNER] })).toThrow();
     expect(() => BrokerConfig.parse({ socketPath: '/run/docker.sock', image: IMAGE, namespace: '../escape', owners: [OWNER] })).toThrow();
-    expect(() => BrokerConfig.parse({ socketPath: '/run/docker.sock', image: IMAGE, namespace: NAMESPACE, owners: [] })).toThrow();
     expect(() => BrokerConfig.parse({ socketPath: '/run/docker.sock', image: IMAGE, namespace: NAMESPACE, owners: [OWNER], extra: true })).toThrow();
   });
 });

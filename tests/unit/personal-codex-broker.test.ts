@@ -133,6 +133,23 @@ function ipc(action: string, owner = 'alice', method: 'GET' | 'POST' = 'POST', b
 const rpcLog = async (owner = 'alice') => readFile(path.join(root, `${owner}.rpc.log`), 'utf8').catch(() => '');
 
 describe('Personal Codex protected broker', () => {
+  it('starts with an empty owner list and rejects all owner actions without provisioning or sign-in', async () => {
+    await broker!.close();
+    driver = new FixtureDriver([], socketPath, root);
+    broker = await startPersonalBroker(driver);
+    expect((await stat(socketPath)).mode & 0o777).toBe(0o660);
+    for (const owner of ['alice', 'bob']) {
+      for (const action of ['status', 'connect', 'start', 'cancel', 'disconnect']) {
+        const response = await ipc(action, owner, action === 'status' ? 'GET' : 'POST');
+        expect(response.status).toBe(503);
+      }
+    }
+    expect(driver.ensured).toEqual([]);
+    expect(driver.retainedStarts).toEqual([]);
+    expect(driver.bridged).toEqual([]);
+    expect(driver.provisioned.size).toBe(0);
+    expect(await readdir(root)).toEqual(['broker.sock']);
+  });
   it('protects its UDS and status does not provision or start a native client', async () => {
     expect((await stat(root)).mode & 0o777).toBe(0o700);
     expect((await stat(socketPath)).mode & 0o777).toBe(0o660);
