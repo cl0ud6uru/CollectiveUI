@@ -37,7 +37,7 @@ describe("device code sign-in", () => {
     expect(calls[0].url).toBe("https://auth.openai.com/api/accounts/deviceauth/usercode");
     expect(JSON.parse(bodyOf(calls[0]))).toEqual({ client_id: "app_EMoamEEZ73f0CkXaXp7hrann" });
     const headers = calls[0].init.headers as Record<string, string>;
-    expect(headers["User-Agent"]).toMatch(/AIPortal/);
+    expect(headers["User-Agent"]).toBe("CollectiveUI/0.1.0");
     expect(calls[0].init.redirect).toBe("error");
   });
 
