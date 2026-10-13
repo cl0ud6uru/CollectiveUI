@@ -36,18 +36,47 @@ export async function invalidateChatGPTConnection(owner: string, database: DbOrT
   });
 }
 
-/** Broker readiness alone cannot authorize a removed credential, disabled owner, or invalidated portal binding. */
-export async function assertCurrentSIWCConnection(owner: string, binding: string, fingerprint: string) {
-  await db.transaction(async tx => {
+/** Stable server-verified facts captured while the exact dispatch token is still current. Contains no tokens. */
+export type SIWCDispatchIdentity = Readonly<{
+  owner: string; sessionVersion: number; binding: string; credentialId: string;
+  accountId: string; subject: string | null; email: string | null;
+  clientId: string; hostId: string; scope: string;
+}>;
+
+type ConnectionVerification = { kind: 'dispatch'; fingerprint: string; identity?: SIWCDispatchIdentity }
+  | { kind: 'retained'; identity: SIWCDispatchIdentity };
+
+async function validateSIWCConnection(owner: string, binding: string, verification: ConnectionVerification): Promise<SIWCDispatchIdentity> {
+  return db.transaction(async tx => {
     const person = await lockPersonalOwner(owner, tx);
     const [personal] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, owner));
     const [credential] = await tx.select().from(userCredentials).where(and(eq(userCredentials.userId, owner), eq(userCredentials.provider, 'chatgpt')));
     if (person.disabled || !personal?.connected || personal.credentialBinding !== binding || !credential ||
-      credential.status !== 'active' || !credential.expiresAt || credential.expiresAt.getTime() <= Date.now())
+      credential.status !== 'active' || (verification.kind === 'dispatch' && (!credential.expiresAt || credential.expiresAt.getTime() <= Date.now())))
       throw new HttpError(409, 'Your ChatGPT connection is no longer available. Reconnect before using Codex.');
     const secret = openCredentialSecret(credential);
     assertSIWCCredential(secret);
-    if (tokenFingerprint(secret.access) !== fingerprint || personal.workspaceId !== credential.accountId || personal.email !== credential.email)
+    const identity: SIWCDispatchIdentity = Object.freeze({ owner, sessionVersion: person.sessionVersion, binding,
+      credentialId: credential.id, accountId: credential.accountId, subject: credential.externalSubject, email: credential.email,
+      clientId: secret.siwc.clientId, hostId: secret.siwc.hostId, scope: secret.siwc.scope });
+    if (personal.workspaceId !== credential.accountId || personal.email !== credential.email ||
+      (verification.kind === 'dispatch' && tokenFingerprint(secret.access) !== verification.fingerprint) ||
+      (verification.identity && (Object.keys(identity) as (keyof SIWCDispatchIdentity)[]).some(key => identity[key] !== verification.identity![key])))
       throw new HttpError(409, 'Your ChatGPT connection changed. Synchronize the current account before using Codex.');
+    return identity;
   });
+}
+
+/** Before dispatch, the broker's token must still be the exact active credential in the portal. */
+export function captureCurrentSIWCConnection(owner: string, binding: string, fingerprint: string, identity?: SIWCDispatchIdentity) {
+  return validateSIWCConnection(owner, binding, { kind: 'dispatch', fingerprint, identity });
+}
+
+export async function assertCurrentSIWCConnection(owner: string, binding: string, fingerprint: string) {
+  await captureCurrentSIWCConnection(owner, binding, fingerprint);
+}
+
+/** An in-flight turn may survive token refresh only when every captured owner/account/registration fact remains bound. */
+export async function assertRetainedSIWCConnection(identity: SIWCDispatchIdentity) {
+  await validateSIWCConnection(identity.owner, identity.binding, { kind: 'retained', identity });
 }

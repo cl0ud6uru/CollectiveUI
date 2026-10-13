@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CodexClient, CodexNotification, CodexServerRequest } from './client';
 import type { CodexPolicy } from './config';
 import type { CodexRuntime } from './runtime';
+import type { SIWCDispatchIdentity } from '@/lib/llm/chatgpt/invalidation';
 
 type Client = Pick<CodexClient, 'request' | 'onNotification' | 'onFailure' | 'onServerRequest' | 'respond' | 'rejectRequest'>;
 const id = z.string().min(1).max(256);
@@ -39,6 +40,7 @@ const nativeTool = z.discriminatedUnion('type', [
 export async function executeCodexSession(client: Client, runtime: CodexRuntime, policy: CodexPolicy,
   input: string, instructions: string, hooks: SessionHooks, signal: AbortSignal) {
   let accountEpoch = 0, verifiedEpoch = -1;
+  let dispatched = false, siwcIdentity: SIWCDispatchIdentity | undefined;
   let accountFailure: Error | undefined, accountVerification: Promise<void> | undefined;
   const unwatchAccount = client.onNotification(e => { if (e.method === 'account/updated') accountEpoch++; });
   const verifyCurrentAccount = async () => {
@@ -53,8 +55,14 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         const status = await personalControl(runtime.ownerId, 'status');
         if (!runtime.managed || !runtime.tokenFingerprint || status.state !== 'running' || !status.siwc?.available || status.siwc.credentialBinding !== runtime.tokenFingerprint)
           throw new Error('Stock Codex is not synchronized with your verified ChatGPT connection. Enable it in Settings → Connected accounts.');
-        const { assertCurrentSIWCConnection } = await import('@/lib/llm/chatgpt/invalidation');
-        await assertCurrentSIWCConnection(runtime.ownerId, runtime.credentialBinding, runtime.tokenFingerprint);
+        const { captureCurrentSIWCConnection, assertRetainedSIWCConnection } = await import('@/lib/llm/chatgpt/invalidation');
+        if (dispatched) {
+          if (!siwcIdentity) throw new Error('Codex dispatch has no verified ChatGPT identity.');
+          await assertRetainedSIWCConnection(siwcIdentity);
+        } else {
+          const current = await captureCurrentSIWCConnection(runtime.ownerId, runtime.credentialBinding, runtime.tokenFingerprint, siwcIdentity);
+          siwcIdentity ??= current;
+        }
         await hooks.authorizeAccount?.(null);
         if (epoch === accountEpoch) { verifiedEpoch = epoch; return; }
         continue;
@@ -254,8 +262,10 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       // Persist uncertainty BEFORE the wire write. No retry is safe after this checkpoint.
       await verifyAccount();
       await hooks.checkpoint({ phase: 'dispatching' });
-      if (accountEpoch !== verifiedEpoch) await verifyAccount();
+      // The checkpoint can refresh portal tokens without a native account event. Keep the exact-token fence at the wire boundary.
+      if (runtime.authMode === 'siwc' || accountEpoch !== verifiedEpoch) await verifyAccount();
       signal.throwIfAborted();
+      dispatched = true;
       const response = z.object({ turn: z.object({ id }) }).parse(await client.request('turn/start', {
         threadId, clientUserMessageId: hooks.clientMessageId, input: [{ type: 'text', text: input, text_elements: [] }], model: policy.model, effort: policy.effort,
         serviceTierForTurn: 'default', approvalPolicy: 'on-request', approvalsReviewer: 'user',
