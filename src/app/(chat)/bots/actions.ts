@@ -60,6 +60,7 @@ import { addSelectedDelegators } from "@/lib/coordinator/roles";
 import { assertApprovedBot, guardManagedBotMutation } from "@/lib/hermes-provisioning/bot-policy";
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { isLocalHermes } from "@/lib/local-hermes/config";
+import { EDITABLE_TRIGGER_TYPES } from "@/lib/triggers/types";
 import { saveBotNavigation } from "@/lib/bots/navigation-store";
 
 async function localEngine(appId: string | null, q: DbOrTx = db) {
@@ -559,7 +560,7 @@ const RoutineInput = z.object({
   botId: z.string(),
   name: z.string().trim().min(1).max(100),
   prompt: z.string().trim().min(1).max(10000),
-  triggerType: z.enum(["cron", "webhook"]),
+  triggerType: z.enum(EDITABLE_TRIGGER_TYPES),
   cron: z.string().max(100).optional().nullable(),
   timezone: z.string().max(64).default("UTC"),
   enabled: z.boolean().default(true),
