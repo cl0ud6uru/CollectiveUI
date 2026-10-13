@@ -6,7 +6,7 @@ import { SIWC_NODE_EXECUTABLE, siwcChildCommand, siwcToolCommand, siwcToolEviden
   passedSiwcAppServerObservation, siwcSocketPositiveControl } from '../../scripts/lib/personal-codex-siwc-proof.mjs';
 
 const proof = (nonce: string) => ({ probe: 'siwcToolIsolation', nonce, pid: 20, accessTokenPresent: false,
-  child: { status: 0, signal: null, spawnError: false, spawnErrorCode: null, spawnErrorSyscall: null, spawnExecutable: SIWC_NODE_EXECUTABLE, stderrEmpty: true, stdoutJsonExact: true,
+  child: { status: 0, signal: null, spawnError: false, spawnErrorCode: null, spawnErrorSyscall: null, spawnErrorMessage: null, spawnExecutable: SIWC_NODE_EXECUTABLE, stderrEmpty: true, stdoutJsonExact: true,
     proof: { probe: 'siwcChildEnvironment', nonce, pid: 21, accessTokenPresent: false } },
   parentEnvironDenied: true, parentEnvironError: 'ENOENT', socketDenied: true, socketError: 'EACCES' });
 const reply = (value: unknown) => ({ result: { exitCode: 0, stderr: '', stdout: JSON.stringify(value) } });
@@ -20,7 +20,7 @@ describe('synthetic SIWC parent and child observations', () => {
       expect(passedSiwcChild({ ...valid.child.proof, ...patch }, nonce, 20)).toBe(false);
     }
     for (const patch of [{ status: null }, { status: 1 }, { signal: 'SIGSYS' }, { spawnError: true },
-      { spawnErrorCode: 'ENOENT' }, { spawnErrorSyscall: 'spawnSync node' }, { spawnExecutable: 'node' },
+      { spawnErrorCode: 'ENOENT' }, { spawnErrorSyscall: 'spawnSync node' }, { spawnErrorMessage: 'spawnSync node ENOENT' }, { spawnExecutable: 'node' },
       { stderrEmpty: false }, { stdoutJsonExact: false }, { proof: null }, { proof: { passed: true } }]) {
       expect(siwcToolEvidence(reply({ ...valid, child: { ...valid.child, ...patch } }), nonce).passed).toBe(false);
     }
@@ -116,16 +116,41 @@ describe('synthetic SIWC parent and child observations', () => {
   it('keeps bounded executable and spawn diagnostics while rejecting every spawn error', () => {
     const nonce = randomUUID(), valid = proof(nonce);
     const failed = { ...valid, child: { ...valid.child, spawnError: true, spawnErrorCode: 'ENOENT',
-      spawnErrorSyscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE } };
+      spawnErrorSyscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE, spawnErrorMessage: 'spawnSync ' + SIWC_NODE_EXECUTABLE + ' ENOENT' } };
     const observed = siwcToolEvidence(reply(failed), nonce);
     expect(observed.passed).toBe(false);
     expect(observed.observed).toMatchObject({ childSpawnError: true, childSpawnExecutable: SIWC_NODE_EXECUTABLE,
-      childSpawnErrorCode: 'ENOENT', childSpawnErrorSyscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE });
+      childSpawnErrorCode: 'ENOENT', childSpawnErrorSyscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE,
+      childSpawnErrorMessage: 'spawnSync ' + SIWC_NODE_EXECUTABLE + ' ENOENT' });
     const arbitrary = siwcToolEvidence(reply({ ...failed, child: { ...failed.child,
-      spawnErrorCode: 'fixture-only-secret', spawnErrorSyscall: 'fixture-only-secret', spawnExecutable: 'fixture-only-secret' } }), nonce);
+      spawnErrorCode: 'fixture-only-secret', spawnErrorSyscall: 'fixture-only-secret', spawnErrorMessage: 'fixture-only-secret', spawnExecutable: 'fixture-only-secret' } }), nonce);
     expect(arbitrary.passed).toBe(false);
-    expect(arbitrary.observed).toMatchObject({ childSpawnErrorCode: 'UNKNOWN', childSpawnErrorSyscall: 'other', childSpawnExecutable: null });
+    expect(arbitrary.observed).toMatchObject({ childSpawnErrorCode: 'UNKNOWN', childSpawnErrorSyscall: 'other', childSpawnErrorMessage: 'other', childSpawnExecutable: null });
     expect(JSON.stringify(arbitrary)).not.toContain('fixture-only-secret');
+  });
+
+  it('captures native spawn messages without emitting arbitrary error text', () => {
+    const nonce = randomUUID();
+    for (const message of ['spawnSync ' + SIWC_NODE_EXECUTABLE + ' ENOENT', 'fixture-only-private-error']) {
+      let output = '';
+      const socket = { destroy() {}, setTimeout() {}, once(event: string, handler: (error: { code: string }) => void) {
+        if (event === 'error') handler({ code: 'EACCES' }); return this;
+      } };
+      const fixtureRequire = (module: string) => {
+        if (module === 'node:fs') return { readFileSync() { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); } };
+        if (module === 'node:net') return { connect: () => socket };
+        if (module === 'node:child_process') return { spawnSync: () => ({ status: null, signal: null,
+          error: Object.assign(new Error(message), { code: 'ENOENT', syscall: 'spawnSync ' + SIWC_NODE_EXECUTABLE }) }) };
+        throw new Error('Unexpected fixture module');
+      };
+      new Script(siwcToolCommand(nonce, 30)).runInNewContext({ require: fixtureRequire,
+        process: { execPath: 'node', pid: 20, env: {}, stdout: { write(value: string) { output += value; } } } });
+      expect(output).not.toContain('fixture-only-private-error');
+      const observation = siwcToolEvidence(reply(JSON.parse(output)), nonce);
+      expect(observation.passed).toBe(false);
+      expect(observation.observed).toMatchObject({ childSpawnExecutable: SIWC_NODE_EXECUTABLE, childSpawnErrorCode: 'ENOENT',
+        childSpawnErrorMessage: message.startsWith('spawnSync ') ? message : 'Child spawn error: ENOENT' });
+    }
   });
 
   it('requires complete outside-token scans and clear with a different live app-server PID', () => {

@@ -4,6 +4,11 @@ const SPAWN_CODES = ['EACCES','EAGAIN','E2BIG','EINVAL','EIO','EMFILE','ENAMETOO
 const exact = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join() === [...keys].sort().join();
 const pid = value => Number.isSafeInteger(value) && value > 0;
+function spawnMessage(value, code) {
+  if (value === null) return null;
+  const known = SPAWN_CODES.includes(code) ? code : 'UNKNOWN';
+  return value === 'spawnSync ' + SIWC_NODE_EXECUTABLE + ' ' + known || value === 'Child spawn error: ' + known ? value : 'other';
+}
 function nonce(value) {
   if (!/^[a-f0-9-]{36}$/.test(value)) throw new Error('Invalid synthetic SIWC nonce.');
   return value;
@@ -28,12 +33,13 @@ const childExecutable=${JSON.stringify(SIWC_NODE_EXECUTABLE)};
 const child=cp.spawnSync(childExecutable,['-e',${JSON.stringify(siwcChildCommand(token))}],{encoding:'utf8',timeout:3000,maxBuffer:4096,stdio:['ignore','pipe','pipe']});
 const spawnErrorCode=child.error?(${JSON.stringify(SPAWN_CODES)}.includes(child.error.code)?child.error.code:'UNKNOWN'):null;
 const spawnErrorSyscall=child.error?(child.error.syscall==='spawnSync '+childExecutable?child.error.syscall:'other'):null;
+const spawnErrorMessage=child.error?(child.error.message==='spawnSync '+childExecutable+' '+spawnErrorCode?child.error.message:'Child spawn error: '+spawnErrorCode):null;
 let childProof=null,stdoutJsonExact=false;
 try{childProof=JSON.parse(child.stdout);stdoutJsonExact=child.stdout===JSON.stringify(childProof);}catch{}
 let parentEnvironDenied=false,parentEnvironError=null;
 try{fs.readFileSync('/proc/${appServerPid}/environ');}catch(error){parentEnvironError=error.code??null;parentEnvironDenied=['EACCES','EPERM','ENOENT'].includes(parentEnvironError);}
 const result={probe:'siwcToolIsolation',nonce:${JSON.stringify(token)},pid:process.pid,accessTokenPresent:Object.prototype.hasOwnProperty.call(process.env,'ACCESS_TOKEN'),
- child:{status:child.status,signal:child.signal,spawnError:!!child.error,spawnErrorCode,spawnErrorSyscall,spawnExecutable:childExecutable,stderrEmpty:child.stderr==='',stdoutJsonExact,proof:childProof},parentEnvironDenied,parentEnvironError,socketDenied:false,socketError:null};
+ child:{status:child.status,signal:child.signal,spawnError:!!child.error,spawnErrorCode,spawnErrorSyscall,spawnErrorMessage,spawnExecutable:childExecutable,stderrEmpty:child.stderr==='',stdoutJsonExact,proof:childProof},parentEnvironDenied,parentEnvironError,socketDenied:false,socketError:null};
 const socket=net.connect(${JSON.stringify(socketPath)});let finished=false;
 function finish(){if(finished)return;finished=true;socket.destroy();process.stdout.write(JSON.stringify(result));}
 socket.setTimeout(1500,()=>{result.socketError='TIMEOUT';finish();});
@@ -57,9 +63,9 @@ export function siwcToolEvidence(reply, token) {
     toolObserved: exact(proof,['probe','nonce','pid','accessTokenPresent','child','parentEnvironDenied','parentEnvironError','socketDenied','socketError'])
       && proof.probe === 'siwcToolIsolation' && proof.nonce === token && pid(proof.pid),
     toolEnvironmentExcluded: proof?.accessTokenPresent === false,
-    childExecuted: exact(proof?.child,['status','signal','spawnError','spawnErrorCode','spawnErrorSyscall','spawnExecutable','stderrEmpty','stdoutJsonExact','proof'])
+    childExecuted: exact(proof?.child,['status','signal','spawnError','spawnErrorCode','spawnErrorSyscall','spawnErrorMessage','spawnExecutable','stderrEmpty','stdoutJsonExact','proof'])
       && proof.child.status === 0 && proof.child.signal === null && proof.child.spawnError === false
-      && proof.child.spawnErrorCode === null && proof.child.spawnErrorSyscall === null && proof.child.spawnExecutable === SIWC_NODE_EXECUTABLE
+      && proof.child.spawnErrorCode === null && proof.child.spawnErrorSyscall === null && proof.child.spawnErrorMessage === null && proof.child.spawnExecutable === SIWC_NODE_EXECUTABLE
       && proof.child.stderrEmpty === true && proof.child.stdoutJsonExact === true && passedSiwcChild(proof.child.proof, token, proof.pid),
     parentEnvironDenied: proof?.parentEnvironDenied === true && ['EACCES','EPERM','ENOENT'].includes(proof.parentEnvironError),
     siwcSocketDenied: proof?.socketDenied === true && ['EACCES','EPERM','ENOENT'].includes(proof.socketError),
@@ -76,6 +82,7 @@ export function siwcToolEvidence(reply, token) {
         : proof?.child?.spawnErrorCode === null ? null : 'UNKNOWN',
       childSpawnErrorSyscall: proof?.child?.spawnErrorSyscall === 'spawnSync ' + SIWC_NODE_EXECUTABLE ? proof.child.spawnErrorSyscall
         : proof?.child?.spawnErrorSyscall === null ? null : 'other',
+      childSpawnErrorMessage: spawnMessage(proof?.child?.spawnErrorMessage, proof?.child?.spawnErrorCode),
       childStderrEmpty: proof?.child?.stderrEmpty === true, childExactJson: proof?.child?.stdoutJsonExact === true,
       parentEnvironError: ['EACCES','EPERM','ENOENT'].includes(proof?.parentEnvironError) ? proof.parentEnvironError : null,
       socketError: ['EACCES','EPERM','ENOENT'].includes(proof?.socketError) ? proof.socketError : null } };
