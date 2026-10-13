@@ -39,7 +39,7 @@ shell_environment_policy.filters.ACCESS_TOKEN=exclude
 
 The initial runtime inspection showed the shell policy was not effective when set only in requirements TOML. The wrapper now pins those two values as immutable app-server `-c` arguments, and this record reflects the rebuilt image above. This config read establishes the effective settings, not successful sandbox enforcement.
 
-## Still required on the runtime host
+## Runtime-host follow-up and required rerun
 
 The full protected stock proof was attempted against the exact pinned binary. Native workspace execution failed before the SIWC shell and parent-process checks because bundled bubblewrap reported:
 
@@ -47,16 +47,48 @@ The full protected stock proof was attempted against the exact pinned binary. Na
 bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces
 ```
 
-No host sysctl, AppArmor, seccomp, or security setting was changed. The shell child environment exclusion and `/proc` isolation have therefore **not** been proven in this environment, and SIWC remains unavailable by default. Do not treat the config values or the synthetic parent-process fixture as that proof.
+No host sysctl, AppArmor, seccomp, or security setting was changed. That local environment did not prove shell child environment exclusion or `/proc` isolation, and SIWC remains unavailable by default. Do not treat the config values or the synthetic parent-process fixture as that proof.
 
-On the actual runtime VM, build from the final reviewed source commit and capture the build's returned immutable image ID. A VM rebuild can have a different config ID; the cloud-local ID above exists elsewhere only if that exact image is transferred. Pin the published binary/archive checksums above, and use the same locally built image ID in both the proof and broker configuration:
+The parent subsequently reports a disposable stock-runtime run at **`d32db5c0`** on the VM: stock build, app-server sentinel positive control, agent shell exclusion, parent `/proc` isolation, SIWC socket denial and token clearing passed. Two helper checks failed because the probe used `process.env.PATH.split(...)` while the required command environment inherits nothing. The child environment check exited zero without observation output, so it remains inconclusive. These are parent-reported results, not raw evidence independently inspected on this Mac.
+
+The corrected stock helper probes discover the sole prepared `codex-arg0` directory in the sandbox's synthetic helper tree and require its alias to resolve to `/opt/codex/bin/codex`. They do not inherit or inject PATH. Both runtime probes accept a complete immutable local `sha256:` image ID as well as the reviewed repository name, and still verify runtime artifacts and security constraints. The SIWC probe uses the normal private supervisor socket and app-server bridge. Its child must emit an exact nonce/PID/environment observation; empty output, stderr, a signal, or any spawn error fails even with exit zero. It checks exclusion in the command and child, independently observes the token-bearing app-server, denies parent-environment and socket access, then confirms app-server replacement and absence of the sentinel after clearing.
+
+Run from the final reviewed PR #205 checkout on the actual runtime host. These portal/probe corrections do not change the wrapper image, pinned Codex binary, requirements, AppArmor or seccomp; reuse the existing reviewed VM image. A VM image can have a different config ID from the local record above. Capture the existing tag's complete ID, compare it with the operator's recorded approved image, and use that same ID in both proofs and the broker configuration. The parent coordinates this run; the Mac task does not operate the VM.
 
 ```sh
-PERSONAL_CODEX_NATIVE_IMAGE=sha256:<immutable-ID-returned-by-the-VM-build> \
-  node scripts/probe-personal-codex-protected-masks.mjs
+set -eu
+git rev-parse HEAD
+sha256sum /etc/apparmor.d/collectiveui-sandbox-v1 \
+  /etc/collectiveui/security/collectiveui-seccomp-v1.json \
+  docker/personal-codex/requirements.toml
+runtime_image="$(/usr/bin/docker image inspect collectiveui/personal-codex:stock-runtime --format '{{.Id}}')"
+printf 'Runtime image: %s\n' "$runtime_image"
+export PERSONAL_CODEX_DOCKER_EXECUTABLE=/usr/bin/docker
+export PERSONAL_CODEX_SANDBOX_PROFILE=collectiveui-sandbox-v1
+export PERSONAL_CODEX_NATIVE_IMAGE="$runtime_image"
+
+# Preserve complete evidence and exit codes even if either proof fails.
+mask_exit=0
+node scripts/probe-personal-codex-protected-masks.mjs > stock-native-evidence.json || mask_exit=$?
+siwc_exit=0
+node scripts/probe-personal-codex-siwc.mjs > stock-siwc-evidence.json || siwc_exit=$?
+printf 'Protected masks exit: %s; SIWC exit: %s\n' "$mask_exit" "$siwc_exit"
+test "$mask_exit" -eq 0
+test "$siwc_exit" -eq 0
+
+node --input-type=module - <<'JS'
+import { readFileSync } from 'node:fs';
+import { allStockChecksPass } from './scripts/lib/personal-codex-stock-proof.mjs';
+const masks = JSON.parse(readFileSync('stock-native-evidence.json', 'utf8'));
+const siwc = JSON.parse(readFileSync('stock-siwc-evidence.json', 'utf8'));
+if (masks.authenticated !== false || masks.verified !== true || !allStockChecksPass(masks.cases)
+  || siwc.authenticated !== false || siwc.verified !== true
+  || Object.values(siwc.checks).some(value => value !== true)) process.exit(1);
+console.log('Both disposable stock proofs passed; retain complete JSON for review.');
+JS
 ```
 
-The VM operator must additionally perform a synthetic-sentinel run through the normal wrapper `--sync-token` and app-server `command/exec` path: verify the sentinel is present in the app-server positive-control process; verify the command process and its spawned child do not have `ACCESS_TOKEN`; verify the sandbox cannot read the app-server `/proc/<pid>/environ` or connect to `/codex-home/.collective-codex-siwc.sock`; then issue `--clear-token` and verify the sentinel is absent after restart. Do not set `siwcSandboxVerified=true` unless both the full protected-mask proof and this token-bearing process proof pass on that host. No command here changes Docker networking, allowlists, host security, or production credentials.
+Return the exact checkout/image/policy hashes, both exit codes, every check, the child observation, and complete failure diagnostics. Do not set `siwcSandboxVerified=true` unless both the full protected-mask proof and the token-bearing process proof pass on that host. The probes create and remove only their own temporary containers and volumes, use a synthetic sentinel, and do not change Docker networking, allowlists, host security or production credentials.
 
 ## Rollout and rollback
 

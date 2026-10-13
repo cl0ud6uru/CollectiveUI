@@ -5,6 +5,7 @@ import { MASK_STATES, allStockChecksPass, stockCommands, passedProbe, networkCom
 import { fixtureRpc, fixtureFailure, redactFixtureText } from './lib/personal-codex-fixture-rpc.mjs';
 import { commandEvidence, collectCommandEvidence, traceFixtureCommand } from './lib/personal-codex-command-evidence.mjs';
 import { heldProcessCommand, observeProcessCommand, passedProcessObservation } from './lib/personal-codex-process-proof.mjs';
+import { isReviewedFixtureImage } from './lib/personal-codex-fixture-image.mjs';
 
 // Disposable fixtures only. No enrollment/grants are read. Only synthetic command
 // failures produce bounded diagnostics; production native logs stay suppressed.
@@ -32,7 +33,7 @@ const docker = args => execFileSync(dockerPath, args, { encoding: 'utf8', timeou
 let security = { create: ['no-new-privileges:true'], inspect: ['no-new-privileges:true'] };
 
 try {
-  if (!/^collectiveui\/personal-codex(?::[a-z0-9-]+|@sha256:[a-f0-9]{64})$/.test(image)
+  if (!isReviewedFixtureImage(image)
     || !['/usr/local/bin/docker', '/usr/bin/docker'].includes(dockerPath)) throw new Error('Unreviewed fixture input.');
   if (process.env.PERSONAL_CODEX_SANDBOX_PROFILE !== undefined) {
     // Operator commit 946723b supplies this fixed, hash-verified module.
