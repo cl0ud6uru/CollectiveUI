@@ -7,6 +7,7 @@ import { BrokerConfig, PersonalCodexDriver, runtimeKey } from '@/personal-codex/
 const OWNER = 'member-101';
 const OTHER_OWNER = 'member-202';
 const IMAGE = `collectiveui/personal-codex@sha256:${'a'.repeat(64)}`;
+const LOCAL_IMAGE = `sha256:${'b'.repeat(64)}`;
 const NAMESPACE = 'cui-codex-test';
 const labels = (owner = OWNER, namespace = NAMESPACE) => ({
   'collective.codex.owner': runtimeKey(owner),
@@ -19,6 +20,7 @@ const config = (owners = [OWNER]) => BrokerConfig.parse({
 function containerFixture(owner = OWNER) {
   const name = `${NAMESPACE}-${runtimeKey(owner)}`;
   return {
+    Image: LOCAL_IMAGE,
     Name: `/${name}`, AppArmorProfile: 'docker-default',
     Config: {
       Labels: labels(owner), Image: IMAGE, User: '10001:10001', WorkingDir: '/home/agent/workspace',
@@ -70,8 +72,9 @@ class FakeDockerDriver extends PersonalCodexDriver {
   networkDoc = networkFixture();
   peer: unknown = null;
   imageExists = true;
+  imageId = LOCAL_IMAGE;
 
-  constructor(owners = [OWNER], sandboxProfile?: 'collectiveui-sandbox-v1') { super({ ...config(owners), sandboxProfile }); }
+  constructor(owners = [OWNER], sandboxProfile?: 'collectiveui-sandbox-v1', image = IMAGE) { super({ ...config(owners), sandboxProfile, image }); }
 
   protected override async command(args: string[]) {
     this.calls.push([...args]);
@@ -81,7 +84,7 @@ class FakeDockerDriver extends PersonalCodexDriver {
     }
     if (args[0] === 'image' && args[1] === 'inspect') {
       if (!this.imageExists) throw new Error('image absent');
-      return '[]';
+      return JSON.stringify([{ Id: this.imageId }]);
     }
     if (args[0] === 'container' && args[1] === 'ls') {
       const filter = args.find(arg => arg.startsWith('name=^/'));
@@ -111,12 +114,13 @@ class FakeDockerDriver extends PersonalCodexDriver {
       const owner = this.config.owners.find(candidate => this.name(candidate) === name)!;
       if (owner === OWNER) {
         this.container = containerFixture(owner);
+        this.container.Config.Image = this.config.image;
         if (this.config.sandboxProfile) {
           this.container.AppArmorProfile = this.config.sandboxProfile;
           this.container.HostConfig.SecurityOpt = ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'];
         }
       }
-      else this.otherContainers.set(name, containerFixture(owner));
+      else this.otherContainers.set(name, { ...containerFixture(owner), Config: { ...containerFixture(owner).Config, Image: this.config.image } });
       return 'container-id';
     }
     if (args[0] === 'start') {
@@ -151,6 +155,30 @@ class FakeDockerDriver extends PersonalCodexDriver {
 const unavailable = /configuration or storage needs operator reconciliation/i;
 
 describe('personal Codex Docker isolation', () => {
+  it('uses the complete local image ID and validates both the image and created container identity', async () => {
+    const driver = new FakeDockerDriver([OWNER], undefined, LOCAL_IMAGE);
+    await driver.ensure(OWNER);
+    expect(driver.calls).toContainEqual(['image', 'inspect', LOCAL_IMAGE]);
+    expect(driver.calls.find(args => args[0] === 'create')).toContain(LOCAL_IMAGE);
+    expect(driver.container?.Config.Image).toBe(LOCAL_IMAGE);
+    expect(driver.container?.Image).toBe(LOCAL_IMAGE);
+    driver.expectNoDestructiveOrExpansiveDockerCalls();
+  });
+  it('fails before creating private storage if the local image inspection reports a different ID', async () => {
+    const driver = new FakeDockerDriver([OWNER], undefined, LOCAL_IMAGE);
+    driver.imageId = `sha256:${'c'.repeat(64)}`;
+    await expect(driver.ensure(OWNER)).rejects.toThrow(unavailable);
+    expect(driver.calls.some(args => ['create', 'volume', 'start'].includes(args[0]))).toBe(false);
+  });
+  it('rejects a retained local container with a matching requested reference but different actual image', async () => {
+    const driver = new FakeDockerDriver([OWNER], undefined, LOCAL_IMAGE);
+    driver.container = containerFixture(); driver.container.Config.Image = LOCAL_IMAGE;
+    driver.container.Image = `sha256:${'c'.repeat(64)}`; driver.seedVolumes();
+    await expect(driver.inspect(OWNER)).rejects.toThrow(unavailable);
+    await expect(driver.startRetained(OWNER)).rejects.toThrow(unavailable);
+    expect(driver.calls.some(args => ['start', 'create'].includes(args[0]))).toBe(false);
+    expect(driver.volumes.size).toBe(2);
+  });
   it('applies and revalidates the pinned policy at creation and inspection', async () => {
     policy.load.mockResolvedValue({ create: ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp=/etc/collectiveui/security/collectiveui-seccomp-v1.json'], inspect: ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'], appArmorProfile: 'collectiveui-sandbox-v1' });
     const driver = new FakeDockerDriver([OWNER], 'collectiveui-sandbox-v1');
@@ -329,6 +357,12 @@ describe('personal Codex Docker isolation', () => {
 });
 
 describe('BrokerConfig', () => {
+  it('accepts only a complete lowercase local image ID alongside the existing registry form', () => {
+    expect(BrokerConfig.parse({ ...config(), image: LOCAL_IMAGE }).image).toBe(LOCAL_IMAGE);
+    for (const image of ['b'.repeat(64), 'sha256:abcdef', `sha256:${'B'.repeat(64)}`, 'node:22-slim', '--privileged']) {
+      expect(() => BrokerConfig.parse({ ...config(), image })).toThrow();
+    }
+  });
   it('requires operator supplied absolute socket, digest-pinned image, namespace, and enrollment', () => {
     expect(config().image).toBe(IMAGE);
     expect(() => BrokerConfig.parse({ socketPath: 'relative.sock', image: IMAGE, namespace: NAMESPACE, owners: [OWNER] })).toThrow();
