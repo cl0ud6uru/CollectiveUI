@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CodexClient, CodexNotification, CodexServerRequest } from './client';
 import type { CodexPolicy } from './config';
 import type { CodexRuntime } from './runtime';
+import { COMPUTER_TOOL_NAMES, invokeComputerTool, type ComputerAgent, type ComputerToolName } from '@/lib/computer/agent';
 
 type Client = Pick<CodexClient, 'request' | 'onNotification' | 'onFailure' | 'onServerRequest' | 'respond' | 'rejectRequest'>;
 const id = z.string().min(1).max(256);
@@ -21,6 +22,9 @@ export type SessionHooks = {
   totalUsage?: (usage: CodexTokenUsage) => void;
   checkpoint: (values: { threadId?: string; turnId?: string; baselineTurnId?: string; phase: 'ready' | 'dispatching' | 'running' | 'terminal' }) => Promise<void>;
   resumeThreadId?: string;
+  computerAgent?: ComputerAgent | null;
+  authorizeComputerCall?: () => Promise<void>;
+  computerTool?: (callId: string, tool: ComputerToolName, phase: 'started' | 'completed', success?: boolean) => void;
   tool?: (item: NativeToolItem, phase: 'started' | 'completed') => void;
   approval?: (request: CodexServerRequest, signal: AbortSignal) => Promise<'decline' | 'cancel'>;
   text: (itemId: string, delta: string) => void;
@@ -110,6 +114,8 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         'features.shell_tool': runtime.managed === true, 'features.view_image': false, 'features.multi_agent': false,
         'features.multi_agent_v2': false, 'features.plugins': false, 'features.plugin_hooks': false,
         'features.enable_mcp_apps': false, 'features.image_generation': false },
+      // The pinned generated schema only permits dynamicTools on thread/start; resumed threads keep their saved tools.
+      ...(!hooks.resumeThreadId && runtime.managed && hooks.computerAgent ? { dynamicTools: hooks.computerAgent.tools } : {}),
     }));
     if (thread.model !== policy.model || thread.modelProvider !== 'openai' || thread.cwd !== runtime.cwd)
       throw new Error('Codex did not honor the selected model or workspace.');
@@ -125,6 +131,7 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
     let pendingRequests: CodexServerRequest[] = [];
     const requests = new Map<string | number, AbortController>();
     const resolvedRequests = new Set<string | number>();
+    const computerCallIds = new Set<string>();
     const approvalStop = new AbortController();
     const nativeItems = new Set<string>();
     const emittedText = new Map<string, string>();
@@ -151,8 +158,9 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         }
         const p = parsed.data;
         if (e.method === 'serverRequest/resolved') {
-          const resolved = z.object({ requestId: z.union([z.string(), z.number()]) }).parse(p);
-          resolvedRequests.add(resolved.requestId); requests.get(resolved.requestId)?.abort(); return;
+          const resolved = z.object({ threadId: id, requestId: z.union([z.string(), z.number()]) }).parse(p);
+          if (resolved.threadId !== threadId) return;
+          resolvedRequests.add(resolved.requestId); requests.get(resolved.requestId)?.abort(); requests.delete(resolved.requestId); return;
         }
         if (e.method === 'turn/completed') {
           const turn = z.object({ turn: z.object({ id, status: z.string() }) }).parse(p).turn;
@@ -189,6 +197,17 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
             hooks.tool?.(tool.type === 'commandExecution' ? { ...tool, aggregatedOutput: tool.aggregatedOutput ?? undefined } : tool, e.method === 'item/started' ? 'started' : 'completed');
             return;
           }
+          if (item.type === 'dynamicToolCall') {
+            const tool = z.object({ id, type: z.literal('dynamicToolCall'), namespace: z.null(),
+              tool: z.enum(COMPUTER_TOOL_NAMES), status: z.enum(['inProgress', 'completed', 'failed']),
+              success: z.boolean().nullable().optional() }).passthrough().parse(p.item);
+            if (!runtime.managed || !hooks.computerAgent) throw new Error('Codex requested an unsupported dynamic tool.');
+            bytes += JSON.stringify({ id: tool.id, tool: tool.tool, status: tool.status }).length;
+            if (bytes > 4 * 1024 * 1024 || nativeItems.size > 512) throw new Error('Codex tool output exceeded this pilot’s limit.');
+            nativeItems.add(tool.id);
+            hooks.computerTool?.(tool.id, tool.tool, e.method === 'item/started' ? 'started' : 'completed', tool.success ?? undefined);
+            return;
+          }
           if (!['userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction'].includes(item.type))
             throw new Error('Codex requested a native tool that is not supported by this text-only pilot.');
         } else if (e.method === 'thread/tokenUsage/updated') {
@@ -208,6 +227,38 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       if (resolvedRequests.has(r.id)) return;
       if (finished) { client.rejectRequest(r.id); return; }
       if (!turnId) { if (pendingRequests.length >= 16) { client.rejectRequest(r.id); fail(new Error('Too many Codex approval requests.')); } else pendingRequests.push(r); return; }
+      if (r.method === 'item/tool/call') {
+        const call = z.object({ threadId: id, turnId: id, callId: id, namespace: z.null(),
+          tool: z.enum(COMPUTER_TOOL_NAMES), arguments: z.unknown() }).strict().safeParse(r.params);
+        if (!runtime.managed || !hooks.computerAgent || !hooks.authorizeComputerCall || !call.success) {
+          client.rejectRequest(r.id); fail(new Error('Codex requested an unsupported computer tool.')); return;
+        }
+        const toolCall = call.data;
+        if (toolCall.threadId !== threadId || toolCall.turnId !== turnId || requests.has(r.id) || computerCallIds.has(toolCall.callId) ||
+            computerCallIds.size >= 512 || requests.size >= 32) {
+          client.rejectRequest(r.id); fail(new Error('Codex requested an unsupported computer tool.')); return;
+        }
+        const requestStop = new AbortController();
+        const toolSignal = AbortSignal.any([signal, approvalStop.signal, requestStop.signal]);
+        requests.set(r.id, requestStop); computerCallIds.add(toolCall.callId);
+        void (async () => {
+          try {
+            await verifyAccount();
+            await hooks.authorizeComputerCall!();
+            toolSignal.throwIfAborted();
+            const result = await invokeComputerTool(hooks.computerAgent!, toolCall.tool, toolCall.arguments, toolSignal, hooks.authorizeComputerCall!);
+            if (finished || toolSignal.aborted || resolvedRequests.has(r.id)) return;
+            client.respond(r.id, result);
+          } catch {
+            if (toolSignal.aborted || resolvedRequests.has(r.id)) return;
+            if (!toolSignal.aborted && !resolvedRequests.has(r.id)) client.rejectRequest(r.id);
+            fail(new Error('Computer tool authorization failed safely.'));
+          } finally {
+            requests.delete(r.id);
+          }
+        })();
+        return;
+      }
       const p = z.object({ threadId: id, turnId: id, itemId: id }).safeParse(r.params);
       if (!runtime.managed || !p.success || p.data.threadId !== threadId || p.data.turnId !== turnId ||
         !['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(r.method) || requests.has(r.id) || !hooks.approval) {

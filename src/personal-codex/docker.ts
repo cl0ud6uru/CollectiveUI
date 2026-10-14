@@ -6,31 +6,52 @@ import { isAbsolute } from 'node:path';
 import { PERSONAL_CODEX_WORKSPACE } from './workspace';
 import { ownerId } from './contracts';
 import { sandboxPolicy } from './sandbox-policy.mjs';
+import type { ComputerInput, ComputerStatus, PersonalCodexRuntimeDriver } from './driver';
 
 const absolute = z.string().refine(v => isAbsolute(v) && !/[\x00-\x1f,]/.test(v));
-export const BrokerConfig = z.object({
+const BrokerBase = z.object({
   socketPath: absolute,
-  // Registry manifest references and complete local config IDs are distinct
-  // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
-  image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   namespace: z.string().regex(/^cui-codex-[a-z0-9-]{1,20}$/),
   // Admission is installed by an operator; an empty list starts with all owners denied.
   owners: z.array(ownerId).max(1000),
+});
+const DockerBrokerConfig = BrokerBase.extend({
+  backend: z.literal('docker').optional().default('docker'),
+  // Registry manifest references and complete local config IDs are distinct
+  // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
+  image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   sandboxProfile: z.literal('collectiveui-sandbox-v1').optional(),
   dockerExecutable: z.enum(['/usr/local/bin/docker', '/usr/bin/docker']).default('/usr/local/bin/docker'),
   memoryMb: z.number().int().min(512).max(16384).default(2048),
   cpus: z.number().min(.25).max(8).default(2),
 }).strict();
-export type BrokerConfig = z.infer<typeof BrokerConfig>;
+export type DockerBrokerConfig = z.infer<typeof DockerBrokerConfig>;
+export const SbxBrokerConfigSchema = BrokerBase.extend({
+  backend: z.literal('sbx'),
+  // A digest-pinned trusted desktop image; sbx must never resolve a mutable tag.
+  template: z.string().regex(/^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$/),
+  sbxExecutable: z.enum(['/usr/local/bin/sbx', '/usr/bin/sbx']).default('/usr/local/bin/sbx'),
+  sbxVersion: z.literal('0.48.0').default('0.48.0'),
+  sbxHome: absolute,
+  memoryMb: z.number().int().min(512).max(65536),
+  cpus: z.number().int().min(1).max(64),
+}).strict();
+/** Legacy Docker-only schema remains the default public config contract. */
+export const BrokerConfig = DockerBrokerConfig;
+export type BrokerConfig = z.infer<typeof DockerBrokerConfig>;
+/** Strict optional backend union used only by broker startup. */
+export const PersonalCodexBrokerConfig = z.union([DockerBrokerConfig, SbxBrokerConfigSchema]);
+export type PersonalCodexBrokerConfig = z.infer<typeof PersonalCodexBrokerConfig>;
+export type SbxBrokerConfig = z.infer<typeof SbxBrokerConfigSchema>;
 const exec = promisify(execFile);
 export const dockerEnv = { NODE_ENV: 'production' as const, PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent', LANG: 'C.UTF-8' };
 export const runtimeKey = (owner: string) => createHash('sha256').update(ownerId.parse(owner)).digest('hex');
 const unavailable = () => new Error('Personal Codex runtime configuration or storage needs operator reconciliation. Data is retained.');
 
 /** Only trusted provisioner code calls Docker. All names/mounts/commands are derived here. */
-export class PersonalCodexDriver {
-  readonly config: BrokerConfig;
-  constructor(config: BrokerConfig) { this.config = BrokerConfig.parse(config); }
+export class PersonalCodexDriver implements PersonalCodexRuntimeDriver {
+  readonly config: DockerBrokerConfig;
+  constructor(config: DockerBrokerConfig) { this.config = DockerBrokerConfig.parse(config); }
   private async policy() {
     try { return await sandboxPolicy(this.config.sandboxProfile); } catch { throw unavailable(); }
   }
@@ -137,5 +158,23 @@ export class PersonalCodexDriver {
     if (!(await this.inspect(owner))?.State.Running) throw unavailable();
     return spawn(this.config.dockerExecutable, ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/bridge.mjs'],
       { env: dockerEnv, stdio: 'pipe' });
+  }
+  async computerStatus(owner: string): Promise<ComputerStatus> {
+    this.name(owner);
+    return { available: false, running: false, width: 1280, height: 800 };
+  }
+  async computerFrame(owner: string): Promise<Buffer> {
+    this.name(owner);
+    throw unavailable();
+  }
+  async computerInput(owner: string, _input: ComputerInput): Promise<void> {
+    void _input;
+    this.name(owner);
+    throw unavailable();
+  }
+  async computerPause(owner: string, _paused: boolean): Promise<void> {
+    void _paused;
+    this.name(owner);
+    throw unavailable();
   }
 }

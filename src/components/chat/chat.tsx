@@ -41,6 +41,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { PetChatActivity } from "@/components/pets/pet-context";
 import { WorkspaceBrowser, useWorkspaceAccess, type WorkspaceCommandHistory } from "./workspace-browser";
 import { AgentBrowserViewer } from "./agent-browser-viewer";
+import { ComputerViewer } from "./computer-viewer";
 import { artifactPath } from "@/lib/chat/workspace-artifacts";
 import { WorkspaceFileContext } from "./workspace-context";
 import { hasPendingAsyncTasks } from "@/lib/delegation/policy";
@@ -697,10 +698,10 @@ export function Chat({
             )}
             {target?.kind === "bot" && !embedded && !target.hermes && !target.hermesTeam && (
               <button ref={browserToggleRef} onClick={() => { setDetailsView(null); setWorkspaceOpen(false); setBrowserOpen(value => !value); }}
-                className={cn("rounded-lg p-2 hover:bg-hover", browserOpen ? "text-fg" : "text-muted")}
-                aria-label={browserOpen ? "Hide agent browser" : "View agent browser"} aria-expanded={browserOpen}
-                title="View the agent browser · read only">
-                <Eye className="h-4 w-4" aria-hidden />
+                className={cn("rounded-lg hover:bg-hover", target.codex ? "flex items-center gap-1.5 px-2 py-2 text-xs font-medium" : "p-2", browserOpen ? "text-fg" : "text-muted")}
+                aria-label={browserOpen ? `Hide ${target.codex ? "computer" : "agent browser"}` : target.codex ? "View bot’s computer" : "View agent browser"} aria-expanded={browserOpen}
+                title={target.codex ? "View bot’s computer" : "View the agent browser · read only"}>
+                {target.codex ? <><Monitor className="h-4 w-4" aria-hidden /><span>Computer</span></> : <Eye className="h-4 w-4" aria-hidden />}
               </button>
             )}
             {started && !embedded && <ShareButton conversationId={conversationId} />}
@@ -914,7 +915,8 @@ export function Chat({
         )}
       </div>
       {workspaceAllowed && <WorkspaceBrowser open={workspaceOpen} onClose={closeWorkspace} fileRequest={workspaceFileRequest} history={workspaceHistory} onInsertPath={path => composerRef.current?.appendText(`\`${path}\``)} />}
-      {target?.kind === "bot" && !embedded && !target.hermes && !target.hermesTeam && <AgentBrowserViewer open={browserOpen} onClose={closeBrowser} conversationId={conversationId} />}
+      {target?.kind === "bot" && !embedded && target.codex && <ComputerViewer open={browserOpen} onClose={closeBrowser} conversationId={conversationId} />}
+      {target?.kind === "bot" && !embedded && !target.codex && !target.hermes && !target.hermesTeam && <AgentBrowserViewer open={browserOpen} onClose={closeBrowser} conversationId={conversationId} />}
       {target?.kind === "bot" && !embedded && (
         <div id={detailsId} onFocusCapture={(event) => { detailsFocusRef.current = event.target; }} hidden={detailsView !== "desktop"}>
           {detailsView === "desktop" && <BotSidePanel bot={target} onClose={closeDetails} panelId={detailsId} />}

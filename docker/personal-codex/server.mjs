@@ -5,7 +5,7 @@ import { prepareWorkspace } from './prepare-workspace.mjs';
 chmodSync('/codex-home', 0o700);
 chmodSync('/home/agent/workspace', 0o700);
 prepareWorkspace();
-// Only the credential-free fixture uses stdio; production stays loopback-only.
+// Stdio supports the credential-free fixture and the desktop image's private Unix-socket proxy.
 const stdio = process.argv.length === 3 && process.argv[2] === '--stdio';
 if (process.argv.length > (stdio ? 3 : 2)) process.exit(1);
 const child = spawn('codex', ['-c', 'projects={"/home/agent/workspace"={trust_level="untrusted"}}', '-c', 'notify=[]', '-c', 'features.hooks=false', '-c', 'features.shell_snapshot=false', '-c', 'features.memories=false', '-c', 'forced_login_method="chatgpt"', '-c', 'cli_auth_credentials_store="file"',

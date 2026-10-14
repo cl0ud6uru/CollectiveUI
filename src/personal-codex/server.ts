@@ -4,13 +4,16 @@ import { chmod, mkdir, lstat, writeFile, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { WebSocketServer } from 'ws';
-import { PersonalCodexDriver, runtimeKey } from './docker';
+import { runtimeKey } from './docker';
+import type { PersonalCodexRuntimeDriver } from './driver';
 import { ownerId, pendingLogin, nativeAccount, type BrokerStatus } from './contracts';
 import { CodexClient } from '../lib/codex/client';
 import type { CodexRuntime } from '../lib/codex/runtime';
+import { ComputerController, handleComputerRequest } from './computer';
 
 /** Protected Unix socket only. Socket access grants server authority; never mount it in an agent runtime. */
-export async function startPersonalBroker(driver: PersonalCodexDriver) {
+export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
+  const computer = new ComputerController(driver);
   const socketPath = driver.config.socketPath;
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o750 });
   // Refuse stale/symlink collisions rather than deleting someone else's socket.
@@ -75,11 +78,12 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
     const reply = (value: unknown, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
     void (async () => {
       const owner = ownerId.parse(req.headers['x-collective-owner']); driver.name(owner);
+      if (req.url?.startsWith('/computer/')) return handleComputerRequest(computer, req, res, owner);
       const action = req.url?.slice(1);
       if (req.headers['content-length'] && req.headers['content-length'] !== '0') return reply({ error: 'Unexpected body' }, 400);
       if (!(action === 'status' && req.method === 'GET') && !(['connect', 'cancel', 'disconnect', 'start'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
       const prior = queue.get(owner) ?? Promise.resolve();
-      const next = prior.catch(() => {}).then(async () => {
+      const next = prior.catch(() => {}).then(() => computer.agentOperation(owner, async () => {
         if (action === 'connect') await driver.ensure(owner);
         if (action === 'start') await driver.startRetained(owner);
         if (action === 'connect') {
@@ -104,7 +108,7 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
           await clearMarker(owner);
         }
         return status(owner);
-      });
+      }));
       queue.set(owner, next);
       try { reply(await next); } finally { if (queue.get(owner) === next) queue.delete(owner); }
     })().catch(() => reply({ error: 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' }, 503));
@@ -114,7 +118,7 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
     void (async () => {
       if (req.url !== '/runtime') throw new Error();
       const owner = ownerId.parse(req.headers['x-collective-owner']);
-      const bridge = await driver.bridge(owner);
+      const bridge = await computer.agentBridge(owner);
       wss.handleUpgrade(req, socket, head, ws => {
         bridge.stderr.resume();
         const lines = createInterface({ input: bridge.stdout });
