@@ -88,7 +88,12 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
     <p role="status" className="text-sm">{loading ? "Checking your ChatGPT account…" : view ? messageFor(view) : "Your ChatGPT account status could not be loaded."}</p>
     {view?.credential && <p className="text-sm">{view.credential.email || "ChatGPT account"}{view.credential.planType ? ` · ${view.credential.planType}` : ""}</p>}
     {view && <div className="grid gap-2 text-xs text-muted sm:grid-cols-2">
-      {(["native", "codex"] as const).map((name) => <p key={name} className="rounded-lg bg-surface-2 p-3"><span className="font-medium text-foreground">{name === "native" ? "Native CollectiveUI" : "Stock Codex"}:</span> {view.backends[name].state}</p>)}
+      {(["native", "codex"] as const).map((name) => {
+        const reason = view.backends[name].reason;
+        const detail = reason && ![messageFor(view), view.reason, setup?.reason, setup?.runtime.reason].includes(reason)
+          && (name === "native" || reason !== view.backends.native.reason) ? ` · ${reason}` : "";
+        return <p key={name} className="rounded-lg bg-surface-2 p-3"><span className="font-medium text-foreground">{name === "native" ? "Native CollectiveUI" : "Stock Codex"}:</span> {view.backends[name].state}{detail}</p>;
+      })}
     </div>}
     {view?.allowed && <div aria-label="ChatGPT setup status" className="space-y-3 rounded-xl border border-border p-4 text-sm">
       <dl className="grid gap-2 sm:grid-cols-3">

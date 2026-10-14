@@ -60,4 +60,12 @@ describe('truthful account setup UI', () => {
     expect(html).not.toContain('Prepare private runtime');
     expect(html).toContain('local sign-in app is required');
   });
+
+  it('retains a distinct backend prerequisite while showing a policy reason once', () => {
+    const reason = 'ChatGPT connections are disabled.';
+    const html = render({ ...initial, allowed: false, reason,
+      backends: { native: { state: 'disabled', reason }, codex: { state: 'unavailable', reason: 'Stock Codex requires an approved runtime installation.' } } });
+    expect(html.split(reason).length - 1).toBe(1);
+    expect(html).toContain('Stock Codex requires an approved runtime installation.');
+  });
 });
