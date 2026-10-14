@@ -1,5 +1,5 @@
 export const SIWC_NODE_EXECUTABLE: '/usr/local/bin/node';
-export function siwcChildCommand(token: string): string;
+export function siwcChildCommand(token: string, writerMode?: 'stream' | 'sync'): string;
 export function siwcToolCommand(token: string, appServerPid: number, socketPath?: string): string;
 export function passedSiwcChild(value: unknown, token: string, parentPid: number): boolean;
 export function siwcToolEvidence(reply: unknown, token: string): { passed: boolean; checks: Record<string, boolean>; observed: Record<string, unknown> };

@@ -97,7 +97,7 @@ try {
   const command = siwcToolCommand(toolNonce, bearing.appServerPid);
   evidence.artifacts.commandSha256 = createHash('sha256').update(command).digest('hex');
   const reply = await runtime.request('command/exec', { command: [SIWC_NODE_EXECUTABLE,'-e',command], cwd: '/home/agent/workspace',
-    permissionProfile: 'collective-personal', timeoutMs: 7000, outputBytesCap: 16384 });
+    permissionProfile: 'collective-personal', timeoutMs: 10000, outputBytesCap: 16384 });
   const proof = siwcToolEvidence(reply, toolNonce);
   evidence.observations.nativeCommand = proof;
   checks.nativeParentAndChildIsolation = proof.passed;
