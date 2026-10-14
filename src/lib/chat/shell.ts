@@ -2,7 +2,7 @@ import "server-only";
 import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { TargetOption } from "@/components/chat/types";
 import { db } from "@/db";
-import { aiApps, conversationBots, conversations, folders, inboxItems, userBotPrefs } from "@/db/schema";
+import { aiApps, codexBotConfigs, conversationBots, conversations, folders, inboxItems, userBotPrefs } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { listAccessibleBots, listAccessibleModels } from "@/lib/authz";
 import { orderBots } from "@/lib/bots/navigation";
@@ -16,7 +16,7 @@ import { personalPlanStatus } from "@/lib/chat/targets";
 
 /** Everything the chat shell (web sidebar, native app home) shows for one person. */
 export async function loadShell(p: Principal) {
-  const [unfilteredConvs, folderRows, apps, bots, branding, [unread], prefs, tasks] = await Promise.all([
+  const [unfilteredConvs, folderRows, apps, bots, branding, [unread], prefs, tasks, codexRows] = await Promise.all([
     db
       .select({
         id: conversations.id,
@@ -44,11 +44,13 @@ export async function loadShell(p: Principal) {
       .where(and(eq(inboxItems.userId, p.user.id), isNull(inboxItems.readAt))),
     db.select().from(userBotPrefs).where(eq(userBotPrefs.userId, p.user.id)),
     loadRecentTasks(p),
+    db.select({ botId: codexBotConfigs.botId }).from(codexBotConfigs),
   ]);
   const { filterTeamConversationViews } = await import('@/lib/hermes-team/conversations');
   const convs = await filterTeamConversationViews(p, unfilteredConvs, c => c.id);
   const coordinator = await defaultCoordinator(p);
   const prefByBot = new Map(prefs.map((x) => [x.botId, x]));
+  const codexBotIds = new Set(codexRows.map(row => row.botId));
   const homes = new Map<string, { botId: string; conversationId: string; updatedAt: Date }>();
   for (const c of convs) if (c.isBotHome && c.botId && !homes.has(c.botId)) homes.set(c.botId, { botId: c.botId, conversationId: c.id, updatedAt: c.updatedAt });
   const roster = await loadBotRoster(p, [...homes.values()], bots.map(bot => bot.id));
@@ -87,6 +89,7 @@ export async function loadShell(p: Principal) {
     description: b.description,
     starters: b.starters,
     hermes: b.hermesTeam || (!!b.appId && hermesApps.has(b.appId)),
+    codex: codexBotIds.has(b.id),
     hermesTeam: b.hermesTeam,
     pinned: prefByBot.get(b.id)?.pinned ?? false,
     hidden: prefByBot.get(b.id)?.hidden ?? false,

@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, readdir, rm, stat, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, chmod, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { BrokerConfig, PersonalCodexDriver } from '@/personal-codex/docker';
 import { EnrollmentJournal } from '@/personal-codex/enrollment';
 import { startPersonalBroker } from '@/personal-codex/server';
 import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
 import { tokenFingerprint } from '@/personal-codex/contracts';
+import { CodexClient } from '@/lib/codex/client';
 
 vi.mock('server-only', () => ({}));
 
@@ -54,6 +56,9 @@ class FixtureDriver extends PersonalCodexDriver {
   readonly bridged: string[] = [];
   readonly children = new Set<ChildProcessWithoutNullStreams>();
   readonly provisioned = new Set<string>();
+  readonly stopped = new Set<string>();
+  readonly pauses: boolean[] = [];
+  computerEnabled = false;
   failProbe = false;
   connectedAccount = false;
   emitStaleCompletion = false;
@@ -70,16 +75,23 @@ class FixtureDriver extends PersonalCodexDriver {
 
   override name(owner: string) { return super.name(owner); }
   override async inspect(owner: string) {
-    return this.provisioned.has(owner) ? { State: { Running: true } } as never : null;
+    return this.provisioned.has(owner) ? { State: { Running: !this.stopped.has(owner) } } as never : null;
   }
   override async ensure(owner: string) {
     this.ensured.push(owner);
     this.provisioned.add(owner);
+    this.stopped.delete(owner);
   }
   override async startRetained(owner: string) {
     if (!this.provisioned.has(owner)) throw new Error('No retained runtime is available.');
     this.retainedStarts.push(owner);
+    this.stopped.delete(owner);
   }
+  override async computerStatus(owner: string) {
+    return { available: this.computerEnabled, running: this.provisioned.has(owner) && !this.stopped.has(owner), width: 1280 as const, height: 800 as const };
+  }
+  override async computerPause(_owner: string, paused: boolean) { this.pauses.push(paused); }
+  async stop(owner: string) { this.stopped.add(owner); this.tokens.delete(owner); }
   override async synchronizeToken(owner: string, token: string) { this.tokens.set(owner, token); }
   override async clearToken(owner: string) {
     if (this.failClearToken) throw new Error('fixture token clear failure');
@@ -138,6 +150,23 @@ function ipc(action: string, owner = 'alice', method: 'GET' | 'POST' = 'POST', b
   return socketFetch(socketPath)(`${LOCAL_ORIGIN}/${action}`, {
     method, headers: { 'x-collective-owner': owner }, ...(body === undefined ? {} : { body }),
   });
+}
+
+function runtimeClient(owner = 'alice') {
+  return CodexClient.connect({ endpoint: 'ws://127.0.0.1/runtime', managed: true, socketPath, ownerId: owner } as never);
+}
+
+function deferNextBridge() {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const original = driver.bridge.bind(driver);
+  vi.spyOn(driver, 'bridge').mockImplementationOnce(async owner => {
+    const child = await original(owner);
+    entered(); await wait;
+    return child;
+  });
+  return { started, release };
 }
 const rpcLog = async (owner = 'alice') => readFile(path.join(root, `${owner}.rpc.log`), 'utf8').catch(() => '');
 
@@ -231,6 +260,22 @@ describe('Personal Codex protected broker', () => {
     expect((await rpcLog()).match(/account\/login\/start/g)).toHaveLength(2);
   });
 
+  it('reapplies a persisted desktop pause before accepting broker requests after a crash', async () => {
+    driver.computerEnabled = true;
+    driver.provisioned.add('alice');
+    const record = path.join(root, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);
+    await writeFile(record, JSON.stringify({ version: 1, paused: true }), { mode: 0o600 });
+    await broker!.close();
+    broker = await startPersonalBroker(driver);
+
+    expect(driver.pauses).toEqual([true]);
+    const response = await socketFetch(socketPath)(`${LOCAL_ORIGIN}/computer/status`, {
+      method: 'GET', headers: { 'x-collective-owner': 'alice', 'x-collective-view-session': 'a'.repeat(64) },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ paused: true, control: 'other' });
+  });
+
   it('blocks connect when the native sandbox probe fails, before sign-in can start', async () => {
     driver.failProbe = true;
     const response = await ipc('connect');
@@ -306,10 +351,114 @@ describe('Personal Codex protected broker', () => {
     expect(await failure.text()).not.toContain('fixture token clear failure');
     expect(driver.tokens.get('alice')).toBe(token);
     expect((await (await ipc('status', 'alice', 'GET')).json()).siwc).not.toHaveProperty('credentialBinding');
+    await expect(runtimeClient()).rejects.toThrow('connection failed');
     expect(driver.bridged).toEqual([]);
     driver.failClearToken = false;
     expect((await ipc('disconnect')).status).toBe(200);
     expect(driver.tokens.has('alice')).toBe(false);
+  });
+
+  it('denies a surviving guest SIWC token after broker restart until an explicit fresh sync', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const accessToken = 'synthetic-retained-guest-token';
+    const body = JSON.stringify({ accessToken, credentialBinding: tokenFingerprint(accessToken) });
+    expect((await ipc('sync-token', 'alice', 'POST', body)).status).toBe(200);
+    const clear = vi.spyOn(driver, 'clearToken');
+    await broker!.close(); broker = await startPersonalBroker(driver);
+    expect(driver.tokens.get('alice')).toBe(accessToken);
+    expect(clear).not.toHaveBeenCalled();
+    await expect(runtimeClient()).rejects.toThrow('connection failed');
+    expect(driver.bridged).toEqual([]);
+    expect((await ipc('sync-token', 'alice', 'POST', body)).status).toBe(200);
+    const client = await runtimeClient();
+    client.close();
+    expect(driver.bridged).toEqual(['alice']);
+  });
+
+  it.each(['disconnect', 'sync-token'] as const)('rejects an upgrade waiting on a bridge when %s invalidates SIWC authority', async action => {
+    driver.config.siwcSandboxVerified = true;
+    const accessToken = 'synthetic-race-token';
+    const body = JSON.stringify({ accessToken, credentialBinding: tokenFingerprint(accessToken) });
+    expect((await ipc('sync-token', 'alice', 'POST', body)).status).toBe(200);
+    const active = await runtimeClient();
+    const invalidated = new Promise<void>(resolve => { active.onFailure(() => resolve()); });
+    const deferred = deferNextBridge();
+    const pending = runtimeClient().then(client => { client.close(); return null; }, error => error);
+    await deferred.started;
+    const mutation = ipc(action, 'alice', 'POST', action === 'sync-token' ? body : undefined);
+    try {
+      // Even a queued mutation fences authority and existing transports before
+      // waiting for the earlier asynchronous driver bridge to return.
+      await invalidated;
+    } finally { deferred.release(); active.close(); }
+    expect(await pending).toBeInstanceOf(Error);
+    expect((await mutation).status).toBe(200);
+    if (action === 'sync-token') {
+      const fresh = await runtimeClient(); fresh.close();
+    } else await expect(runtimeClient()).rejects.toThrow('connection failed');
+  });
+
+  it('rechecks owner admission after an asynchronous bridge wait', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const accessToken = 'synthetic-admission-token';
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken, credentialBinding: tokenFingerprint(accessToken) }))).status).toBe(200);
+    const deferred = deferNextBridge();
+    const pending = runtimeClient().then(client => { client.close(); return null; }, error => error);
+    await deferred.started;
+    driver.config.owners = [];
+    deferred.release();
+    expect(await pending).toBeInstanceOf(Error);
+  });
+
+  it('drops SIWC readiness when status observes a stopped runtime', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: fingerprint }))).status).toBe(200);
+    driver.stopped.add('alice');
+
+    const response = await ipc('status', 'alice', 'GET');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'stopped', siwc: { available: true, reason: expect.any(String) } });
+  });
+
+  it('drops SIWC readiness before starting a stopped retained runtime', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: fingerprint }))).status).toBe(200);
+    driver.stopped.add('alice');
+
+    const response = await ipc('start');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'running', siwc: { available: true, reason: expect.any(String) } });
+    expect(driver.retainedStarts).toEqual(['alice']);
+  });
+
+  it('keeps SIWC status readable during takeover and revokes a paused desktop without resuming it', async () => {
+    driver.config.siwcSandboxVerified = true;
+    driver.computerEnabled = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    const syncBody = JSON.stringify({ accessToken: token, credentialBinding: fingerprint });
+    expect((await ipc('sync-token', 'alice', 'POST', syncBody)).status).toBe(200);
+    const takeover = await socketFetch(socketPath)(`${LOCAL_ORIGIN}/computer/control`, {
+      method: 'POST', headers: { 'x-collective-owner': 'alice', 'x-collective-view-session': 'a'.repeat(64) },
+      body: JSON.stringify({ action: 'takeover' }),
+    });
+    expect(takeover.status).toBe(200);
+    expect((await takeover.json()).paused).toBe(true);
+    const status = await ipc('status', 'alice', 'GET');
+    expect(status.status).toBe(200);
+    expect((await status.json()).siwc.credentialBinding).toBe(fingerprint);
+    expect((await ipc('sync-token', 'alice', 'POST', syncBody)).status).toBe(503);
+    const disconnect = await ipc('disconnect');
+    expect(disconnect.status).toBe(200);
+    expect(await disconnect.json()).toMatchObject({ state: 'stopped', siwc: { available: true } });
+    expect(driver.tokens.has('alice')).toBe(false);
+    expect(driver.stopped.has('alice')).toBe(true);
+    expect(driver.pauses).toEqual([true]);
+    expect(driver.retainedStarts).toEqual([]);
+    expect(driver.bridged).toEqual([]);
+    const later = await ipc('status', 'alice', 'GET');
+    expect((await later.json()).siwc).not.toHaveProperty('credentialBinding');
   });
 
   it('still clears a retained SIWC token when an operator has disabled capability admission', async () => {
@@ -401,11 +550,27 @@ describe('broker self enrollment', () => {
     for (const owner of ['alice', 'bob']) expect(await (await ipc('prepare', owner, 'POST', consent)).json()).toMatchObject({ state: 'ready', enrolled: true, runtimeState: 'running' });
     expect(driver.ensured).toEqual(['alice', 'bob']);
     expect(driver.tokens.size).toBe(0);
+    expect((await ipc('status', 'bob', 'GET')).status).toBe(200);
     await broker!.close(); driver = new FixtureDriver([], socketPath, root); capable();
     broker = await startPersonalBroker(driver);
     expect(driver.admitted('alice')).toBe(true); expect(driver.admitted('bob')).toBe(true);
     const status = await (await ipc('status', 'bob', 'GET')).json(); expect(status.siwc.credentialBinding).toBeUndefined();
     expect(status.siwc.reason).toContain('synchronization');
+  });
+  it('restores persisted computer pauses for owners admitted by consent receipts', async () => {
+    capable();
+    expect((await ipc('prepare', 'bob', 'POST', consent)).status).toBe(200);
+    const record = path.join(root, `computer-${createHash('sha256').update('bob').digest('hex')}.json`);
+    await writeFile(record, JSON.stringify({ version: 1, paused: true }), { mode: 0o600 });
+    await broker!.close();
+    driver = new FixtureDriver([], socketPath, root);
+    capable(); driver.computerEnabled = true; driver.provisioned.add('bob');
+    broker = await startPersonalBroker(driver);
+    expect(driver.admitted('bob')).toBe(true);
+    expect(driver.admittedOwners()).toContain('bob');
+    expect(driver.pauses).toEqual([true]);
+    expect((await ipc('start', 'bob')).status).toBe(503);
+    expect(driver.retainedStarts).toEqual([]);
   });
   it('rolls back fresh admission on uncertain setup and never creates token readiness on failure', async () => {
     capable(); vi.spyOn(driver, 'ensure').mockRejectedValueOnce(new Error('private setup failure'));

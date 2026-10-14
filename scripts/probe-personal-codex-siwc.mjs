@@ -74,7 +74,7 @@ try {
   checks.initialSocketReachable = outside(siwcSocketPositiveControl()).connected === true; requireCheck('initialSocketReachable');
   stage = 'syncSyntheticToken';
   docker(['exec', '-i', name, 'node', '/opt/collective-codex/server.mjs', '--sync-token'],
-    JSON.stringify({ accessToken: sentinel, credentialBinding: 'a'.repeat(64) }));
+    JSON.stringify({ accessToken: sentinel, credentialBinding: createHash('sha256').update(sentinel).digest('hex') }));
   synced = true;
   stage = 'tokenBearingAppServerPositiveControl';
   const bearing = await observeAppServer(true, initial.appServerPid);

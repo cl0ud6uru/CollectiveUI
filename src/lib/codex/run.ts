@@ -1,4 +1,4 @@
-import { HttpError } from '@/lib/authz';
+import { getOwnedConversation, HttpError } from '@/lib/authz';
 // Shared by the Next server and plain Node worker; this builtin rejects browser bundles.
 import 'node:async_hooks';
 import type { UIMessageChunk, DynamicToolUIPart } from 'ai';
@@ -20,6 +20,9 @@ import { resolveTurnTarget } from '@/lib/agent/target';
 import { mapUsage, recordUsage } from '@/lib/llm/usage';
 import { accountRejection, userMayUseChatGPT } from '@/lib/llm/chatgpt/policy';
 import { getSetting } from '@/lib/settings';
+import { personalAccount } from '@/personal-codex/accounts';
+import { managedComputerAgent } from '@/lib/computer/agent';
+import { webSessionRegistryEnabled } from '@/lib/auth/web-sessions';
 
 export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
   if (!opts.bot || !opts.run?.holder || !opts.persist || !opts.responseMessageId || opts.continuation || opts.background || opts.delegation ||
@@ -37,6 +40,29 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
   const [retained] = runtime.managed ? await db.select().from(codexThreads).where(and(eq(codexThreads.conversationId, opts.conversation.id), eq(codexThreads.userId, runtime.ownerId))) : [];
   if (retained && (retained.binding !== binding(runtime) || retained.appId !== opts.app.id || retained.lastMessageId !== opts.history.at(-2)?.id))
     throw new HttpError(409, 'This Codex chat belongs to a different account, bot revision or conversation branch. Start a new chat.');
+  const connectedAccount = runtime.managed ? await personalAccount(runtime.ownerId) : undefined;
+  const computerAgent = runtime.managed && connectedAccount?.credentialBinding === runtime.credentialBinding &&
+    opts.app.providerConfig?.codexHarness === true && opts.bot.executionMode === 'caller' && !opts.bot.hermesTeam
+    ? await managedComputerAgent(runtime) : null;
+  const authorizeComputerCall = async () => {
+    if (!computerAgent || !runtime.managed || process.env.COMPUTER_VIEW_ENABLED !== '1' || !webSessionRegistryEnabled())
+      throw new HttpError(403, 'Computer tools are unavailable for this Codex session.');
+    const fresh = await loadPrincipal(opts.principal.user.id);
+    if (!fresh || fresh.user.sessionVersion !== opts.principal.user.sessionVersion) throw new HttpError(403, 'Your Codex access changed during this turn.');
+    const conversation = await getOwnedConversation(fresh, opts.conversation.id);
+    if (conversation.source !== 'chat' || conversation.isGroup || conversation.botId !== opts.bot!.id)
+      throw new HttpError(403, 'This Codex conversation is no longer authorized.');
+    const target = await resolveTurnTarget(fresh, conversation);
+    if (!target.bot || target.bot.id !== opts.bot!.id || target.bot.executionMode !== 'caller' || target.bot.hermesTeam ||
+        target.app.id !== opts.app.id || target.app.providerConfig?.codexHarness !== true)
+      throw new HttpError(403, 'This Codex computer is no longer authorized.');
+    const currentRuntime = await callerRuntime(fresh.user.id, policy.funding);
+    assertRuntimeOwner(currentRuntime, fresh.user);
+    const currentAccount = currentRuntime.managed ? await personalAccount(fresh.user.id) : undefined;
+    if (!currentRuntime.managed || runtimeBinding(currentRuntime) !== runtimeBinding(runtime) || currentRuntime.socketPath !== runtime.socketPath ||
+        !currentAccount || currentAccount.credentialBinding !== runtime.credentialBinding)
+      throw new HttpError(403, 'The connected Codex account changed during this turn.');
+  };
   await reserveCodexRun(opts.run, runtime);
   const cancelled = new AbortController();
   const signal = AbortSignal.any([opts.abortSignal ?? AbortSignal.timeout(30 * 60 * 1000), cancelled.signal]);
@@ -61,8 +87,10 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
         client = await CodexClient.connect(runtime);
         await executeCodexSession(client, runtime, policy,
           runtime.managed && retained ? opts.history.at(-1)!.parts.filter(p => p.type === 'text').map(p => p.text).join('\n') : `Conversation transcript (JSON). Respond to the last user message.\n${transcript}`,
-          [opts.bot!.instructions, opts.bot!.boundaries, runtime.managed ? 'Execute useful commands and file edits inside your personal workspace. Protected auth storage and external tools are unavailable. Permission expansion requires review; this pilot permits decline or stop only.' : 'This is a text-only CollectiveUI session. Do not invoke tools or request approvals.'].filter(Boolean).join('\n\n'), {
+          [opts.bot!.instructions, opts.bot!.boundaries, runtime.managed ? 'Execute useful commands and file edits inside your personal workspace. Protected auth storage and external tools are unavailable. Permission expansion requires review; this pilot permits decline or stop only.' : 'This is a text-only CollectiveUI session. Do not invoke tools or request approvals.',
+            computerAgent ? 'The account-owned computer is available through the computer tools. Use screenshots and bounded click, type, key, and scroll actions when useful. If a sign-in, secret, or sensitive account decision is required, pause and ask the user; never ask them to send passwords, codes, or secrets in chat. Human takeover pauses computer input until control is released.' : 'No computer tools are available in this session.'].filter(Boolean).join('\n\n'), {
             resumeThreadId: retained?.threadId, clientMessageId: opts.run!.id, baselineUsage: retained?.tokenTotals,
+            computerAgent, authorizeComputerCall,
             totalUsage: u => { tokenTotals = u; },
             authorizeAccount: async identity => {
               if (runtime.authMode === 'siwc') {
@@ -103,6 +131,21 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
                 const output = item.type === 'commandExecution' ? { status: item.status, stdout: item.aggregatedOutput ?? '', exitCode: item.exitCode } : { status: item.status, changes: item.changes };
                 const complete: DynamicToolUIPart = { type: 'dynamic-tool', toolCallId: item.id, toolName: part.toolName, state: 'output-available', input, output };
                 Object.assign(part, complete); emit({ type: 'tool-output-available', toolCallId: item.id, output, dynamic: true });
+              }
+            },
+            computerTool: (callId, toolName, phase, success) => {
+              let part = responseMessage.parts.find(p => p.type === 'dynamic-tool' && p.toolCallId === callId) as DynamicToolUIPart | undefined;
+              const input = {};
+              if (!part) {
+                part = { type: 'dynamic-tool', toolCallId: callId, toolName, state: 'input-available', input };
+                responseMessage.parts.push(part);
+                emit({ type: 'tool-input-available', toolCallId: callId, toolName, input, dynamic: true });
+              }
+              if (phase === 'completed') {
+                const output = { success: success === true };
+                const complete: DynamicToolUIPart = { type: 'dynamic-tool', toolCallId: callId, toolName, state: 'output-available', input, output };
+                Object.assign(part, complete);
+                emit({ type: 'tool-output-available', toolCallId: callId, output, dynamic: true });
               }
             },
             approval: async (request, approvalSignal) => {

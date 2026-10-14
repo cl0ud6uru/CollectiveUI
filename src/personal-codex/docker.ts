@@ -4,18 +4,22 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { isAbsolute } from 'node:path';
 import { PERSONAL_CODEX_WORKSPACE } from './workspace';
-import { ownerId } from './contracts';
+import { ownerId, tokenFingerprint } from './contracts';
 import { sandboxPolicy } from './sandbox-policy.mjs';
+import type { ComputerInput, ComputerStatus, PersonalCodexRuntimeDriver } from './driver';
 
 const absolute = z.string().refine(v => isAbsolute(v) && !/[\x00-\x1f,]/.test(v));
-export const BrokerConfig = z.object({
+const BrokerBase = z.object({
   socketPath: absolute,
-  // Registry manifest references and complete local config IDs are distinct
-  // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
-  image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   namespace: z.string().regex(/^cui-codex-[a-z0-9-]{1,20}$/),
   // Operator admission remains supported; self enrollment requires an installed capability and durable consent.
   owners: z.array(ownerId).max(1000),
+});
+const DockerBrokerConfig = BrokerBase.extend({
+  backend: z.literal('docker').optional().default('docker'),
+  // Registry manifest references and complete local config IDs are distinct
+  // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
+  image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   allowSelfEnrollment: z.boolean().default(false),
   sandboxProfile: z.literal('collectiveui-sandbox-v1').optional(),
   // True only after the installed image passes the reviewed SIWC shell/proc isolation proof.
@@ -24,18 +28,40 @@ export const BrokerConfig = z.object({
   memoryMb: z.number().int().min(512).max(16384).default(2048),
   cpus: z.number().min(.25).max(8).default(2),
 }).strict();
-export type BrokerConfig = z.infer<typeof BrokerConfig>;
+export type DockerBrokerConfig = z.infer<typeof DockerBrokerConfig>;
+export const SbxBrokerConfigSchema = BrokerBase.extend({
+  backend: z.literal('sbx'),
+  // A digest-pinned trusted desktop image; sbx must never resolve a mutable tag.
+  template: z.string().regex(/^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$/),
+  sbxExecutable: z.enum(['/usr/local/bin/sbx', '/usr/bin/sbx']).default('/usr/local/bin/sbx'),
+  sbxVersion: z.literal('0.48.0').default('0.48.0'),
+  sbxHome: absolute,
+  memoryMb: z.number().int().min(512).max(65536),
+  cpus: z.number().int().min(1).max(64),
+  // Enables the separately authenticated owner-scoped admin adapter. Default stays disabled.
+  adminEnabled: z.boolean().default(false),
+  // Same operator verification gate as the Docker backend. Defaults to disabled.
+  siwcSandboxVerified: z.boolean().default(false),
+}).strict();
+/** Legacy Docker-only schema remains the default public config contract. */
+export const BrokerConfig = DockerBrokerConfig;
+export type BrokerConfig = z.infer<typeof DockerBrokerConfig>;
+/** Strict optional backend union used only by broker startup. */
+export const PersonalCodexBrokerConfig = z.union([DockerBrokerConfig, SbxBrokerConfigSchema]);
+export type PersonalCodexBrokerConfig = z.infer<typeof PersonalCodexBrokerConfig>;
+export type SbxBrokerConfig = z.infer<typeof SbxBrokerConfigSchema>;
 const exec = promisify(execFile);
 export const dockerEnv = { NODE_ENV: 'production' as const, PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', DOCKER_CONFIG: '/nonexistent', LANG: 'C.UTF-8' };
 export const runtimeKey = (owner: string) => createHash('sha256').update(ownerId.parse(owner)).digest('hex');
 const unavailable = () => new Error('Personal Codex runtime configuration or storage needs operator reconciliation. Data is retained.');
 
 /** Only trusted provisioner code calls Docker. All names/mounts/commands are derived here. */
-export class PersonalCodexDriver {
-  readonly config: BrokerConfig;
-  constructor(config: BrokerConfig) { this.config = BrokerConfig.parse(config); }
+export class PersonalCodexDriver implements PersonalCodexRuntimeDriver {
+  readonly config: DockerBrokerConfig;
+  constructor(config: DockerBrokerConfig) { this.config = DockerBrokerConfig.parse(config); }
   private readonly enrolled = new Set<string>();
   admitted(owner: string) { return this.config.owners.includes(ownerId.parse(owner)) || this.enrolled.has(owner); }
+  admittedOwners() { return [...new Set([...this.config.owners, ...this.enrolled])]; }
   admit(owner: string) { this.enrolled.add(ownerId.parse(owner)); }
   revokeAdmission(owner: string) { this.enrolled.delete(owner); }
   private resourceName(owner: string) { return `${this.config.namespace}-${runtimeKey(owner)}`; }
@@ -162,18 +188,41 @@ export class PersonalCodexDriver {
     return spawn(this.config.dockerExecutable, ['exec', '-i', this.resourceName(owner), 'node', '/opt/collective-codex/bridge.mjs'],
       { env: dockerEnv, stdio: 'pipe' });
   }
+  async computerStatus(owner: string): Promise<ComputerStatus> {
+    this.name(owner);
+    return { available: false, running: false, width: 1280, height: 800 };
+  }
+  async computerFrame(owner: string): Promise<Buffer> {
+    this.name(owner);
+    throw unavailable();
+  }
+  async computerInput(owner: string, _input: ComputerInput): Promise<void> {
+    void _input;
+    this.name(owner);
+    throw unavailable();
+  }
+  async computerPause(owner: string, _paused: boolean): Promise<void> {
+    void _paused;
+    this.name(owner);
+    throw unavailable();
+  }
   /** Token is sent only on docker exec stdin to the container's private, memory-only supervisor socket. */
   async synchronizeToken(owner: string, accessToken: string, credentialBinding: string): Promise<void> {
     this.name(owner);
     if (!this.config.siwcSandboxVerified) throw new Error('Personal Codex token sharing is unavailable until the SIWC sandbox environment and /proc isolation proof is approved by an operator.');
-    if (accessToken.length < 1 || accessToken.length > 16_384 || credentialBinding.length < 1 || credentialBinding.length > 256) throw unavailable();
+    if (accessToken.length < 1 || accessToken.length > 16_384 || !/^[a-f0-9]{64}$/.test(credentialBinding) ||
+      tokenFingerprint(accessToken) !== credentialBinding) throw unavailable();
     if (!(await this.inspect(owner))?.State.Running) throw unavailable();
     const child = spawn(this.config.dockerExecutable, ['exec', '-i', this.resourceName(owner), 'node', '/opt/collective-codex/server.mjs', '--sync-token'],
       { env: dockerEnv, stdio: ['pipe', 'ignore', 'ignore'] });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(unavailable()); }, 10_000);
       child.once('error', () => { clearTimeout(timer); reject(unavailable()); });
-      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(unavailable()); });
+      child.once('exit', code => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(unavailable());
+      });
       child.stdin.end(JSON.stringify({ accessToken, credentialBinding }));
     });
   }
@@ -185,7 +234,11 @@ export class PersonalCodexDriver {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(unavailable()); }, 10_000);
       child.once('error', () => { clearTimeout(timer); reject(unavailable()); });
-      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(unavailable()); });
+      child.once('exit', code => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(unavailable());
+      });
     });
   }
 }
