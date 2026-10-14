@@ -60,6 +60,12 @@ export class SbxPersonalCodexDriver implements PersonalCodexRuntimeDriver {
     return `${this.config.namespace}-${runtimeKey(normalized)}`;
   }
 
+  admitted(owner: string) {
+    const normalized = ownerId.parse(owner);
+    if (!this.config.adminEnabled) return this.config.owners.includes(normalized);
+    return this.adminSettings.knownOwners.includes(normalized) && this.adminSettings.admittedOwners.includes(normalized);
+  }
+
   private async command(args: string[], timeout = 45000): Promise<Buffer> {
     const cwd = await this.protectedCwd();
     try {
@@ -635,7 +641,7 @@ export class SbxPersonalCodexDriver implements PersonalCodexRuntimeDriver {
     const name = this.name(owner);
     await this.assertAdmitted(owner);
     if (!(await this.inspect(owner))?.State.Running) throw unavailable();
-    await this.pipe(['exec', '--interactive', name, 'python3', '/opt/collective-computer/control.py', 'input'], Buffer.from(`${JSON.stringify(parsed)}\n`));
+    await this.pipe(['exec', '--interactive', name, 'python3', '/opt/collective-computer/control.py', 'input'], Buffer.from(`${JSON.stringify(parsed.data)}\n`));
   }
 
   async computerPause(owner: string, paused: boolean): Promise<void> {

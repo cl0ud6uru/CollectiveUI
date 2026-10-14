@@ -1,5 +1,8 @@
 import importlib.util
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +20,105 @@ REVISION = "a" * 40
 MIGRATIONS = "b" * 64
 WEB_DIGEST = "sha256:" + "c" * 64
 WORKER_DIGEST = "sha256:" + "d" * 64
+
+
+class MissingManifestTests(unittest.TestCase):
+    reference = f"docker.io/example/collectiveui-web:sha-{REVISION}"
+
+    def test_accepts_observed_buildx_absence_for_the_requested_reference(self):
+        release.verify_missing_manifest(self.reference, f"ERROR: {self.reference}: not found\n")
+
+    def test_accepts_complete_legacy_manifest_absence_diagnostics(self):
+        for output in (
+            f"ERROR: {self.reference}: manifest unknown",
+            f"ERROR: {self.reference}: manifest unknown: manifest unknown",
+            f"ERROR: {self.reference}: no such manifest",
+            "ERROR: manifest unknown",
+            "ERROR: manifest unknown: manifest unknown",
+            f"ERROR: no such manifest: {self.reference}",
+        ):
+            with self.subTest(output=output):
+                release.verify_missing_manifest(self.reference, output)
+
+    def test_rejects_auth_network_and_ambiguous_diagnostics(self):
+        for output in (
+            "ERROR: unauthorized: authentication required",
+            "ERROR: failed to authorize: failed to fetch oauth token: 401 Unauthorized",
+            "ERROR: unexpected status from HEAD request: 403 Forbidden",
+            "ERROR: unexpected status from HEAD request: 429 Too Many Requests",
+            "ERROR: dial tcp: lookup registry-1.docker.io: no such host",
+            "ERROR: TLS handshake timeout",
+            "ERROR: manifest unknown: failed to authorize",
+            "ERROR: certificate file not found",
+            "not found",
+            "",
+            f"ERROR: {self.reference}-other: not found",
+            f"ERROR: {self.reference}: not found\nERROR: unauthorized: authentication required",
+        ):
+            with self.subTest(output=output), self.assertRaises(release.ReleaseError):
+                release.verify_missing_manifest(self.reference, output)
+
+    def run_workflow_guard(self, responses):
+        """Run the checked-in publishing guard with a synthetic Docker CLI."""
+        workflow = (REPOSITORY_ROOT / ".github/workflows/docker-release.yml").read_text()
+        step = workflow.split("      - name: Refuse to overwrite existing version tags\n", 1)[1]
+        block = step.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0]
+        script = "\n".join(line.removeprefix("          ") for line in block.splitlines())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            docker = root / "docker"
+            docker.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "assert sys.argv[1:4] == ['buildx', 'imagetools', 'inspect']\n"
+                "ref = sys.argv[4]\n"
+                "with open(os.environ['INSPECT_CALLS'], 'a') as log: log.write(ref + '\\n')\n"
+                "result = json.loads(os.environ['INSPECT_RESULTS'])[ref]\n"
+                "print(result['output'])\n"
+                "sys.exit(result['status'])\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+            calls = root / "calls"
+            result = subprocess.run(
+                ["bash", "-c", script], cwd=REPOSITORY_ROOT, capture_output=True, text=True,
+                env=os.environ | {
+                    "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+                    "DOCKERHUB_NAMESPACE": "example", "VERSION": f"sha-{REVISION}",
+                    "INSPECT_CALLS": str(calls), "INSPECT_RESULTS": json.dumps(responses),
+                },
+            )
+            return result, calls.read_text().splitlines()
+
+    def absent_pair(self):
+        return {
+            f"docker.io/example/{image}:sha-{REVISION}": {
+                "status": 1, "output": f"ERROR: docker.io/example/{image}:sha-{REVISION}: not found",
+            }
+            for image in ("collectiveui-web", "collectiveui-worker")
+        }
+
+    def test_workflow_accepts_only_when_both_tags_are_absent(self):
+        responses = self.absent_pair()
+        result, calls = self.run_workflow_guard(responses)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, list(responses))
+
+    def test_workflow_stops_on_existing_tags_auth_and_network_errors(self):
+        for image in ("collectiveui-web", "collectiveui-worker"):
+            reference = f"docker.io/example/{image}:sha-{REVISION}"
+            for status, output, diagnostic in (
+                (0, "manifest metadata", "Refusing to overwrite existing tag"),
+                (1, "ERROR: unauthorized: authentication required", "Could not prove"),
+                (1, "ERROR: TLS handshake timeout", "Could not prove"),
+            ):
+                with self.subTest(image=image, output=output):
+                    responses = self.absent_pair()
+                    responses[reference] = {"status": status, "output": output}
+                    result, calls = self.run_workflow_guard(responses)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(diagnostic, result.stderr)
+                    self.assertEqual(calls[-1], reference)
 
 
 class EventTrustTests(unittest.TestCase):

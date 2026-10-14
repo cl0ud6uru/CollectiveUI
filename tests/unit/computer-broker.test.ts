@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -63,8 +63,20 @@ describe('computer broker ownership and takeover', () => {
 
     await controller.reconcilePersistedPauses(['alice', 'bob']);
     expect(driver.computerPause).toHaveBeenCalledExactlyOnceWith('alice', true);
+    expect(await controller.status('alice', session)).toMatchObject({ paused: true, control: 'other' });
     await expect(controller.agentBridge('alice')).rejects.toThrow('Return computer control');
     expect(JSON.parse(await readFile(record, 'utf8'))).toEqual({ version: 1, paused: true });
+  });
+  it('does not grant human control when durable pause persistence fails', async () => {
+    const record = join(dir, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);
+    await controller.status('alice', session);
+    // A directory at the record path makes the atomic rename fail after the temporary record is synced.
+    await mkdir(record);
+
+    await expect(controller.control('alice', session, { action: 'takeover' })).rejects.toThrow();
+    expect(driver.computerPause).not.toHaveBeenCalled();
+    expect(await controller.status('alice', session)).toMatchObject({ paused: true, control: 'other' });
+    await expect(controller.input('alice', session, { kind: 'key', key: 'Enter' })).rejects.toThrow();
   });
   it('stops and verifies a running runtime if persisted pause recovery fails, retaining the fence', async () => {
     const record = join(dir, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);

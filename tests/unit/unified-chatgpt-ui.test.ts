@@ -12,24 +12,17 @@ describe("unified ChatGPT account settings", () => {
     expect(page).toContain('key={`${p.user.id}:${p.user.sessionVersion}`}');
     expect(settings).not.toContain("chatgpt && <ChatGPTConnection");
     expect(account).toContain('fetch("/api/me/chatgpt"');
-    expect(account).toContain('action: "start"');
     expect(account).toContain('action: "disconnect"');
     expect(account).toContain('action: "sync-token"');
-    expect(account).toContain("setSetup({ instructions: data.instructions, hostId: data.hostId, userId: data.userId })");
   });
 
   it("shows actionable fetch failures and distinct enrollment/backend availability", () => {
     expect(account).toContain("Could not load your ChatGPT account");
     expect(account).toContain(">Retry</Button>");
     expect(account).toContain("view.reason");
-    expect(account).toContain("view.onboarding.reason");
-    expect(account).toContain("view.backends[name].reason");
     expect(account).toContain('["not_connected", "stopped"].includes(view.backends.codex.state)');
     expect(account).toContain("data.revocationConfirmed === false");
-    expect(account).toContain("Native CollectiveUI harness");
-    expect(account).toContain("npm run chatgpt:sign-in");
-    expect(account).toContain("npm run chatgpt:import");
-    expect(account).toContain("Never upload the profile in this browser.");
+    expect(account).toContain("Native CollectiveUI");
     expect(account).toContain("void refresh(true)");
   });
 

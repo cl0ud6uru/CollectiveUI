@@ -26,3 +26,23 @@ export type SiwcStatus = { available: boolean; credentialBinding?: string; reaso
 export type BrokerStatus = { state: 'not_started' | 'stopped' | 'running'; account?: NativeAccount; loginUncertain?: true; login?: z.infer<typeof pendingLogin>; siwc?: SiwcStatus };
 export type SiwcSyncResult = { state: 'running'; credential: 'synchronized'; siwc: SiwcStatus };
 export type PersonalControlResult = BrokerStatus | SiwcSyncResult;
+
+export const enrollmentRequest = z.object({ consentVersion: z.literal(1), sessionVersion: z.number().int().nonnegative() }).strict();
+export const enrollmentReadinessSchema = z.object({
+  state: z.enum(['ready', 'operator_setup_required', 'verification_required', 'unavailable']),
+  selfEnrollment: z.boolean(), enrolled: z.boolean(),
+  runtimeState: z.enum(['not_started', 'stopped', 'running']).optional(),
+  reason: z.enum(['An operator must enable enrollment for this installation.', 'An operator must verify the stock sandbox before enrollment.', 'Installed runtime resources require operator reconciliation.', 'SBX runtime preparation is operator managed; self enrollment is unavailable.']).optional(),
+}).strict();
+export type EnrollmentReadiness = z.infer<typeof enrollmentReadinessSchema>;
+
+/** Browser-safe projection; resource readiness never implies a ChatGPT credential. */
+export type AccountSetupView = {
+  eligible: boolean;
+  reason: string | null;
+  runtime: EnrollmentReadiness | { state: 'not_installed' | 'unavailable'; selfEnrollment: false; enrolled: false; runtimeState?: undefined; reason: string };
+  canPrepareRuntime: boolean;
+  authentication: { state: 'companion_required' | 'companion_ready'; reason: string; downloadUrl?: string };
+};
+
+export type CompanionSignInView = { state: 'created' | 'paired' | 'receiving' | 'complete' | 'cancelled' | 'needs_attention' | 'expired'; expiresAt: string; reason?: string };

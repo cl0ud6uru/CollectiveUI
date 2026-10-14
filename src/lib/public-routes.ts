@@ -5,7 +5,7 @@
  */
 export const PUBLIC_PREFIXES = ["/login", "/api/auth", "/api/routines/webhook", "/api/health", "/api/hermes-team/native"] as const;
 
-export const PUBLIC_PATHS = ["/api/branding/logo", "/api/branding/login-pet", "/api/mobile/info", "/api/mobile/auth/token"] as const;
+export const PUBLIC_PATHS = ["/api/branding/logo", "/api/branding/login-pet", "/api/mobile/info", "/api/mobile/auth/token", "/api/chatgpt/companion"] as const;
 
 export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "?")) || PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/") || pathname.startsWith(p + "?"));

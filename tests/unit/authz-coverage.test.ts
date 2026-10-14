@@ -26,6 +26,7 @@ function urlOf(file: string) {
 
 // Public routes and actions that intentionally run without a session, and how each one authenticates instead.
 const PUBLIC_HANDLERS: Record<string, string> = {
+  "/api/chatgpt/companion": "Owner/session-bound expiring launch capability plus signed source proof; subsequent requests require scoped native capability and fresh owner checks; browsers/cookies refused",
   "/api/hermes-team/native/[contextId]/model/[purpose]/[...operation]": "Opaque per-run, per-purpose native grant plus fresh server-owned Team authorization; empty verified registry denies dispatch",
   "/api/hermes-team/native/[contextId]/mcp": "Opaque per-run native tool grant plus fresh Team, adapter, connector, action/resource and approval checks",
   "/api/hermes-team/native/[contextId]/learning": "Separate single-use native snapshot grant plus fresh Team worker context; no terminal model token or browser profile authority",
@@ -84,6 +85,8 @@ describe("authorization coverage", () => {
     for (const p of apiPrefixes) expect(Object.keys(PUBLIC_HANDLERS).some((u) => u.startsWith(p)), p).toBe(true);
     expect(isPublicPath("/api/healthz")).toBe(false);
     expect(isPublicPath("/api/chat")).toBe(false);
+    expect(isPublicPath("/api/chatgpt/companion")).toBe(true);
+    expect(isPublicPath("/api/chatgpt/companion/other")).toBe(false);
     expect(isPublicPath("/api/branding/logo/private")).toBe(false);
     expect(isPublicPath("/api/branding/login-pet/other")).toBe(false);
     expect(isPublicPath("/api/admin/branding/logo")).toBe(false);

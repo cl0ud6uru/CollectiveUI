@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { BrokerConfig, PersonalCodexBrokerConfig } from '@/personal-codex/docker';
 import { tokenFingerprint } from '@/personal-codex/contracts';
 import { SbxPersonalCodexDriver } from '@/personal-codex/sbx';
@@ -94,6 +95,8 @@ process.exit(2);
   it('keeps SIWC disabled by default and synchronizes a verified token only through stdin', async () => {
     const disabled = await fixture();
     expect(disabled.driver.config.siwcSandboxVerified).toBe(false);
+    expect(disabled.driver.config.adminEnabled).toBe(false);
+    expect(PersonalCodexBrokerConfig.safeParse({ ...disabled.driver.config, allowSelfEnrollment: true }).success).toBe(false);
     await disabled.driver.ensure(OWNER);
     await expect(disabled.driver.synchronizeToken(OWNER, 'test-access-token', tokenFingerprint('test-access-token')))
       .rejects.toThrow(/unavailable until.*proof/i);
@@ -215,10 +218,34 @@ process.exit(2);
     bridge.stdin.end();
     await new Promise<void>(resolve => bridge.once('close', () => resolve()));
     expect(await driver.computerFrame(OWNER)).toEqual(Buffer.from([0xff,0xd8,0x01,0x02,0xff,0xd9]));
-    await driver.computerInput(OWNER, { kind: 'type', text: 'hello' });
+    const inputs = [
+      { kind: 'type' as const, text: 'hello' },
+      { kind: 'click' as const, x: 12, y: 31, button: 'left' as const },
+      { kind: 'key' as const, key: 'Enter' as const },
+      { kind: 'scroll' as const, direction: 'down' as const, amount: 2 },
+    ];
+    for (const input of inputs) await driver.computerInput(OWNER, input);
     await expect(driver.computerInput(OWNER, { kind: 'click', x: 1280, y: 0 } as never)).rejects.toThrow();
     const state = JSON.parse(await readFile(statePath, 'utf8'));
-    expect(state.received).toEqual([{ success: true, data: { kind: 'type', text: 'hello' } }]);
+    expect(state.received).toEqual(inputs);
+    // Consume the exact bytes sent through the fake CLI with the production Python
+    // parser and command validator. Validate commands without invoking the desktop.
+    for (const input of state.received) {
+      const output = execFileSync('python3', ['-c', [
+        'import importlib.util, json, sys',
+        'spec = importlib.util.spec_from_file_location("computer_control", sys.argv[1])',
+        'control = importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(control)',
+        'command, data = control.command_for(control.read_action())',
+        'print(json.dumps({"command": command, "text": data.decode("utf-8") if data is not None else None}))',
+      ].join('\n'), join(process.cwd(), 'docker/computer/control.py')], {
+        input: JSON.stringify(input), encoding: 'utf8', timeout: 5000,
+        env: { PATH: process.env.PATH, LANG: 'C.UTF-8', NODE_ENV: 'test', PYTHONDONTWRITEBYTECODE: '1' },
+      });
+      const result = JSON.parse(output);
+      expect(result.command[0]).toBe('/usr/bin/xdotool');
+      expect(result.text).toBe(input.kind === 'type' ? input.text : null);
+    }
     const calls = (await readFile(argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     const bridgeCall = calls.find((row: { args: string[] }) => row.args.includes('/opt/collective-codex/bridge.mjs')).args as string[];
     expect(bridgeCall).toContain('--interactive');

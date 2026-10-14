@@ -14,6 +14,10 @@ export type ComputerStatus = {
 export interface PersonalCodexRuntimeDriver {
   readonly config: { socketPath: string; owners: string[]; siwcSandboxVerified?: boolean };
   name(owner: string): string;
+  /** Current in-memory admission, usable at the final synchronous bridge boundary. */
+  admitted?(owner: string): boolean;
+  /** Docker consent receipts may add owners beyond the operator's static list. */
+  admittedOwners?(): string[];
   inspect(owner: string): Promise<{ State: { Running: boolean } } | null>;
   ensure(owner: string): Promise<void>;
   startRetained(owner: string): Promise<void>;

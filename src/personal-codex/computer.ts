@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, rename, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
@@ -13,6 +14,24 @@ const MAX_BODY_BYTES = 20_000;
 const viewSession = z.string().regex(/^[a-f0-9]{64}$/);
 const controlAction = z.object({ action: z.enum(['takeover', 'release', 'heartbeat']) }).strict();
 const pausedRecord = z.object({ version: z.literal(1), paused: z.boolean() }).strict();
+async function persistPauseRecord(path: string, paused: boolean) {
+  const directoryPath = dirname(path);
+  const temp = `${path}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    await handle.writeFile(JSON.stringify({ version: 1, paused }));
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temp, path);
+    const directory = await open(directoryPath, constants.O_RDONLY);
+    try { await directory.sync(); } finally { await directory.close(); }
+  } finally {
+    await handle?.close().catch(() => {});
+    await unlink(temp).catch(() => {});
+  }
+}
 
 export class ComputerError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -64,9 +83,7 @@ export class ComputerController {
   }
   private async persist(owner: string, paused: boolean) {
     const path = this.path(owner);
-    const temp = `${path}.${randomUUID()}.tmp`;
-    await writeFile(temp, JSON.stringify({ version: 1, paused }), { mode: 0o600, flag: 'wx' });
-    await rename(temp, path);
+    await persistPauseRecord(path, paused);
   }
   /** Reapply durable takeover intent before the broker accepts bridges or input. */
   async reconcilePersistedPauses(owners: readonly string[]) {

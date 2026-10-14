@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { connect } from 'node:net';
+import { spawn } from 'node:child_process';
+import WebSocket from 'ws';
 import { startPersonalBroker } from '@/personal-codex/server';
 import { SbxPersonalCodexDriver } from '@/personal-codex/sbx';
-import { SbxBrokerConfigSchema } from '@/personal-codex/docker';
+import { SbxBrokerConfigSchema, runtimeKey } from '@/personal-codex/docker';
+import { enrollmentReadinessSchema, tokenFingerprint } from '@/personal-codex/contracts';
 import { socketFetch, LOCAL_ORIGIN } from '@/lib/local-hermes/client';
 
 const template = `registry.example/computer@sha256:${'a'.repeat(64)}`;
@@ -41,7 +45,76 @@ const act = (request: unknown) => fetchBroker(`${LOCAL_ORIGIN}/admin/action`, {
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ actorId: 'admin', request }),
 });
 
+function runtimeSocket() {
+  const ws = new WebSocket('ws://127.0.0.1/runtime', { createConnection: () => connect(driver.config.socketPath),
+    headers: { 'x-collective-owner': 'alice' }, handshakeTimeout: 2000 });
+  return new Promise<WebSocket>((resolve, reject) => {
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+    ws.once('close', () => reject(new Error('Runtime transport denied.')));
+  });
+}
+
 describe('protected admin broker routes', () => {
+  it.each([false, true])('denies an unverified SBX bridge without native-login fallback (configured proof %s)', async configured => {
+    driver.config.siwcSandboxVerified = configured;
+    vi.spyOn(driver, 'siwcVerified').mockResolvedValue(false);
+    const bridge = vi.spyOn(driver, 'bridge');
+    broker = await startPersonalBroker(driver);
+    await expect(runtimeSocket()).rejects.toThrow();
+    expect(bridge).not.toHaveBeenCalled();
+  });
+
+  it('rejects an earlier upgrade generation after the same token is resynchronized during the final proof wait', async () => {
+    vi.spyOn(driver, 'siwcVerified').mockResolvedValue(true);
+    vi.spyOn(driver, 'synchronizeToken').mockResolvedValue();
+    broker = await startPersonalBroker(driver);
+    const accessToken = 'synthetic-same-token';
+    const sync = () => fetchBroker(`${LOCAL_ORIGIN}/sync-token`, { method: 'POST', headers: { 'x-collective-owner': 'alice' },
+      body: JSON.stringify({ accessToken, credentialBinding: tokenFingerprint(accessToken) }) });
+    expect((await sync()).status).toBe(200);
+    const child = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { stdio: 'pipe',
+      env: { NODE_ENV: 'test', PATH: process.env.PATH } });
+    vi.spyOn(driver, 'bridge').mockResolvedValue(child);
+    let entered!: () => void, release!: () => void, calls = 0;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(driver.siwcVerified).mockImplementation(async () => {
+      if (++calls === 2) { entered(); await wait; }
+      return true;
+    });
+    const pending = runtimeSocket().then(ws => { ws.terminate(); return null; }, error => error);
+    try {
+      await started;
+      expect((await sync()).status).toBe(200);
+    } finally { release(); }
+    try { expect(await pending).toBeInstanceOf(Error); }
+    finally { child.kill(); }
+  });
+
+  it('reports operator-managed SBX preparation without adopting Docker consent or provisioning', async () => {
+    const receiptName = `codex-enrollment-${runtimeKey('bob')}.json`;
+    await writeFile(join(directory, receiptName), JSON.stringify({ version: 1, admission: 'admitted', owner: 'bob',
+      namespace: driver.config.namespace, image: `sha256:${'a'.repeat(64)}`, consentVersion: 1, sessionVersion: 7 }), { mode: 0o600 });
+    broker = await startPersonalBroker(driver);
+    for (const owner of ['alice', 'bob']) {
+      const expected = { state: 'operator_setup_required', selfEnrollment: false, enrolled: owner === 'alice',
+        reason: 'SBX runtime preparation is operator managed; self enrollment is unavailable.' };
+      for (const [path, method] of [['/readiness', 'GET'], ['/prepare', 'POST']] as const) {
+        const response = await fetchBroker(`${LOCAL_ORIGIN}${path}`, { method, headers: { 'x-collective-owner': owner },
+          ...(method === 'POST' ? { body: JSON.stringify({ consentVersion: 1, sessionVersion: 7 }) } : {}) });
+        expect(response.status).toBe(200);
+        expect(enrollmentReadinessSchema.parse(await response.json())).toEqual(expected);
+      }
+    }
+    expect(driver.ensure).not.toHaveBeenCalled();
+    expect(driver.startRetained).not.toHaveBeenCalled();
+    expect(driver.inspect).not.toHaveBeenCalled();
+    expect(await driver.adminOwnerAccess('bob')).toEqual({ known: false, admitted: false });
+    expect(driver.config.owners).toEqual(['alice']);
+    expect((await readdir(directory)).filter(name => name.startsWith('codex-enrollment-'))).toEqual([receiptName]);
+  });
+
   it('exposes unavailable setup metadata when operator administration is disabled', async () => {
     driver.config.adminEnabled = false;
     broker = await startPersonalBroker(driver);
