@@ -7,9 +7,10 @@ import { assertNoCodexWork, lockPersonalOwner } from '@/personal-codex/accounts'
 import { personalControl, PersonalControlError } from '@/personal-codex/control';
 import { tokenFingerprint } from '@/personal-codex/contracts';
 import { assertSIWCCredential, openCredentialSecret, removeChatGPTConnection } from './store';
+import { cancelCompanionAttemptsLocked } from './companion-state';
 
 /** Caller holds the owner's user row lock on this connection. Remote revocation runs after commit/lock release. */
-export async function invalidateChatGPTConnectionLocked(owner: string, tx: DbOrTx, f?: typeof fetch) {
+export async function clearPersonalCodexAuthenticationLocked(owner: string, tx: DbOrTx) {
   // Reservations take the same owner row lock. An unconfirmed stop must never be treated as a disconnect.
   await assertNoCodexWork(owner, tx);
   const [personal] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, owner));
@@ -24,6 +25,11 @@ export async function invalidateChatGPTConnectionLocked(owner: string, tx: DbOrT
   } else if (personal) {
     throw new HttpError(503, 'Restore the Personal Codex broker before disconnecting this retained account.');
   }
+}
+
+export async function invalidateChatGPTConnectionLocked(owner: string, tx: DbOrTx, f?: typeof fetch) {
+  await clearPersonalCodexAuthenticationLocked(owner, tx);
+  await cancelCompanionAttemptsLocked(owner, tx);
   await tx.update(personalCodexAccounts).set({ connected: false, credentialBinding: randomUUID(), updatedAt: new Date() })
     .where(eq(personalCodexAccounts.userId, owner));
   return removeChatGPTConnection(owner, tx, f);

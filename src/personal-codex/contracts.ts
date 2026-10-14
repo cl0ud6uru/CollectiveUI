@@ -42,5 +42,7 @@ export type AccountSetupView = {
   reason: string | null;
   runtime: EnrollmentReadiness | { state: 'not_installed' | 'unavailable'; selfEnrollment: false; enrolled: false; runtimeState?: undefined; reason: string };
   canPrepareRuntime: boolean;
-  authentication: { state: 'companion_required'; reason: string };
+  authentication: { state: 'companion_required' | 'companion_ready'; reason: string; downloadUrl?: string };
 };
+
+export type CompanionSignInView = { state: 'created' | 'paired' | 'receiving' | 'complete' | 'cancelled' | 'needs_attention' | 'expired'; expiresAt: string; reason?: string };

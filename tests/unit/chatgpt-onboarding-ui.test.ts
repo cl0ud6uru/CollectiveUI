@@ -12,6 +12,7 @@ const initial: ChatGPTAccountView = {
     runtime: { state: 'ready', selfEnrollment: true, enrolled: false, runtimeState: 'not_started' },
     authentication: { state: 'companion_required', reason: 'A local sign-in app is required and is not available yet.' } },
 };
+const companionReady: ChatGPTAccountView = { ...initial, setup: { ...initial.setup!, authentication: { state: 'companion_ready', reason: 'Open the installed ChatGPT sign-in app to continue.' } } };
 const render = (view = initial) => renderToStaticMarkup(createElement<{ initialView?: ChatGPTAccountView }>(ChatGPTConnection, { initialView: view }));
 
 describe('truthful account setup UI', () => {
@@ -32,6 +33,27 @@ describe('truthful account setup UI', () => {
     expect(html).toContain('Local sign-in app required');
     expect(html).not.toContain('Prepare private runtime');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Connect ChatGPT<\/button>/);
+  });
+
+  it('offers explicit local companion consent only when the companion is ready', () => {
+    const html = render(companionReady);
+    expect(html).toContain('Local sign-in app ready');
+    expect(html).toContain('I authorize this installation to use my ChatGPT account for Native CollectiveUI.');
+    expect(html).toContain('Prepare and use my private stock Codex runtime');
+    expect(html).not.toMatch(/chatgpt-profile|chatgpt:import|secure SSH|run:/);
+  });
+
+  it('shows sanitized waiting status and cancellation without exposing launch capabilities', () => {
+    const html = render({ ...companionReady, signIn: { state: 'receiving', expiresAt: '2026-10-14T12:00:00.000Z' } });
+    expect(html).toContain('The local app is returning your sign-in. This may take a moment.');
+    expect(html).toContain('Cancel sign-in');
+    expect(html).not.toMatch(/ticket|capability|launchUrl|attemptId/);
+  });
+
+  it('does not treat a completed historical transfer as a currently connected account', () => {
+    const html = render({ ...companionReady, signIn: { state: 'complete', expiresAt: '2026-10-14T12:00:00.000Z' } });
+    expect(html).toContain('<dd>Sign-in completed</dd>');
+    expect(html).not.toContain('<dd>Connected</dd>');
   });
 
   it('preserves connected-state cleanup without offering repeated preparation', () => {
