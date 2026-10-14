@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { addOfficeBot } from "@/app/admin/bots/office-actions";
+import { Button } from "@/components/ui/button";
 
 export function OfficeBotInstaller({ models, botId }: { models: { id: string; name: string }[]; botId: string | null }) {
   const [appId, setAppId] = useState(models[0]?.id ?? "");
@@ -29,7 +30,7 @@ export function OfficeBotInstaller({ models, botId }: { models: { id: string; na
               {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
             </select>
           </label>
-          <button className="rounded-lg bg-accent px-4 py-2 text-sm text-white disabled:opacity-50" disabled={pending || !appId}>{pending ? "Checking workspace…" : "Add Office Bot"}</button>
+          <Button type="submit" disabled={pending || !appId}>{pending ? "Checking workspace…" : "Add Office Bot"}</Button>
         </form>
       )}
       {!botId && <p className="mt-2 text-xs text-muted">Requires a public company model with tools and the Office sandbox image. Existing workspace access and approvals apply.</p>}

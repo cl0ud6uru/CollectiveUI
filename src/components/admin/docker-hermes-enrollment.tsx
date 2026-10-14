@@ -8,6 +8,7 @@ import { Badge, Card, Table, Td } from '@/components/admin/ui';
 import { Button } from '@/components/ui/button';
 import { HermesNetworkControl, useHermesNetworks } from './hermes-network-control';
 import { cn } from '@/lib/utils';
+import { AdminTimestamp } from '@/components/admin/timestamp';
 
 type Person = { id: string; name: string; upn: string; enabled: boolean; cleanup: string; error: string | null; changedBy: string | null; changedAt: string | null };
 
@@ -22,7 +23,6 @@ const CLEANUP: Record<string, { label: string; tone: 'default' | 'amber' | 'red'
   failed: { label: 'Stop failed', tone: 'red' },
   stopped: { label: 'Stopped · data kept', tone: 'default' },
 };
-const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
 export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: { people: Person[]; readiness: DockerReadiness; legacyConfigured: boolean }) {
   const [pending, start] = useTransition();
@@ -91,14 +91,16 @@ export function DockerHermesEnrollment({ people, readiness, legacyConfigured }: 
               <span className={person.enabled ? '' : 'text-muted'}>{person.enabled ? 'Allowed' : 'Off'}</span>
             </label>
           </Td>
-          <Td><HermesNetworkControl owner={person.id} name={person.name} enabled={person.enabled && person.cleanup === 'none'} status={networks.status(person.id)} reload={networks.refresh} /></Td>
+          <Td><HermesNetworkControl owner={person.id} name={person.name} enabled={person.enabled && person.cleanup === 'none'} status={networks.status(person.id)}
+            unavailable={readiness.status !== 'ready' ? 'Network unavailable · broker not ready' : networks.error ? 'Network status unavailable' : undefined}
+            reload={networks.refresh} /></Td>
           <Td className="min-w-40">
             {cleanup ? <Badge tone={cleanup.tone}>{cleanup.label}</Badge> : <span className="text-subtle">—</span>}
             {person.error && <p role="alert" className="mt-1 text-xs text-danger">{person.error}</p>}
             {stopping && <Button variant="outline" size="sm" className="mt-2" disabled={pending} onClick={() => update(person.id, false)} aria-label={`Retry runtime stop for ${person.name}`}>Retry stop</Button>}
           </Td>
           <Td className="min-w-40 text-xs text-muted">
-            {person.changedAt ? <>{person.changedBy ?? 'Deleted administrator'}<br /><time dateTime={person.changedAt} suppressHydrationWarning>{when(person.changedAt)}</time></> : <span className="text-subtle">Never</span>}
+            {person.changedAt ? <>{person.changedBy ?? 'Deleted administrator'}<br /><AdminTimestamp value={person.changedAt} /></> : <span className="text-subtle">Never</span>}
           </Td>
         </tr>;
       })}

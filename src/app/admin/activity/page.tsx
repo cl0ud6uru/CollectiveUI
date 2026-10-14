@@ -1,129 +1,71 @@
+import Link from "next/link";
 import { requireAdminPage } from "@/lib/session";
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { AdminHeader, Badge, Table, Td } from "@/components/admin/ui";
-import { db } from "@/db";
-import { auditLog, bots, routineRuns, routines, toolCalls, users } from "@/db/schema";
+import { AdminPagination } from "@/components/admin/pagination";
+import { AdminTimestamp } from "@/components/admin/timestamp";
+import { ACTIVITY_STATUSES, listAdminActivity, readActivityFilters } from "@/lib/admin/activity";
+import { adminListHref } from "@/lib/admin/listing";
 
-const tone = (s: string) =>
-  s === "done" || s === "succeeded" ? "green" : s === "error" || s === "failed" || s === "denied" ? "red" : s.includes("approval") ? "amber" : "default";
+const tone = (status: string) => status === "done" || status === "succeeded" ? "green"
+  : status === "error" || status === "failed" || status === "denied" ? "red" : status.includes("approval") ? "amber" : "default";
+const control = "mt-1 block h-10 w-full min-w-0 rounded-lg border border-border bg-surface px-3 text-sm focus-visible:outline-2 focus-visible:outline-offset-2";
 
 export default async function AdminActivityPage(props: PageProps<"/admin/activity">) {
-  const p = await requireAdminPage();
-  const privateScope = sql`(not exists (select 1 from ai_apps personal where personal.id = ${bots.appId} and personal.provider_config->'docker' is not null) or ${bots.ownerId} = ${p.user.id})`;
-  const sp = await props.searchParams;
-  const tab = sp.tab === "runs" ? "runs" : sp.tab === "audit" ? "audit" : "tools";
-  const tool = typeof sp.tool === "string" ? sp.tool : "";
-  const filters: SQL[] = [privateScope];
-  if (tool) filters.push(eq(toolCalls.toolName, tool));
-
-  const tabs = (
-    <div className="mb-4 flex gap-1 border-b border-border text-sm">
-      {[
-        ["tools", "Tool calls"],
-        ["runs", "Routine runs"],
-        ["audit", "Admin audit log"],
-      ].map(([k, label]) => (
-        <a key={k} href={`?tab=${k}`} className={`-mb-px border-b-2 px-3 py-2 ${tab === k ? "border-fg font-medium" : "border-transparent text-muted"}`}>
-          {label}
-        </a>
-      ))}
-    </div>
-  );
-
-  if (tab === "runs") {
-    const runs = await db
-      .select({ run: routineRuns, routine: routines.name, bot: bots.name, owner: users.name })
-      .from(routineRuns)
-      .innerJoin(routines, eq(routines.id, routineRuns.routineId))
-      .innerJoin(bots, eq(bots.id, routines.botId))
-      .innerJoin(users, eq(users.id, routines.ownerId))
-      .where(privateScope)
-      .orderBy(desc(routineRuns.createdAt))
-      .limit(200);
-    return (
-      <div>
-        <AdminHeader title="Activity" />
-        {tabs}
-        <Table head={["When", "Routine", "Bot", "Owner", "Trigger", "Status", "Error"]}>
-          {runs.map(({ run, routine, bot, owner }) => (
-            <tr key={run.id}>
-              <Td className="whitespace-nowrap text-xs text-muted">{run.createdAt.toLocaleString()}</Td>
-              <Td>{routine}</Td>
-              <Td>{bot}</Td>
-              <Td>{owner}</Td>
-              <Td className="text-xs">{run.trigger}</Td>
-              <Td>
-                <Badge tone={tone(run.status)}>{run.status.replace(/_/g, " ")}</Badge>
-              </Td>
-              <Td className="max-w-[240px] truncate text-xs text-danger">{run.error}</Td>
-            </tr>
-          ))}
-        </Table>
+  const principal = await requireAdminPage();
+  const filters = readActivityFilters(await props.searchParams);
+  const { values, errors } = filters;
+  const { tab } = values;
+  const { rows, window } = await listAdminActivity(principal, filters);
+  const isAudit = tab === "audit";
+  const isTools = tab === "tools";
+  const clearHref = adminListHref("/admin/activity", { tab });
+  const hasFilters = Object.entries(values).some(([key, value]) => key !== "tab" && value);
+  return <div>
+    <AdminHeader title="Activity" description="Inspect tool calls, routine runs and administrator changes. Dates and times are shown in UTC." />
+    <nav aria-label="Activity views" className="mb-4 flex flex-wrap gap-1 border-b border-border text-sm">
+      {[["tools", "Tool calls"], ["runs", "Routine runs"], ["audit", "Admin audit log"]].map(([key, label]) =>
+        <Link key={key} href={adminListHref("/admin/activity", { tab: key })} aria-current={tab === key ? "page" : undefined}
+          className={`-mb-px border-b-2 px-3 py-2 ${tab === key ? "border-fg font-medium" : "border-transparent text-muted"}`}>{label}</Link>)}
+    </nav>
+    <form action="/admin/activity" className="mb-4 grid gap-3 rounded-xl border border-border p-4 sm:grid-cols-2 lg:grid-cols-3">
+      <input type="hidden" name="tab" value={tab} />
+      <label className="min-w-0 text-sm">From date (UTC)<input className={control} type="date" name="from" defaultValue={values.from} /></label>
+      <label className="min-w-0 text-sm">Through date (UTC)<input className={control} type="date" name="to" defaultValue={values.to} /></label>
+      <label className="min-w-0 text-sm">{isAudit ? "Actor" : "User"}<input className={control} name="user" maxLength={200} defaultValue={values.user} placeholder="Name or UPN" /></label>
+      {!isAudit && <label className="min-w-0 text-sm">Status<select className={control} name="status" defaultValue={values.status}>
+        <option value="">All statuses</option>
+        {ACTIVITY_STATUSES[tab].map(status => <option key={status} value={status}>{status.replaceAll("_", " ")}</option>)}
+      </select></label>}
+      {isTools && <label className="min-w-0 text-sm">Tool name<input className={control} name="tool" maxLength={200} defaultValue={values.tool} placeholder="Exact tool name" /></label>}
+      {isAudit && <label className="min-w-0 text-sm">Action<input className={control} name="action" maxLength={200} defaultValue={values.action} placeholder="For example, group.update" /></label>}
+      <div className="flex items-end gap-3"><button className="h-10 rounded-lg border border-border px-4 text-sm hover:bg-hover" type="submit">Apply filters</button>
+        {hasFilters && <Link className="px-2 py-2 text-sm underline" href={clearHref}>Clear filters</Link>}
       </div>
-    );
-  }
-
-  if (tab === "audit") {
-    const rows = await db
-      .select({ a: auditLog, actor: users.name })
-      .from(auditLog)
-      .leftJoin(users, eq(users.id, auditLog.actorId))
-      .orderBy(desc(auditLog.createdAt))
-      .limit(300);
-    return (
-      <div>
-        <AdminHeader title="Activity" />
-        {tabs}
-        <Table head={["When", "Actor", "Action", "Target", "Details"]}>
-          {rows.map(({ a, actor }) => (
-            <tr key={a.id}>
-              <Td className="whitespace-nowrap text-xs text-muted">{a.createdAt.toLocaleString()}</Td>
-              <Td>{actor}</Td>
-              <Td className="font-mono text-xs">{a.action}</Td>
-              <Td className="font-mono text-xs">{a.target}</Td>
-              <Td className="max-w-[320px] truncate font-mono text-xs text-muted">{a.details ? JSON.stringify(a.details) : ""}</Td>
-            </tr>
-          ))}
-        </Table>
-      </div>
-    );
-  }
-
-  const calls = await db
-    .select({ c: toolCalls, user: users.name, bot: bots.name })
-    .from(toolCalls)
-    .leftJoin(users, eq(users.id, toolCalls.userId))
-    .leftJoin(bots, eq(bots.id, toolCalls.botId))
-    .where(filters.length ? and(...filters) : undefined)
-    .orderBy(desc(toolCalls.createdAt))
-    .limit(300);
-  return (
-    <div>
-      <AdminHeader title="Activity" description="Every tool call made by bots, including approvals and denials." />
-      {tabs}
-      {tool && (
-        <p className="mb-2 text-sm">
-          Filtered by <code>{tool}</code> · <a href="?tab=tools" className="underline">clear</a>
-        </p>
-      )}
-      <Table head={["When", "User", "Bot", "Tool", "Status", "Input"]}>
-        {calls.map(({ c, user, bot }) => (
-          <tr key={c.id}>
-            <Td className="whitespace-nowrap text-xs text-muted">{c.createdAt.toLocaleString()}</Td>
-            <Td>{user}</Td>
-            <Td>{bot}</Td>
-            <Td>
-              <a href={`?tab=tools&tool=${encodeURIComponent(c.toolName)}`} className="font-mono text-xs hover:underline">
-                {c.toolName}
-              </a>
-            </Td>
-            <Td>
-              <Badge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</Badge>
-            </Td>
-            <Td className="max-w-[320px] truncate font-mono text-xs text-muted">{JSON.stringify(c.input)}</Td>
-          </tr>
-        ))}
-      </Table>
-    </div>
-  );
+    </form>
+    {errors.length > 0 && <p role="alert" className="mb-3 text-sm text-danger">{errors.join(" ")}</p>}
+    <AdminPagination window={window} path="/admin/activity" filters={values} noun="records" />
+    <Table head={isAudit ? ["When", "Actor", "Action", "Target", "Details"] : ["When", "User", "Bot", isTools ? "Tool" : "Routine", "Status", "Details"]}>
+      {rows.map(row => <tr key={row.id}>
+        <Td className="text-xs text-muted"><AdminTimestamp value={row.createdAt} /></Td>
+        <Td><span>{row.user ?? "Deleted user / system"}</span>{row.upn && <span className="block text-xs text-muted">{row.upn}</span>}</Td>
+        {!isAudit && <Td>{row.bot ?? "—"}</Td>}
+        <Td className="break-words text-xs">{isTools
+          ? <Link href={adminListHref("/admin/activity", { ...values, tool: row.subject })} className="font-mono underline-offset-4 hover:underline">{row.subject}</Link>
+          : row.subject}</Td>
+        {isAudit ? <Td className="break-words font-mono text-xs">{row.target ?? "—"}</Td>
+          : <Td><Badge tone={tone(row.status!)}>{row.status!.replaceAll("_", " ")}</Badge></Td>}
+        <Td>
+          <details className="min-w-40 max-w-2xl">
+            <summary className="cursor-pointer rounded px-1 py-1 text-sm underline-offset-4 hover:underline focus-visible:outline-2" aria-label={`View details for ${row.subject} ${row.id}`}>View details</summary>
+            <pre className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap rounded-lg bg-surface-2 p-3 font-mono text-xs [overflow-wrap:anywhere]" tabIndex={0} aria-label="Record details">{row.details}</pre>
+            {row.conversationId && <Link href={`/c/${encodeURIComponent(row.conversationId)}`} className="mt-2 inline-block text-sm underline">Open my conversation</Link>}
+          </details>
+        </Td>
+      </tr>)}
+      {!rows.length && <tr><Td colSpan={isAudit ? 5 : 6} className="py-8 text-center text-muted">
+        {hasFilters ? <>No activity matches these filters. <Link href={clearHref} className="underline">Clear filters</Link></> : "No activity has been recorded in this view yet."}
+      </Td></tr>}
+    </Table>
+    {window.pages > 1 && <AdminPagination window={window} path="/admin/activity" filters={values} noun="records" />}
+  </div>;
 }
