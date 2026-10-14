@@ -37,9 +37,11 @@ being swapped for a symlink between checks. Bounded reads verify inode metadata
 before and after reading; two scans separated by a settling interval must match
 metadata and content hashes. A caller must also hold the broker's exclusive
 runtime maintenance lease and quiesce native writes across capture. Equal scans
-alone do not guarantee a stable writer-free interval. Docker profile volumes are
-not assumed to be host-visible, so these helpers do not imply a supported live
-broker capture capability before the volume helper is packaged and verified.
+alone do not guarantee a stable writer-free interval. Docker profile volumes are not assumed to be host-visible. The current broker
+packages these helpers and mounts only its retained owner volume; see
+[Docker Team resource maintenance](docker-hermes.md#disabled-team-resource-maintenance)
+and [private updates](hermes-team-member-updates.md). Fixture support does not
+establish deployment-host or live model compatibility.
 
 ## Member reconciliation
 

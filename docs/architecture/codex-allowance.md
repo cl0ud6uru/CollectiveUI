@@ -4,7 +4,7 @@ This implementation adds an owner-only allowance UI in Settings and a read-only 
 
 ## Architecture decision
 
-Repository inspection found native Hermes profile device sign-in (`src/docker-hermes/oauth.ts`, broker/bridge), the direct ChatGPT provider's cached response headers (`src/lib/llm/chatgpt/fetch.ts` / `store.ts`), and held official Team plan/auth integrations. None establishes a supported, isolated per-user Codex app-server account transport. Hermes `/usage` reports local chat token activity, not provider allowance. The new adapter does not query unofficial/private HTTP quota endpoints, open existing OAuth secrets, use organization keys, start new sign-ins, or alter the held official-sign-in work. No runtime migration was introduced.
+Repository inspection found native Hermes profile device sign-in (`src/docker-hermes/oauth.ts`, broker/bridge), the direct ChatGPT provider's cached response headers (`src/lib/llm/chatgpt/fetch.ts` / `store.ts`), and held official Team plan/auth integrations. None supplies the allowance adapter with an authenticated runtime. The later [Codex harness pilot](../codex-harness.md) adds a separate owner-bound manifest and app-server transport in `src/lib/codex/`, but does not register it with `registerCodexAllowanceRuntime` or wire rate-limit reads/notifications into this UI. Hermes `/usage` reports local chat token activity, not provider allowance. The new adapter does not query unofficial/private HTTP quota endpoints, open existing OAuth secrets, use organization keys, start new sign-ins, or alter the held official-sign-in work. No runtime migration was introduced.
 
 ## Remaining activation requirement
 

@@ -4,7 +4,7 @@ A rounded charcoal cloud companion with a crimson rim, one expressive eye, and
 three circuit tendrils. The user supplied the CollectiveUI brand reference and
 selected the rounded toy concept. The artwork was generated with OpenAI ImageGen;
 the reference, selected concept, and animation prompt templates are preserved in
-`source/`.
+`source/`. The prompts are preserved creation records, not repository build instructions; references such as `qa/look-mechanics.md` belong to the original creation workspace and are not bundled here.
 
 Nine animation strips were generated separately against the selected concept.
 Generated poses were extracted, fitted with a shared scale per row, and registered

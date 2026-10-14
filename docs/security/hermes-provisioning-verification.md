@@ -1,5 +1,7 @@
 # Hermes provisioning verification — 2026-10-02
 
+Historical verification record for the commits below. Test totals, PR state, temporary paths and integration coordination describe that checkpoint, not the current checkout. For current setup and migration guidance, use [Hermes profile provisioning](../architecture/hermes-profile-provisioning.md) and [operations](../operations.md).
+
 Branch: `feat/hermes-profile-provisioning`; draft [PR #13](https://github.com/cl0ud6uru/CollectiveUI/pull/13). Tested base: `d5abf7437745fe138751a5ecb6d2d186d3ad7087`. This report covers the corrective changes after published head `6c44d2184014ee5ba87e975097c1a5c758d3285e`.
 
 ## Review findings and corrections

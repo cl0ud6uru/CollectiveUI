@@ -14,7 +14,7 @@ Pet adaptation for CollectiveUI by @cl0ud6uru. Inspired by Hermes Agent from Nou
 
 The bundled [Hermes v2 artwork](assets/pets/hermes/README.md) was generated from the user-selected green concept, an edit of earlier reference-inspired artwork. Complete provenance and third-party licensing permissions for the underlying reference have not been established. The artwork and its reproductions in previews/screenshots are excluded from the application's MIT license. Attribution does not grant rights in the underlying reference; no ownership or official endorsement is asserted. The supplied [source notice](assets/pets/hermes/SOURCE-README.txt) is preserved. The credit and artwork notice are also served in `/third-party-notices.txt`.
 
-The source repository does not vendor `node_modules`, compiled bundles, container images, or native runtime binaries. Distributors of those outputs must preserve the applicable dependency notices and satisfy any additional requirements, including those for sharp/libvips prebuilt bundles (LGPL-3.0-or-later, plus their bundled component licenses). This notices file is not a complete binary-distribution license inventory. Hermes integrations refer to separately installed upstream software and images, which retain their own terms.
+The source repository includes the generated iOS voice-engine HTML bundle with React/Three.js and other dependency license comments. It does not vendor `node_modules`, container images, or native runtime binaries. Distributors of those outputs must preserve the applicable dependency notices and satisfy any additional requirements, including those for sharp/libvips prebuilt bundles (LGPL-3.0-or-later, plus their bundled component licenses). This notices file is not a complete binary-distribution license inventory. Hermes integrations refer to separately installed upstream software and images, which retain their own terms.
 
 ## Hermes Assimilated artwork
 
@@ -33,3 +33,7 @@ An original crowned seedling robot: a calm, friendly coordinator in CollectiveUI
 AI-assisted design; vector production artwork adapted from CollectiveUI's original MIT-licensed Moss/Ember visual family.
 
 [The Queen](assets/pets/the-queen/README.md) is supplied native vector artwork based on the project's Moss/Ember, with its actual [MIT notice](assets/pets/the-queen/LICENSE.txt) retained. The runtime atlas clears only the 15 unused cells; all 73 required frames retain their exact decoded pixels. The original atlas and historical source notice are preserved.
+
+## Nimbus artwork
+
+[Nimbus](assets/pets/nimbus/README.md) was created for CollectiveUI from a user-supplied brand reference with OpenAI ImageGen. Its preserved reference, concept, prompt templates and packaged sprite hashes are documented alongside the artwork. It is a separate bundled catalog option from Moss, Ember and the other companions.

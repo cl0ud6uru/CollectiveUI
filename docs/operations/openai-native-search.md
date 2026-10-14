@@ -6,7 +6,7 @@ OpenAI native search uses the Responses API's hosted `web_search` tool. Enable i
 
 The connection must use organization API credentials, the `openai` provider, and the default `https://api.openai.com/v1` endpoint. Saved provider connections are checked by their effective endpoint and enabled state. Azure, arbitrary compatible endpoints, ChatGPT subscriptions, and Hermes are excluded. Hermes keeps its backend tools.
 
-The verified model list is deliberately finite: `gpt-4.1`, `gpt-4.1-mini`, `gpt-5`, `gpt-5.4`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-6-luna`, `gpt-6-sol`, `gpt-6.1-sol`, and `gpt-6-astra`. Unknown names and dated snapshots remain unavailable until verified. The integration does not request GPT-5's unsupported `minimal` reasoning effort.
+The application's model allowlist in `src/lib/native-search-policy.ts` is deliberately finite: `gpt-4.1`, `gpt-4.1-mini`, `gpt-5`, `gpt-5.4`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-6-luna`, `gpt-6-sol`, `gpt-6.1-sol`, and `gpt-6-astra`. Unknown names and dated snapshots remain unavailable until the allowlist is updated. This lists implemented policy, not a fresh check of model availability on your account. The integration does not request `minimal` reasoning effort when native search is attached.
 
 Hosted execution happens on OpenAI's servers. CollectiveUI cannot intercept it with a local fetch rule or pause it for per-call approval. Native search is therefore unavailable when search/page access is disabled, when the selected tool requires approval, or when the local web-page allowlist is nonempty. Existing “always allow” grants cannot override that refusal. Service bots remain restricted to reviewed MCP tools.
 

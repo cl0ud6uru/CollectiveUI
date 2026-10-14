@@ -5,10 +5,7 @@ Tick items off as they're done.
 
 ## 1. Status snapshot
 
-- **Verified locally** against the seeded OpenLDAP directory (`dev/ldap/seed.ldif`) and the mock OpenAI-compatible model (`dev/mock-llm`):
-  - 34 unit tests (Vitest) and 10 end-to-end tests (Playwright) pass.
-  - Lint, type check and the production build are clean.
-  - The standalone server boots and serves pages.
+- **Documentation reviewed against the checkout on 2026-10-12.** Historical test totals and build results are not current release certification. See [development and CI coverage](docs/development.md#running-the-tests) for the runnable suites and [review results](docs/reviews/documentation-audit.md) for this audit's checks.
 - **Stack:** Next.js 16, AI SDK 7, Drizzle, pg-boss.
   - Auth.js v5 is still a **beta** release (`next-auth@5.0.0-beta.x`). Pin the version and review its changelog before upgrading.
 
@@ -25,8 +22,8 @@ Tick items off as they're done.
   - Confirm tool calling works well enough for bots.
   - If the endpoint rejects `response_format: json_schema`, set `OPENAI_COMPAT_STRUCTURED_OUTPUTS=false`. Memory extraction, chat titles, "Create with chat" and "Save as skill" rely on structured output.
   - Check the embedding model used for memory and knowledge search (Admin → Bots & tools → Embeddings app).
-- [ ] **Docker:** neither image (web or worker) nor either compose file has been built. There was no Docker daemon in the build sandbox. The `osixia/openldap` service in `docker-compose.dev.yml` is untested too.
-- [ ] **Workspaces on the portal host:** install gVisor and register it with Docker, build the workspace image, and start `docker-compose.sandbox.yml` (README → Workspaces). Here, sandboxd and the isolation suite ran against Docker 29.3 with gVisor, and the `sandboxd` image passed its start-up checks in a hardened container, but the whole compose stack (web + worker + sandboxd on the internal network) hasn't been started together.
+- [ ] **Deployment-specific Docker validation:** CI definitions include the unit image and production worker smoke test. Verify the complete Compose stack, networking, mounts and directory fixture on your intended host; those checks do not certify your deployment.
+- [ ] **Workspaces on the portal host:** install gVisor and register it with Docker, build the workspace image, and start `docker-compose.sandbox.yml` ([operator guide](docs/operations.md#workspaces-sandboxed-commands)). Here, sandboxd and the isolation suite ran against Docker 29.3 with gVisor, and the `sandboxd` image passed its start-up checks in a hardened container, but the whole compose stack (web + worker + sandboxd on the internal network) hasn't been started together.
 - [ ] **Hermes Agent with a real model:** the integration was tested against a real Hermes gateway (v2026.9.24) running on the mock LLM. Try a profile on your real model (Claude through the Claude Subscription DirectSDK plugin, or an API key), with `approvals.mode: manual`, and check tool steps, an approval, a denial and Stop.
 - [ ] **Microsoft 365 connector:** mail, calendar and file search, sending mail, and routine email notifications are untested. They need delegated Graph scopes (`ENTRA_GRAPH_SCOPES`) and admin consent.
 - [ ] **Web search:** needs a SearXNG instance or a Brave API key.
@@ -42,7 +39,7 @@ Tick items off as they're done.
 ## 3. Known bugs / quick fixes
 
 - [x] **Stop in direct chats only stopped the browser** (and closing the tab lost the rest of the reply while tools and billing carried on). Fixed by durable runs (P6): replies run in the worker, Stop cancels them on the server.
-  - Fix: pass `abortSignal: req.signal` and save the partial reply.
+  - Cancellation is owned by the durable run and worker; disconnecting the browser must not cancel a direct reply.
 - [ ] **E2E tests write to the dev database.** `tests/e2e/seed-e2e.ts` removes leftover bot copies and E2E routines, but chats and inbox items pile up. Use a separate test database.
 - [ ] **Chat titles fall back to "New chat"** when the first message is only a scripted mock tool marker. This is cosmetic and only happens with the mock model.
 
@@ -55,7 +52,7 @@ Tick items off as they're done.
 - [ ] Members can't be changed after the group is created.
 - [ ] Handoffs between bots are text only.
 
-**Delegation:** delegated bots can't ask for approval (the tool call is declined), and delegation goes at most 2 levels deep.
+**Delegation:** native asynchronous delegates can relay workspace approvals to the originating chat or child task. Synchronous delegates and other delegated approval types remain unavailable. Delegation goes at most 2 levels deep. Native follow-ups use `continue_*` with the earlier task ID; Hermes continuation is unavailable. See [delegated tasks](docs/features/delegated-tasks.md).
 
 **Routines**
 - [ ] When a routine pauses for approval, you resolve it by opening the chat from the Inbox. There's no approve/deny button in the Inbox itself.
@@ -74,17 +71,17 @@ Tick items off as they're done.
 **Workspaces**
 - [ ] No network access from workspaces (no package installs from the internet); egress with an allowlist comes with the gateway phase.
 - [ ] No disk or inode quota per workspace; keep Docker's data root on its own filesystem.
-- [ ] Files can only be reached through bots (no file browser or download in the UI).
+- [x] The [workspace browser](docs/architecture/workspace-browser.md) supports files, previews, uploads, downloads and streamed commands. Rich image/PDF rendering and a persistent interactive terminal remain outside its scope.
 
 **Hermes bots**
-- [ ] Editing or regenerating a message doesn't rewind Hermes' own copy of the conversation; attachments are sent as text only.
+- [ ] Editing or regenerating a message does not rewind Hermes' native history. Original-file delivery is implemented for compatible Remote, managed and personal Docker Hermes contexts; unsupported gateways fail explicitly. See [attachment requirements](docs/architecture/hermes-remote-attachments.md).
 - [ ] Approvals continue with Hermes' live stream when the continuation runs on the worker that holds it (always, with one worker). With several worker replicas it may land on another one, which re-attaches to the run (newer Hermes) or, on Hermes ≤ v2026.9.24, shows only the run's final result.
 - [ ] A routine's Hermes approval waits in the Inbox, but Hermes denies it after its own `approvals.timeout` (5 min by default), and a waiting run takes one of Hermes' `max_concurrent_runs` slots.
-- [ ] Profiles are added one by one in Admin → Apps (no import of display names or avatars from the Hermes dashboard yet); a shared profile's memory is shared by everyone who uses the bot.
+- [ ] Manually connected Hermes profiles share native memory with their bot audience. Managed/personal profiles and Team Bot member contexts provide separate lifecycle paths; see [connections](docs/connections.md) and [Team Bots](docs/architecture/hermes-team-foundation.md).
 
 **Search:** English full-text search only; there's no semantic search over past chats.
 
-**No usage guardrails:** no rate limits, per-user quotas or cost caps.
+**Usage guardrails:** authentication throttles, run concurrency limits and native-search budgets exist. There are no general daily model-token quotas or cost caps. Provider spending and Codex allowance views report upstream/accounting data; they are not a universal enforcement layer.
 
 **Durable runs (P6)**
 - [ ] Group chats still run inside the request: they don't resume on reload, and closing the tab stops them.
@@ -96,14 +93,14 @@ Tick items off as they're done.
 
 **Dictation privacy:** dictation uses the browser's Web Speech API. **In Chrome, the audio is processed on Google's servers**, which may conflict with company policy. Firefox isn't supported. Consider disabling it, or swapping in a self-hosted speech-to-text service.
 
-**Small screens:** the bot side panel is hidden below large-screen widths; use the bot's profile page instead.
+**Small screens:** bot details open as a dismissible sheet; workspace controls also have a mobile dialog. The native iOS app has its own supported subset; see [mobile](docs/mobile.md).
 
 **Other gaps**
 - [ ] The admin-defined HTTP tool templates from the original plan weren't built; MCP servers cover that use case.
 - [ ] No SIEM export, data-retention policies or conversation export.
-- [ ] Keys can't be rotated after `ENCRYPTION_KEY` is set.
-- [ ] No translations (i18n), and accessibility hasn't been audited.
-- [ ] No CI workflow; the tests only run locally.
+- [x] Encryption key rotation supports a keyring and worker rewrapping. Retain old keys until rewrapping and backup recovery have been verified; see [development](docs/development.md#architecture).
+- [ ] No translations (i18n). Targeted keyboard, reduced-motion, mobile and native Dynamic Type checks exist; a comprehensive accessibility audit remains outstanding.
+- [x] GitHub Actions covers type checking, lint, unit tests, selected browser/native fixtures, Docker and iOS checks. General database/LDAP E2E coverage still requires its stack.
 - [ ] Security headers are minimal and there's no strict Content-Security-Policy.
 
 ## 5. Backlog
@@ -112,8 +109,8 @@ Tick items off as they're done.
 - [x] Fix Stop in direct chats (see section 3): durable runs, P6.
 - [ ] Connect real Entra and/or LDAP and one real endpoint, then run the smoke checklist (section 6).
 - [ ] Build and run the Docker images, and write down the deployment steps for your infrastructure.
-- [ ] Add a GitHub Actions workflow for lint, type check, unit tests and build. E2E would also need Postgres, OpenLDAP and the mock LLM as services.
-- [ ] Add basic rate limiting and per-user daily token caps.
+- [x] GitHub Actions workflows are checked in under `.github/workflows/`. Expand general E2E automation with disposable Postgres, OpenLDAP and mock LLM services.
+- [ ] Add general model-usage limits and per-user daily token caps beyond existing authentication throttles, concurrency and native-search budgets.
 
 ### P1
 - [ ] Azure Blob / S3 storage adapter.
@@ -127,11 +124,11 @@ Tick items off as they're done.
 - [ ] Replace or remove the Bing web search option.
 
 ### P2: Grok Bot features not built yet
-- [ ] Voice chat and voice memos.
-- [ ] Message threads and emoji reactions.
+- [x] Fullscreen voice chat is implemented for Native and Hermes, including native iOS voice. Recorded voice memos remain separate future work; see [voice](docs/voice.md).
+- [x] Message replies, reactions, bookmarks and per-user hiding are implemented. These are conversation interactions, not independently executing nested bot threads.
 - [ ] Asynchronous bot-to-bot messages (the receiving bot wakes up later).
 - [ ] Bots that live in Teams or Slack.
-- [ ] A browser for bots, and network access for workspaces (the offline workspace computer is built), plus "teach a task" (record a workflow and turn it into a skill).
+- [ ] Complete deployment-specific containment and egress verification before enabling the implemented private agent browser. General workspace network access and “teach a task” screen recording remain separate future work.
 - [ ] More keyboard shortcuts (bot switching, find in chat).
 - [ ] Review the Grok Bot docs sections not yet covered: *Skills and routines*, *Approvals, security and privacy*, *Files and results*.
 
@@ -145,4 +142,4 @@ Tick items off as they're done.
 6. [ ] Start a group chat with two bots. Test an @mention and a handoff.
 7. [ ] Share a template link, then open it as a second user and **Add to my bots**.
 8. [ ] Check that Admin → Usage numbers and the CSV export look right.
-9. [ ] Turn on Workspaces (Admin → Workspaces shows "gVisor isolation"), give a bot the Workspace tools, approve a command, and check a second person on the same bot gets an empty workspace.
+9. [ ] Turn on Workspaces (Admin → Workspaces shows "gVisor isolation"), give a bot the Workspace tools with **Run commands → Ask me first**, approve a command, and check a second person on the same bot gets an empty workspace.

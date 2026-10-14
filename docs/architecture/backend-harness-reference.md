@@ -1,8 +1,10 @@
 # Backend harness — technical reference
 
+Historical design and upstream comparison. Authentication descriptions here are not current setup instructions. Use the [connection guide](../connections.md) and [stock Codex guide](../codex-harness.md) for the supported SIWC flow and operator gates.
+
 Companion to [backend-harness.md](./backend-harness.md). These facts were checked against primary sources
 (vendor source code, npm tarballs, official docs) on 2026-09-24/25 and pin the versions the plan targets.
-Re-verify on every version bump — Codex app-server and the Claude Code control protocol are experimental/undocumented.
+This is a dated research record, not the installed dependency or implemented runtime inventory. The later [Codex harness pilot](../codex-harness.md) has its own pin and supported scope. Re-verify these contracts before applying them to a different version; the experimental/undocumented classifications below describe the research baseline.
 
 **ChatGPT direct**
 - Endpoints:

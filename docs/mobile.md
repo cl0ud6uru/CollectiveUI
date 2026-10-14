@@ -15,13 +15,19 @@ and history as on the web.
 - Image and document attachments (the same upload limits as the web).
 - Resuming a reply that was still running when the app was closed.
 - Inbox: routine and task results and approval requests.
+- Hermes command picker and supported slash commands, including status and recovery controls; available commands come from the server.
+- On-device dictation into a draft, plus [fullscreen voice conversations](voice.md) when the server has an eligible voice connection.
+- Bot status and effective pet artwork, with native appearance preferences and optional [Live Activities](operations/live-activities.md).
 
-Administration, bot editing, settings and security (passkeys, TOTP, passwords) stay on the web. Group chats can be read
-but are best used on the web. Hermes slash commands are not offered in the app.
+Administration, bot editing, and account security (passkeys, TOTP, passwords) stay on the web. Native Settings contains
+appearance, Live Activities, account/server/session details and sign-out, plus links to website settings and, for current
+administrators, administration. Those links use ordinary website authentication and may require another sign-in.
+Existing group conversations support chat and approvals, but the full group-management experience remains on the web.
+Voice is limited to eligible direct chats; group, delegated read-only and Hermes Team chats do not offer voice.
 
 ## Enable it on the server
 
-Set in **both** the web environment (the worker does not need it):
+Set in the web service environment. If you enable background Live Activity delivery, also set `MOBILE_APP_ENABLED=true` in the worker; delivery rechecks that switch before each push:
 
 ```dotenv
 MOBILE_APP_ENABLED=true
@@ -29,7 +35,7 @@ MOBILE_APP_ENABLED=true
 MOBILE_SESSION_DAYS=30
 ```
 
-Apply migrations (`0027_mobile_sessions`) before starting the new version. Use HTTPS with a certificate the device
+Run the normal migrations before starting the new version; mobile sign-in uses `0027_mobile_sessions`, and Live Activities also uses `0029_live_activities`. Use HTTPS with a certificate the device
 trusts; iOS refuses plain HTTP except for local-network development servers.
 
 ## How sign-in works
@@ -45,6 +51,8 @@ including local accounts with passkeys or an authenticator app, Microsoft Entra 
 4. The app redeems the code at `POST /api/mobile/auth/token` with its PKCE verifier. Codes are single use (a wrong
    verifier burns the code) and expire after two minutes.
 5. The app receives an opaque bearer token, stored in the iOS Keychain (this device only).
+
+See [the iOS README](../ios/README.md) for Xcode requirements, local builds, offline demo mode and simulator screenshot commands.
 
 ### Token security
 
@@ -62,13 +70,13 @@ including local accounts with passkeys or an authenticator app, Microsoft Entra 
   revocations are recorded in the audit log (`mobile.authorize`, `mobile.revoke`).
 - Turning `MOBILE_APP_ENABLED` off stops new sign-ins and rejects all existing tokens without deleting them.
 - A bearer token reaches only the mobile API: `/api/mobile/v1/*`, `/api/chat` (send, snapshot, resume, stop),
-  `/api/files` and `/api/search`. `proxy.ts` rejects it everywhere else (pages, admin, account security, server
+  `/api/chat/commands`, `/api/chat/{id}/approvals`, `/api/files`, `/api/workspace/files` and `/api/search`. `proxy.ts` rejects it everywhere else (pages, admin, account security, server
   actions). A request carrying a bearer token is judged by the token alone, never by cookies, and `/api/mobile/v1/*`
   never accepts browser cookies. Other `Authorization` schemes, such as Basic auth from a reverse proxy, are unaffected.
 
 ## API reference
 
-All JSON; errors are `{ "error": "…" }`. Authenticated requests send `Authorization: Bearer <token>`; a `401` means the
+Control endpoints use JSON; attachments and avatar endpoints return binary data, and chat replies use SSE. Errors are `{ "error": "…" }`. Authenticated requests send `Authorization: Bearer <token>`; a `401` means the
 token is no longer valid and the app signs out.
 
 | Method & path | Auth | Purpose |
@@ -78,7 +86,9 @@ token is no longer valid and the app signs out.
 | `POST /api/mobile/auth/token` `{ code, codeVerifier }` | public (code) | `{ token, expiresAt, user }` |
 | `GET /api/mobile/v1/session` | token | `{ user, deviceName, expiresAt }` |
 | `DELETE /api/mobile/v1/session` | token | Sign this device out |
-| `GET /api/mobile/v1/shell` | token | `{ user, branding, conversations, folders, apps, bots, inboxUnread }` — the web sidebar's data |
+| `GET /api/mobile/v1/shell` | token | `{ user, branding, conversations, folders, apps, bots, inboxUnread, pets }` — the web sidebar's data |
+| `GET /api/mobile/v1/bot-statuses` | token | Authorized bot activity states for the roster |
+| `GET /api/mobile/v1/bots/{id}/pet/avatar?v={revision}` | token | The bot's effective authenticated pet atlas |
 | `POST /api/mobile/v1/bots/{id}/chat` `{ kind: "home" \| "side" }` | token | `{ conversationId }` |
 | `PATCH /api/mobile/v1/conversations/{id}` `{ title?, pinned?, archived? }` | token | Rename, pin, archive |
 | `DELETE /api/mobile/v1/conversations/{id}` | token | Delete a chat |
@@ -90,6 +100,15 @@ token is no longer valid and the app signs out.
 | `POST /api/chat/{id}/stop` `{ messageId }` | token | Stop the reply |
 | `POST /api/files`, `GET /api/files/{id}` | token | Upload (multipart field `file`) and download attachments |
 | `GET /api/search?q=…` | token | Search chat titles and messages |
+| `GET`, `POST /api/chat/commands` | token | Available Hermes commands and command execution |
+| `GET`, `POST /api/chat/{id}/approvals` | token | Read and answer requests for delegated tool approvals |
+| `GET /api/workspace/files?path=…` | token | Download a file from the signed-in user's workspace |
+| `GET`, `POST /api/mobile/v1/voice/session` | token | Voice availability and session lifecycle |
+| `GET`, `POST /api/mobile/v1/voice/turn` | token | Poll and submit voice transcript/backend work |
+| `POST /api/mobile/v1/voice/reaction` | token | Contextual avatar reactions |
+| `GET /api/mobile/v1/voice/avatar?conversationId=…` | token | Configured self-contained GLB (maximum 25 MiB) |
+| `GET /api/mobile/v1/conversations/{id}/activity?runId=…` | token | Generic, authorized Live Activity snapshot |
+| `POST`, `DELETE /api/mobile/v1/live-activities` | token | Register or revoke Live Activity background updates; push setup is separate |
 
 `POST /api/chat` bodies are the same as the web client's: a new user message
 `{ conversationId, appId? | botId?, parentId, message: { id, role: "user", parts } }`, a regeneration

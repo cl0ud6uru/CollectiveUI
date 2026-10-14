@@ -7,8 +7,10 @@ use it to apply its own per-user permissions instead of trusting one shared key.
 - **Header:** `X-Portal-Identity` by default (the admin can rename it). It is sent *next to* the server's static
   headers, so an existing `Authorization: Bearer …` key keeps working; check both.
 - **Format:** a JWT signed with HS256. The key is the secret shown once when identity is turned on (use the string's
-  UTF-8 bytes, which is what JWT libraries do with a string secret). "New secret" issues another one; the old one
-  stops working at once. Changing the server's URL also issues a new secret.
+  UTF-8 bytes, which is what JWT libraries do with a string secret). "New secret" issues another one and subsequent
+  portal requests use it. Update your server's verifier to accept the new secret and remove the old one; previously
+  issued tokens remain verifiable until expiry wherever the old key is still accepted. Changing the server's URL
+  also issues a new secret.
 - **Lifetime:** 60 seconds. A fresh token is minted for every request.
 
 ## Claims
@@ -23,6 +25,7 @@ use it to apply its own per-user permissions instead of trusting one shared key.
 | `groups` | the person's portal group names |
 | `bot`, `conv` | the bot and conversation the call comes from |
 | `system` | `true` on the portal's own calls (no person) |
+| `service` | Present for an admin-published service capability: exact bot/grant revision, server/tool and call context; see [service bot identity](service-bots.md#enforcement-and-identity) |
 | `iat`, `exp`, `jti` | issued at, expiry (iat + 60), unique id |
 
 Always check the signature, `exp`, `iss` **and `aud`** (a token minted for another server must not work on yours).
@@ -43,6 +46,7 @@ export async function portalUser(req) {
     algorithms: ["HS256"],
     issuer: "ai-portal",
     audience: "https://mcp.internal/jira/mcp", // this server's URL as registered in the portal
+    requiredClaims: ["exp", "iat", "sub"],
     maxTokenAge: "90s",
   });
   return payload; // { sub, upn, email, name, groups, bot, conv, ... }

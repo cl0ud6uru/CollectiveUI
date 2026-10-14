@@ -1,3 +1,5 @@
+> Historical design QA records follow. They describe the checks performed for their original changes, not a fresh certification of every current screen. Local `/home/...` references are operator evidence paths and are not distributed in this repository. Workspace browser captures were refreshed on 2026-10-12 with the current component fixture; the original comparison images were not regenerated. See [the documentation audit](docs/reviews/documentation-audit.md).
+
 # Workspace browser design QA
 
 **Findings**

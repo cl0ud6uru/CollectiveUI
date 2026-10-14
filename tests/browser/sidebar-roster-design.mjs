@@ -15,7 +15,7 @@ const dir = await mkdtemp(path.join(tmpdir(), 'sidebar-roster-design-'));
 const shots = process.env.SIDEBAR_ROSTER_SCREENSHOT_DIR ?? path.join(root, 'docs/screenshots/sidebar-roster');
 await mkdir(shots, { recursive: true });
 const entry = path.join(dir, 'entry.tsx');
-const names = ['LloydGPT', 'Action1 Ops Agent', 'Gemma 4', 'Audit Bot', 'IT Ticket Bot', 'Hermes'];
+const names = ['CollectiveUI', 'Action1 Ops Agent', 'Gemma 4', 'Audit Bot', 'IT Ticket Bot', 'Hermes'];
 const previews = ['Yep—today’s big conversation...', 'Workspace ready', 'Good morning! I’m here...', 'Yep—that gives us...', '2 tickets submitted...', 'I’m currently running...'];
 const bots = names.map((name, i) => ({ kind: 'bot', id: `bot-${i}`, name, icon: ['blob:circle:blue','blob:hexagon:blue','blob:ghost:grey','blob:triangle:yellow','blob:circle:teal','blob:hexagon:teal'][i], description: null, preview: previews[i], coordinator: i === 0, pinned: i === 0, lastAt: new Date(Date.now() - i * 60000).toISOString() }));
 const conversation = (id, title, more = {}) => ({ id, title, botId: null, appId: null, source: 'chat', pinned: false, folderId: null, updatedAt: new Date(Date.now()-(Number(id.split('-').at(-1))||0)*60000).toISOString(), ...more });
@@ -27,7 +27,7 @@ import { Tooltip } from 'radix-ui';
 import { ShellProvider, useShell } from '${root}/src/components/chat/shell-context';
 import { ChatShell } from '${root}/src/components/chat/chat-shell';
 function Controls() { const shell=useShell(); return <><button onClick={()=>shell.setMobileOpen(true)}>Open sidebar</button>{shell.searchOpen && <div role="dialog" aria-label="Search chats"><button onClick={()=>shell.setSearchOpen(false)}>Close search</button></div>}<p>Private synthetic sidebar fixture</p></>; }
-const initial={bots:${JSON.stringify(bots)},conversations:${JSON.stringify(conversations)},apps:[],folders:[],inboxUnread:2,user:{id:'fixture',name:'Jason Hartley',email:'jhartley@lloydmc.com',isAdmin:true,canCreateBots:true},branding:{appName:'LloydGPT',welcomeText:'',logoEmoji:''}};
+const initial={bots:${JSON.stringify(bots)},conversations:${JSON.stringify(conversations)},apps:[],folders:[],inboxUnread:2,user:{id:'fixture',name:'Demo User',email:'demo@example.invalid',isAdmin:true,canCreateBots:true},branding:{appName:'CollectiveUI',welcomeText:'',logoEmoji:''}};
 createRoot(document.getElementById('root')).render(<Tooltip.Provider><ShellProvider {...initial}><ChatShell><Controls/></ChatShell></ShellProvider></Tooltip.Provider>);
 `);
 const noAction = 'async()=>{}';
@@ -65,7 +65,7 @@ try {
  await nav.getByRole('link',{name:'Browse bots',exact:true}).click();expect(await page.evaluate(()=>window.fixtureNavigation)).toBe('/bots');
  await expect(nav.getByRole('link',{name:'Hermes',exact:true})).toHaveCount(0);
  await nav.getByRole('link',{name:'Inbox',exact:false}).click();expect(await page.evaluate(()=>window.fixtureNavigation)).toBe('/inbox');
- await nav.getByRole('button',{name:'Jason Hartley',exact:false}).click();await expect(page.getByRole('menuitem',{name:'Admin panel'})).toBeVisible();await page.keyboard.press('Escape');
+ await nav.getByRole('button',{name:'Demo User',exact:false}).click();await expect(page.getByRole('menuitem',{name:'Admin panel'})).toBeVisible();await page.keyboard.press('Escape');
  await nav.evaluate(el=>el.querySelector('.overflow-y-auto').scrollTop=0);await page.mouse.move(700,20);await nav.screenshot({path:path.join(shots,'desktop.png')});
  for(const width of [320,390]) {await page.setViewportSize({width,height:844});await page.getByRole('button',{name:'Open sidebar',exact:true}).click();const drawer=page.getByRole('navigation',{name:'Main navigation'}).filter({visible:true});await expect(drawer).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await expect(drawer.getByRole('link',{name:'Inbox',exact:false})).toBeInViewport();await drawer.screenshot({path:path.join(shots,`mobile-${width}.png`)});await drawer.locator('[data-navigation-bot="bot-3"] a').click();await expect(drawer).toBeHidden();}
  expect(errors).toEqual([]);

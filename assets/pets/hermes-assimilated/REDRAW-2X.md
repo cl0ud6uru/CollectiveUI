@@ -53,7 +53,7 @@ Frame counts are fixed. Unused cells stay empty.
 | 8 | Review | 6 | Reading a tablet: finger to chin, a wink, a satisfied nod. |
 | 9–10 | Gaze | 8 + 8 | Head and eyes turn toward 16 directions clockwise from up (0°) in 22.5° steps: 90° is screen right, 180° down, 270° screen left. The cybernetic eye stays on the same side as she turns. |
 
-Gaze frames are part of v2 but aren't animated in CollectiveUI yet. Still redraw all 16 so the pet stays complete.
+Gaze frames are part of v2 and can be inspected in the pet preview. Ordinary chat avatars do not track the cursor; the voice renderer uses screen-left/right poses for orientation gestures. Redraw all 16 to keep the pet complete.
 
-The shipped v2 sheet already rounds its colors to fit the 4 MB import limit. Expect the build script to do the same
+The shipped v2 sheet already rounds its colors to fit the 4 MiB import limit. Expect the build script to do the same
 for the redraw.
