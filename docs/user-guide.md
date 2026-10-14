@@ -4,7 +4,7 @@
 
 ## Features
 
-The bot features below describe ordinary **native caller bots** unless stated otherwise. [Service bots](service-bots.md) have a narrower, admin-published tool set and direct-chat-only scope. [Hermes bots](connections.md#hermes-agent-bots-from-your-hermes-profiles) use their backend’s tools, skills and memory instead. The [Codex app-server pilot](codex-harness.md) uses your own operator-enrolled personal runtime and ChatGPT connection, with native command/file tools and persistent threads. Activation requires validated operator setup. Attachments, groups, routines and delegation are unavailable; legacy manifest runtimes remain text-only. Your administrator controls which features are enabled.
+The bot features below describe ordinary **native caller bots** unless stated otherwise. [Service bots](service-bots.md) have a narrower, admin-published tool set and direct-chat-only scope. [Hermes bots](connections.md#hermes-agent-bots-from-your-hermes-profiles) use their backend’s tools, skills and memory instead. The [Codex app-server preview](codex-harness.md) uses your owner-bound Sign in with ChatGPT account and a private stock runtime, with native command/file tools and persistent threads. It is disabled by default until the operator has distributed and enrolled the reviewed runtime and completed live sandbox proof. Attachments, groups, routines and delegation are unavailable; legacy manifest runtimes remain text-only. Your administrator controls which features are enabled.
 
 **Everyday chat**
 

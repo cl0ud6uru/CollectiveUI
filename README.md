@@ -4,7 +4,7 @@
 
 **A self-hosted AI workspace. Choose what runs your bots.**
 
-CollectiveUI brings AI conversations and task-focused bots into one web app, with a choice of engine behind each bot. Use CollectiveUI’s built-in engine with a connected model, connect a Hermes backend with its own tools, memory, skills and model, or try the Codex personal-agent pilot using each caller's own runtime. Different bots can use different engines through the same chat interface.
+CollectiveUI brings AI conversations and task-focused bots into one web app, with a choice of engine behind each bot. Use CollectiveUI’s built-in engine with a connected model, or connect a Hermes backend with its own tools, memory, skills and model. A separately gated Codex preview is described below; it is not currently a generally available engine.
 
 Use it for yourself or a team, with an administrator choosing the available connections, tools and access rules.
 
@@ -63,13 +63,13 @@ Want more detail? The [user guide](docs/user-guide.md) covers chat controls, bot
 
 An **agent harness**, called a **bot engine** here, is the software that runs a bot’s steps and tools around its AI model. Choosing the engine determines which system provides the bot’s tools, memory and skills.
 
-When creating a bot, choose **Bot engine → Native · CollectiveUI** and a **Model connection**, or **Hermes** and an **Agent backend connection**. The editor also offers **Codex · personal agent** for new bots. Its personal Docker pilot uses each caller’s own ChatGPT connection, native command/file tools and persistent native threads. Operator enrollment, validated sandbox execution and egress setup are prerequisites; activation remains gated. Legacy operator-assigned manifest runtimes retain direct text chat only. Neither route supports attachments, groups, routines or delegation. [Codex setup and limits](docs/codex-harness.md). Available features and permissions depend on the engine and bot mode.
+For general use, the supported engines are **Native · CollectiveUI** with a **Model connection**, and **Hermes** with an **Agent backend connection**. The editor also exposes **Codex · personal agent** as a separately gated preview. It uses the caller's owner-bound Sign in with ChatGPT account and private stock app-server runtime, but the SIWC profile transfer/import, reviewed image distribution, per-owner enrollment, approved egress and exact-image live sandbox proof are prerequisites. The runtime remains disabled by default until those gates pass. Optional computer/SBX mode requires its own administrator opt-in and live proof, and also remains off by default. Legacy operator-assigned manifest runtimes retain direct text chat only. The Codex preview does not support attachments, groups, routines or delegation. [Codex setup and limits](docs/codex-harness.md). Available features and permissions depend on the engine and bot mode.
 
 | Name in the app | What it means | Where you use it |
 | --- | --- | --- |
 | **Model connection** | A connection to one AI model or provider deployment that generates answers. | **New Chat**, or a bot using the built-in **Native · CollectiveUI** engine. |
 | **Agent backend connection** | A connection to a service that runs its own agent, tools and model. **Hermes** is the external backend currently implemented. | A bot using the **Hermes** engine. It is not a model choice in New Chat. |
-| **Bot** | A named assistant with a purpose, instructions and an audience. It uses the native engine, Hermes, or the Codex personal-agent pilot. | **Bots**, including its home chat and side chats. |
+| **Bot** | A named assistant with a purpose, instructions and an audience. It uses the native engine or Hermes; a separately gated Codex preview is not generally available. | **Bots**, including its home chat and side chats. |
 
 Admins configure both types of connection under **Admin → Connections**. [Supported providers and setup](docs/connections.md) · [Model and backend behavior](docs/features/models-and-agent-backends.md).
 
