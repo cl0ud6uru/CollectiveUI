@@ -511,7 +511,8 @@ class ImageAndPreflightTests(unittest.TestCase):
 
     def test_preflight_accepts_only_synthetic_stock_compose_config(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            # Operator canonicalizes the installation; macOS temporary paths use a /var alias.
+            root = Path(tmp).resolve()
             (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
             (root / ".env").chmod(0o600)
             (root / "docker-compose.release.yml").write_text("services: fixture\n")
@@ -537,7 +538,7 @@ class ImageAndPreflightTests(unittest.TestCase):
 
     def test_deployed_runtime_configuration_change_blocks_update_preflight(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             environment = root / ".env"
             environment.write_text("POSTGRES_PASSWORD=synthetic\n")
             environment.chmod(0o600)

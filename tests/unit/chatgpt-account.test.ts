@@ -48,6 +48,7 @@ import { db, schema } from '@/db';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { deleteAllChatGPTConnections, getChatGPTAuth, openCredentialSecret, sealCredentialSecret } from '@/lib/llm/chatgpt/store';
 import { changeUnifiedAccount, importSIWCProfile, unifiedAccountView } from '@/lib/llm/chatgpt/account';
+import { accountSetupView, prepareAccountRuntime } from '@/lib/llm/chatgpt/onboarding';
 import { assertCurrentSIWCConnection } from '@/lib/llm/chatgpt/invalidation';
 import { tokenFingerprint } from '@/personal-codex/contracts';
 import { PersonalControlError } from '@/personal-codex/control';
@@ -97,6 +98,8 @@ beforeEach(async () => {
   fixture.identity = { subject: 'siwc-subject', email: 'alice@test.invalid', clientId: 'issued-client-id', expiresAt: new Date(Date.now() + 3_600_000) };
   fixture.control.mockReset().mockImplementation(async (_owner: string, action: string) => {
     if (action === 'status') return { state: 'stopped', siwc: { available: true } };
+    if (action === 'readiness') return { state: 'ready', selfEnrollment: true, enrolled: false, runtimeState: 'not_started' };
+    if (action === 'prepare') return { state: 'ready', selfEnrollment: true, enrolled: true, runtimeState: 'running' };
     return { state: 'stopped' };
   });
   fixture.refresh.mockReset();
@@ -355,5 +358,97 @@ describe('unified ChatGPT account', () => {
     else if (cause === 'deleted credential') await db.delete(schema.userCredentials).where(eq(schema.userCredentials.userId, 'alice'));
     else await db.update(schema.personalCodexAccounts).set({ connected: false }).where(eq(schema.personalCodexAccounts.userId, 'alice'));
     await expect(verify()).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+describe('consented private runtime preparation', () => {
+  const consent = { accepted: true as const, consentVersion: 1 as const };
+
+  it('keeps status read-only and distinguishes prepared resources from sign-in', async () => {
+    await expect(unifiedAccountView(alice!)).resolves.toMatchObject({
+      credential: null, setup: { eligible: true, canPrepareRuntime: true,
+        runtime: { enrolled: false }, authentication: { state: 'companion_required' } },
+    });
+    expect(fixture.control.mock.calls.every(call => ['status', 'readiness'].includes(call[1]))).toBe(true);
+    expect(await savedCredential()).toBeUndefined();
+    expect(await db.select().from(schema.personalCodexAccounts)).toEqual([]);
+  });
+
+  it('records explicit same-owner consent without storing credentials or authorizing inference', async () => {
+    await expect(prepareAccountRuntime(alice!, consent)).resolves.toMatchObject({ prepared: true,
+      runtime: { enrolled: true, runtimeState: 'running' }, authentication: { state: 'companion_required' } });
+    await prepareAccountRuntime(bob!, consent);
+    expect(fixture.control.mock.calls).toEqual([
+      ['alice', 'prepare', { consentVersion: 1, sessionVersion: 0 }],
+      ['bob', 'prepare', { consentVersion: 1, sessionVersion: 0 }],
+    ]);
+    const entries = await db.select().from(schema.auditLog).where(eq(schema.auditLog.action, 'chatgpt.codex.prepare'));
+    expect(entries.map(row => ({ actor: row.actorId, target: row.target, details: row.details }))).toEqual([
+      { actor: 'alice', target: 'alice', details: { consentVersion: 1, sessionVersion: 0 } },
+      { actor: 'bob', target: 'bob', details: { consentVersion: 1, sessionVersion: 0 } },
+    ]);
+    expect(await db.select().from(schema.userCredentials)).toEqual([]);
+    expect(await db.select().from(schema.personalCodexAccounts)).toEqual([]);
+  });
+
+  it.each(['disabled', 'rotated'] as const)('rejects a %s principal before broker access', async reason => {
+    await db.update(schema.users).set(reason === 'disabled' ? { disabled: true } : { sessionVersion: 1 }).where(eq(schema.users.id, 'alice'));
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toMatchObject({ status: 403 });
+    expect(fixture.control).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { enabled: false }, { access: 'selected' }, { allowPersonalPlans: false }, { allowedWorkspaceIds: ['restricted-workspace'] },
+  ])('rechecks current administrator policy before preparation', async policy => {
+    await permitChatGPT(policy);
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toMatchObject({ status: 403 });
+    expect(fixture.control).not.toHaveBeenCalled();
+  });
+
+  it('does not trust stale administrator privileges', async () => {
+    await permitChatGPT({ access: 'selected' });
+    const staleAdmin = fixture.admin!;
+    await db.update(schema.users).set({ isAdmin: false }).where(eq(schema.users.id, 'admin'));
+    await expect(prepareAccountRuntime(staleAdmin, consent)).rejects.toMatchObject({ status: 403 });
+    expect(fixture.control).not.toHaveBeenCalled();
+  });
+
+  it('requires an email binding and a valid installation host without changing either', async () => {
+    await db.update(schema.users).set({ email: null, upn: 'local:alice' }).where(eq(schema.users.id, 'alice'));
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toMatchObject({ status: 403 });
+    expect(fixture.control).not.toHaveBeenCalled();
+    await db.update(schema.users).set({ email: 'alice@test.invalid' }).where(eq(schema.users.id, 'alice'));
+    vi.stubEnv('CHATGPT_SIWC_HOST_ID', 'invalid-host');
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toMatchObject({ status: 403 });
+    expect(fixture.control).not.toHaveBeenCalled();
+    expect((await db.select().from(schema.users).where(eq(schema.users.id, 'alice')))[0]).toMatchObject({ email: 'alice@test.invalid', upn: 'local:alice' });
+  });
+
+  it('blocks preparation while Codex work has not reached a confirmed terminal state', async () => {
+    await db.insert(schema.codexRuns).values({ runId: 'prepare-blocked', userId: 'alice', runtimeId: 'runtime', binding: 'binding', funding: 'chatgpt_subscription', phase: 'stop_unconfirmed' });
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toMatchObject({ status: 409 });
+    expect(fixture.control).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { state: 'verification_required', selfEnrollment: true, enrolled: false, reason: 'An operator must verify the stock sandbox before enrollment.' },
+    { state: 'ready', selfEnrollment: true, enrolled: true, runtimeState: 'stopped' },
+    { state: 'ready', selfEnrollment: true, enrolled: false, runtimeState: 'running' },
+  ])('never reports successful preparation from an incomplete broker result', async result => {
+    fixture.control.mockResolvedValue(result);
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(schema.auditLog).where(eq(schema.auditLog.action, 'chatgpt.codex.prepare'))).toEqual([]);
+    expect(await savedCredential()).toBeUndefined();
+  });
+
+  it('reports unavailable read-only setup safely and does not retry a failed mutation', async () => {
+    fixture.control.mockRejectedValue(new Error('synthetic private operator detail'));
+    await expect(accountSetupView(alice!, await import('@/lib/settings').then(m => m.getSetting('chatgpt')))).resolves.toMatchObject({
+      canPrepareRuntime: false, runtime: { state: 'unavailable', enrolled: false, reason: expect.not.stringContaining('private operator detail') },
+    });
+    fixture.control.mockClear();
+    await expect(prepareAccountRuntime(alice!, consent)).rejects.toThrow('synthetic private operator detail');
+    expect(fixture.control).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(schema.auditLog).where(eq(schema.auditLog.action, 'chatgpt.codex.prepare'))).toEqual([]);
   });
 });

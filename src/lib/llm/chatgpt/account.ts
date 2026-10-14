@@ -11,9 +11,10 @@ import { accountRejection, userMayUseChatGPT } from './policy';
 import { getChatGPTAuth, getChatGPTCredential, openCredentialSecret, revokeCredentialSecret, saveChatGPTConnection, type ChatGPTSecret } from './store';
 import { invalidateChatGPTConnectionLocked } from './invalidation';
 import { SIWCCredentialSchema, validateSIWCCredential } from './siwc';
+import { accountSetupView, localSignInReason } from './onboarding';
 
 const hostId = () => process.env.CHATGPT_SIWC_HOST_ID?.trim();
-const onboardingReason = 'Sign in on your own computer with the local ChatGPT helper, then explicitly transfer and import only your protected profile into this self-hosted installation. No second Codex authorization is needed.';
+const onboardingReason = localSignInReason;
 
 /** Browser projection deliberately excludes tokens, refresh data and token fingerprints. */
 export async function unifiedAccountView(p: Principal) {
@@ -35,9 +36,10 @@ export async function unifiedAccountView(p: Principal) {
     } catch (error) { codex = error instanceof HttpError && error.message.includes('not enrolled') ? { state: 'not_enrolled', reason: error.message } : { state: 'backend_error', reason: 'Stock Codex is unavailable. Ask the operator to check the broker, then retry.' }; }
   }
   if (!allowed) codex = { state: 'disabled', reason: reason! };
-  return { allowed, reason, credential: row ? { email: row.email, planType: row.planType, status: row.status, migrationRequired } : null,
+  const setup = await accountSetupView(p, settings);
+  return { allowed, reason, setup, credential: row ? { email: row.email, planType: row.planType, status: row.status, migrationRequired } : null,
     backends: { native: { state: nativeState, ...(reason || policyReason ? { reason: reason ?? policyReason! } : {}) }, codex },
-    onboarding: { state: hostId() ? 'ready' as const : 'blocked' as const, reason: hostId() ? onboardingReason : 'An operator must configure a stable CHATGPT_SIWC_HOST_ID for this installation before you run the local sign-in helper.' } };
+    onboarding: { state: hostId() ? 'ready' as const : 'blocked' as const, reason: hostId() ? onboardingReason : 'An operator must finish this installation’s ChatGPT sign-in configuration.' } };
 }
 
 /** Explicit import is server/CLI-only. A browser cannot post credentials to this service. */
