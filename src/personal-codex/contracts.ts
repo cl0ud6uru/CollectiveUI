@@ -35,3 +35,12 @@ export const enrollmentReadinessSchema = z.object({
   reason: z.enum(['An operator must enable enrollment for this installation.', 'An operator must verify the stock sandbox before enrollment.', 'Installed runtime resources require operator reconciliation.']).optional(),
 }).strict();
 export type EnrollmentReadiness = z.infer<typeof enrollmentReadinessSchema>;
+
+/** Browser-safe projection; resource readiness never implies a ChatGPT credential. */
+export type AccountSetupView = {
+  eligible: boolean;
+  reason: string | null;
+  runtime: EnrollmentReadiness | { state: 'not_installed' | 'unavailable'; selfEnrollment: false; enrolled: false; runtimeState?: undefined; reason: string };
+  canPrepareRuntime: boolean;
+  authentication: { state: 'companion_required'; reason: string };
+};

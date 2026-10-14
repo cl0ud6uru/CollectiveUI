@@ -64,9 +64,12 @@ policy/session checks, active-work refusal, credential-free preparation, truthfu
 UI states, read-only readiness, installation-bound receipts, failed unlink across
 restart, and connected-runtime idempotence. Driver tests verify preflight performs
 no resource mutation. Unix socket tests use disposable fixtures; no production
-Docker runtime or OAuth service is contacted. Final validation passed 151 tests
-across ten focused suites and `npm run typecheck`. Targeted lint reported no errors
+Docker runtime or OAuth service is contacted. Final validation passed 172 tests
+across eleven focused suites (including repository policy guards) and `npm run typecheck`. Targeted lint reported no errors
 and five existing warnings in the driver and account tests. Independent Sol 6.1
 and Luna reviews found no blocking issue within this slice. Stock runtime image
-files are unchanged. Desktop/browser UI control was paused at the user's request;
-the UI checks rendered the component in terminal-only synthetic tests.
+files are unchanged. Desktop/browser UI control was paused at the user's request.
+Terminal-only UI checks include static renders and a disposable headless Chromium
+fixture that exercises consent, exact mutation payloads, failure recovery,
+connected controls, approval headers, and 320/390/768/1280 pixel widths. The fixture
+uses synthetic localhost endpoints and a separate temporary browser profile.

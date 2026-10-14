@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { PersonalCodexConnection } from "@/components/settings/personal-codex-connection";
-import type { AccountSetupView } from "@/lib/llm/chatgpt/onboarding";
+import type { AccountSetupView } from "@/personal-codex/contracts";
 
 type Backend = { state: string; reason?: string };
 export type ChatGPTAccountView = {

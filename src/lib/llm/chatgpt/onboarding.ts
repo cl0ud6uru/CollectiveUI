@@ -6,7 +6,7 @@ import { HttpError } from '@/lib/authz';
 import { getSetting, type ChatGPTSettings } from '@/lib/settings';
 import { assertNoCodexWork, lockPersonalOwner } from '@/personal-codex/accounts';
 import { personalControl } from '@/personal-codex/control';
-import type { EnrollmentReadiness } from '@/personal-codex/contracts';
+import type { AccountSetupView } from '@/personal-codex/contracts';
 import { userMayUseChatGPT } from './policy';
 import { SIWCCredentialSchema } from './siwc';
 
@@ -25,14 +25,6 @@ export function accountSetupEligibility(p: Principal, settings: ChatGPTSettings,
   if (![p.user.email, p.user.upn].some(value => z.email().safeParse(value).success)) return { allowed: false, reason: 'Your CollectiveUI account needs an email binding before ChatGPT can be connected. Ask an administrator to verify your account details.' };
   return { allowed: true, reason: null };
 }
-
-export type AccountSetupView = {
-  eligible: boolean;
-  reason: string | null;
-  runtime: EnrollmentReadiness | { state: 'not_installed' | 'unavailable'; selfEnrollment: false; enrolled: false; runtimeState?: undefined; reason: string };
-  canPrepareRuntime: boolean;
-  authentication: { state: 'companion_required'; reason: string };
-};
 
 /** Read-only projection: inspecting setup never enrolls a user or starts a container. */
 export async function accountSetupView(p: Principal, settings: ChatGPTSettings): Promise<AccountSetupView> {
