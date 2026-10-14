@@ -8,22 +8,23 @@ import type { DockerNetworks } from '@/lib/docker-hermes/network';
 export function useHermesNetworks(enabled: boolean) {
   const [value, setValue] = useState<DockerNetworks | null>(null), [error, setError] = useState('');
   const refresh = useCallback(async () => {
+    if (!enabled) return;
     try {
       const res = await fetch('/api/admin/hermes/network', { cache: 'no-store' }); const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Network status is unavailable.');
       setValue(data); setError('');
-    } catch (e) { setError(e instanceof Error ? e.message : 'Network status is unavailable.'); }
-  }, []);
+    } catch (e) { setValue(null); setError(e instanceof Error ? e.message : 'Network status is unavailable.'); }
+  }, [enabled]);
   useEffect(() => { let active = true; if (enabled) queueMicrotask(() => { if (active) void refresh(); }); return () => { active = false; }; }, [enabled, refresh]);
   useEffect(() => {
-    if (!value || !Object.values(value.owners).some(s => s.changing)) return;
+    if (!enabled || !value || !Object.values(value.owners).some(s => s.changing)) return;
     const timer = setInterval(() => void refresh(), 3000); return () => clearInterval(timer);
-  }, [value, refresh]);
-  const status = (owner: string): NetworkStatus | null => value ? value.owners[owner] ?? { mode: value.defaultMode,
+  }, [enabled, value, refresh]);
+  const status = (owner: string): NetworkStatus | null => enabled && value ? value.owners[owner] ?? { mode: value.defaultMode,
     onlineMode: value.defaultMode === 'proxy' ? 'proxy' : 'internet', actual: 'absent', running: false, revision: 0, changing: false, receipt: null, error: null } : null;
   return { status, error, refresh };
 }
-export function HermesNetworkControl({ owner, name, enabled, status, reload }: { owner: string; name: string; enabled: boolean; status: NetworkStatus | null; reload: () => Promise<void> }) {
+export function HermesNetworkControl({ owner, name, enabled, status, unavailable, reload }: { owner: string; name: string; enabled: boolean; status: NetworkStatus | null; unavailable?: string; reload: () => Promise<void> }) {
   const [change, setChange] = useState<{ mode: NetworkMode; revision: number; requestId: string } | null>(null);
   const [confirmed, setConfirmed] = useState(false), [pending, setPending] = useState(false), [error, setError] = useState('');
   function select(mode: NetworkMode) {
@@ -31,7 +32,7 @@ export function HermesNetworkControl({ owner, name, enabled, status, reload }: {
     setChange({ mode, revision: status.revision, requestId: crypto.randomUUID() }); setConfirmed(false); setError('');
   }
   async function apply() {
-    if (!change || !confirmed || pending) return;
+    if (!change || !confirmed || pending || blocked) return;
     setPending(true); setError('');
     try {
       const res = await fetch('/api/admin/hermes/network', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -41,12 +42,12 @@ export function HermesNetworkControl({ owner, name, enabled, status, reload }: {
     } catch (e) { setError(e instanceof Error ? e.message : 'The request could not be confirmed. Reload status before retrying the same request.'); await reload(); }
     finally { setPending(false); }
   }
-  const blocked = !enabled || !status || status.changing || status.actual === 'unknown' || (!!status.error && status.receipt?.state !== 'rolled_back');
+  const blocked = !!unavailable || !enabled || !status || status.changing || status.actual === 'unknown' || (!!status.error && status.receipt?.state !== 'rolled_back');
   return <div className="min-w-48 space-y-1">
     <label className="inline-flex min-h-11 items-center gap-2">
       <input type="checkbox" className="h-4 w-4 accent-[var(--fg)]" checked={!!status && status.mode !== 'none'} disabled={blocked}
         onChange={e => select(e.target.checked ? status!.onlineMode : 'none')} aria-label={`Internet access for ${name}`} />
-      <span>{status ? networkLabels[status.mode] : 'Checking network…'}</span>
+      <span>{unavailable || (status ? networkLabels[status.mode] : 'Checking network…')}</span>
     </label>
     {status && <p className="text-xs text-muted">{status.changing ? 'Changing safely…' : status.actual === 'absent' ? 'Policy saved · runtime not created' : status.actual === 'unknown' ? 'Actual runtime network unconfirmed' : `${networkLabels[status.actual]} · ${status.running ? 'running' : 'stopped'}`}</p>}
     {status?.error && <p role="alert" className="text-xs text-danger">{status.error}</p>}
@@ -61,7 +62,7 @@ export function HermesNetworkControl({ owner, name, enabled, status, reload }: {
           {change?.mode === 'proxy' && <p>The existing restricted proxy policy is preserved. An operator must provide and maintain its reviewed per-user proxy network.</p>}
           <label className="flex items-start gap-2"><input type="checkbox" className="mt-1" checked={confirmed} disabled={pending} onChange={e => setConfirmed(e.target.checked)} />I approve this policy and any required runtime restart.</label>
           {error && <p role="alert" className="text-danger">{error}</p>}
-          <div className="flex gap-2"><Button disabled={!confirmed || pending} onClick={() => void apply()}>{pending ? 'Submitting…' : 'Apply network policy'}</Button><Button variant="ghost" disabled={pending} onClick={() => setChange(null)}>Cancel</Button></div>
+          <div className="flex gap-2"><Button disabled={!confirmed || pending || blocked} onClick={() => void apply()}>{pending ? 'Submitting…' : 'Apply network policy'}</Button><Button variant="ghost" disabled={pending} onClick={() => setChange(null)}>Cancel</Button></div>
         </div>
       </DialogContent>
     </Dialog>

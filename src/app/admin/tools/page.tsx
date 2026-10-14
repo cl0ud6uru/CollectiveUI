@@ -47,6 +47,9 @@ export default async function AdminToolsPage() {
           utilityAppId: t.utilityAppId,
           embeddingAppId: t.embeddingAppId,
           learningEnabled: t.learningEnabled,
+          learningRequireApproval: t.learningRequireApproval,
+          learningMaintenanceEnabled: t.learningMaintenanceEnabled,
+          learningConsolidationEnabled: t.learningConsolidationEnabled,
         }}
         tools={[...BUILTIN_TOOLS.map((b) => ({ key: b.key, label: b.label })), { key: "mcp", label: "All MCP servers" }]}
         utilityApps={utilityApps}

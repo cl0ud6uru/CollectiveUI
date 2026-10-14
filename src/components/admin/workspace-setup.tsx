@@ -5,6 +5,7 @@ import { checkWorkspaceSetup } from "@/app/admin/workspace-setup-actions";
 import { Button } from "@/components/ui/button";
 import type { WorkspaceSetupReport } from "@/lib/sandbox/setup";
 import { Badge, Card } from "./ui";
+import { AdminTimestamp } from "./timestamp";
 
 const compose = "docker compose -f docker-compose.yml -f docker-compose.sandbox.yml";
 const operatorSteps = [
@@ -66,7 +67,7 @@ export function WorkspaceSetup({ report, enabled, onChecked }: { report: Workspa
         try { onChecked(await checkWorkspaceSetup()); setChecked(true); }
         catch { setFailure("Could not complete the check. Confirm you are still an admin, then retry or reload the page."); }
       })}>{pending ? "Checking…" : checked || failure ? "Retry setup check" : "Run setup check"}</Button>
-      <p role="status" aria-live="polite" className="text-xs text-muted">{pending ? "Checking the portal connection and service prerequisites…" : checked ? report.ready ? "Prerequisites passed. Access still follows the saved settings. Bot command and file tests are the next step." : "Check complete. Resolve the steps marked Action needed, then retry." : `Last checked ${new Date(report.checkedAt).toLocaleString()}`}</p>
+      <p role="status" aria-live="polite" className="text-xs text-muted">{pending ? "Checking the portal connection and service prerequisites…" : checked ? report.ready ? "Prerequisites passed. Access still follows the saved settings. Bot command and file tests are the next step." : "Check complete. Resolve the steps marked Action needed, then retry." : <>Last checked <AdminTimestamp value={report.checkedAt} /></>}</p>
     </div>
     {failure && <p role="alert" className="text-sm text-danger">{failure}</p>}
   </Card>;
