@@ -32,7 +32,7 @@ export const enrollmentReadinessSchema = z.object({
   state: z.enum(['ready', 'operator_setup_required', 'verification_required', 'unavailable']),
   selfEnrollment: z.boolean(), enrolled: z.boolean(),
   runtimeState: z.enum(['not_started', 'stopped', 'running']).optional(),
-  reason: z.enum(['An operator must enable enrollment for this installation.', 'An operator must verify the stock sandbox before enrollment.', 'Installed runtime resources require operator reconciliation.']).optional(),
+  reason: z.enum(['An operator must enable enrollment for this installation.', 'An operator must verify the stock sandbox before enrollment.', 'Installed runtime resources require operator reconciliation.', 'SBX runtime preparation is operator managed; self enrollment is unavailable.']).optional(),
 }).strict();
 export type EnrollmentReadiness = z.infer<typeof enrollmentReadinessSchema>;
 

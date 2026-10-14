@@ -32,7 +32,7 @@ export const appOption = (a: AiApp, planStatus?: PlanStatus | null): TargetOptio
   ...(a.provider === "chatgpt" && planStatus ? { personalPlan: { provider: "chatgpt" as const, status: planStatus } } : {}),
 });
 
-export const botOption = (b: Bot, hermes = false): TargetOption => ({
+export const botOption = (b: Bot, hermes = false, codex = false): TargetOption => ({
   kind: "bot",
   id: b.id,
   name: b.name,
@@ -42,6 +42,7 @@ export const botOption = (b: Bot, hermes = false): TargetOption => ({
   starters: b.starters,
   hermes: hermes || b.hermesTeam,
   hermesTeam: b.hermesTeam,
+  codex,
 });
 
 /** A bot new chats may start with. The organization default must be shared with everyone. */
@@ -99,7 +100,7 @@ export async function resolveTargetOption(
       const available = hermes || codex ? [] : await skillsForBot(bot.id, bot.ownerId);
       if (!hermes && !codex && bot.executionMode !== "service" && await learningIsEnabled(p)) available.push(...await learnedSkillsForBot(bot.id, p.user.id));
       const skills = available.map((s) => ({ slug: s.slug, name: s.name, description: s.description }));
-      return { target: botOption(bot, hermes), skills };
+      return { target: botOption(bot, hermes, !!codex), skills };
     }
     return { target: null, skills: [] };
   }
