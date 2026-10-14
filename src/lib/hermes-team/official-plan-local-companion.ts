@@ -145,6 +145,22 @@ export class OfficialPlanLocalCompanion {
       return { revocationConfirmed };
     });
   }
+  /** Validate the destination's complete receipt before exposing accepted public registration metadata. */
+  async verifiedCompleteRegistration(raw: unknown) {
+    const journal = await this.load(), ack = this.acknowledgment(journal, raw);
+    if (ack.state !== 'complete' || !journal.snapshot || !journal.file) throw companionFailure();
+    const snapshot = verifyTranscript(journal.snapshot, this.pairing.sourceSigningPublicKey);
+    if (snapshot.clientId === 'dynamic_agent_client') throw companionFailure();
+    return { clientId: snapshot.clientId, subject: snapshot.subject };
+  }
+  /** Public registration metadata only, from the source-signed snapshot of a completed custody transfer. */
+  async transferredRegistration() {
+    const journal = await this.load();
+    if (journal.phase !== 'transferred' || !journal.snapshot) throw companionFailure();
+    const snapshot = verifyTranscript(journal.snapshot, this.pairing.sourceSigningPublicKey);
+    if (snapshot.clientId === 'dynamic_agent_client') throw companionFailure();
+    return { clientId: snapshot.clientId, subject: snapshot.subject };
+  }
   async refresh() {
     return this.store.locked(async () => {
       const prior = await this.load(); if (prior.phase !== 'active' || !prior.file || !prior.snapshot) throw companionFailure();

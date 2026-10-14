@@ -36,7 +36,7 @@ const publicKey = (privateKey: string) => createPublicKey(privateKey).export({ t
 
 async function credentialBinding(owner: string, tx: DbOrTx) {
   const [row] = await tx.select().from(userCredentials).where(and(eq(userCredentials.userId, owner), eq(userCredentials.provider, 'chatgpt'))).for('update');
-  return { row, binding: row ? transcriptDigest({ id: row.id, accountId: row.accountId, subject: row.externalSubject, status: row.status, secretEnc: row.secretEnc }) : null };
+  return { row, binding: row ? transcriptDigest({ id: row.id, accountId: row.accountId, subject: row.externalSubject, status: row.status, ciphertext: row.secretEnc }) : null };
 }
 async function browserActor(p: Principal, tx: DbOrTx, checkPolicy = true) {
   const person = await lockPersonalOwner(p.user.id, tx);

@@ -2,7 +2,7 @@
 
 This optional Mac application completes OpenAI authorization on the user's computer, then transfers the protected grant to their existing CollectiveUI account. The native harness and stock Codex use the same stored credential. The website never receives tokens or an OpenAI callback. Installation is required once; subsequent sign-ins start in Settings → Connected accounts.
 
-The implementation follows OpenAI's [open-source local sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and [self-hosted VM transfer guidance](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms). Dynamic registration returns an account-specific client ID. Returning grants retain that registration and subject. OAuth uses fresh state, nonce, PKCE and a bound `127.0.0.1` listener before opening the browser.
+The implementation follows OpenAI's [open-source local sign-in flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and [self-hosted VM transfer guidance](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms). Dynamic registration returns an account-specific client ID. After verified destination acceptance, the Mac retains the client ID and subject in a protected cache scoped to the exact installation origin, authenticated owner and local host. Reconnect keeps that registration even after VM Disconnect removes the credential. The current server registration takes precedence; mismatches fail explicitly. OAuth always uses fresh state, nonce, PKCE and a bound `127.0.0.1` listener before opening the browser.
 
 ## Operator prerequisites
 
@@ -27,11 +27,13 @@ Install the approved application. In Settings → Connected accounts, review sto
 
 Cancel before custody closes the paired server attempt and clears any pre-custody local grant after attempting revocation. Browser Cancel, account disconnect, bulk disconnect and user disable fence pending attempts. A canceled or expired launch cannot begin another OAuth flow; create a new attempt explicitly.
 
+A first-time grant cancelled before VM email acceptance does not populate the cross-attempt cache. Its issued registration remains in that attempt's protected journal for inspection; a new first-time attempt uses explicit dynamic registration. This prevents a rejected ChatGPT identity from becoming the portal owner's retained identity.
+
 ## Custody and recovery
 
 Fresh authorization expires after ten minutes. Signed recovery remains bounded to one day. The server encrypts receiver keys and return capability with row-and-owner-bound AAD. The launch capability is hashed and is never placed in browser storage or the DOM. Native transport rejects browser Origin, Cookie and Fetch Metadata headers and supplies no CORS access.
 
-The source durably suspends refresh before sending an Ed25519-authenticated, X25519/AES-GCM-encrypted snapshot. Only the VM subsequently refreshes it. A complete signed receipt removes local credential material. A lost response triggers signed recovery; only a signed pending receipt permits retrying the exact suspended envelope. A negative receipt fences any delayed server activation before it is returned. Failed transfers never resume local refresh automatically.
+The source durably suspends refresh before sending an Ed25519-authenticated, X25519/AES-GCM-encrypted snapshot. Only the VM subsequently refreshes it. After validating a complete signed receipt and fresh destination completion, it persists the protected registration cache before removing local credential material. Cache-write failure keeps custody suspended for recovery. A lost response triggers signed recovery; only a signed pending receipt permits retrying the exact suspended envelope. A negative receipt fences any delayed server activation before it is returned. Failed transfers never resume local refresh automatically.
 
 Receiver activation rechecks current owner session, disabled state, access policy, email, registration/subject, host/origin, active work and the prior credential binding. Replacing an account first requires confirmed app-server token and broker fingerprint clearing. If clearing fails, the prior credential is preserved and the transfer requires attention.
 
