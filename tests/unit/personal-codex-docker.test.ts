@@ -390,3 +390,26 @@ describe('BrokerConfig', () => {
     expect(() => BrokerConfig.parse({ socketPath: '/run/docker.sock', image: IMAGE, namespace: NAMESPACE, owners: [OWNER], extra: true })).toThrow();
   });
 });
+
+describe('read-only enrollment preflight', () => {
+  it('checks preinstalled resources without admitting an owner or provisioning', async () => {
+    class CandidateDriver extends PersonalCodexDriver {
+      calls: string[][] = []; imageId = LOCAL_IMAGE; owner = OTHER_OWNER;
+      constructor() { super({ ...config([]), image: LOCAL_IMAGE, allowSelfEnrollment: true, siwcSandboxVerified: true }); }
+      protected override async command(args: string[]) {
+        this.calls.push(args);
+        if (args[0] === 'image') return JSON.stringify([{ Id: this.imageId }]);
+        if (args[0] === 'network') return JSON.stringify([networkFixture(this.owner)]);
+        if (args[0] === 'volume' && args[1] === 'ls') return '';
+        if (args[0] === 'container' && args[1] === 'ls') return '';
+        throw new Error('unexpected mutation');
+      }
+    }
+    const driver = new CandidateDriver();
+    expect(await driver.preflight(OTHER_OWNER)).toBe('not_started');
+    expect(driver.admitted(OTHER_OWNER)).toBe(false); expect(() => driver.name(OTHER_OWNER)).toThrow();
+    expect(driver.calls.every(args => ['inspect', 'ls'].includes(args[1]))).toBe(true);
+    driver.imageId = `sha256:${'c'.repeat(64)}`; await expect(driver.preflight(OTHER_OWNER)).rejects.toThrow();
+    driver.imageId = LOCAL_IMAGE; driver.owner = OWNER; await expect(driver.preflight(OTHER_OWNER)).rejects.toThrow();
+  });
+});
