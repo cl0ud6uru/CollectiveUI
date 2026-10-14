@@ -37,6 +37,8 @@ export const SbxBrokerConfigSchema = BrokerBase.extend({
   sbxHome: absolute,
   memoryMb: z.number().int().min(512).max(65536),
   cpus: z.number().int().min(1).max(64),
+  // Enables the separately authenticated owner-scoped admin adapter. Default stays disabled.
+  adminEnabled: z.boolean().default(false),
   // Same operator verification gate as the Docker backend. Defaults to disabled.
   siwcSandboxVerified: z.boolean().default(false),
 }).strict();
@@ -193,7 +195,11 @@ export class PersonalCodexDriver implements PersonalCodexRuntimeDriver {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(unavailable()); }, 10_000);
       child.once('error', () => { clearTimeout(timer); reject(unavailable()); });
-      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(unavailable()); });
+      child.once('exit', code => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(unavailable());
+      });
       child.stdin.end(JSON.stringify({ accessToken, credentialBinding }));
     });
   }
@@ -205,7 +211,11 @@ export class PersonalCodexDriver implements PersonalCodexRuntimeDriver {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(unavailable()); }, 10_000);
       child.once('error', () => { clearTimeout(timer); reject(unavailable()); });
-      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(unavailable()); });
+      child.once('exit', code => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(unavailable());
+      });
     });
   }
 }

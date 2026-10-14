@@ -12,7 +12,8 @@ const config = (sbxHome = '/tmp/sbx-fixture-home', siwcSandboxVerified = false) 
   template: `collectiveui/personal-codex@sha256:${'a'.repeat(64)}`, sbxHome, memoryMb: 4096, cpus: 2, siwcSandboxVerified,
 });
 
-describe('personal Codex sbx adapter', () => {
+// These cases launch many fake CLI processes; allow shared CI hosts time to schedule them.
+describe('personal Codex sbx adapter', { timeout: 30_000 }, () => {
   let directory: string | undefined;
   const directories: string[] = [];
   afterEach(async () => { await Promise.all(directories.map(path => rm(path, { recursive: true, force: true }))); directories.length = 0; directory = undefined; });

@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import type { PersonalCodexRuntimeDriver } from './driver';
 import { ComputerInputSchema, type ComputerViewStatus } from '../lib/computer/contracts';
+import type { AdminRuntime } from './admin-contracts';
 
 export const COMPUTER_LEASE_MS = 30_000;
 const MAX_FRAME_BYTES = 512 * 1024;
@@ -131,6 +132,36 @@ export class ComputerController {
       const remaining = (this.operations.get(owner) ?? 1) - 1;
       if (remaining) this.operations.set(owner, remaining); else this.operations.delete(owner);
     }
+  }
+  /** Administrative stop/delete invalidates the human lease and fences input until the guest is stopped. */
+  async stopRuntime(owner: string, work: () => Promise<void>) {
+    return this.serial(owner, async () => {
+      if (this.operations.get(owner)) throw new ComputerError(409, 'An account operation is in progress. Retry after it finishes.');
+      const state = await this.state(owner);
+      state.lease = undefined;
+      state.paused = true;
+      await this.persist(owner, true);
+      try {
+        await work();
+        if ((await this.driver.inspect(owner))?.State.Running) throw new ComputerError(503, 'The computer could not be stopped.');
+      } catch (error) {
+        // An uncertain stop never reopens admission. Preserve durable intent and try to suspend
+        // any surviving process tree; a failed host operation still needs operator reconciliation.
+        try { if ((await this.driver.inspect(owner))?.State.Running) await this.driver.computerPause(owner, true); } catch {}
+        throw error;
+      }
+      await this.persist(owner, false);
+      state.paused = false;
+      state.lastFrameAt = null;
+    });
+  }
+  /** Operational metadata only: no viewer session identifier, screenshot, or personal input. */
+  async adminStatus(owner: string): Promise<AdminRuntime['computer']> {
+    const state = await this.state(owner);
+    const runtime = await this.driver.computerStatus(owner);
+    return { available: runtime.available && runtime.running, paused: state.paused,
+      control: !runtime.available || !runtime.running ? 'unavailable' : state.paused ? state.lease ? 'human' : 'paused' : 'agent',
+      lastFrameAt: runtime.running ? state.lastFrameAt : null };
   }
   async agentFrame(owner: string) {
     return this.serial(owner, async () => {

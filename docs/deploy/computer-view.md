@@ -55,12 +55,33 @@ Install the following as the broker’s protected JSON configuration, with mode 
   "sbxExecutable": "/usr/local/bin/sbx",
   "sbxVersion": "0.48.0",
   "sbxHome": "/var/lib/collectiveui/sbx",
+  "adminEnabled": false,
   "memoryMb": 4096,
   "cpus": 2
 }
 ```
 
 `sbxExecutable` may be `/usr/local/bin/sbx` or `/usr/bin/sbx`; `sbxVersion` must be `0.48.0`. `memoryMb` is an integer from 512 through 65536, and `cpus` is an integer from 1 through 64. The config schema rejects extra fields. In particular, it has no hook, kit, shared-skill, secret, host-path, or credential settings.
+
+## Optional SBX administration panel
+
+The **Docker Sandboxes** admin page is available at `/admin/docker-sandboxes` to web administrators. Its broker feature flag is `adminEnabled`, which defaults to `false`; the example above leaves it off. To deliberately use the panel in a staging installation, set `"adminEnabled": true` in the protected SBX broker JSON config and restart the broker. This flag exposes admin APIs only through the existing protected broker socket and web admin authorization. It does not make the SBX backend ready or change the separate `siwcSandboxVerified` proof gate. Keep it off unless the host operator intends to grant administrators these controls.
+
+The panel can manage owner admission, runtime lifecycle, the approved template catalog, default template and new-runtime CPU/memory/capacity settings, owner-scoped network rules, sanitized diagnostics, and operator validation records. These controls do not edit immutable host configuration such as backend selection, SBX binary/version, namespace, socket, `sbxHome`, or the host's SSH/KVM settings. Those remain in the protected broker and host configuration.
+
+Admin state is durably recorded in `$sbxHome/collectiveui-admin.json` as a private, mode-`0600` broker-owned file with atomic updates and revision checks. The first initialization seeds known/admitted owners from the protected `owners` config. The panel's enrollment changes update this durable owner policy; future `owners` values in protected config are merged as known owners. Do not create, copy, prepopulate, or hand-edit the state file. A state-file ownership, permission, schema, or reconciliation error fails the admin view/actions closed and needs operator repair.
+
+Changes to CPU, memory, or default template apply only when a new VM is provisioned. Existing owner bindings, VM IDs, guest files, and their original resource/template assignments remain intact. The maximum running count applies to every subsequent provision/start, including retained VMs; lowering it does not stop already running machines. Stop a running VM or raise the limit before starting another. Removing an owner's admission blocks new use before stopping its VM and retains the VM and data. If stopping fails, access remains revoked and repeating removal retries the stop. Use the separate lifecycle **Delete computer** action only when guest data should be removed: it requires typing `DELETE`, removes the VM and guest files, and retains the person's database identity and ChatGPT connection.
+
+Template operations accept only immutable digest references. **Import from host inbox** is not a browser upload: an operator must place a reviewed regular `.tar` archive in `$sbxHome/template-imports`, owned by the broker account and inaccessible to group/other users. The broker creates this directory privately (mode `0700`) and lists only safe archive names; imports are bounded to 8 GiB per file and 100 entries. Import calls the pinned CLI on that exact inbox file, then verifies that the digest appears in the local template catalog before it becomes approved. No files are extracted into the web app or uploaded from the administrator's browser.
+
+Network rules recorded by this panel are app-managed and scoped to one owner's sandbox. The panel does not claim they describe every host or SBX network rule. Host policy is shown as observed only when the pinned CLI response matches the understood schema; unrecognized or unavailable policy is shown as unobserved, and a network check returns **unknown** when there is no definitive decision. Recent events are separate host observations and may be unavailable. Never interpret a missing event list as proof that no traffic occurred or that a destination is blocked.
+
+Network mutations and template imports persist an intent before invoking the CLI. If a crash leaves a newly matching network rule whose ownership cannot be established, the broker retains the receipt and reports that operator reconciliation is required; it does not adopt or delete the ambiguous rule. Review the local policy and receipt before repair or retry.
+
+Diagnostics return a sanitized summary of recognized host checks, not raw CLI output, owner credentials, screenshots, or conversation data. Operator validation records save the administrator, evidence reference, selected template, and manual pass/fail/pending result; these are attestations, not automatic verification. Neither diagnostics nor panel validation can enable or override `siwcSandboxVerified`; only the separately reviewed operator proof in the live preflight can do that. The deployment remains blocked until the live SBX, authenticated inference, and credential-containment checks below pass.
+
+The protected proof applies only to the exact `template` digest in the operator's broker configuration. A new default chosen in the panel does not inherit that approval: token synchronization is blocked for its VMs until an operator reviews that digest and updates protected configuration. Existing VMs retain their recorded template and are evaluated against that binding. Changing the panel's default also resets its manual evidence records.
 
 The backend selector defaults to Docker when omitted, preserving existing deployments and their Docker config. To roll back, restore the existing Docker configuration (omit `backend` or set it to `docker`) and restart the broker. Do not delete owner sandboxes or their ledgers as part of a backend switch; use the explicit cleanup path after reviewing the data-retention impact.
 

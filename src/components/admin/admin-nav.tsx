@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, AppWindow, ArrowLeft, BarChart3, BookOpen, Bot, PawPrint, Plug, Settings, Terminal, Users, UsersRound, Wrench } from "lucide-react";
+import { Activity, AppWindow, ArrowLeft, BarChart3, BookOpen, Bot, Container, PawPrint, Plug, Settings, Terminal, Users, UsersRound, Wrench } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
@@ -17,6 +17,7 @@ const ITEMS = [
   { href: "/admin/tools", label: "Bots & tools", icon: Wrench },
   { href: "/admin/mcp", label: "MCP servers", icon: Plug },
   { href: "/admin/sandboxes", label: "Workspaces", icon: Terminal },
+  { href: "/admin/docker-sandboxes", label: "Docker Sandboxes", icon: Container },
   { href: "/admin/workspace-templates", label: "Workspace templates", icon: BookOpen },
   { href: "/admin/activity", label: "Activity", icon: Activity },
   { href: "/admin/settings", label: "Settings", icon: Settings },

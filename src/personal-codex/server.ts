@@ -3,13 +3,16 @@ import { createServer } from 'node:http';
 import { chmod, mkdir, lstat, writeFile, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { runtimeKey } from './docker';
 import type { PersonalCodexRuntimeDriver } from './driver';
 import { ownerId, pendingLogin, nativeAccount, tokenSyncRequest, tokenFingerprint, type BrokerStatus } from './contracts';
 import { CodexClient } from '../lib/codex/client';
 import type { CodexRuntime } from '../lib/codex/runtime';
 import { ComputerController, handleComputerRequest } from './computer';
+import { SbxPersonalCodexDriver } from './sbx';
+import { SandboxAdminController, SandboxAdminError } from './admin';
+import { SandboxAdminAction, unavailableAdminSnapshot } from './admin-contracts';
 
 /** Protected Unix socket only. Socket access grants server authority; never mount it in an agent runtime. */
 export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
@@ -27,10 +30,49 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
   const sessions = new Map<string, { client: CodexClient; login?: ReturnType<typeof pendingLogin.parse>; until?: number; completed: Set<string>; verified: boolean }>();
   // Non-secret fingerprint is deliberately ephemeral; a broker restart requires a fresh sync.
   const tokenBindings = new Map<string, string>();
-  const siwcStatus = (owner: string) => driver.config.siwcSandboxVerified
+  const siwcVerified = (owner: string) => driver instanceof SbxPersonalCodexDriver
+    ? driver.siwcVerified(owner) : Promise.resolve(driver.config.siwcSandboxVerified);
+  const siwcStatus = async (owner: string) => await siwcVerified(owner)
     ? { available: true, ...(tokenBindings.has(owner) ? { credentialBinding: tokenBindings.get(owner)! } : { reason: 'Token synchronization is required for this broker session.' }) }
     : { available: false, reason: 'An operator must verify the stock sandbox shell environment and /proc isolation proof.' };
   const queue = new Map<string, Promise<unknown>>();
+  const ownerBridges = new Map<string, Set<WebSocket>>();
+  const ownerAccess = async (owner: string) => driver instanceof SbxPersonalCodexDriver && driver.config.adminEnabled
+    ? driver.adminOwnerAccess(owner)
+    : { known: driver.config.owners.includes(owner), admitted: driver.config.owners.includes(owner) };
+  const admin = driver instanceof SbxPersonalCodexDriver && driver.config.adminEnabled
+    ? new SandboxAdminController(driver, {
+      runtimeState: async owner => {
+        const running = (await driver.inspect(owner))?.State.Running === true;
+        if (!running) tokenBindings.delete(owner);
+        return { credentialState: !await siwcVerified(owner) ? 'operator_unverified' : tokenBindings.has(owner) ? 'synchronized' : 'sync_required',
+          computer: await computer.adminStatus(owner) };
+      },
+      lifecycle: async (owner, operation) => {
+        const prior = queue.get(owner) ?? Promise.resolve();
+        const next = prior.catch(() => {}).then(async () => {
+          if (operation === 'stop' || operation === 'delete') {
+            tokenBindings.delete(owner);
+            sessions.get(owner)?.client.close(); sessions.delete(owner);
+            for (const bridge of ownerBridges.get(owner) ?? []) bridge.terminate();
+            await computer.stopRuntime(owner, async () => {
+              if (!driver.stop || operation === 'delete' && !driver.cleanup) throw new Error('Runtime lifecycle is unavailable.');
+              await driver.stop(owner);
+              if (operation === 'delete') await driver.cleanup!(owner);
+            });
+            await clearMarker(owner);
+          } else {
+            await computer.agentOperation(owner, async () => {
+              if (!(await driver.inspect(owner))?.State.Running) tokenBindings.delete(owner);
+              if (operation === 'provision') await driver.ensure(owner);
+              else await driver.startRetained(owner);
+            });
+          }
+        });
+        queue.set(owner, next);
+        try { await next; } finally { if (queue.get(owner) === next) queue.delete(owner); }
+      },
+    }) : null;
   const runtime = (owner: string): CodexRuntime => ({ id: `personal:${owner}`, ownerId: owner, funding: 'chatgpt_subscription',
     endpoint: 'ws://127.0.0.1/runtime', tokenFile: '', isolationId: driver.name(owner), credentialBinding: 'connection-management',
     cwd: '/home/agent/workspace', isolated: true, nativeMcpDisabled: true, managed: true, socketPath });
@@ -73,7 +115,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
     const c = await driver.inspect(owner);
     // An ephemeral binding cannot remain trusted after a runtime has stopped or disappeared.
     if (!c || !c.State.Running) tokenBindings.delete(owner);
-    const capability = driver.config.siwcSandboxVerified ? { siwc: siwcStatus(owner) } : {};
+    const capability = driver.config.siwcSandboxVerified ? { siwc: await siwcStatus(owner) } : {};
     if (!c) return { state: 'not_started', ...capability };
     if (!c.State.Running) return { state: 'stopped', ...capability };
     // In SIWC mode, runtime readiness is the credential binding, not native account/read fields.
@@ -88,8 +130,33 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
     const reply = (value: unknown, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
     const isTokenSync = req.url === '/sync-token';
     void (async () => {
+      // This socket is only shared with trusted portal/worker services. The portal must verify a
+      // current administrator for every call; these routes are never exposed as browser endpoints.
+      if (req.url?.startsWith('/admin/')) {
+        if (req.url === '/admin/snapshot' && req.method === 'GET') {
+          return reply(admin ? await admin.snapshot() : unavailableAdminSnapshot(
+            driver instanceof SbxPersonalCodexDriver
+              ? 'Ask your host operator to enable adminEnabled in the protected SBX broker configuration.'
+              : 'This broker uses Docker workspaces. Configure the SBX backend to manage Docker Sandboxes here.',
+            driver instanceof SbxPersonalCodexDriver ? 'sbx' : 'docker'));
+        }
+        if (req.url !== '/admin/action' || req.method !== 'POST') return reply({ error: 'Unknown admin operation.', code: 'unknown_action' }, 404);
+        if (!admin) return reply({ error: 'Docker Sandboxes administration is not enabled.', code: 'admin_unavailable' }, 503);
+        const chunks: Buffer[] = []; let size = 0;
+        for await (const chunk of req) {
+          size += chunk.length;
+          if (size > 20_000) return reply({ error: 'The admin request is too large.', code: 'invalid_request' }, 413);
+          chunks.push(Buffer.from(chunk));
+        }
+        const body = z.object({ actorId: ownerId, request: SandboxAdminAction }).strict().safeParse(
+          (() => { try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return null; } })());
+        if (!body.success) return reply({ error: 'The admin request is invalid.', code: 'invalid_request' }, 400);
+        return reply(await admin.act(body.data.request, body.data.actorId));
+      }
       const owner = ownerId.parse(req.headers['x-collective-owner']);
-      if (!driver.config.owners.includes(owner)) return reply({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' }, 403);
+      const access = await ownerAccess(owner);
+      if (!access.known || !access.admitted && !['/status', '/disconnect'].includes(req.url ?? ''))
+        return reply({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' }, 403);
       driver.name(owner);
       if (req.url?.startsWith('/computer/')) return handleComputerRequest(computer, req, res, owner);
       const action = req.url?.slice(1);
@@ -102,10 +169,23 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
       if (!(action === 'status' && req.method === 'GET') && !(['connect', 'cancel', 'disconnect', 'start', 'sync-token'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
       const prior = queue.get(owner) ?? Promise.resolve();
       const operation = async () => {
+        const currentAccess = await ownerAccess(owner);
+        if (!currentAccess.known || !currentAccess.admitted && action !== 'status' && action !== 'disconnect')
+          throw new Error('Owner admission changed.');
         if (action === 'disconnect') {
           // Fence readiness before any I/O: failed token clearing must never leave a trusted fingerprint.
           tokenBindings.delete(owner);
           const current = await driver.inspect(owner);
+          if (!currentAccess.admitted) {
+            sessions.get(owner)?.client.close(); sessions.delete(owner);
+            for (const bridge of ownerBridges.get(owner) ?? []) bridge.terminate();
+            if (current?.State.Running) {
+              if (!driver.stop) throw new Error('Runtime stop is unavailable.');
+              await driver.stop(owner);
+            }
+            await clearMarker(owner);
+            return status(owner);
+          }
           if (!current || (!current.State.Running && driver.config.siwcSandboxVerified)) { await clearMarker(owner); return status(owner); }
           // Clear retained SIWC tokens even if admission was disabled since the last synchronization.
           // SIWC has no native account identity; clearing must never depend on account/logout.
@@ -133,7 +213,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
           await driver.ensure(owner);
           await driver.synchronizeToken(owner, sync.accessToken, sync.credentialBinding);
           tokenBindings.set(owner, sync.credentialBinding);
-          return { state: 'running', credential: 'synchronized' as const, siwc: siwcStatus(owner) };
+          return { state: 'running', credential: 'synchronized' as const, siwc: await siwcStatus(owner) };
         }
         if (action === 'connect') {
           const session = await accountClient(owner);
@@ -165,9 +245,15 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
       });
       queue.set(owner, next);
       try { reply(await next); } finally { if (queue.get(owner) === next) queue.delete(owner); }
-    })().catch(() => reply({ error: isTokenSync && !driver.config.siwcSandboxVerified
+    })().catch(error => {
+      if (req.url?.startsWith('/admin/')) return reply(error instanceof SandboxAdminError
+        ? { code: error.code, error: error.message }
+        : { code: 'operation_failed', error: 'The sandbox operation could not be confirmed. Refresh its status before retrying.' },
+      error instanceof SandboxAdminError ? error.status : 503);
+      return reply({ error: isTokenSync && !driver.config.siwcSandboxVerified
       ? 'Personal Codex token sharing is unavailable until an operator verifies the stock sandbox shell environment and /proc isolation proof.'
-      : 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' }, 503));
+      : 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' }, 503);
+    });
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
   server.on('upgrade', (req, socket, head) => {
@@ -176,6 +262,8 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
       const owner = ownerId.parse(req.headers['x-collective-owner']);
       const bridge = await computer.agentBridge(owner);
       wss.handleUpgrade(req, socket, head, ws => {
+        const bridges = ownerBridges.get(owner) ?? new Set<WebSocket>();
+        bridges.add(ws); ownerBridges.set(owner, bridges);
         bridge.stderr.resume();
         const lines = createInterface({ input: bridge.stdout });
         let bytes = 0;
@@ -185,13 +273,18 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver) {
         ws.on('message', data => { if (!bridge.stdin.write(`${data}\n`)) ws.pause(); });
         bridge.stdin.on('drain', () => ws.resume());
         bridge.stdin.on('error', () => ws.terminate()); bridge.on('error', () => ws.terminate()); bridge.on('exit', () => ws.terminate());
-        ws.on('close', () => { lines.close(); bridge.stdin.end(); bridge.kill(); }); ws.on('error', () => bridge.kill());
+        ws.on('close', () => {
+          bridges.delete(ws); if (!bridges.size) ownerBridges.delete(owner);
+          lines.close(); bridge.stdin.end(); bridge.kill();
+        }); ws.on('error', () => bridge.kill());
       });
     })().catch(() => { socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n'); socket.destroy(); });
   });
   // Restore persisted human-control fences before any broker request can reach the runtime.
   // The controller reads each owner's record first and does no runtime work when none exists.
-  await computer.reconcilePersistedPauses(driver.config.owners);
+  await admin?.initialize();
+  await computer.reconcilePersistedPauses(driver instanceof SbxPersonalCodexDriver && driver.config.adminEnabled
+    ? await driver.adminKnownOwners() : driver.config.owners);
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
   await chmod(socketPath, 0o660);
   return { server, close: async () => { for (const session of sessions.values()) session.client.close(); for (const ws of wss.clients) ws.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); } };

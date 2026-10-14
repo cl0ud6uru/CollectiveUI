@@ -25,6 +25,36 @@ beforeEach(async () => {
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
 describe('computer broker ownership and takeover', () => {
+  it('admin metadata reports human control without exposing a viewer session or frame', async () => {
+    await controller.control('alice', session, { action: 'takeover' });
+    const metadata = await controller.adminStatus('alice');
+    expect(metadata).toEqual({ available: true, paused: true, control: 'human', lastFrameAt: null });
+    expect(JSON.stringify(metadata)).not.toContain(session);
+    expect(driver.computerFrame).not.toHaveBeenCalled();
+    now += COMPUTER_LEASE_MS + 1;
+    expect((await controller.adminStatus('alice')).control).toBe('paused');
+  });
+  it('administrative stop revokes human input and clears the pause only after confirmed stop', async () => {
+    await controller.control('alice', session, { action: 'takeover' });
+    let finish!: () => void;
+    const work = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    vi.mocked(driver.inspect).mockResolvedValue({ State: { Running: false } });
+    const stop = controller.stopRuntime('alice', work);
+    await vi.waitFor(() => expect(work).toHaveBeenCalledOnce());
+    const input = controller.input('alice', session, { kind: 'key', key: 'Enter' });
+    finish();
+    await stop;
+    await expect(input).rejects.toThrow('Take over');
+    expect(driver.computerInput).not.toHaveBeenCalled();
+    expect(driver.computerPause).toHaveBeenCalledExactlyOnceWith('alice', true);
+    await expect(new ComputerController(driver).assertAgentControl('alice')).resolves.toBeUndefined();
+  });
+  it('an unconfirmed administrative stop reapplies suspension and retains the durable fence', async () => {
+    vi.mocked(driver.inspect).mockResolvedValue({ State: { Running: true } });
+    await expect(controller.stopRuntime('alice', async () => {})).rejects.toThrow('could not be stopped');
+    expect(driver.computerPause).toHaveBeenCalledExactlyOnceWith('alice', true);
+    await expect(new ComputerController(driver).assertAgentControl('alice')).rejects.toThrow('Return computer control');
+  });
   it('reapplies a persisted pause before admitting runtime access after a broker crash', async () => {
     const record = join(dir, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);
     await writeFile(record, JSON.stringify({ version: 1, paused: true }), { mode: 0o600 });

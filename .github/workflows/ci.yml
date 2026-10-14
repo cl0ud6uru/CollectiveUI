@@ -83,6 +83,7 @@ jobs:
           node tests/browser/codex-harness.mjs
           node tests/browser/personal-codex.mjs
           node tests/browser/computer-viewer.mjs
+          node tests/browser/docker-sandboxes-admin.mjs
           node tests/browser/voice-mode.mjs
           node tests/browser/voice-avatar.mjs
           npx playwright test --config tests/group-lead.playwright.config.ts
