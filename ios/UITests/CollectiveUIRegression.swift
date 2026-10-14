@@ -301,6 +301,15 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Needs attention") == true)
         app.textViews["chatComposer"].typeText("Next draft remains separate")
         XCTAssertFalse(app.buttons["Send"].isEnabled)
+        // History plus the software keyboard can put the recovery control below
+        // the viewport. Reveal it as a reader would; never tap an offscreen frame.
+        let transcript = app.scrollViews["chat.transcript"]
+        XCTAssertTrue(transcript.exists)
+        for _ in 0..<4 where !check.isHittable { transcript.swipeUp() }
+        let visible = expectation(for: NSPredicate { _, _ in
+            check.exists && check.isHittable && transcript.frame.contains(check.frame)
+        }, evaluatedWith: check)
+        wait(for: [visible], timeout: 5)
         capture("recovery-01-unconfirmed-error")
         tap(check)
         XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
