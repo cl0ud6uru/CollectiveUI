@@ -207,10 +207,7 @@ jobs:
               echo "Refusing to overwrite existing tag $ref" >&2
               exit 1
             fi
-            if ! grep -Eiq 'manifest unknown|no such manifest' <<< "$output"; then
-              echo "Could not prove that $ref is absent: $output" >&2
-              exit 1
-            fi
+            printf '%s\n' "$output" | python3 scripts/container-release.py verify-missing-manifest "$ref"
           done
 
       - name: Push the already-tested images and verify registry digests

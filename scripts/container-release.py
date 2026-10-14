@@ -154,6 +154,23 @@ def validate_namespace(namespace: str) -> str:
     return namespace
 
 
+def verify_missing_manifest(reference: str, output: str) -> None:
+    """Accept only complete, known absence diagnostics from a failed inspect."""
+    # Buildx's resolver now emits "<requested reference>: not found". Do not
+    # treat incidental "not found" text (or mixed auth/network errors) as proof.
+    known_errors = {
+        f"ERROR: {reference}: not found",
+        f"ERROR: {reference}: manifest unknown",
+        f"ERROR: {reference}: manifest unknown: manifest unknown",
+        f"ERROR: {reference}: no such manifest",
+        "ERROR: manifest unknown",
+        "ERROR: manifest unknown: manifest unknown",
+        f"ERROR: no such manifest: {reference}",
+    }
+    if output.strip() not in known_errors:
+        raise ReleaseError(f"Could not prove that {reference} is absent: {output.strip()}")
+
+
 def make_manifest(
     *, namespace: str, revision: str, version: str, migrations_sha256: str,
     web_digest: str, worker_digest: str,
@@ -239,6 +256,9 @@ def main() -> int:
     namespace = commands.add_parser("validate-namespace")
     namespace.add_argument("value")
 
+    missing = commands.add_parser("verify-missing-manifest")
+    missing.add_argument("reference")
+
     evidence = commands.add_parser("verify-loaded-images")
     evidence.add_argument("--evidence", required=True, type=Path)
     evidence.add_argument("--web-inspect", required=True, type=Path)
@@ -275,6 +295,8 @@ def main() -> int:
             print(migration_fingerprint(args.root))
         elif args.command == "validate-namespace":
             print(validate_namespace(args.value))
+        elif args.command == "verify-missing-manifest":
+            verify_missing_manifest(args.reference, sys.stdin.read())
         elif args.command == "verify-loaded-images":
             verify_loaded_images(
                 args.evidence, args.web_inspect, args.worker_inspect,
