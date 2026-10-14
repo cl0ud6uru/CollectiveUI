@@ -65,7 +65,7 @@ border. It runs the installer's own checks: v2 cell layout at both sizes,
 importability, and a likeness check that the two sheets are the same art. It then
 prints each file's size and SHA-256.
 
-If the shrunk v2 sheet would decode past the importer's 4 MB limit, the script
+If the shrunk v2 sheet would decode past the importer's 4 MiB limit, the script
 rounds its colors to four-value steps (at most 2 of 255 per channel), as the
 shipped Assimilated sheet already does, and says so.
 

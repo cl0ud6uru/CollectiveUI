@@ -1,5 +1,7 @@
 # Runs API /yolo integration contract
 
+Historical integration handoff for the source checkpoint below. It records the remote Runs contract; current supported transports and command behavior are documented in [connections](../../docs/connections.md#hermes-agent-bots-from-your-hermes-profiles).
+
 Source inspected: src/lib/llm/resolve.ts, src/lib/llm/providers/hermes/client.ts, src/lib/runs/hermes-context.ts at base 234b57703553da249d531618d73e1b1fe36981fa.
 
 Normal remote bot runs pass session_id = `portal-${conversationId}-${botId}` to POST /p/{profile}/v1/runs. These are caller-supplied IDs, not native workspace runtime/stored IDs. Approval-mode endpoints must use precisely this same ID, including before the first run; do not invent a separate session identity. Persist it across server restarts and do not inherit it into a fresh session.

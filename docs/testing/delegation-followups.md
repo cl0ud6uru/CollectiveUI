@@ -12,6 +12,8 @@ Continuation is offered only in durable native contexts. Existing group and Herm
 
 ## Verification
 
+The pass counts below are historical implementation-checkpoint results. They are retained with the fixture screenshots, not presented as a new validation run of the current checkout. Use the commands and disposable-database requirements below to rerun the relevant suites.
+
 All runtime checks use disposable loopback PostgreSQL databases, synthetic local accounts, and `dev/mock-llm`. No external model, user account data, live connector, deployment, or merge is required.
 
 - `npm test`: 662 passed, 389 normally gated/skipped tests; 71 passed files.

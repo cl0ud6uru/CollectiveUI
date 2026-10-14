@@ -2,7 +2,7 @@
 
 The `worker` target installs the lockfile with `npm ci --omit=dev` in its own `runtime-deps` stage. It does not
 inherit the build/test dependency layer. Application source, migrations, `tsconfig.json`, and the documented
-`scripts/local-account.ts` operator command are included; tests, development servers and repository automation
+`scripts/local-account.ts` and `scripts/migrate-docker-hermes-enrollment.ts` operator commands, plus bundled pet artwork, are included; tests, development servers and repository automation
 are not. Application files remain root-owned and readable but not writable by the non-root `app` user.
 `/data/uploads` remains writable by `app`.
 
@@ -14,7 +14,7 @@ This change removes development tooling; it does not claim a fully minimal worke
 
 Next's optional `@playwright/test` peer is classified `devOptional` in the lockfile. npm installs it even with
 `--omit=dev`, so the runtime install explicitly removes `@playwright/test`, `playwright`, `playwright-core` and
-their executable links. The worker does not use Next's experimental browser-test integration. Four optional
+their executable links. It also removes Drizzle's optional `@electric-sql/pglite` test peer; the worker uses PostgreSQL through `pg`. The worker does not use Next's experimental browser-test integration. Four optional
 declaration peers are retained: `@types/node`, `@types/pg`, `@types/react-dom` and `undici-types`. These satisfy
 production libraries' optional type dependencies and contain declarations rather than development executables;
 the filesystem check allowlists them explicitly rather than accepting every `devOptional` package.

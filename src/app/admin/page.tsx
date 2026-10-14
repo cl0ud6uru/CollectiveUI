@@ -47,6 +47,21 @@ export default async function AdminUsagePage() {
             </div>
           ))}
         </div>
+        <details className="mt-4 text-sm">
+          <summary className="cursor-pointer font-medium">View daily message and token counts</summary>
+          <div className="mt-3">
+            <Table head={["Date", "Assistant messages", "Tokens"]}>
+              {daily.map((d) => (
+                <tr key={d.day}>
+                  <Td>{d.day}</Td>
+                  <Td className="tabular-nums">{n(d.messages)}</Td>
+                  <Td className="tabular-nums">{n(d.tokens)}</Td>
+                </tr>
+              ))}
+              {!daily.length && <tr><Td colSpan={3} className="text-muted">No assistant messages in the last 30 days.</Td></tr>}
+            </Table>
+          </div>
+        </details>
       </Card>
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div>

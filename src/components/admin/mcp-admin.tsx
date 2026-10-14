@@ -22,6 +22,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type { McpServerStatus, McpToolPolicy, McpTrust } from "@/lib/mcp/kinds";
+import { formatAdminTimestamp } from "@/lib/admin/timestamp";
 import { GroupPicker } from "./group-picker";
 import { Badge, Table, Td } from "./ui";
 
@@ -60,6 +61,25 @@ const STATUS: Record<McpServerStatus, { label: string; tone: "default" | "green"
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
 
+function serverInput(s: Partial<McpServerView>, identity: boolean, headers: string) {
+  return {
+    id: s.id,
+    name: s.name ?? "",
+    description: s.description ?? "",
+    url: s.url ?? "",
+    transport: s.transport ?? "http",
+    headers,
+    isPublic: s.isPublic ?? true,
+    groupIds: s.groupIds ?? [],
+    trust: s.trust ?? "untrusted",
+    identity,
+    identityHeader: s.identityHeader ?? undefined,
+    resultBudgetKb: s.resultBudgetKb ?? 64,
+    timeoutSec: s.timeoutSec ?? 60,
+    toolPolicy: s.toolPolicy ?? {},
+  };
+}
+
 function ToolBadges({ t }: { t: ToolView }) {
   return (
     <>
@@ -96,10 +116,12 @@ function SecretOnce({ secret, header }: { secret: string; header: string }) {
 
 function ServerDialog({
   server,
+  servers,
   groups,
   onClose,
 }: {
   server: Partial<McpServerView> | null;
+  servers: McpServerView[];
   groups: { id: string; name: string }[];
   onClose: () => void;
 }) {
@@ -111,9 +133,34 @@ function ServerDialog({
   const [secret, setSecret] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const [busy, setBusy] = useState<string | null>(null);
+  const [savedInput, setSavedInput] = useState(() => serverInput(server ?? {}, !!server?.identityHeader, ""));
+  const [testFeedback, setTestFeedback] = useState<{ error: boolean; message: string } | null>(null);
+  const input = serverInput(s, identity, headers);
+  const dirty = JSON.stringify(input) !== JSON.stringify(savedInput);
+  // A refresh updates test results without replacing the draft being edited.
+  const current = servers.find((row) => row.id === s.id) ?? s;
   const policy = s.toolPolicy ?? {};
   const setPolicy = (name: string, patch: McpToolPolicy[string]) => setS({ ...s, toolPolicy: { ...policy, [name]: { ...policy[name], ...patch } } });
   const saved = !!s.id;
+
+  const testSaved = async () => {
+    if (!s.id || dirty || pending || busy) return;
+    setBusy("Test");
+    setTestFeedback(null);
+    try {
+      const result = await testMcpServer(s.id);
+      setTestFeedback(!result.ok
+        ? { error: true, message: `Connection failed: ${result.error}` }
+        : { error: false, message: result.result === "drift"
+          ? "The saved server's tool list changed. Review the changes below."
+          : `Saved configuration tested successfully. ${result.tools.length} ${result.tools.length === 1 ? "tool" : "tools"} available.` });
+      router.refresh();
+    } catch (err) {
+      setTestFeedback({ error: true, message: errorText(err, "Connection test failed. Try again.") });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const run = async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -129,28 +176,15 @@ function ServerDialog({
   const save = () =>
     start(async () => {
       try {
-        const r = await saveMcpServer({
-          id: s.id,
-          name: s.name!,
-          description: s.description,
-          url: s.url!,
-          transport: s.transport ?? "http",
-          headers,
-          isPublic: s.isPublic ?? true,
-          groupIds: s.groupIds ?? [],
-          trust: s.trust ?? "untrusted",
-          identity,
-          identityHeader: s.identityHeader ?? undefined,
-          resultBudgetKb: s.resultBudgetKb ?? 64,
-          timeoutSec: s.timeoutSec ?? 60,
-          toolPolicy: s.toolPolicy,
-        });
+        const r = await saveMcpServer(input);
         toast.success(saved ? "Saved" : "Saved as a draft. Test it, then enable it.");
         router.refresh();
         if (r.identitySecret) {
           // Keep the dialog open so the secret can be copied; later saves edit this server.
           setSecret(r.identitySecret);
-          setS((cur) => ({ ...cur, id: r.id, hasIdentitySecret: true }));
+          const next = { ...s, id: r.id, hasIdentitySecret: true };
+          setS(next);
+          setSavedInput(serverInput(next, identity, ""));
           setHeaders("");
         } else onClose();
       } catch (err) {
@@ -289,32 +323,23 @@ function ServerDialog({
             <div className="space-y-3 rounded-xl border border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-sm">
-                  <span className="font-medium">Tools</span> <Badge tone={STATUS[s.status ?? "draft"].tone}>{STATUS[s.status ?? "draft"].label}</Badge>
+                  <span className="font-medium">Tools</span> <Badge tone={STATUS[current.status ?? "draft"].tone}>{STATUS[current.status ?? "draft"].label}</Badge>
                   <div className="text-xs text-muted">
-                    {s.lastTestedAt ? `Last checked ${new Date(s.lastTestedAt).toLocaleString()}` : "Not tested yet"}
-                    {s.serverInfo?.name ? ` · ${s.serverInfo.name}${s.serverInfo.version ? ` ${s.serverInfo.version}` : ""}` : ""}
+                    {current.lastTestedAt ? `Last checked ${formatAdminTimestamp(current.lastTestedAt)}` : "Not tested yet"}
+                    {current.serverInfo?.name ? ` · ${current.serverInfo.name}${current.serverInfo.version ? ` ${current.serverInfo.version}` : ""}` : ""}
                   </div>
                 </div>
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
-                    disabled={!!busy}
-                    onClick={() =>
-                      run("Test", async () => {
-                        const r = await testMcpServer(s.id!);
-                        if (!r.ok) toast.error(`Connection failed: ${r.error}`);
-                        else if (r.result === "drift") toast.warning("The tool list changed. Review the changes below.");
-                        else toast.success(`${r.tools.length} tools`);
-                        router.refresh();
-                        onClose();
-                      })
-                    }
+                    disabled={!!busy || pending || dirty}
+                    onClick={testSaved}
                   >
-                    {busy === "Test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />} Test
+                    {busy === "Test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />} Test saved server
                   </Button>
-                  {s.status === "draft" || s.status === "disabled" ? (
+                  {current.status === "draft" || current.status === "disabled" ? (
                     <Button
-                      disabled={!!busy || !s.tools?.length}
+                      disabled={!!busy || pending || dirty || !current.tools?.length}
                       onClick={() =>
                         run("Enable", async () => {
                           await setMcpServerEnabled(s.id!, true);
@@ -329,7 +354,7 @@ function ServerDialog({
                   ) : (
                     <Button
                       variant="outline"
-                      disabled={!!busy}
+                      disabled={!!busy || pending || dirty}
                       onClick={() =>
                         run("Disable", async () => {
                           await setMcpServerEnabled(s.id!, false);
@@ -344,34 +369,36 @@ function ServerDialog({
                   )}
                 </div>
               </div>
-              {s.lastError && <p className="text-xs text-danger">Last check failed: {s.lastError}</p>}
+              {dirty && <p role="status" className="text-sm text-muted">Save your changes before testing or changing this server&apos;s status.</p>}
+              {testFeedback && !dirty && <p role={testFeedback.error ? "alert" : "status"} className={`text-sm ${testFeedback.error ? "text-danger" : "text-muted"}`}>{testFeedback.message}</p>}
+              {current.lastError && !testFeedback && <p className="text-xs text-danger">Last check failed: {current.lastError}</p>}
 
-              {s.drift && (
+              {current.drift && (
                 <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-                  <p className="font-medium">The server&apos;s tool list changed ({new Date(s.drift.detectedAt).toLocaleString()})</p>
+                  <p className="font-medium">The server&apos;s tool list changed ({formatAdminTimestamp(current.drift.detectedAt)})</p>
                   <p className="text-xs text-muted">Changed and removed tools are hidden from bots, and new tools aren&apos;t offered, until you accept.</p>
-                  {s.drift.added.map((t) => (
+                  {current.drift.added.map((t) => (
                     <div key={`a-${t.name}`} className="text-xs">
                       <Badge tone="blue">new</Badge> <span className="font-mono">{t.name}</span> <ToolBadges t={t} />
                       <div className="text-muted">{t.description}</div>
                     </div>
                   ))}
-                  {s.drift.changed.map((t) => (
+                  {current.drift.changed.map((t) => (
                     <div key={`c-${t.name}`} className="text-xs">
                       <Badge tone="amber">changed</Badge> <span className="font-mono">{t.name}</span> <ToolBadges t={t} />
                       <div className="text-muted">{t.description}</div>
                     </div>
                   ))}
-                  {s.drift.removed.map((n) => (
+                  {current.drift.removed.map((n) => (
                     <div key={`r-${n}`} className="text-xs">
                       <Badge tone="red">removed</Badge> <span className="font-mono">{n}</span>
                     </div>
                   ))}
                   <Button
-                    disabled={!!busy}
+                    disabled={!!busy || pending || dirty}
                     onClick={() =>
                       run("Accept", async () => {
-                        await acceptMcpToolChanges(s.id!, s.drift!.hash);
+                        await acceptMcpToolChanges(s.id!, current.drift!.hash);
                         toast.success("Changes accepted");
                         router.refresh();
                         onClose();
@@ -383,9 +410,9 @@ function ServerDialog({
                 </div>
               )}
 
-              {!!s.tools?.length && (
+              {!!current.tools?.length && (
                 <div className="divide-y divide-border rounded-lg border border-border">
-                  {s.tools.map((t) => (
+                  {current.tools.map((t) => (
                     <div key={t.name} className="flex items-start gap-3 px-3 py-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -409,7 +436,7 @@ function ServerDialog({
                   ))}
                 </div>
               )}
-              {!!s.tools?.length && <p className="text-xs text-muted">&quot;Ask first&quot; always asks, even if someone chose &quot;Always allow&quot;. Save to apply.</p>}
+              {!!current.tools?.length && <p className="text-xs text-muted">&quot;Ask first&quot; always asks, even if someone chose &quot;Always allow&quot;. Save to apply.</p>}
             </div>
           )}
 
@@ -417,7 +444,7 @@ function ServerDialog({
             <Button variant="ghost" onClick={onClose}>
               {secret ? "Done" : "Cancel"}
             </Button>
-            <Button disabled={pending || !s.name || !s.url} onClick={save}>
+            <Button disabled={pending || !!busy || !s.name || !s.url} onClick={save}>
               {pending && <Loader2 className="h-4 w-4 animate-spin" />} Save
             </Button>
           </div>
@@ -532,22 +559,52 @@ export function McpAdmin({ servers, groups }: { servers: McpServerView[]; groups
   const router = useRouter();
   const [edit, setEdit] = useState<Partial<McpServerView> | null>(null);
   const [importing, setImporting] = useState(false);
-  const [testing, setTesting] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<{ id: string; action: "Test" | "Delete" } | null>(null);
+  const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
+  const runRowAction = async (server: McpServerView, action: "Test" | "Delete") => {
+    if (pendingAction) return;
+    if (action === "Delete" && !confirm(`Delete ${server.name}?`)) return;
+    setPendingAction({ id: server.id, action });
+    setFeedback(null);
+    try {
+      let message: string;
+      if (action === "Test") {
+        const result = await testMcpServer(server.id);
+        if (!result.ok) throw new Error(`Connection failed: ${result.error}`);
+        message = result.result === "drift"
+          ? `${server.name}: the tool list changed. Open it to review.`
+          : `${result.tools.length} tools: ${result.tools.slice(0, 8).join(", ")}${result.tools.length > 8 ? "…" : ""}`;
+      } else {
+        await deleteMcpServer(server.id);
+        message = `${server.name} deleted.`;
+      }
+      setFeedback({ error: false, message });
+      toast.success(message);
+      router.refresh();
+    } catch (err) {
+      const message = errorText(err, `${action} failed. Try again.`);
+      setFeedback({ error: true, message });
+      toast.error(message);
+    } finally {
+      setPendingAction(null);
+    }
+  };
   return (
     <div>
       <div className="mb-4 flex justify-end gap-2">
-        <Button variant="outline" onClick={() => setImporting(true)}>
+        <Button variant="outline" disabled={!!pendingAction} onClick={() => setImporting(true)}>
           <Download className="h-4 w-4" /> Import
         </Button>
-        <Button onClick={() => setEdit({ transport: "http", isPublic: true, trust: "untrusted", resultBudgetKb: 64, timeoutSec: 60 })}>
+        <Button disabled={!!pendingAction} onClick={() => setEdit({ transport: "http", isPublic: true, trust: "untrusted", resultBudgetKb: 64, timeoutSec: 60 })}>
           <Plus className="h-4 w-4" /> Add server
         </Button>
       </div>
+      {feedback && <p role={feedback.error ? "alert" : "status"} className={`mb-4 text-sm ${feedback.error ? "text-danger" : "text-muted"}`}>{feedback.message}</p>}
       <Table head={["Name", "URL", "Access", "Status", ""]}>
         {servers.map((s) => (
-          <tr key={s.id} className="cursor-pointer hover:bg-hover/50" onClick={() => setEdit(s)}>
+          <tr key={s.id} className="hover:bg-hover/50">
             <Td>
-              <div className="font-medium">{s.name}</div>
+              <button type="button" className="text-left font-medium underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2" aria-label={`Edit ${s.name}`} disabled={!!pendingAction} onClick={() => setEdit(s)}>{s.name}</button>
               <div className="text-xs text-muted">{s.description}</div>
             </Td>
             <Td className="font-mono text-xs text-muted">{s.url}</Td>
@@ -562,32 +619,22 @@ export function McpAdmin({ servers, groups }: { servers: McpServerView[]; groups
             </Td>
             <Td className="whitespace-nowrap">
               <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  setTesting(s.id);
-                  const r = await testMcpServer(s.id).catch((err) => ({ ok: false as const, error: errorText(err, "Test failed") }));
-                  setTesting(null);
-                  if (!r.ok) toast.error(`Connection failed: ${r.error}`);
-                  else if (r.result === "drift") toast.warning(`${s.name}: the tool list changed. Open it to review.`);
-                  else toast.success(`${r.tools.length} tools: ${r.tools.slice(0, 8).join(", ")}${r.tools.length > 8 ? "…" : ""}`);
-                  router.refresh();
-                }}
-                className="rounded-lg p-1.5 text-muted hover:bg-hover"
+                type="button"
+                disabled={!!pendingAction}
+                onClick={() => runRowAction(s, "Test")}
+                className="rounded-lg p-1.5 text-muted hover:bg-hover disabled:opacity-50"
                 aria-label={`Test ${s.name}`}
               >
-                {testing === s.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
+                {pendingAction?.id === s.id && pendingAction.action === "Test" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />}
               </button>
               <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  if (!confirm(`Delete ${s.name}?`)) return;
-                  await deleteMcpServer(s.id);
-                  router.refresh();
-                }}
-                className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger"
+                type="button"
+                disabled={!!pendingAction}
+                onClick={() => runRowAction(s, "Delete")}
+                className="rounded-lg p-1.5 text-muted hover:bg-hover hover:text-danger disabled:opacity-50"
                 aria-label={`Delete ${s.name}`}
               >
-                <Trash2 className="h-4 w-4" />
+                {pendingAction?.id === s.id && pendingAction.action === "Delete" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
               </button>
             </Td>
           </tr>
@@ -600,7 +647,7 @@ export function McpAdmin({ servers, groups }: { servers: McpServerView[]; groups
           </tr>
         )}
       </Table>
-      <ServerDialog key={edit?.id ?? (edit ? "new" : "none")} server={edit} groups={groups} onClose={() => setEdit(null)} />
+      <ServerDialog key={edit?.id ?? (edit ? "new" : "none")} server={edit} servers={servers} groups={groups} onClose={() => setEdit(null)} />
       {importing && <ImportDialog open onClose={() => setImporting(false)} />}
     </div>
   );

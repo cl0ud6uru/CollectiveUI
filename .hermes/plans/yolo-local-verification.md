@@ -1,5 +1,7 @@
 # Local + remote normal-chat session YOLO
 
+Historical verification report for the branch/base below. Tests ran in a Linux environment with a synthetic native gateway; the totals and scratch paths are not current-checkout results or portable macOS commands. See [current connection guidance](../../docs/connections.md#hermes-agent-bots-from-your-hermes-profiles) for supported behavior.
+
 Branch: `fix/yolo-local-and-remote-20261009`; base `330c8e1`.
 
 ## Delivered

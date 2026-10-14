@@ -7,11 +7,28 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { PGlite } from '@electric-sql/pglite';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { tokenFingerprint } from '@/personal-codex/contracts';
 import type { PersistTurnInput } from '@/lib/agent/persist';
 import type { TurnOptions } from '@/lib/agent/run';
 
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, siwcFingerprint: null as string | null,
+  syncTokens: [] as { owner: string; accessToken: string; credentialBinding: string }[], refreshTokens: vi.fn() }));
 vi.mock('server-only', () => ({}));
+vi.mock('@/lib/llm/chatgpt/siwc', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/llm/chatgpt/siwc')>('@/lib/llm/chatgpt/siwc');
+  return { ...actual, refreshSIWCTokens: (...args: Parameters<typeof actual.refreshSIWCTokens>) => fixture.refreshTokens(...args) };
+});
+vi.mock('@/personal-codex/control', () => ({
+  personalSocket: () => process.env.PERSONAL_CODEX_SOCKET,
+  personalControl: vi.fn(async (owner: string, action: string, credential?: { accessToken: string; credentialBinding: string }) => {
+    if (action === 'sync-token' && credential) {
+      fixture.syncTokens.push({ owner, ...credential });
+      fixture.siwcFingerprint = credential.credentialBinding;
+      return { synchronized: true };
+    }
+    return { state: 'running', siwc: { available: true, credentialBinding: fixture.siwcFingerprint } };
+  }),
+}));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'), { drizzle } = await import('drizzle-orm/pglite'), schema = await import('@/db/schema');
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
@@ -26,6 +43,10 @@ import { CodexClient } from '@/lib/codex/client';
 import { executeCodexSession } from '@/lib/codex/session';
 import { checkpointCodexRun, reserveCodexRun } from '@/lib/codex/store';
 import { CODEX_VERSION } from '@/lib/codex/config';
+import { getChatGPTAuth, openCredentialSecret, saveChatGPTConnection, sealCredentialSecret } from '@/lib/llm/chatgpt/store';
+
+const SIWC_HOST_ID = 'urn:uuid:123e4567-e89b-42d3-a456-426614174000';
+const SIWC_SCOPE = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 
 const unixServer = createServer();
 const server = createServer(), wss = new WebSocketServer({ server });
@@ -36,6 +57,7 @@ let mode: 'normal' | 'hold' | 'lost_ack' | 'approval' | 'wrong_account' | 'unrea
 const seen: { owner: string; method: string; params: Record<string, unknown> }[] = [];
 let subscription = false, managed = false, nativeSequence = 0;
 const states = new Map<string, { id: string; status: string }>();
+const heldTurns: { ws: WebSocket; threadId: string; turnId: string }[] = [];
 const send = (ws: WebSocket, value: unknown) => ws.send(JSON.stringify(value));
 wss.on('connection', (ws, req) => {
   const owner = String(req.headers['x-collective-owner'] ?? req.url!.slice(1));
@@ -60,22 +82,27 @@ wss.on('connection', (ws, req) => {
       const accountReply = () => reply({ account: mode === 'wrong_account' || subscription || managed ? { type: 'chatgpt', email: mode === 'wrong_account' || lateAccountChange ? 'other@test.invalid' : `${owner}@test.invalid`, planType: 'business' } : { type: 'apiKey' }, requiresOpenaiAuth: true, ...(managed ? { workspaceRouting: { chatgptAccountId: 'shared-workspace', backendOrigin: 'https://chatgpt.com/backend-api', accountRoutingOverride: 'NO_CONSTRAINT' } } : {}) });
       if (lateAccountChange) setTimeout(accountReply, 30); else accountReply();
     }
-    else if (m.method === 'config/read') reply({ config: subscription || managed ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: 'shared-workspace' } : {} });
+    else if (m.method === 'config/read') reply({ config: managed ? {
+      model_provider: 'openai_chatgpt_plan', model_providers: { openai_chatgpt_plan: {
+        base_url: 'https://api.openai.com/v1', env_key: 'ACCESS_TOKEN', wire_api: 'responses',
+        requires_openai_auth: false, supports_websockets: false,
+      } }, shell_environment_policy: { inherit: 'none', filters: { ACCESS_TOKEN: 'exclude' } },
+    } : subscription ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: 'shared-workspace' } : {} });
     else if (m.method === 'configRequirements/read') reply({ requirements: { defaultPermissions: 'collective-personal', allowedPermissionProfiles: { 'collective-personal': true }, allowedLoginMethods: ['chatgpt'], allowedApprovalsReviewers: ['user'], allowedApprovalPolicies: ['on-request'] } });
-    else if (m.method === 'model/list') { if (mode === 'switch_preflight') notification('account/updated', { authMode: 'chatgpt' }); reply({ data: [{ model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }], nextCursor: null }); }
-    else if (m.method === 'thread/start' || m.method === 'thread/resume') reply({ thread: { id: `thread-${owner}`, turns: m.method === 'thread/resume' && states.has(`thread-${owner}`) ? [states.get(`thread-${owner}`)!] : [] }, model: 'fixture-model', modelProvider: 'openai', cwd: managed ? '/home/agent/workspace' : '/audit',
+    else if (m.method === 'model/list') { if (mode === 'switch_preflight') { fixture.siwcFingerprint = 'changed-before-dispatch'; notification('account/updated', { authMode: 'chatgpt' }); } reply({ data: [{ model: 'fixture-model', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] }], nextCursor: null }); }
+    else if (m.method === 'thread/start' || m.method === 'thread/resume') reply({ thread: { id: `thread-${owner}`, turns: m.method === 'thread/resume' && states.has(`thread-${owner}`) ? [states.get(`thread-${owner}`)!] : [] }, model: 'fixture-model', modelProvider: managed ? 'openai_chatgpt_plan' : 'openai', cwd: managed ? '/home/agent/workspace' : '/audit',
       ...(managed ? { activePermissionProfile: { id: 'collective-personal', extends: null } } : {}),
       approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: managed ? 'workspaceWrite' : 'readOnly', networkAccess: false } });
     else if (m.method === 'turn/start') {
       const threadId = String(m.params.threadId), turnId = managed ? `turn-${owner}-${++nativeSequence}` : `turn-${owner}`;
       states.set(threadId, { id: turnId, status: 'inProgress' });
       if (mode === 'lost_ack' || mode === 'unreachable_stop') { ws.terminate(); return; }
-      if (mode === 'hold') { reply({ turn: { id: turnId } }); return; }
+      if (mode === 'hold') { heldTurns.push({ ws, threadId, turnId }); reply({ turn: { id: turnId } }); return; }
       if (mode === 'approval') {
         reply({ turn: { id: turnId } }); send(ws, { id: 'approval', method: 'item/commandExecution/requestApproval', params: { threadId, turnId, ...(managed ? { itemId: 'native-command', command: 'protected-command', reason: 'Additional permissions' } : {}) } }); return;
       }
       if (mode === 'native_tool' || mode === 'completed_tool') { reply({ turn: { id: turnId } }); notification(mode === 'completed_tool' ? 'item/completed' : 'item/started', { threadId, turnId, item: { type: 'fileChange' } }); return; }
-      if (mode === 'switch_at_completion') { lateAccountChange = true; notification('account/updated', { authMode: 'chatgpt' }); }
+      if (mode === 'switch_at_completion') { lateAccountChange = true; fixture.siwcFingerprint = 'changed-at-completion'; notification('account/updated', { authMode: 'chatgpt' }); }
       if (mode === 'resolved_approval') {
         send(ws, { id: 'resolved-native', method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'native-command' } });
         notification('serverRequest/resolved', { threadId, requestId: 'resolved-native' });
@@ -112,7 +139,9 @@ beforeAll(async () => {
   await new Promise<void>(resolve => unixServer.listen(join(root, 'native.sock'), resolve));
 }, 45000);
 beforeEach(async () => {
-  mode = 'normal'; subscription = false; managed = false; nativeSequence = 0; serverReplies.length = 0; vi.stubEnv('PERSONAL_CODEX_SOCKET', ''); seen.length = 0; states.clear();
+  mode = 'normal'; subscription = false; managed = false; nativeSequence = 0; fixture.siwcFingerprint = null; fixture.syncTokens.length = 0; serverReplies.length = 0; vi.stubEnv('PERSONAL_CODEX_SOCKET', ''); seen.length = 0; states.clear();
+  fixture.refreshTokens.mockReset();
+  heldTurns.length = 0;
   await fixture.client!.exec('TRUNCATE users, ai_apps, codex_runs, settings, codex_approvals CASCADE');
   await db.insert(schema.users).values(['alice', 'bob'].map(id => ({ id, upn: `${id}@test.invalid`, name: id, authSource: 'local' as const, identityRealm: 'local' as const })));
   await db.insert(schema.bots).values({ id: 'audit', ownerId: 'alice', name: 'Shared example bot', visibility: 'org' });
@@ -281,9 +310,8 @@ describe('Codex native app-server harness (local protocol fixtures, no live infe
     expect(RuntimeManifestSchema.safeParse({ version: 1, runtimes: [{ ...runtime, funding: 'chatgpt_subscription' }] }).success).toBe(false);
   });
   it('resumes the same managed native thread, allows command/file items, and reports per-turn usage deltas', async () => {
-    managed = true; mode = 'agent_tools';
-    const runtime = { ...await callerRuntime('alice', 'api'), funding: 'chatgpt_subscription' as const, managed: true as const,
-      socketPath: join(root, 'native.sock'), endpoint: 'ws://127.0.0.1/runtime', cwd: '/home/agent/workspace', expectedEmail: 'alice@test.invalid', expectedWorkspaceId: 'shared-workspace' };
+    await managedConnection(); mode = 'agent_tools';
+    const runtime = await callerRuntime('alice', 'chatgpt_subscription', { synchronize: true });
     let totals: import('@/lib/codex/session').CodexTokenUsage | undefined;
     const tools: unknown[] = [], usage: unknown[] = [];
     for (let turn = 0; turn < 2; turn++) {
@@ -311,27 +339,134 @@ describe('Codex native app-server harness (local protocol fixtures, no live infe
 
   async function managedConnection() {
     managed = true; vi.stubEnv('PERSONAL_CODEX_SOCKET', join(root, 'native.sock'));
+    vi.stubEnv('CHATGPT_SIWC_HOST_ID', SIWC_HOST_ID);
     await db.insert(schema.settings).values({ key: 'chatgpt', value: { enabled: true, access: 'everyone', allowPersonalPlans: true, allowedUpns: [], allowedGroupIds: [], allowedWorkspaceIds: [] } });
     await db.update(schema.codexBotConfigs).set({ policy: { funding: 'chatgpt_subscription', model: 'fixture-model', effort: 'medium' } });
-    await db.insert(schema.personalCodexAccounts).values({ userId: 'alice', credentialBinding: 'fixture-account-generation', email: 'alice@test.invalid', workspaceId: 'shared-workspace', planType: 'business' });
+    await saveChatGPTConnection('alice', { accessToken: 'fixture-managed-access-token', refreshToken: 'fixture-managed-refresh-token', idToken: 'fixture-managed-id-token', expiresIn: 3600 },
+      { accountId: 'siwc:issued-client-id', userId: 'fixture-managed-subject', email: 'alice@test.invalid', planType: null, residency: null, isFedramp: false, expiresAt: new Date(Date.now() + 3_600_000) },
+      undefined, { clientId: 'issued-client-id', hostId: SIWC_HOST_ID, scope: SIWC_SCOPE });
   }
+  function completeHeldTurn(recheckAccount = true) {
+    const { ws, threadId, turnId } = heldTurns[0];
+    if (recheckAccount) send(ws, { method: 'account/updated', params: { authMode: 'chatgpt' } });
+    send(ws, { method: 'item/agentMessage/delta', params: { threadId, turnId, itemId: 'answer', delta: 'Completed after refresh' } });
+    states.set(threadId, { id: turnId, status: 'completed' });
+    send(ws, { method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+  }
+  it('completes an in-flight stock turn after the native harness rotates only the SIWC tokens', async () => {
+    await managedConnection(); mode = 'hold';
+    const { opts } = await options('alice'), running = consume(opts);
+    await until(async () => heldTurns.length === 1 && (await db.select().from(schema.codexRuns))[0]?.phase === 'running');
+    const originalFingerprint = fixture.siwcFingerprint;
+    const [before] = await db.select().from(schema.userCredentials);
+    const [bindingBefore] = await db.select().from(schema.personalCodexAccounts);
+    fixture.refreshTokens.mockResolvedValue({ ok: true, tokens: { accessToken: 'native-rotated-access', refreshToken: 'native-rotated-refresh', expiresIn: 3600 } });
+    expect((await getChatGPTAuth('alice', { rejectedToken: 'fixture-managed-access-token' })).accessToken).toBe('native-rotated-access');
+    expect(fixture.siwcFingerprint).toBe(originalFingerprint);
+    expect(fixture.syncTokens).toHaveLength(1);
+    const [after] = await db.select().from(schema.userCredentials);
+    expect(after).toMatchObject({ id: before.id, accountId: before.accountId, externalSubject: before.externalSubject, email: before.email });
+    expect((await db.select().from(schema.personalCodexAccounts))[0].credentialBinding).toBe(bindingBefore.credentialBinding);
+    // A native-harness refresh does not publish an account update on the stock app-server.
+    completeHeldTurn(false);
+    const result = await running;
+    expect(result.result.error).toBeUndefined();
+    expect(result.result.responseMessage.parts).toContainEqual({ type: 'text', text: 'Completed after refresh', state: 'done' });
+    expect((await db.select().from(schema.codexRuns))[0].phase).toBe('terminal');
+  });
+  it('strictly rechecks the dispatch token after a checkpoint refresh without an account notification', async () => {
+    await managedConnection();
+    const runtime = await callerRuntime('alice', 'chatgpt_subscription', { synchronize: true });
+    fixture.refreshTokens.mockResolvedValue({ ok: true, tokens: { accessToken: 'checkpoint-rotated-access', refreshToken: 'checkpoint-rotated-refresh', expiresIn: 3600 } });
+    const client = await CodexClient.connect(runtime);
+    try {
+      await expect(executeCodexSession(client, runtime, { funding: 'chatgpt_subscription', model: 'fixture-model', effort: 'medium' }, 'hello', '', {
+        checkpoint: async value => { if (value.phase === 'dispatching') await getChatGPTAuth('alice', { rejectedToken: 'fixture-managed-access-token' }); },
+        text: () => {},
+      }, AbortSignal.timeout(2000))).rejects.toThrow('Your ChatGPT connection changed');
+    } finally { client.close(); }
+    expect(fixture.refreshTokens).toHaveBeenCalledTimes(1);
+    expect(fixture.siwcFingerprint).toBe(runtime.tokenFingerprint);
+    expect(seen.some(call => call.method === 'turn/start')).toBe(false);
+  });
+  it.each(['disabled owner', 'removed credential', 'disconnected binding', 'rotated binding', 'session version', 'credential ID',
+    'account ID', 'subject', 'email', 'client registration', 'host registration', 'scope registration', 'inactive credential', 'broker fingerprint'] as const)
+  ('rejects an in-flight completion after changing %s', async cause => {
+    await managedConnection(); mode = 'hold';
+    const { opts } = await options('alice'), running = consume(opts);
+    await until(async () => heldTurns.length === 1 && (await db.select().from(schema.codexRuns))[0]?.phase === 'running');
+    const [credential] = await db.select().from(schema.userCredentials);
+    const secret = openCredentialSecret(credential);
+    switch (cause) {
+      case 'disabled owner': await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, 'alice')); break;
+      case 'removed credential': await db.delete(schema.userCredentials).where(eq(schema.userCredentials.id, credential.id)); break;
+      case 'disconnected binding': await db.update(schema.personalCodexAccounts).set({ connected: false }).where(eq(schema.personalCodexAccounts.userId, 'alice')); break;
+      case 'rotated binding': await db.update(schema.personalCodexAccounts).set({ credentialBinding: 'replacement-binding' }).where(eq(schema.personalCodexAccounts.userId, 'alice')); break;
+      case 'session version': await db.update(schema.users).set({ sessionVersion: 1 }).where(eq(schema.users.id, 'alice')); break;
+      case 'credential ID': await db.update(schema.userCredentials).set({ id: 'replacement-credential', secretEnc: sealCredentialSecret('replacement-credential', secret) }).where(eq(schema.userCredentials.id, credential.id)); break;
+      case 'account ID':
+        await db.update(schema.userCredentials).set({ accountId: 'siwc:replacement-account' }).where(eq(schema.userCredentials.id, credential.id));
+        await db.update(schema.personalCodexAccounts).set({ workspaceId: 'siwc:replacement-account' }).where(eq(schema.personalCodexAccounts.userId, 'alice')); break;
+      case 'subject': await db.update(schema.userCredentials).set({ externalSubject: 'replacement-subject' }).where(eq(schema.userCredentials.id, credential.id)); break;
+      case 'email':
+        await db.update(schema.userCredentials).set({ email: 'replacement@test.invalid' }).where(eq(schema.userCredentials.id, credential.id));
+        await db.update(schema.personalCodexAccounts).set({ email: 'replacement@test.invalid' }).where(eq(schema.personalCodexAccounts.userId, 'alice')); break;
+      case 'client registration':
+        await db.update(schema.userCredentials).set({ secretEnc: sealCredentialSecret(credential.id, { ...secret, siwc: { ...secret.siwc!, clientId: 'replacement-client' } }) }).where(eq(schema.userCredentials.id, credential.id)); break;
+      case 'host registration': {
+        const hostId = 'urn:uuid:123e4567-e89b-42d3-b456-426614174000';
+        vi.stubEnv('CHATGPT_SIWC_HOST_ID', hostId);
+        await db.update(schema.userCredentials).set({ secretEnc: sealCredentialSecret(credential.id, { ...secret, siwc: { ...secret.siwc!, hostId } }) }).where(eq(schema.userCredentials.id, credential.id)); break;
+      }
+      case 'scope registration':
+        await db.update(schema.userCredentials).set({ secretEnc: sealCredentialSecret(credential.id, { ...secret, siwc: { ...secret.siwc!, scope: `${SIWC_SCOPE} changed-registration` } }) }).where(eq(schema.userCredentials.id, credential.id)); break;
+      case 'inactive credential': await db.update(schema.userCredentials).set({ status: 'needs_reauth' }).where(eq(schema.userCredentials.id, credential.id)); break;
+      case 'broker fingerprint': fixture.siwcFingerprint = 'replacement-broker-token'; break;
+    }
+    completeHeldTurn();
+    const result = await running;
+    expect(result.result.error).toMatch(/ChatGPT connection/);
+    expect(result.chunks.find(chunk => chunk.type === 'finish')).toMatchObject({ finishReason: 'error' });
+    expect(seen.filter(call => call.method === 'turn/start')).toHaveLength(1);
+  });
+  it.each(['disabled owner', 'deleted credential', 'disconnected binding'])('never dispatches with a stale broker fingerprint after %s', async cause => {
+    await managedConnection();
+    const runtime = await callerRuntime('alice', 'chatgpt_subscription', { synchronize: true });
+    expect(fixture.siwcFingerprint).toBe(runtime.tokenFingerprint);
+    if (cause === 'disabled owner') await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, 'alice'));
+    else if (cause === 'deleted credential') await db.delete(schema.userCredentials).where(eq(schema.userCredentials.userId, 'alice'));
+    else await db.update(schema.personalCodexAccounts).set({ connected: false }).where(eq(schema.personalCodexAccounts.userId, 'alice'));
+    const client = await CodexClient.connect(runtime);
+    try {
+      await expect(executeCodexSession(client, runtime, { funding: 'chatgpt_subscription', model: 'fixture-model', effort: 'medium' }, 'hello', '',
+        { checkpoint: async () => {}, text: () => {} }, AbortSignal.timeout(2000))).rejects.toThrow('connection is no longer available');
+    } finally { client.close(); }
+    expect(seen.some(call => call.method === 'thread/start' || call.method === 'turn/start')).toBe(false);
+  });
   it('persists native tool parts and continues the same owner-bound thread through the production run adapter', async () => {
     await managedConnection(); mode = 'agent_tools';
     const first = await options('alice'); const reply = await consume(first.opts);
     expect(reply.result.error).toBeUndefined();
     expect(reply.chunks.filter(c => c.type === 'tool-input-available')).toHaveLength(2);
     expect(reply.result.responseMessage.parts.some(p => p.type === 'dynamic-tool')).toBe(true);
+    const stableBinding = (await db.select().from(schema.personalCodexAccounts))[0].credentialBinding;
+    await db.update(schema.userCredentials).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(schema.userCredentials.userId, 'alice'));
+    fixture.refreshTokens.mockResolvedValue({ ok: true, tokens: { accessToken: 'fixture-managed-access-token-rotated', refreshToken: 'fixture-managed-refresh-token-rotated', expiresIn: 3600 } });
     await db.update(schema.agentRuns).set({ status: 'succeeded' }).where(eq(schema.agentRuns.id, first.runId));
     const next = await options('alice', 'followup');
     next.opts.conversation = first.opts.conversation;
     next.opts.history = [...first.opts.history, reply.result.responseMessage, { id: 'followup-user', role: 'user', parts: [{ type: 'text', text: 'Now update the report.' }] }];
     await db.update(schema.agentRuns).set({ conversationId: first.opts.conversation.id }).where(eq(schema.agentRuns.id, next.runId));
     expect((await consume(next.opts)).result.error).toBeUndefined();
+    expect(fixture.refreshTokens).toHaveBeenCalledWith('fixture-managed-refresh-token', 'issued-client-id', undefined, 'fixture-managed-subject');
+    expect(fixture.syncTokens[1]).toMatchObject({ owner: 'alice', accessToken: 'fixture-managed-access-token-rotated', credentialBinding: tokenFingerprint('fixture-managed-access-token-rotated') });
     expect(seen.filter(s => s.method === 'thread/start')).toHaveLength(1);
     expect(seen.filter(s => s.method === 'thread/resume')).toHaveLength(1);
     expect(seen.filter(s => s.method === 'turn/start')[1].params.input).toEqual([{ type: 'text', text: 'Now update the report.', text_elements: [] }]);
     expect((await db.select().from(schema.codexThreads))[0]).toMatchObject({ userId: 'alice', threadId: 'thread-alice', lastMessageId: next.opts.responseMessageId });
     expect((await db.select().from(schema.usageEvents)).map(row => row.inputTokens)).toEqual([7, 7]);
+    expect(fixture.syncTokens[0]).toMatchObject({ owner: 'alice', accessToken: 'fixture-managed-access-token', credentialBinding: tokenFingerprint('fixture-managed-access-token') });
+    expect((await db.select().from(schema.personalCodexAccounts))[0].credentialBinding).toBe(stableBinding);
     next.opts.history.at(-2)!.id = 'another-branch';
     await expect(runCodexTurn(next.opts)).rejects.toThrow('conversation branch');
   });
@@ -367,7 +502,7 @@ describe('Codex native app-server harness (local protocol fixtures, no live infe
     await managedConnection(); mode = 'switch_at_completion';
     const { opts } = await options('alice');
     const result = await consume(opts);
-    expect(result.result.error).toContain('funding and identity');
+    expect(result.result.error).toContain('not synchronized with your verified ChatGPT connection');
     expect(result.chunks.find(c => c.type === 'finish')).toMatchObject({ finishReason: 'error' });
   });
   it('suppresses pre-ack approval callbacks already resolved by the native server', async () => {

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge, Card } from "@/components/admin/ui";
+import { Button } from "@/components/ui/button";
 import {
   createWorkspaceTemplateDraft,
   createWorkspaceTemplateVersion,
@@ -185,9 +186,9 @@ export function WorkspaceTemplateCatalog({
                 <p className="text-xs text-muted">{enabledCapabilities.join(" and ")} · Starter: {profile.seedBundleKey} · network access: none.</p>
                 {exists
                   ? <p className="text-sm text-muted">{profile.templateName} is already in the catalog. Use its version controls below.</p>
-                  : <button className="rounded-lg bg-fg px-4 py-2 text-sm font-medium text-background disabled:cursor-not-allowed disabled:opacity-60" type="submit" disabled={pending}>
+                  : <Button type="submit" disabled={pending}>
                       {pending ? "Saving…" : `Create ${profile.templateName} draft`}
-                    </button>}
+                    </Button>}
               </form>
             </Card>
           );

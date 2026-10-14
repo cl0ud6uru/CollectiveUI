@@ -1,13 +1,13 @@
 # Hermes Agent integration
 
-Opt-in per-user automatic bot profiles are documented in [Automatic Hermes profiles](hermes-profile-provisioning.md).
-Hermes profiles and session keys are state organization, **not tenant security boundaries**; managed mode requires
-operator-provided whole-process/filesystem isolation per user. The manual integration described below is unchanged.
+This page documents the admin-configured shared **Runs API** integration and preserves its original research/design record. Other implemented paths are [automatic managed profiles](hermes-profile-provisioning.md), [personal Docker runtimes](docker-hermes.md), [personal native remote dashboards](native-hermes.md), and [managed/local native chat controls](hermes-managed-local-parity.md). [Team Bot candidates](hermes-team-pilot.md) remain disabled pending verification.
 
-**Status:** plan agreed 2026-09-30; **H1 built** (see "H1 as built"). Research: NousResearch/hermes-agent at `d9a97ae` (2026-09-29) and
+Hermes profiles and session keys organize state; they are **not tenant security boundaries**. Managed profiles require operator-provided process/filesystem isolation per user; personal Docker runtimes supply a separate owner container.
+
+**Historical baseline:** plan agreed 2026-09-30; **H1 built** (see "H1 as built"). Research: NousResearch/hermes-agent at `d9a97ae` (2026-09-29) and
 release tag `v2026.9.24`, verified by an adversarial second read of the source; Paperclip at `81a52eb`.
 
-## What we're building
+## Shared Runs integration
 
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) (Nous Research, MIT) is a self-hosted personal agent: its
 own agent loop, tools (terminal, files, web, MCP servers), memory, skills and approvals. Since v0.20.3 (Aug 16 2026) its
@@ -45,8 +45,8 @@ H1; since P6 these turns run on it anyway (see "H1 as built").
 
 1. **Start.** `POST {base}/p/{profile}/v1/runs` with `{input, session_id, instructions}` and headers
    `Authorization: Bearer <API_SERVER_KEY>`, `Idempotency-Key: <portal message id>`,
-   `X-Hermes-Session-Key: <HMAC(user, app)>`. Reply `202 {run_id}`.
-   - `session_id = portal-<conversationId>` is always sent explicitly (the session-key header alone attaches to the
+   `X-Hermes-Session-Key: portal-<sha256(app, user)>`. Reply `202 {run_id}`.
+   - `session_id = portal-<conversationId>-<botId>` for a bot (or `portal-<conversationId>` for an app-only chat) is sent explicitly (the session-key header alone attaches to the
      latest session bound to that key). Hermes keeps the conversation in its own session store, so the portal sends
      only the new user message, never the whole history.
    - `instructions` carries the portal side of the bot (its instructions and boundaries, who is chatting, the date).
@@ -153,7 +153,7 @@ disable the local controls or normal chat. No real Hermes commands are exercised
 
 ## Identity and tenancy
 
-Hermes has no end users: one API key opens a whole profile, including its terminal, and a profile's memory
+In this shared Runs integration, one profile API key grants access to that profile, including its terminal, and a profile's memory
 (MEMORY.md/USER.md), skills and approval allowlist are shared by everyone who uses it.
 
 - **H1: shared profiles.** Everyone the admin lets use the bot reaches the same profile, which acts as a service
@@ -200,10 +200,12 @@ Hermes has no end users: one API key opens a whole profile, including its termin
 | Profile metadata (display name, bot title, description, avatar, SOUL.md) only via the admin dashboard (`hermes serve`, port 9119), which can also read and write `.env` | `hermes_cli/web_routers/profiles.py` 83-99; `tui_gateway/methods_profiles.py` |
 | ACP (`hermes acp`) and `hermes mcp serve` are stdio-only | `acp_adapter/entry.py`; `mcp_serve.py` |
 
-## Phases
+## Original phases and later implementations
+
+These phase labels come from the original Runs plan. Per-user managed provisioning and personal Docker runtimes have since shipped through the separate designs linked above; they do not implement every H2/H3 proposal below. Native remote dashboard conversations also have their own owner-authorized history and controls.
 
 - **H1 (now):** the provider above; Admin → Apps "Hermes Agent" with Test and "create a bot"; tool rows, approvals
-  (once/deny, expiry), Stop, usage; shared profiles; background and group turns auto-deny approvals. Tested against a
+  (once/deny, expiry), Stop, usage; shared profiles; delegated and group turns auto-deny approvals. Routines use durable approval/Inbox continuation subject to the native timeout. Tested against a
   real Hermes gateway running on the mock LLM, plus a fake Hermes for CI.
 - **H2:** a profile per person; an hourly sync that flags missing or changed profiles; after each turn, replace tool
   previews with the real arguments and results from `GET /api/sessions/{id}/messages`; optional read-only import of

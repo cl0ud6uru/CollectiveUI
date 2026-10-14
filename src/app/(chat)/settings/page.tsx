@@ -12,48 +12,19 @@ import { db } from "@/db";
 import { botTools, bots, conversations, memories, toolGrants } from "@/db/schema";
 import { listAccessibleBots, listAccessibleModels } from "@/lib/authz";
 import { listStartBots } from "@/lib/chat/targets";
-import { getPendingChatGPTLogin } from "@/lib/llm/chatgpt/device";
-import { planLabel, userMayUseChatGPT } from "@/lib/llm/chatgpt/policy";
-import { getChatGPTCredential } from "@/lib/llm/chatgpt/store";
 import { requirePagePrincipal } from "@/lib/session";
 import { workspaceView } from "@/lib/sandbox/view";
 import { getSetting } from "@/lib/settings";
-import type { ChatGPTConnectionView } from "@/components/settings/chatgpt-connection";
 
 export default async function SettingsPage() {
   const p = await requirePagePrincipal();
   const [remotePolicy, remoteConnections] = await Promise.all([getSetting('remoteHermes'), listRemoteConnections(p.user.id)]);
-  const [chatgptSettings, credential, pendingLogin] = await Promise.all([
-    getSetting("chatgpt"),
-    getChatGPTCredential(p.user.id),
-    getPendingChatGPTLogin(p.user.id),
-  ]);
   let hermes = null;
   if (await dockerAllowed(p)) {
     let canCreate = true;
     try { await assertDockerCreate(p, await getSetting("tools")); } catch { canCreate = false; }
     hermes = <PersonalHermes canCreate={canCreate} />;
   }
-  const allowed = userMayUseChatGPT(p, chatgptSettings);
-  // Only non-secret account facts reach the browser. The tab shows when people may connect, or have a connection.
-  const chatgpt: ChatGPTConnectionView | null =
-    allowed || credential
-      ? {
-          allowed,
-          pending: allowed ? pendingLogin : null,
-          connection: credential
-            ? {
-                email: credential.email,
-                plan: planLabel(credential.planType),
-                accountId: credential.accountId,
-                status: credential.status,
-                connectedAt: credential.createdAt.toISOString(),
-                lastRefreshAt: credential.lastRefreshAt?.toISOString() ?? null,
-                rateLimits: (credential.rateLimits ?? null) as NonNullable<ChatGPTConnectionView["connection"]>["rateLimits"],
-              }
-            : null,
-        }
-      : null;
   const [apps, startBots, accessibleBots, workspaceToolRows, mems, archived, grants, workspace, teamConnections] = await Promise.all([
     listAccessibleModels(p),
     listStartBots(p),
@@ -79,6 +50,7 @@ export default async function SettingsPage() {
   return (
     <PageFrame title="Settings">
       <SettingsView
+        key={`${p.user.id}:${p.user.sessionVersion}`}
         prefs={p.user.prefs ?? {}}
         apps={apps.map((a) => ({ id: a.id, name: a.name }))}
         bots={startBots.map((b) => ({ id: b.id, name: b.name }))}
@@ -86,7 +58,6 @@ export default async function SettingsPage() {
         archived={archived.map((a) => ({ id: a.id, title: a.title, updatedAt: a.updatedAt.toISOString() }))}
         grants={grants}
         user={{ name: p.user.name, upn: p.user.upn, authSource: p.user.authSource }}
-        chatgpt={chatgpt}
         workspace={workspace}
         workspaceBots={workspaceBots}
         security={<SecurityPanel />}

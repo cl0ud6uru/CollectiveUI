@@ -59,6 +59,8 @@ jobs:
       - run: npm run lint
       # Integration and sandbox suites skip themselves without DATABASE_URL / SANDBOX_DOCKER.
       - run: npm test
+      - name: Exercise the synthetic computer transport without a live SBX or credentials
+        run: node tests/browser/computer-transport.mjs
 
   hermes-team-web:
     name: Synthetic Team Bot controls and mobile web
@@ -80,6 +82,8 @@ jobs:
           node tests/browser/hermes-team-builder.mjs
           node tests/browser/codex-harness.mjs
           node tests/browser/personal-codex.mjs
+          node tests/browser/computer-viewer.mjs
+          node tests/browser/docker-sandboxes-admin.mjs
           node tests/browser/voice-mode.mjs
           node tests/browser/voice-avatar.mjs
           npx playwright test --config tests/group-lead.playwright.config.ts

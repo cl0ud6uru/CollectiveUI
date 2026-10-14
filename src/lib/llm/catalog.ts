@@ -497,7 +497,7 @@ export const CATALOG: Record<AppProvider, CatalogEntry> = {
   chatgpt: {
     label: "ChatGPT plan (each person's own)",
     credentials: "user",
-    description: "Each person's own ChatGPT plan, connected in Settings (unofficial). Turn it on under Admin → Settings first.",
+    description: "Each person's own ChatGPT subscription through supported token sharing, connected in Settings. Turn it on under Admin → Settings first.",
     baseUrl: { mode: "none", hint: "" },
     modelLabel: "Model",
     modelPlaceholder: "gpt-5.1-codex",

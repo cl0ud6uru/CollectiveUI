@@ -1805,6 +1805,21 @@ export const officialPlanConnections=pgTable('official_plan_connections',{
 ]);
 
 /** Owner/session-bound one-shot loopback authorization. Secrets never appear in status APIs. */
+export const chatgptCompanionAttempts = pgTable('chatgpt_companion_attempts', {
+  id: text('id').primaryKey(), userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  sessionVersion: integer('session_version').notNull(), hostId: text('host_id').notNull(), origin: text('origin').notNull(),
+  launchHash: text('launch_hash').notNull(), returnHash: text('return_hash'), payloadEnc: text('payload_enc').notNull(),
+  enableCodex: boolean('enable_codex').notNull().default(false), custodyHash: text('custody_hash'),
+  state: text('state').$type<'created' | 'paired' | 'receiving' | 'complete' | 'cancelled' | 'needs_attention' | 'expired'>().notNull().default('created'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), recoveryUntil: timestamp('recovery_until', { withTimezone: true }).notNull(),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [uniqueIndex('chatgpt_companion_open_owner_idx').on(t.userId).where(sql`${t.state} in ('created', 'paired', 'receiving')`),
+  check('chatgpt_companion_state_check', sql`${t.state} in ('created', 'paired', 'receiving', 'complete', 'cancelled', 'needs_attention', 'expired')`),
+  check('chatgpt_companion_identity_check', sql`${t.sessionVersion} >= 0 and length(${t.id}) = 36 and length(${t.hostId}) between 1 and 256 and length(${t.origin}) between 1 and 2048`),
+  check('chatgpt_companion_secret_check', sql`${t.launchHash} ~ '^[a-f0-9]{64}$' and (${t.returnHash} is null or ${t.returnHash} ~ '^[a-f0-9]{64}$') and (${t.custodyHash} is null or ${t.custodyHash} ~ '^[a-f0-9]{64}$') and ${t.payloadEnc} like 'v2.%' and octet_length(${t.payloadEnc}) <= 64000`),
+  check('chatgpt_companion_expiry_check', sql`${t.expiresAt} > ${t.createdAt} and ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes' and ${t.recoveryUntil} >= ${t.expiresAt} and ${t.recoveryUntil} <= ${t.createdAt} + interval '1 day'`),
+]);
+
 export const officialPlanAuthAttempts=pgTable('official_plan_auth_attempts',{
   id:id(),userId:text('user_id').notNull().references(()=>users.id,{onDelete:'cascade'}),sessionVersion:integer('session_version').notNull(),
   transportId:text('transport_id').notNull(),hostId:text('host_id').notNull(),redirectUri:text('redirect_uri').notNull(),

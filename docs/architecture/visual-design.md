@@ -24,8 +24,7 @@ The portal mixes two references: **ChatGPT desktop** for model chats and the ove
 
 ## Bots
 
-- Avatars are flat blobs with two eyes (`bot-avatar.tsx`); the portal mark is the same shape in ink. Motion shows state
-  instead of typing dots: `idle` blinks, `thinking` glances, `working` bobs, `waiting` leans. Reduced motion stops it.
+- Bot placements with a `botId` use the viewer’s private pet appearance when enabled (`bot-identity-avatar.tsx` and `PetArt`), with activity states for working, approval, attention and unavailable. Blobs with two eyes remain the fallback and the basis of the portal mark (`blob-avatar.tsx`). Historical speakers stay decorative unless activity is explicitly supplied. Pet visibility and reduced-motion controls govern animation; fallback blob states include `idle`, `thinking`, `working` and `waiting`.
 - The sidebar roster keeps its stable order; each row adds the home chat's latest line, a short time and a status dot
   (`lib/chat/roster.ts`). Status is per conversation: each open chat reports only itself (`setChatStatus`) and the row
   shows the most urgent of those and the server's, so an idle home never hides a side chat waiting for approval.

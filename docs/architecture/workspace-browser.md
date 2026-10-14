@@ -2,7 +2,7 @@
 
 Native chat headers offer a Workspace button to people in the enabled workspace audience. It opens a resizable right panel on desktop and an accessible dialog below 1100px. Opening bot details closes the workspace panel and vice versa; neither remounts the conversation or replaces a message draft.
 
-Files are shared across the person's native bots and belong to the authenticated person. The panel does not select a bot, user, container reference or host path. External Hermes continues to use its own execution path.
+This browser displays the legacy owner workspace, shared across the person's unassigned native bots. New private template instances use caller/bot bindings for tool execution; assigning a template does not switch these legacy browser routes to that instance. The panel does not select a bot, user, container reference or host path. External Hermes continues to use its own execution path.
 
 ## Files
 
@@ -22,7 +22,7 @@ Clicking **Run** submits the exact entered command. The server requires authenti
 
 | Route | Operation |
 | --- | --- |
-| `GET /api/workspace/browser?operation=status` | Public readiness/state for the owner's workspace; no daemon reference |
+| `GET /api/workspace/browser?operation=status` | Authenticated owner's non-sensitive readiness/state; no daemon reference |
 | `GET /api/workspace/browser?operation=list&path=…` | Up to 500 immediate directory entries |
 | `GET /api/workspace/browser?operation=preview&path=…` | Inert, bounded JSON text preview |
 | `POST /api/workspace/upload` | Bounded multipart upload into a fresh folder |

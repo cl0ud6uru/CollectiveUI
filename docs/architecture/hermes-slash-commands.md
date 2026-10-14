@@ -5,7 +5,7 @@ The research, matrix and roadmap below remain the design record; the next sectio
 
 ## First release as built
 
-Full native command support remains a desired follow-up (S4), not a claim about this implementation. The source observations below
+This section describes the Runs API command endpoint. The separate [personal native remote workspace](remote-hermes-commands.md) now supports additional catalog-gated commands and skill prefills. [Managed/local native controls](hermes-managed-local-parity.md) separately support active-turn steering and queues. Full native command parity remains unimplemented. The source observations below
 describe the research baseline; changed local behavior is documented here and in [hermes.md](hermes.md).
 
 - **Direct app and bot chats:** `/help`, `/status`, `/usage`, `/new` (`/reset`), `/stop`, `/model`, `/skills`, `/tools`.
@@ -52,8 +52,7 @@ semantics can cover arbitrary shell/plugin operations.
 
 The model picker uses configured route aliases, not `/api/model/options` or arbitrary provider/model pairs. Strict
 model pinning, `/steer`, profile editing, native skill expansion, compression and TUI/ACP bridging remain deferred.
-Per-user profile provisioning (H2) is still needed for private filesystem/memory isolation; session-scoped commands
-do not isolate the contents of a shared Hermes profile. Pre-feature runs lack immutable bindings: their local
+[Managed profile provisioning](hermes-profile-provisioning.md) and [personal Docker runtimes](docker-hermes.md) now provide separate per-user integration paths; session-scoped commands do not isolate a shared remote Hermes profile. Pre-feature runs lack immutable bindings: their local
 approvals can close, but remote cancellation may require operator verification. The small crash window between
 upstream acceptance and recording the returned id still requires operator recovery if the worker dies there.
 
@@ -78,7 +77,9 @@ replay fix. The mock Hermes browser scenario and all 3 general chat browser regr
 ESLint, production build and `git diff --check` passed. Desktop/mobile screenshots were inspected. No live Hermes
 runtime or real profile was used. Migration was exercised on fresh isolated PostgreSQL 17 databases.
 
-## Recommendation
+## Original recommendation and research (2026-10-01)
+
+The remaining sections preserve the original proposal and pinned source observations. Future-tense features, proposed filenames and missing capabilities describe that baseline, not the current implementation. The shipped Runs subset is above; newer native paths are linked there. The proposed `command-menu.tsx` was not created: current completion is in `src/components/chat/composer.tsx`, with results in `src/components/chat/command-result.tsx`.
 
 Add a server-authorized command layer in front of the existing Hermes Runs provider. Keep the current durable-run,
 tool-event, approval and usage integration. A command should produce a typed control result, or deliberately start

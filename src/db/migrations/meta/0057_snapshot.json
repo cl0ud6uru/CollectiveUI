@@ -1,5 +1,5 @@
 {
-  "id": "878504b9-bf43-44e2-b84f-d7b2295145f4",
+  "id": "916ed543-9add-4afc-876a-7b7e4c4f82b8",
   "prevId": "f8734781-92d6-41f5-9d12-5bb91dfde89f",
   "version": "7",
   "dialect": "postgresql",
@@ -2315,6 +2315,161 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.chatgpt_companion_attempts": {
+      "name": "chatgpt_companion_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_version": {
+          "name": "session_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "host_id": {
+          "name": "host_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "launch_hash": {
+          "name": "launch_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "return_hash": {
+          "name": "return_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload_enc": {
+          "name": "payload_enc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enable_codex": {
+          "name": "enable_codex",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "custody_hash": {
+          "name": "custody_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'created'"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recovery_until": {
+          "name": "recovery_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "chatgpt_companion_open_owner_idx": {
+          "name": "chatgpt_companion_open_owner_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chatgpt_companion_attempts\".\"state\" in ('created', 'paired', 'receiving')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "chatgpt_companion_attempts_user_id_users_id_fk": {
+          "name": "chatgpt_companion_attempts_user_id_users_id_fk",
+          "tableFrom": "chatgpt_companion_attempts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chatgpt_companion_state_check": {
+          "name": "chatgpt_companion_state_check",
+          "value": "\"chatgpt_companion_attempts\".\"state\" in ('created', 'paired', 'receiving', 'complete', 'cancelled', 'needs_attention', 'expired')"
+        },
+        "chatgpt_companion_identity_check": {
+          "name": "chatgpt_companion_identity_check",
+          "value": "\"chatgpt_companion_attempts\".\"session_version\" >= 0 and length(\"chatgpt_companion_attempts\".\"id\") = 36 and length(\"chatgpt_companion_attempts\".\"host_id\") between 1 and 256 and length(\"chatgpt_companion_attempts\".\"origin\") between 1 and 2048"
+        },
+        "chatgpt_companion_secret_check": {
+          "name": "chatgpt_companion_secret_check",
+          "value": "\"chatgpt_companion_attempts\".\"launch_hash\" ~ '^[a-f0-9]{64}$' and (\"chatgpt_companion_attempts\".\"return_hash\" is null or \"chatgpt_companion_attempts\".\"return_hash\" ~ '^[a-f0-9]{64}$') and (\"chatgpt_companion_attempts\".\"custody_hash\" is null or \"chatgpt_companion_attempts\".\"custody_hash\" ~ '^[a-f0-9]{64}$') and \"chatgpt_companion_attempts\".\"payload_enc\" like 'v2.%' and octet_length(\"chatgpt_companion_attempts\".\"payload_enc\") <= 64000"
+        },
+        "chatgpt_companion_expiry_check": {
+          "name": "chatgpt_companion_expiry_check",
+          "value": "\"chatgpt_companion_attempts\".\"expires_at\" > \"chatgpt_companion_attempts\".\"created_at\" and \"chatgpt_companion_attempts\".\"expires_at\" <= \"chatgpt_companion_attempts\".\"created_at\" + interval '10 minutes' and \"chatgpt_companion_attempts\".\"recovery_until\" >= \"chatgpt_companion_attempts\".\"expires_at\" and \"chatgpt_companion_attempts\".\"recovery_until\" <= \"chatgpt_companion_attempts\".\"created_at\" + interval '1 day'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.chatgpt_device_logins": {
@@ -9398,12 +9553,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "trigger_event_id": {
-          "name": "trigger_event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "payload": {
           "name": "payload",
           "type": "jsonb",
@@ -9466,28 +9615,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "routine_runs_trigger_event_idx": {
-          "name": "routine_runs_trigger_event_idx",
-          "columns": [
-            {
-              "expression": "routine_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "trigger_event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"routine_runs\".\"trigger_event_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -9586,24 +9713,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "trigger_config": {
-          "name": "trigger_config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trigger_provider": {
-          "name": "trigger_provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trigger_connection_id": {
-          "name": "trigger_connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "enabled": {
           "name": "enabled",
           "type": "boolean",
@@ -9638,30 +9747,7 @@
           "default": "now()"
         }
       },
-      "indexes": {
-        "routines_event_idx": {
-          "name": "routines_event_idx",
-          "columns": [
-            {
-              "expression": "trigger_provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "trigger_connection_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"routines\".\"enabled\" and \"routines\".\"trigger_type\" = 'event'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "routines_owner_id_users_id_fk": {
           "name": "routines_owner_id_users_id_fk",
@@ -9688,30 +9774,12 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "routines_trigger_connection_id_trigger_connections_id_fk": {
-          "name": "routines_trigger_connection_id_trigger_connections_id_fk",
-          "tableFrom": "routines",
-          "tableTo": "trigger_connections",
-          "columnsFrom": [
-            "trigger_connection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "routines_trigger_type_check": {
-          "name": "routines_trigger_type_check",
-          "value": "\"routines\".\"trigger_type\" in ('cron', 'webhook', 'event')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.run_events": {
@@ -10355,239 +10423,6 @@
           ]
         }
       },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.trigger_connections": {
-      "name": "trigger_connections",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_id": {
-          "name": "external_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "credentials": {
-          "name": "credentials",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "scopes": {
-          "name": "scopes",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "installed_by": {
-          "name": "installed_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "trigger_connections_provider_external_idx": {
-          "name": "trigger_connections_provider_external_idx",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "trigger_connections_installed_by_users_id_fk": {
-          "name": "trigger_connections_installed_by_users_id_fk",
-          "tableFrom": "trigger_connections",
-          "tableTo": "users",
-          "columnsFrom": [
-            "installed_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.trigger_events": {
-      "name": "trigger_events",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "external_event_id": {
-          "name": "external_event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "event_type": {
-          "name": "event_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'received'"
-        },
-        "matched_count": {
-          "name": "matched_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "payload": {
-          "name": "payload",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "received_at": {
-          "name": "received_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "dispatched_at": {
-          "name": "dispatched_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "trigger_events_provider_external_idx": {
-          "name": "trigger_events_provider_external_idx",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "external_event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "trigger_events_received_idx": {
-          "name": "trigger_events_received_idx",
-          "columns": [
-            {
-              "expression": "received_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "trigger_events_connection_id_trigger_connections_id_fk": {
-          "name": "trigger_events_connection_id_trigger_connections_id_fk",
-          "tableFrom": "trigger_events",
-          "tableTo": "trigger_connections",
-          "columnsFrom": [
-            "connection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

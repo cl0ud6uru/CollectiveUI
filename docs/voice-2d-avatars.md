@@ -31,4 +31,4 @@ npx vitest run --project unit tests/unit/voice-avatar-2d.test.ts
 
 The preview binds to loopback and serves existing repository artwork. The browser suite rejects external requests and fails if its native fixture requests a microphone or backend. It covers four sprites, two vectors, seven blob shapes, a robot icon, v1, missing and malformed assets, speaking, repeated/cancelled gestures, still/Reduce Motion, hidden/stopped suspension and the exact generated native HTML. Native VoiceAvatarIdentityTests check atlas byte/dimension limits; existing VoiceSessionTests cover continuity and saved-session lifecycle.
 
-This change is based on PR #155's shared reaction contract. After combining the live studio, Zod entry-point repair and this adapter, regenerate and check voice-engine.html once with the CSS-aware native bundler. The sole merge coordinator owns integration and main.
+The adapter uses the shared [reaction library](voice-reaction-library.md). After changing shared avatar, reaction, or native engine sources, regenerate `voice-engine.html` with `node ios/scripts/build-voice-engine.mjs` and verify it with `--check`.

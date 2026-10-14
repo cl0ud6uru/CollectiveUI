@@ -21,12 +21,30 @@ import { sweepRuns } from "@/lib/runs/sweeper";
 import { runConfig } from "@/lib/runs/types";
 import { sweepSandboxes } from "@/lib/sandbox/lifecycle";
 import { rewrapAllSecrets } from "@/lib/secrets-rewrap";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { Client } from "pg";
 
 /** How long running replies get to save their partial output on shutdown, then pg-boss's own grace period. */
 const RUNS_SHUTDOWN_MS = 20_000;
 const BOSS_STOP_MS = 10_000;
+const READINESS_DIR = "/tmp/collectiveui-worker";
+const READINESS_FILE = `${READINESS_DIR}/ready`;
+const READINESS_INTERVAL_MS = 15_000;
+
+async function setReady() {
+  await mkdir(READINESS_DIR, { recursive: true, mode: 0o700 });
+  await writeFile(READINESS_FILE, `${Date.now()}\n`, { mode: 0o600 });
+}
+
+async function clearReady() {
+  await unlink(READINESS_FILE).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== "ENOENT") throw err;
+  });
+}
 
 async function main() {
+  // A container restart can retain /tmp in its writable layer; discard any heartbeat from the previous process.
+  await clearReady();
   const boss = await getBoss({ worker: true });
   console.log("[worker] started");
   const stopActivityDelivery = startActivityDelivery();
@@ -128,11 +146,44 @@ async function main() {
   await tick();
   const timer = setInterval(tick, Number(process.env.SCHEDULER_INTERVAL_MS ?? 20_000));
 
+  // Only advertise readiness after all consumers, schedules, startup work and timers are installed. The marker is
+  // refreshed by a real database query, so a dead or unreachable database causes the container healthcheck to fail.
   let stopping = false;
+  let readinessCheck: Promise<void> | undefined;
+  const checkReadiness = async () => {
+    if (stopping) return;
+    const client = new Client({
+      connectionString: process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5432/portal",
+      connectionTimeoutMillis: 5_000,
+      query_timeout: 5_000,
+      statement_timeout: 5_000,
+    });
+    try {
+      await client.connect();
+      await client.query("SELECT 1");
+      if (!stopping) await setReady();
+    } catch {
+      await clearReady().catch(() => {});
+      console.error("[worker] readiness database check failed");
+    } finally {
+      await client.end().catch(() => {});
+    }
+  };
+  const runReadinessCheck = () => {
+    if (readinessCheck) return readinessCheck;
+    readinessCheck = checkReadiness().finally(() => { readinessCheck = undefined; });
+    return readinessCheck;
+  };
+  await runReadinessCheck();
+  const readinessTimer = setInterval(() => { void runReadinessCheck(); }, READINESS_INTERVAL_MS);
+
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
     console.log("[worker] shutting down");
+    clearInterval(readinessTimer);
+    await readinessCheck?.catch(() => {});
+    await clearReady().catch(() => {});
     stopActivityDelivery();
     clearInterval(timer);
     clearInterval(sweepTimer);

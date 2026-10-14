@@ -21,7 +21,7 @@ describe("0056 web-session migration after unchanged 0054/0055", () => {
         INSERT INTO codex_runs VALUES ('codex-run-a');
         INSERT INTO sandboxes VALUES ('owner-a','abcdefghijklmnopqrst',now(),null,now());`);
       const journal = JSON.parse(await readFile("src/db/migrations/meta/_journal.json", "utf8"));
-      expect(journal.entries.slice(0, 57).map((e: { idx: number }) => e.idx)).toEqual(Array.from({ length: 57 }, (_, i) => i));
+      expect(journal.entries.map((e: { idx: number }) => e.idx)).toEqual(Array.from({ length: journal.entries.length }, (_, i) => i));
       const entries = journal.entries.slice(54, 57);
       expect(entries.map((e: { tag: string }) => e.tag)).toEqual(["0054_workspace_contract_foundation", "0055_personal_codex", "0056_web_sessions"]);
       expect(entries[56 - 54].when).toBeGreaterThan(entries[55 - 54].when);

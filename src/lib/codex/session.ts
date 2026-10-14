@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { CodexClient, CodexNotification, CodexServerRequest } from './client';
 import type { CodexPolicy } from './config';
 import type { CodexRuntime } from './runtime';
+import { COMPUTER_TOOL_NAMES, invokeComputerTool, type ComputerAgent, type ComputerToolName } from '@/lib/computer/agent';
+import type { SIWCDispatchIdentity } from '@/lib/llm/chatgpt/invalidation';
 
 type Client = Pick<CodexClient, 'request' | 'onNotification' | 'onFailure' | 'onServerRequest' | 'respond' | 'rejectRequest'>;
 const id = z.string().min(1).max(256);
@@ -21,6 +23,9 @@ export type SessionHooks = {
   totalUsage?: (usage: CodexTokenUsage) => void;
   checkpoint: (values: { threadId?: string; turnId?: string; baselineTurnId?: string; phase: 'ready' | 'dispatching' | 'running' | 'terminal' }) => Promise<void>;
   resumeThreadId?: string;
+  computerAgent?: ComputerAgent | null;
+  authorizeComputerCall?: () => Promise<void>;
+  computerTool?: (callId: string, tool: ComputerToolName, phase: 'started' | 'completed', success?: boolean) => void;
   tool?: (item: NativeToolItem, phase: 'started' | 'completed') => void;
   approval?: (request: CodexServerRequest, signal: AbortSignal) => Promise<'decline' | 'cancel'>;
   text: (itemId: string, delta: string) => void;
@@ -39,6 +44,7 @@ const nativeTool = z.discriminatedUnion('type', [
 export async function executeCodexSession(client: Client, runtime: CodexRuntime, policy: CodexPolicy,
   input: string, instructions: string, hooks: SessionHooks, signal: AbortSignal) {
   let accountEpoch = 0, verifiedEpoch = -1;
+  let dispatched = false, siwcIdentity: SIWCDispatchIdentity | undefined;
   let accountFailure: Error | undefined, accountVerification: Promise<void> | undefined;
   const unwatchAccount = client.onNotification(e => { if (e.method === 'account/updated') accountEpoch++; });
   const verifyCurrentAccount = async () => {
@@ -46,6 +52,25 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       signal.throwIfAborted();
       if (accountFailure) throw accountFailure;
       const epoch = accountEpoch;
+      if (runtime.authMode === 'siwc') {
+        // The stock external-token provider has no native ChatGPT account/read identity. Trust only the
+        // owner-isolated broker's confirmed synchronization of the server-verified SIWC credential.
+        const { personalControl } = await import('@/personal-codex/control');
+        const status = await personalControl(runtime.ownerId, 'status');
+        if (!runtime.managed || !runtime.tokenFingerprint || status.state !== 'running' || !status.siwc?.available || status.siwc.credentialBinding !== runtime.tokenFingerprint)
+          throw new Error('Stock Codex is not synchronized with your verified ChatGPT connection. Enable it in Settings → Connected accounts.');
+        const { captureCurrentSIWCConnection, assertRetainedSIWCConnection } = await import('@/lib/llm/chatgpt/invalidation');
+        if (dispatched) {
+          if (!siwcIdentity) throw new Error('Codex dispatch has no verified ChatGPT identity.');
+          await assertRetainedSIWCConnection(siwcIdentity);
+        } else {
+          const current = await captureCurrentSIWCConnection(runtime.ownerId, runtime.credentialBinding, runtime.tokenFingerprint, siwcIdentity);
+          siwcIdentity ??= current;
+        }
+        await hooks.authorizeAccount?.(null);
+        if (epoch === accountEpoch) { verifiedEpoch = epoch; return; }
+        continue;
+      }
       const response = await client.request('account/read', { refreshToken: false });
       const identity = account.parse(response).account;
       if (runtime.managed) {
@@ -86,7 +111,16 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         allowedPermissionProfiles: z.record(z.string(), z.boolean()), allowedLoginMethods: z.array(z.literal('chatgpt')),
         allowedApprovalsReviewers: z.array(z.literal('user')), allowedApprovalPolicies: z.array(z.literal('on-request')) }) }).parse(await client.request('configRequirements/read', {}));
       if (Object.keys(requirements.allowedPermissionProfiles).length !== 1 || requirements.allowedPermissionProfiles['collective-personal'] !== true ||
-        config.forced_login_method !== 'chatgpt' || (Array.isArray(config.notify) && config.notify.length)) throw new Error('The managed Codex permission contract changed.');
+        (runtime.authMode !== 'siwc' && config.forced_login_method !== 'chatgpt') || (Array.isArray(config.notify) && config.notify.length)) throw new Error('The managed Codex permission contract changed.');
+      if (runtime.authMode === 'siwc') {
+        const providers = config.model_providers as Record<string, Record<string, unknown>> | undefined;
+        const provider = providers?.openai_chatgpt_plan;
+        const environment = config.shell_environment_policy as { inherit?: unknown; filters?: Record<string, unknown> } | undefined;
+        if (config.model_provider !== 'openai_chatgpt_plan' || !provider || provider.base_url !== 'https://api.openai.com/v1' ||
+          provider.env_key !== 'ACCESS_TOKEN' || provider.wire_api !== 'responses' || provider.requires_openai_auth !== false || provider.supports_websockets !== false ||
+          environment?.inherit !== 'none' || environment.filters?.ACCESS_TOKEN !== 'exclude')
+          throw new Error('The stock Codex SIWC provider configuration changed.');
+      }
     }
     for (const key of ['mcp_servers', 'plugins', 'apps']) {
       if (config[key] && Object.keys(config[key] as object).length) throw new Error('This Codex pilot requires a runtime without configured MCP servers, apps or plugins.');
@@ -102,16 +136,18 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
     signal.throwIfAborted();
     const thread = started.parse(await client.request(hooks.resumeThreadId ? 'thread/resume' : 'thread/start', {
       ...(hooks.resumeThreadId ? { threadId: hooks.resumeThreadId } : runtime.managed ? { historyMode: 'legacy' } : {}),
-      model: policy.model, modelProvider: 'openai', cwd: runtime.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user',
+      model: policy.model, modelProvider: runtime.authMode === 'siwc' ? 'openai_chatgpt_plan' : 'openai', cwd: runtime.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user',
       ...(runtime.managed ? { permissions: 'collective-personal' } : { sandbox: 'read-only' }), ephemeral: false, developerInstructions: instructions,
-      config: { service_tier: 'default', web_search: 'disabled', notify: [],
-        ...(runtime.managed ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: runtime.expectedWorkspaceId } : {}),
+      config: { ...(runtime.authMode === 'siwc' ? {} : { service_tier: 'default' }), web_search: 'disabled', notify: [],
+        ...(runtime.managed && runtime.authMode !== 'siwc' ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: runtime.expectedWorkspaceId } : {}),
         projects: { [runtime.cwd]: { trust_level: 'untrusted' } }, 'features.hooks': false, 'features.memories': false, 'features.shell_snapshot': false,
         'features.shell_tool': runtime.managed === true, 'features.view_image': false, 'features.multi_agent': false,
         'features.multi_agent_v2': false, 'features.plugins': false, 'features.plugin_hooks': false,
         'features.enable_mcp_apps': false, 'features.image_generation': false },
+      // The pinned generated schema only permits dynamicTools on thread/start; resumed threads keep their saved tools.
+      ...(!hooks.resumeThreadId && runtime.managed && hooks.computerAgent ? { dynamicTools: hooks.computerAgent.tools } : {}),
     }));
-    if (thread.model !== policy.model || thread.modelProvider !== 'openai' || thread.cwd !== runtime.cwd)
+    if (thread.model !== policy.model || thread.modelProvider !== (runtime.authMode === 'siwc' ? 'openai_chatgpt_plan' : 'openai') || thread.cwd !== runtime.cwd)
       throw new Error('Codex did not honor the selected model or workspace.');
     if (runtime.managed && (thread.activePermissionProfile?.id !== 'collective-personal' || thread.sandbox.type !== 'workspaceWrite'))
       throw new Error('Codex did not honor the managed workspace permission profile.');
@@ -125,6 +161,7 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
     let pendingRequests: CodexServerRequest[] = [];
     const requests = new Map<string | number, AbortController>();
     const resolvedRequests = new Set<string | number>();
+    const computerCallIds = new Set<string>();
     const approvalStop = new AbortController();
     const nativeItems = new Set<string>();
     const emittedText = new Map<string, string>();
@@ -151,8 +188,9 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         }
         const p = parsed.data;
         if (e.method === 'serverRequest/resolved') {
-          const resolved = z.object({ requestId: z.union([z.string(), z.number()]) }).parse(p);
-          resolvedRequests.add(resolved.requestId); requests.get(resolved.requestId)?.abort(); return;
+          const resolved = z.object({ threadId: id, requestId: z.union([z.string(), z.number()]) }).parse(p);
+          if (resolved.threadId !== threadId) return;
+          resolvedRequests.add(resolved.requestId); requests.get(resolved.requestId)?.abort(); requests.delete(resolved.requestId); return;
         }
         if (e.method === 'turn/completed') {
           const turn = z.object({ turn: z.object({ id, status: z.string() }) }).parse(p).turn;
@@ -189,6 +227,17 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
             hooks.tool?.(tool.type === 'commandExecution' ? { ...tool, aggregatedOutput: tool.aggregatedOutput ?? undefined } : tool, e.method === 'item/started' ? 'started' : 'completed');
             return;
           }
+          if (item.type === 'dynamicToolCall') {
+            const tool = z.object({ id, type: z.literal('dynamicToolCall'), namespace: z.null(),
+              tool: z.enum(COMPUTER_TOOL_NAMES), status: z.enum(['inProgress', 'completed', 'failed']),
+              success: z.boolean().nullable().optional() }).passthrough().parse(p.item);
+            if (!runtime.managed || !hooks.computerAgent) throw new Error('Codex requested an unsupported dynamic tool.');
+            bytes += JSON.stringify({ id: tool.id, tool: tool.tool, status: tool.status }).length;
+            if (bytes > 4 * 1024 * 1024 || nativeItems.size > 512) throw new Error('Codex tool output exceeded this pilot’s limit.');
+            nativeItems.add(tool.id);
+            hooks.computerTool?.(tool.id, tool.tool, e.method === 'item/started' ? 'started' : 'completed', tool.success ?? undefined);
+            return;
+          }
           if (!['userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction'].includes(item.type))
             throw new Error('Codex requested a native tool that is not supported by this text-only pilot.');
         } else if (e.method === 'thread/tokenUsage/updated') {
@@ -208,6 +257,42 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       if (resolvedRequests.has(r.id)) return;
       if (finished) { client.rejectRequest(r.id); return; }
       if (!turnId) { if (pendingRequests.length >= 16) { client.rejectRequest(r.id); fail(new Error('Too many Codex approval requests.')); } else pendingRequests.push(r); return; }
+      if (r.method === 'item/tool/call') {
+        const call = z.object({ threadId: id, turnId: id, callId: id, namespace: z.null(),
+          tool: z.enum(COMPUTER_TOOL_NAMES), arguments: z.unknown() }).strict().safeParse(r.params);
+        if (!runtime.managed || !hooks.computerAgent || !hooks.authorizeComputerCall || !call.success) {
+          client.rejectRequest(r.id); fail(new Error('Codex requested an unsupported computer tool.')); return;
+        }
+        const toolCall = call.data;
+        if (toolCall.threadId !== threadId || toolCall.turnId !== turnId || requests.has(r.id) || computerCallIds.has(toolCall.callId) ||
+            computerCallIds.size >= 512 || requests.size >= 32) {
+          client.rejectRequest(r.id); fail(new Error('Codex requested an unsupported computer tool.')); return;
+        }
+        const requestStop = new AbortController();
+        const toolSignal = AbortSignal.any([signal, approvalStop.signal, requestStop.signal]);
+        requests.set(r.id, requestStop); computerCallIds.add(toolCall.callId);
+        void (async () => {
+          try {
+            await verifyAccount();
+            await hooks.authorizeComputerCall!();
+            toolSignal.throwIfAborted();
+            const reauthorize = async () => {
+              await verifyAccount();
+              await hooks.authorizeComputerCall!();
+            };
+            const result = await invokeComputerTool(hooks.computerAgent!, toolCall.tool, toolCall.arguments, toolSignal, reauthorize);
+            if (finished || toolSignal.aborted || resolvedRequests.has(r.id)) return;
+            client.respond(r.id, result);
+          } catch {
+            if (toolSignal.aborted || resolvedRequests.has(r.id)) return;
+            if (!toolSignal.aborted && !resolvedRequests.has(r.id)) client.rejectRequest(r.id);
+            fail(new Error('Computer tool authorization failed safely.'));
+          } finally {
+            requests.delete(r.id);
+          }
+        })();
+        return;
+      }
       const p = z.object({ threadId: id, turnId: id, itemId: id }).safeParse(r.params);
       if (!runtime.managed || !p.success || p.data.threadId !== threadId || p.data.turnId !== turnId ||
         !['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(r.method) || requests.has(r.id) || !hooks.approval) {
@@ -232,8 +317,10 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       // Persist uncertainty BEFORE the wire write. No retry is safe after this checkpoint.
       await verifyAccount();
       await hooks.checkpoint({ phase: 'dispatching' });
-      if (accountEpoch !== verifiedEpoch) await verifyAccount();
+      // The checkpoint can refresh portal tokens without a native account event. Keep the exact-token fence at the wire boundary.
+      if (runtime.authMode === 'siwc' || accountEpoch !== verifiedEpoch) await verifyAccount();
       signal.throwIfAborted();
+      dispatched = true;
       const response = z.object({ turn: z.object({ id }) }).parse(await client.request('turn/start', {
         threadId, clientUserMessageId: hooks.clientMessageId, input: [{ type: 'text', text: input, text_elements: [] }], model: policy.model, effort: policy.effort,
         serviceTierForTurn: 'default', approvalPolicy: 'on-request', approvalsReviewer: 'user',

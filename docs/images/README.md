@@ -1,4 +1,32 @@
-# README screenshots
+# Documentation screenshots
+
+## Current component captures — 2026-10-12
+
+The README's workspace and voice images, and the sidebar captures linked here, were generated from the current production components using the checked-in isolated browser fixtures. These are component previews with synthetic data and simulated endpoints, not a deployed full-stack installation. No live account, provider, Docker workspace, microphone or paid inference was used. PNGs are direct Playwright captures, without retouching or compositing.
+
+| Capture | View and fixture boundary |
+| --- | --- |
+| [Workspace files](../screenshots/workspace-browser/desktop-files.png) · [light](../screenshots/workspace-browser/desktop-light.png) · [terminal](../screenshots/workspace-browser/desktop-terminal.png) | Actual workspace component at 1600 × 1000; surrounding chat, file contents and daemon responses are synthetic. |
+| [Workspace empty](../screenshots/workspace-browser/desktop-empty.png) · [wide empty](../screenshots/workspace-browser/reference-viewport-empty.png) | 1600 × 1000 and 2558 × 1410; the latter retains the original QA viewport, not a newly verified reference comparison. |
+| [Workspace mobile 320](../screenshots/workspace-browser/mobile-320.png) · [390](../screenshots/workspace-browser/mobile-390.png) | Current mobile workspace dialog at 320/390 × 844. |
+| [Voice desktop](current-voice/voice-desktop.png) · [mobile](current-voice/voice-mobile.png) | Fullscreen voice with the original 2D bot icon and captions at 1280 × 900 and 390 × 844. WebRTC, microphone tracks and transcripts are simulated. |
+| [Sidebar desktop](current-sidebar/desktop.png) · [mobile 320](current-sidebar/mobile-320.png) · [390](current-sidebar/mobile-390.png) | Actual sidebar/navigation components cropped to their element bounds. Generic Demo User and fixture bot activity; no authenticated account. |
+
+Reproduce from the repository root after `npm ci`:
+
+```bash
+# Omit these browser overrides when Playwright's matching Chromium is installed.
+# Replace /path/to/chromium with your installed browser executable.
+CHROME_EXECUTABLE_PATH=/path/to/chromium node tests/browser/workspace-browser.mjs
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chromium \
+  VOICE_SCREENSHOT_DIR=docs/images/current-voice node tests/browser/voice-mode.mjs
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chromium \
+  SIDEBAR_ROSTER_SCREENSHOT_DIR=docs/images/current-sidebar node tests/browser/sidebar-roster-design.mjs
+```
+
+All three scripts passed their interaction assertions and reported no page errors. The refresh used installed Google Chrome on macOS, 1× device scale. The workspace and sidebar fixture inputs use generic names; application components were not changed for the captures. Older full-stack captures below were retained and dated because Docker/Postgres were unavailable for a new full-stack session on this host.
+
+## Earlier full-stack demo — 2026-10-02
 
 The chat, bots, avatars and sign-in PNGs are actual Chromium captures of the production build of CollectiveUI, captured on 2026-10-02. No application code or rendered DOM was changed for the captures.
 

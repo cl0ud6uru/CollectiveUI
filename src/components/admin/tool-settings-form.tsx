@@ -19,10 +19,10 @@ type Initial = {
   botCreation: "everyone" | "groups" | "admins";
   utilityAppId?: string;
   embeddingAppId?: string;
-  learningEnabled?: boolean;
-  learningRequireApproval?: boolean;
-  learningMaintenanceEnabled?: boolean;
-  learningConsolidationEnabled?: boolean;
+  learningEnabled: boolean | undefined;
+  learningRequireApproval: boolean | undefined;
+  learningMaintenanceEnabled: boolean | undefined;
+  learningConsolidationEnabled: boolean | undefined;
 };
 
 export function ToolSettingsForm({
