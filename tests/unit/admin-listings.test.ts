@@ -248,4 +248,3 @@ describe("admin listing page rendering", () => {
     expect(empty).toContain('href="/admin/activity?tab=tools"');
   });
 });
-
