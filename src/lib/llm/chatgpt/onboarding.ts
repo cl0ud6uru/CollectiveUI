@@ -9,6 +9,7 @@ import { personalControl } from '@/personal-codex/control';
 import type { AccountSetupView } from '@/personal-codex/contracts';
 import { userMayUseChatGPT } from './policy';
 import { SIWCCredentialSchema } from './siwc';
+import { companionConfiguration } from './companion-config';
 
 export const runtimeConsent = z.object({ accepted: z.literal(true), consentVersion: z.literal(1) }).strict();
 export type RuntimeConsent = z.infer<typeof runtimeConsent>;
@@ -36,9 +37,11 @@ export async function accountSetupView(p: Principal, settings: ChatGPTSettings):
     catch { runtime = { state: 'unavailable', selfEnrollment: false, enrolled: false,
       reason: 'Private Codex setup could not be checked. Retry, or ask the operator to check the runtime service.' }; }
   }
+  const companion = companionConfiguration();
   return { eligible: eligibility.allowed, reason: eligibility.reason, runtime,
     canPrepareRuntime: eligibility.allowed && runtime.state === 'ready' && (runtime.enrolled || runtime.selfEnrollment),
-    authentication: { state: 'companion_required', reason: localSignInReason } };
+    authentication: companion ? { state: 'companion_ready', reason: 'The local sign-in app will open OpenAI sign-in and securely return your account to this installation.', downloadUrl: companion.downloadUrl }
+      : { state: 'companion_required', reason: localSignInReason } };
 }
 
 /** Only explicit same-owner consent may prepare the preapproved isolated resources. */

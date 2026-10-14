@@ -6,9 +6,9 @@
  * write of secret_enc happens inside a transaction holding the row lock (SELECT … FOR UPDATE), and refreshes are
  * also single-flighted in process. The re-check inside the lock is what makes the web app and worker safe together.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
-import { chatgptDeviceLogins, personalCodexAccounts, userCredentials, users, type UserCredential } from "@/db/schema";
+import { chatgptCompanionAttempts, chatgptDeviceLogins, personalCodexAccounts, userCredentials, users, type UserCredential } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { AAD, decrypt, encrypt, needsRewrap } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
@@ -318,9 +318,10 @@ export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promis
 export async function deleteAllChatGPTConnections(f?: Fetch): Promise<number> {
   const rows = await db.select({ userId: userCredentials.userId }).from(userCredentials).where(eq(userCredentials.provider, "chatgpt"));
   const retained = await db.select({ userId: personalCodexAccounts.userId }).from(personalCodexAccounts);
+  const pending = await db.select({ userId: chatgptCompanionAttempts.userId }).from(chatgptCompanionAttempts).where(inArray(chatgptCompanionAttempts.state, ['created', 'paired', 'receiving']));
   let n = 0;
   // Retained bindings must be invalidated even if an older portal already removed the credential row.
-  for (const owner of new Set([...rows, ...retained].map(row => row.userId))) if (await deleteChatGPTConnection(owner, f)) n++;
+  for (const owner of new Set([...rows, ...retained, ...pending].map(row => row.userId))) if (await deleteChatGPTConnection(owner, f)) n++;
   await db.delete(chatgptDeviceLogins);
   return n;
 }

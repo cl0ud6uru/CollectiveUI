@@ -1,18 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { PersonalCodexConnection } from "@/components/settings/personal-codex-connection";
-import type { AccountSetupView } from "@/personal-codex/contracts";
+import type { AccountSetupView, CompanionSignInView } from "@/personal-codex/contracts";
 
 type Backend = { state: string; reason?: string };
+type SignInView = CompanionSignInView;
+type BrowserSetupView = AccountSetupView;
 export type ChatGPTAccountView = {
   allowed: boolean;
   reason: string | null;
   credential: { email: string | null; planType: string | null; status: string; migrationRequired: boolean } | null;
   backends: { native: Backend; codex: Backend };
   onboarding: { state: "ready" | "blocked"; reason: string | null };
-  setup?: AccountSetupView;
+  setup?: BrowserSetupView;
+  signIn?: SignInView | null;
 };
 
 function messageFor(view: ChatGPTAccountView) {
@@ -38,6 +41,11 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
   const [loading, setLoading] = useState(!initialView);
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
+  const [signInConsent, setSignInConsent] = useState(false);
+  const [runtimeConsent, setRuntimeConsent] = useState(false);
+  const [signInBusy, setSignInBusy] = useState(false);
+  const launchUrlRef = useRef<string | null>(null);
+  const [canReopenCompanion, setCanReopenCompanion] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async (keepError = false) => {
@@ -47,7 +55,12 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
       const response = await fetch("/api/me/chatgpt", { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || data.message || `Could not load your ChatGPT account (${response.status}).`);
-      setView(data as ChatGPTAccountView);
+      const nextView = data as ChatGPTAccountView;
+      if (nextView.signIn && nextView.signIn.state !== "created") {
+        launchUrlRef.current = null;
+        setCanReopenCompanion(false);
+      }
+      setView(nextView);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not reach the ChatGPT account service.");
     } finally { setLoading(false); }
@@ -76,10 +89,78 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
     } finally { setBusy(false); }
   }
 
+  async function beginSignIn() {
+    // Open synchronously in the user's click handler so the eventual local-app
+    // navigation still has browser user activation after the authenticated POST.
+    const launchWindow = window.open("about:blank", "_blank");
+    if (!launchWindow) {
+      setError("Your browser blocked the local sign-in window. Allow pop-ups for this site and retry.");
+      return;
+    }
+    launchWindow.opener = null;
+    setSignInBusy(true); setError(null);
+    try {
+      const response = await fetch("/api/me/chatgpt", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "begin-sign-in", accepted: true, consentVersion: 1, enableCodex: runtimeConsent }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.message || "The local sign-in app could not be opened.");
+      const launchUrl = new URL(data.launchUrl);
+      const launchOrigin = launchUrl.searchParams.get("origin");
+      const attempt = launchUrl.searchParams.get("attempt");
+      const ticket = launchUrl.searchParams.get("ticket");
+      if (launchUrl.protocol !== "collectiveui-chatgpt:" || launchUrl.hostname !== "connect" ||
+          launchUrl.pathname !== "" || launchUrl.username || launchUrl.password || launchUrl.port || launchUrl.hash ||
+          launchUrl.searchParams.size !== 3 || launchOrigin !== window.location.origin ||
+          !launchOrigin?.startsWith("https://") ||
+          !attempt || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(attempt) || !ticket || !/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
+        throw new Error("The sign-in service returned an invalid local-app launch link. Retry or contact your administrator.");
+      }
+      // Keep the capability only in this click handler. Never render, persist, or log it.
+      launchUrlRef.current = launchUrl.href;
+      setCanReopenCompanion(true);
+      launchWindow.location.href = launchUrl.href;
+      setView(current => current ? { ...current, signIn: { state: "created", expiresAt: data.expiresAt } } : current);
+      setConsent(false); setSignInConsent(false); setRuntimeConsent(false);
+    } catch (cause) {
+      launchWindow.close();
+      setError(cause instanceof Error ? cause.message : "The local sign-in app could not be opened.");
+    } finally { setSignInBusy(false); }
+  }
+
+  async function cancelSignIn() {
+    setSignInBusy(true); setError(null);
+    try {
+      const response = await fetch("/api/me/chatgpt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "cancel-sign-in" }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.message || "The sign-in attempt could not be cancelled.");
+      launchUrlRef.current = null; setCanReopenCompanion(false);
+      setSignInConsent(false);
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "The sign-in attempt could not be cancelled."); }
+    finally { setSignInBusy(false); }
+  }
+
+  function reopenCompanion() {
+    const launchUrl = launchUrlRef.current;
+    if (!launchUrl) return;
+    const opened = window.open(launchUrl, "_blank");
+    if (!opened) setError("Your browser blocked the local sign-in app. Allow pop-ups for this site and retry.");
+    else opened.opener = null;
+  }
+
   const setup = view?.setup;
   const prepared = setup?.runtime.state === "ready" && setup.runtime.enrolled && setup.runtime.runtimeState === "running";
   const canPrepare = setup?.canPrepareRuntime && !prepared;
   const signedIn = view?.backends.native.state === "connected" && !view.credential?.migrationRequired;
+  const companionReady = setup?.authentication.state === "companion_ready";
+  const waitingSignIn = !!view?.signIn && ["created", "paired", "receiving"].includes(view.signIn.state);
+  useEffect(() => {
+    if (!waitingSignIn) return;
+    const timer = setInterval(() => { void refresh(true); }, 1500);
+    return () => clearInterval(timer);
+  }, [waitingSignIn, refresh]);
   return <section id="chatgpt-account" aria-labelledby="chatgpt-account-title" className="space-y-4 rounded-2xl border border-border p-5">
     <div>
       <h2 id="chatgpt-account-title" className="font-semibold">ChatGPT account</h2>
@@ -99,19 +180,26 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
       <dl className="grid gap-2 sm:grid-cols-3">
         <div><dt className="text-muted">Account eligibility</dt><dd>{setup?.eligible ? "Ready" : "Attention required"}</dd></div>
         <div><dt className="text-muted">Private Codex runtime</dt><dd>{runtimeSetupLabel(setup)}</dd></div>
-        <div><dt className="text-muted">ChatGPT sign-in</dt><dd>{signedIn ? "Connected" : "Local sign-in app required"}</dd></div>
+        <div><dt className="text-muted">ChatGPT sign-in</dt><dd>{signedIn ? "Connected" : view.signIn?.state === "complete" ? "Sign-in completed" : view.signIn?.state === "needs_attention" ? "Needs attention" : view.signIn?.state === "expired" ? "Link expired" : view.signIn?.state === "cancelled" ? "Cancelled" : companionReady ? "Local sign-in app ready" : "Local sign-in app required"}</dd></div>
       </dl>
       {setup?.reason && view.credential && <p className="text-muted">{setup.reason}</p>}
       {setup?.runtime.reason && <p className="text-muted">{setup.runtime.reason}</p>}
-      {!signedIn && <p id="chatgpt-companion-status" className="text-muted">{setup?.authentication.reason || "A supported local sign-in app is required to connect ChatGPT. It is not available in this installation yet."}</p>}
+      {!signedIn && <p id="chatgpt-companion-status" className="text-muted">{view?.signIn?.reason || setup?.authentication.reason || "A supported local sign-in app is required to connect ChatGPT."}</p>}
       {canPrepare && <div className="space-y-3">
         <label className="flex items-start gap-2">
-          <input type="checkbox" checked={consent} disabled={busy || loading} onChange={event => setConsent(event.target.checked)} className="mt-1" />
+          <input type="checkbox" checked={consent} disabled={busy || loading || signInBusy} onChange={event => setConsent(event.target.checked)} className="mt-1" />
           <span>I authorize this installation to prepare my private Codex runtime. ChatGPT plan usage is authorized separately when I sign in.</span>
         </label>
-        <Button disabled={!consent || busy || loading} onClick={() => void mutate({ action: "prepare-runtime", accepted: true, consentVersion: 1 })}>Prepare private runtime</Button>
+        <Button disabled={!consent || busy || loading || signInBusy} onClick={() => void mutate({ action: "prepare-runtime", accepted: true, consentVersion: 1 })}>Prepare private runtime</Button>
       </div>}
-      {!signedIn && <Button disabled aria-describedby="chatgpt-companion-status">{view.credential ? "Reconnect ChatGPT" : "Connect ChatGPT"}</Button>}
+      {!signedIn && companionReady && !waitingSignIn && <div className="space-y-3">
+        {canPrepare && <label className="flex items-start gap-2"><input type="checkbox" checked={runtimeConsent} disabled={signInBusy || busy || loading} onChange={event => setRuntimeConsent(event.target.checked)} className="mt-1" /><span>Prepare and use my private stock Codex runtime</span></label>}
+        <label className="flex items-start gap-2"><input type="checkbox" checked={signInConsent} disabled={signInBusy || busy || loading} onChange={event => setSignInConsent(event.target.checked)} className="mt-1" /><span>I authorize this installation to use my ChatGPT account for Native CollectiveUI.</span></label>
+        <Button disabled={!signInConsent || signInBusy || busy || loading} aria-describedby="chatgpt-companion-status" onClick={() => void beginSignIn()}>{view.signIn && ["expired", "cancelled", "needs_attention"].includes(view.signIn.state) ? "Retry local sign-in" : view.credential ? "Reconnect ChatGPT" : "Connect ChatGPT"}</Button>
+      </div>}
+      {!signedIn && !companionReady && <Button disabled aria-describedby="chatgpt-companion-status">{view.credential ? "Reconnect ChatGPT" : "Connect ChatGPT"}</Button>}
+      {!signedIn && !companionReady && setup?.authentication.downloadUrl && <a className="inline-flex min-h-10 items-center rounded-lg border px-3 text-sm" href={setup.authentication.downloadUrl}>Get the local sign-in app</a>}
+      {waitingSignIn && <div className="flex flex-wrap items-center gap-2"><p role="status" className="text-sm">{view?.signIn?.state === "receiving" ? "The local app is returning your sign-in. This may take a moment." : "Waiting for the local sign-in app to finish…"}</p>{view?.signIn?.state === "created" && canReopenCompanion && <Button variant="outline" onClick={reopenCompanion}>Open local sign-in app</Button>}<Button variant="outline" disabled={signInBusy} onClick={() => void cancelSignIn()}>Cancel sign-in</Button></div>}
     </div>}
     {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
     <div className="flex flex-wrap gap-2">

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { db } from '@/db';
+import { db, type DbOrTx } from '@/db';
 import { personalCodexAccounts, userCredentials } from '@/db/schema';
 import { loadPrincipal, resolvePrincipal, type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
@@ -10,8 +10,9 @@ import { personalControl } from '@/personal-codex/control';
 import { accountRejection, userMayUseChatGPT } from './policy';
 import { getChatGPTAuth, getChatGPTCredential, openCredentialSecret, revokeCredentialSecret, saveChatGPTConnection, type ChatGPTSecret } from './store';
 import { invalidateChatGPTConnectionLocked } from './invalidation';
-import { SIWCCredentialSchema, validateSIWCCredential } from './siwc';
+import { SIWCCredentialSchema, validateSIWCCredential, type SIWCCredential, type SIWCIdentity } from './siwc';
 import { accountSetupView, localSignInReason } from './onboarding';
+import { companionSignInView } from './companion-state';
 
 const hostId = () => process.env.CHATGPT_SIWC_HOST_ID?.trim();
 const onboardingReason = localSignInReason;
@@ -36,40 +37,43 @@ export async function unifiedAccountView(p: Principal) {
     } catch (error) { codex = error instanceof HttpError && error.message.includes('not enrolled') ? { state: 'not_enrolled', reason: error.message } : { state: 'backend_error', reason: 'Stock Codex is unavailable. Ask the operator to check the broker, then retry.' }; }
   }
   if (!allowed) codex = { state: 'disabled', reason: reason! };
-  const setup = await accountSetupView(p, settings);
-  return { allowed, reason, setup, credential: row ? { email: row.email, planType: row.planType, status: row.status, migrationRequired } : null,
+  const setup = await accountSetupView(p, settings), signIn = await companionSignInView(p);
+  return { allowed, reason, setup, signIn, credential: row ? { email: row.email, planType: row.planType, status: row.status, migrationRequired } : null,
     backends: { native: { state: nativeState, ...(reason || policyReason ? { reason: reason ?? policyReason! } : {}) }, codex },
     onboarding: { state: hostId() ? 'ready' as const : 'blocked' as const, reason: hostId() ? onboardingReason : 'An operator must finish this installation’s ChatGPT sign-in configuration.' } };
 }
 
-/** Explicit import is server/CLI-only. A browser cannot post credentials to this service. */
-export async function importSIWCProfile(p: Principal, raw: unknown) {
+/** Shared commit after independent token validation. Caller keeps external I/O outside this transaction. */
+export async function applySIWCProfileLocked(p: Principal, profile: SIWCCredential, identity: SIWCIdentity, tx: DbOrTx) {
   const installation = hostId();
   if (!installation) throw new HttpError(409, 'Configure this installation’s stable ChatGPT host ID first.');
-  const profile = SIWCCredentialSchema.parse(raw);
-  // A transferred local profile keeps its local host ID; the destination keeps its own independent host ID.
-  const identity = await validateSIWCCredential(profile, { hostId: profile.hostId });
   let previous: ChatGPTSecret | undefined;
-  const saved = await db.transaction(async tx => {
-    const person = await lockPersonalOwner(p.user.id, tx);
-    if (person.disabled || person.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, 'Sign in to CollectiveUI again.');
-    const fresh = await resolvePrincipal(person, tx), settings = await getSetting('chatgpt', tx);
-    if (!userMayUseChatGPT(fresh, settings)) throw new HttpError(403, 'Personal ChatGPT access is not enabled for you.');
-    if (![person.email, person.upn].some(value => value?.toLowerCase() === identity.email.toLowerCase())) throw new HttpError(403, 'Import only your own ChatGPT profile matching your CollectiveUI email.');
-    // SIWC hides workspace/plan metadata. Never reinterpret client_id as a legacy workspace ID.
-    if (settings.allowedWorkspaceIds.some(value => value.trim())) throw new HttpError(403, 'The legacy workspace allowlist cannot be verified from SIWC’s opaque metadata. An administrator must explicitly revise that policy before importing.');
-    if (!settings.allowPersonalPlans) throw new HttpError(403, 'Enable personal ChatGPT plans explicitly before importing a SIWC profile; plan metadata is not exposed by this integration.');
-    await assertNoCodexWork(person.id, tx);
-    const [old] = await tx.select().from(userCredentials).where(eq(userCredentials.userId, person.id)).for('update');
-    if (old) { try { previous = openCredentialSecret(old); } catch { /* explicit unreadable migration */ } }
-    const sameRegistration = old?.externalSubject === identity.subject && previous?.siwc?.clientId === identity.clientId;
-    const row = await saveChatGPTConnection(person.id, { accessToken: profile.accessToken, refreshToken: profile.refreshToken, idToken: profile.idToken, expiresIn: profile.expiresIn },
-      { accountId: `siwc:${identity.clientId}`, userId: identity.subject, email: identity.email.toLowerCase(), planType: null, residency: null, isFedramp: false, expiresAt: identity.expiresAt },
-      undefined, { clientId: identity.clientId, hostId: installation, scope: profile.scope }, tx, false);
-    // Reconnect invalidates old native bindings without touching retained workspace data.
-    await tx.update(personalCodexAccounts).set({ connected: false, ...(!sameRegistration ? { credentialBinding: randomUUID() } : {}), updatedAt: new Date() }).where(eq(personalCodexAccounts.userId, person.id));
-    return { email: row.email, status: row.status };
-  });
+  const person = await lockPersonalOwner(p.user.id, tx);
+  if (person.disabled || person.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, 'Sign in to CollectiveUI again.');
+  const fresh = await resolvePrincipal(person, tx), settings = await getSetting('chatgpt', tx);
+  if (!userMayUseChatGPT(fresh, settings)) throw new HttpError(403, 'Personal ChatGPT access is not enabled for you.');
+  if (![person.email, person.upn].some(value => value?.toLowerCase() === identity.email.toLowerCase())) throw new HttpError(403, 'Import only your own ChatGPT profile matching your CollectiveUI email.');
+  // SIWC hides workspace/plan metadata. Never reinterpret client_id as a legacy workspace ID.
+  if (settings.allowedWorkspaceIds.some(value => value.trim())) throw new HttpError(403, 'The legacy workspace allowlist cannot be verified from SIWC’s opaque metadata. An administrator must explicitly revise that policy before importing.');
+  if (!settings.allowPersonalPlans) throw new HttpError(403, 'Enable personal ChatGPT plans explicitly before importing a SIWC profile; plan metadata is not exposed by this integration.');
+  await assertNoCodexWork(person.id, tx);
+  const [old] = await tx.select().from(userCredentials).where(eq(userCredentials.userId, person.id)).for('update');
+  if (old) { try { previous = openCredentialSecret(old); } catch { /* explicit unreadable migration */ } }
+  const sameRegistration = old?.externalSubject === identity.subject && previous?.siwc?.clientId === identity.clientId;
+  const row = await saveChatGPTConnection(person.id, { accessToken: profile.accessToken, refreshToken: profile.refreshToken, idToken: profile.idToken, expiresIn: profile.expiresIn },
+    { accountId: `siwc:${identity.clientId}`, userId: identity.subject, email: identity.email.toLowerCase(), planType: null, residency: null, isFedramp: false, expiresAt: identity.expiresAt },
+    undefined, { clientId: identity.clientId, hostId: installation, scope: profile.scope }, tx, false);
+  // Reconnect invalidates old native bindings without touching retained workspace data.
+  await tx.update(personalCodexAccounts).set({ connected: false, ...(!sameRegistration ? { credentialBinding: randomUUID() } : {}), updatedAt: new Date() }).where(eq(personalCodexAccounts.userId, person.id));
+  return { saved: { email: row.email, status: row.status }, previous };
+
+}
+
+/** Explicit import is server/CLI-only. A browser cannot post credentials to this service. */
+export async function importSIWCProfile(p: Principal, raw: unknown) {
+  const profile = SIWCCredentialSchema.parse(raw);
+  const identity = await validateSIWCCredential(profile, { hostId: profile.hostId });
+  const { saved, previous } = await db.transaction(tx => applySIWCProfileLocked(p, profile, identity, tx));
   if (previous && previous.refresh !== profile.refreshToken) await revokeCredentialSecret(previous);
   return saved;
 }

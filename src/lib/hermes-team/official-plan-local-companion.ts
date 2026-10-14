@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { createOfficialPlanVerifier } from './official-plan-signatures';
-import { CompanionPrivateStore } from './official-plan-companion-storage';
+export interface LocalCompanionStore { read(name: string): Promise<unknown | null>; write(name: string, value: unknown): Promise<void>; locked<T>(operation: () => Promise<T>): Promise<T>; isLocked(): Promise<boolean>; }
 import { AckSchema, CompanionCredentialSchema, CompanionHostIdSchema, CustodySchema, SnapshotSchema, TicketSchema, companionFailure, credentialDigest,
   samePublicKey, sealCompanionPayload, signTranscript, signedSchema, transcriptDigest, verifyTranscript, type CompanionEnvelope, type Signed, type SourceSnapshot } from './official-plan-companion-protocol';
 
@@ -30,7 +30,7 @@ const CLOCK_SKEW_MS = 60000;
 export class OfficialPlanLocalCompanion {
   private readonly pairing: LocalCompanionPairing;
   private readonly verifier: ReturnType<typeof createOfficialPlanVerifier>;
-  constructor(private readonly store: CompanionPrivateStore, pairing: LocalCompanionPairing, private readonly fetcher: typeof fetch = fetch) {
+  constructor(private readonly store: LocalCompanionStore, pairing: LocalCompanionPairing, private readonly fetcher: typeof fetch = fetch, private readonly retainedRegistration?: { clientId: string; subject: string }) {
     this.pairing = LocalPairingSchema.parse(pairing); this.verifier = createOfficialPlanVerifier(fetcher); this.authority();
   }
   private authority() {
@@ -69,11 +69,11 @@ export class OfficialPlanLocalCompanion {
   }
   private async record(tokens: z.infer<typeof tokenSchema>, clientId: string, expected: { nonce?: string; subject?: string }, priorId?: string) {
     const scopes = tokens.scope.split(/\s+/).filter(Boolean);
-    if (SCOPES.some(scope => !scopes.includes(scope))) throw companionFailure();
+    if (scopes.length !== SCOPES.length || SCOPES.some(scope => !scopes.includes(scope))) throw companionFailure();
     if (!tokens.id_token && !priorId) throw companionFailure();
     const subject = tokens.id_token ? (await this.verifier.verifyIdToken(tokens.id_token, { clientId, ...expected })).subject : expected.subject;
     const access = await this.verifier.verifyAccessToken(tokens.access_token);
-    if (!subject || access.subject !== subject || access.clientId !== clientId || SCOPES.some(scope => !access.scopes.includes(scope))) throw companionFailure();
+    if (!subject || access.subject !== subject || access.clientId !== clientId || ['resource.invoke', 'chatgpt.tokens.use.direct'].some(scope => !access.scopes.includes(scope))) throw companionFailure();
     const file = CompanionCredentialSchema.parse({ version: 1, client_id: clientId, subject, source_host_id: this.pairing.sourceHostId,
       access_token: tokens.access_token, refresh_token: tokens.refresh_token, id_token: tokens.id_token ?? priorId, ...(tokens.earliest_refresh_at === undefined ? {} : { earliest_refresh_at: tokens.earliest_refresh_at }) });
     const snapshot = signTranscript<SourceSnapshot>({ version: 1, pairingId: this.pairing.pairingId, sourceHostId: this.pairing.sourceHostId, clientId, subject,
@@ -85,7 +85,7 @@ export class OfficialPlanLocalCompanion {
     return this.store.locked(async () => {
       const prior = await this.load(); if (['signing_in', 'refreshing', 'suspended'].includes(prior.phase)) throw companionFailure();
       if (reconnect && !prior.snapshot) throw companionFailure();
-      const retainedClient = prior.snapshot?.body.clientId ?? prior.registrationClientId, reauthorize = Boolean(retainedClient);
+      const retainedClient = prior.snapshot?.body.clientId ?? prior.registrationClientId ?? this.retainedRegistration?.clientId, reauthorize = Boolean(retainedClient);
       const clientId = retainedClient ?? 'dynamic_agent_client', state = random(), nonce = random(), verifier = random();
       let server: Server | undefined, accepted = false, cancelled = false, activated = false, timer: ReturnType<typeof setTimeout> | undefined, processing: Promise<void> | undefined;
       let resolveDone!: () => void, rejectDone!: (error: Error) => void;
@@ -106,7 +106,7 @@ export class OfficialPlanLocalCompanion {
             journal.registrationClientId = issued; await this.save(journal);
             if (cancelled || signal?.aborted) throw companionFailure();
             const tokens = await this.exchange(new URLSearchParams({ grant_type: 'authorization_code', client_id: issued, code: callback.searchParams.get('code')!, code_verifier: verifier, redirect_uri: journal.attempt!.redirectUri, resource: RESOURCE }));
-            const recorded = await this.record(tokens, issued, { nonce, ...(prior.snapshot ? { subject: prior.snapshot.body.subject } : {}) });
+            const recorded = await this.record(tokens, issued, { nonce, ...((prior.snapshot?.body.subject ?? this.retainedRegistration?.subject) ? { subject: prior.snapshot?.body.subject ?? this.retainedRegistration?.subject } : {}) });
             if (cancelled || signal?.aborted) throw companionFailure();
             this.authority(); await this.save({ version: 1, revision: journal.revision + 1, phase: 'active', ...recorded }); activated = true; finish(200); resolveDone();
           } catch { finish(400); rejectDone(companionFailure()); } };
@@ -132,6 +132,34 @@ export class OfficialPlanLocalCompanion {
         await this.save({ ...prior, registrationClientId: journal.registrationClientId ?? retainedClient, revision: journal.revision + 1, phase: 'needs_attention', attempt: undefined }); throw companionFailure();
       } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); server?.closeAllConnections(); await new Promise<void>(resolve => { if (server?.listening) server.close(() => resolve()); else resolve(); }); }
     });
+  }
+  /** Only a confirmed non-delivery permits discarding a locally owned grant. Custody requires signed recovery. */
+  async cancelBeforeCustody(revoke: (file: import('./official-plan-companion-protocol').CompanionCredential) => Promise<boolean>) {
+    return this.store.locked(async () => {
+      const journal = await this.load();
+      if (journal.ticket || journal.custody || ['suspended', 'transferred', 'signing_in', 'refreshing'].includes(journal.phase)) throw companionFailure();
+      if (!journal.file) return { revocationConfirmed: true };
+      let revocationConfirmed = false;
+      try { revocationConfirmed = await revoke(journal.file); } catch { /* Local retention ends even if upstream revocation is uncertain. */ }
+      await this.save({ version: 1, revision: journal.revision + 1, phase: 'empty', registrationClientId: journal.file.client_id });
+      return { revocationConfirmed };
+    });
+  }
+  /** Validate the destination's complete receipt before exposing accepted public registration metadata. */
+  async verifiedCompleteRegistration(raw: unknown) {
+    const journal = await this.load(), ack = this.acknowledgment(journal, raw);
+    if (ack.state !== 'complete' || !journal.snapshot || !journal.file) throw companionFailure();
+    const snapshot = verifyTranscript(journal.snapshot, this.pairing.sourceSigningPublicKey);
+    if (snapshot.clientId === 'dynamic_agent_client') throw companionFailure();
+    return { clientId: snapshot.clientId, subject: snapshot.subject };
+  }
+  /** Public registration metadata only, from the source-signed snapshot of a completed custody transfer. */
+  async transferredRegistration() {
+    const journal = await this.load();
+    if (journal.phase !== 'transferred' || !journal.snapshot) throw companionFailure();
+    const snapshot = verifyTranscript(journal.snapshot, this.pairing.sourceSigningPublicKey);
+    if (snapshot.clientId === 'dynamic_agent_client') throw companionFailure();
+    return { clientId: snapshot.clientId, subject: snapshot.subject };
   }
   async refresh() {
     return this.store.locked(async () => {

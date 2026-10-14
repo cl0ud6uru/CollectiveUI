@@ -1,5 +1,7 @@
 # Consented private Codex runtime preparation
 
+Follow-up: the optional Mac launcher, local OAuth and encrypted unified-account receiver are now implemented in the [companion change](../chatgpt-companion.md). That feature remains disabled until the reviewed app is distributed and the operator enables it. The evidence below describes the prerequisite runtime-preparation slice.
+
 This change is a bounded setup slice. Connected accounts shows account eligibility,
 private runtime readiness, and the local sign-in prerequisite separately. An eligible
 user can consent to preparation of their preapproved isolated runtime. Preparation
