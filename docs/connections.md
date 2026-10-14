@@ -48,6 +48,8 @@ In the bot builder, each MCP server can be narrowed to some of its tools, with a
 
 ### People's own ChatGPT plans (Sign in with ChatGPT)
 
+Installations distributing the reviewed Mac companion can enable the browser-initiated sign-in flow in this account card. The app completes local OAuth and a protected owner-bound transfer; users install it once, then start sign-in from Settings. See [companion setup, distribution and recovery](chatgpt-companion.md). The protected CLI workflow below remains available when the companion is not enabled.
+
 CollectiveUI uses OpenAI's supported subscription token sharing preview: one owner-bound credential serves the native CollectiveUI harness and stock Codex's documented external-token Responses provider. Requests use `https://api.openai.com/v1`; legacy Codex device grants are **not compatible** and are never converted or copied automatically. Local tools remain in the native harness's tool loop. Hosted tools, embeddings, server-side response storage and `previous_response_id` are unsupported.
 
 For a personal self-hosted installation, follow OpenAI's [local sign-in](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and [self-hosted VM profile transfer](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) instructions:

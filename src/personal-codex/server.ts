@@ -1,3 +1,4 @@
+import { EnrollmentJournal, enrollmentReadiness } from './enrollment';
 import { z } from 'zod';
 import { createServer } from 'node:http';
 import { chmod, mkdir, lstat, writeFile, unlink } from 'node:fs/promises';
@@ -5,12 +6,12 @@ import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { WebSocketServer } from 'ws';
 import { PersonalCodexDriver, runtimeKey } from './docker';
-import { ownerId, pendingLogin, nativeAccount, tokenSyncRequest, tokenFingerprint, type BrokerStatus } from './contracts';
+import { enrollmentRequest, ownerId, pendingLogin, nativeAccount, tokenSyncRequest, tokenFingerprint, type BrokerStatus } from './contracts';
 import { CodexClient } from '../lib/codex/client';
 import type { CodexRuntime } from '../lib/codex/runtime';
 
 /** Protected Unix socket only. Socket access grants server authority; never mount it in an agent runtime. */
-export async function startPersonalBroker(driver: PersonalCodexDriver) {
+export async function startPersonalBroker(driver: PersonalCodexDriver, enrollment = new EnrollmentJournal(driver)) {
   const socketPath = driver.config.socketPath;
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o750 });
   // Refuse stale/symlink collisions rather than deleting someone else's socket.
@@ -18,6 +19,7 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
   const parent = await lstat(dirname(socketPath));
   if (!parent.isDirectory() || parent.isSymbolicLink() || parent.mode & 0o007 || parent.mode & 0o020)
     throw new Error('Personal Codex socket directory must be protected from untrusted access/writes.');
+  await enrollment.load();
   const loginMarker = (owner: string) => join(dirname(socketPath), `codex-login-${runtimeKey(owner)}.pending`);
   const clearMarker = (owner: string) => unlink(loginMarker(owner)).catch(() => {});
   const hasMarker = async (owner: string) => !!await lstat(loginMarker(owner)).catch(() => null);
@@ -84,18 +86,43 @@ export async function startPersonalBroker(driver: PersonalCodexDriver) {
     const isTokenSync = req.url === '/sync-token';
     void (async () => {
       const owner = ownerId.parse(req.headers['x-collective-owner']);
-      if (!driver.config.owners.includes(owner)) return reply({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' }, 403);
-      driver.name(owner);
+      if (req.url === '/readiness' && req.method === 'GET') return reply(await enrollmentReadiness(driver, owner));
+      const preparing = req.url === '/prepare' && req.method === 'POST';
+      if (!driver.admitted(owner) && !(preparing && driver.config.allowSelfEnrollment)) return reply({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' }, 403);
+      if (!preparing) driver.name(owner);
       const action = req.url?.slice(1);
+      let consent: ReturnType<typeof enrollmentRequest.parse> | undefined;
+      if (preparing) {
+        const chunks: Buffer[] = []; let size = 0;
+        for await (const chunk of req) { size += chunk.length; if (size > 2048) throw new Error(); chunks.push(Buffer.from(chunk)); }
+        consent = enrollmentRequest.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      }
       let sync: ReturnType<typeof tokenSyncRequest.parse> | undefined;
       if (action === 'sync-token' && req.method === 'POST') {
         const chunks: Buffer[] = []; let size = 0;
         for await (const chunk of req) { size += chunk.length; if (size > 17_000) throw new Error('Invalid credential request'); chunks.push(Buffer.from(chunk)); }
         sync = tokenSyncRequest.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } else if (req.headers['content-length'] && req.headers['content-length'] !== '0') return reply({ error: 'Unexpected body' }, 400);
-      if (!(action === 'status' && req.method === 'GET') && !(['connect', 'cancel', 'disconnect', 'start', 'sync-token'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
+      } else if (!preparing && req.headers['content-length'] && req.headers['content-length'] !== '0') return reply({ error: 'Unexpected body' }, 400);
+      if (!(action === 'status' && req.method === 'GET') && !(['prepare', 'connect', 'cancel', 'disconnect', 'start', 'sync-token'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
       const prior = queue.get(owner) ?? Promise.resolve();
       const next = prior.catch(() => {}).then(async () => {
+        if (action === 'prepare' && consent) {
+          const readiness = await enrollmentReadiness(driver, owner);
+          if (readiness.state !== 'ready') return readiness;
+          // Preparation is infrastructure-only: an existing trusted connection is idempotent.
+          if (driver.admitted(owner) && tokenBindings.has(owner) && readiness.runtimeState === 'running') return readiness;
+          tokenBindings.delete(owner);
+          await enrollment.record(owner, consent);
+          driver.admit(owner);
+          try { await driver.ensure(owner); await driver.clearToken(owner); }
+          catch {
+            await enrollment.rollback(owner);
+            throw new Error('Runtime preparation unconfirmed');
+          }
+          try { await enrollment.record(owner, consent, 'admitted'); }
+          catch { driver.revokeAdmission(owner); throw new Error('Enrollment persistence unconfirmed'); }
+          return { ...readiness, enrolled: true, runtimeState: 'running' };
+        }
         if (action === 'disconnect') {
           // Fence readiness before any I/O: failed token clearing must never leave a trusted fingerprint.
           tokenBindings.delete(owner);
