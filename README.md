@@ -154,6 +154,7 @@ See the [development status and backlog](TODO.md), [service-bot restrictions](do
 | Learn chat and bot controls | [User guide](docs/user-guide.md) |
 | Run the demo or troubleshoot startup | [Local setup](docs/getting-started.md) |
 | Deploy, update, back up or recover an installation | [Operator guide](docs/operations.md) |
+| Deploy published images without building on the VM | [Docker Hub deployment and updates](docs/docker-hub-deployment.md) |
 | Connect models, MCP tools or Hermes | [Connection guide](docs/connections.md) |
 | Set up an optional coordinator or The Queen starter | [Default coordinator](docs/features/default-coordinator.md) |
 | Configure narrowly scoped shared capabilities | [Service bots](docs/service-bots.md) |

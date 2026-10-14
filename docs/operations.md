@@ -6,6 +6,8 @@ This pre-release serves one installation/organization. Validate integrations and
 
 ## Production deployment
 
+For VM deployment without local application builds, use the optional [Docker Hub image release and operator updater](docker-hub-deployment.md). It includes a setup checklist, digest-pinned Compose deployment and explicit backup/restore recovery.
+
 For a fresh local-account installation, follow [the complete bootstrap walkthrough](#standalone-vps-with-local-accounts). For directory sign-in, configure [Entra or LDAP](#active-directory-setup) and administrator access first. In either case, fill in `.env`, configure HTTPS and private network access, then build and migrate before serving traffic:
 
 ```bash
