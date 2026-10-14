@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { BrokerConfig, PersonalCodexDriver } from '@/personal-codex/docker';
+import { EnrollmentJournal } from '@/personal-codex/enrollment';
 import { startPersonalBroker } from '@/personal-codex/server';
 import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
 import { tokenFingerprint } from '@/personal-codex/contracts';
@@ -370,4 +371,80 @@ describe('Personal Codex protected broker', () => {
     expect(driver.ensured).toEqual([]);
     expect(driver.retainedStarts).toEqual(['alice']);
   });
+});
+
+describe('broker self enrollment', () => {
+  const consent = JSON.stringify({ consentVersion: 1, sessionVersion: 7 });
+  function capable() {
+    driver.config.allowSelfEnrollment = true; driver.config.siwcSandboxVerified = true;
+    return vi.spyOn(driver, 'preflight').mockResolvedValue('not_started');
+  }
+  it('readiness is read only and default capability rejects preparation by an unadmitted owner', async () => {
+    expect((await (await ipc('readiness', 'bob', 'GET')).json()).state).toBe('operator_setup_required');
+    expect((await ipc('prepare', 'bob', 'POST', consent)).status).toBe(403);
+    expect(driver.ensured).toEqual([]);
+    expect((await readdir(root)).filter(f => f.startsWith('codex-enrollment-'))).toEqual([]);
+    capable(); expect((await (await ipc('readiness', 'bob', 'GET')).json()).runtimeState).toBe('not_started');
+    expect(driver.admitted('bob')).toBe(false); expect(driver.ensured).toEqual([]);
+  });
+  it('preflights before admission and enforces strict owner-independent body', async () => {
+    const preflight = capable().mockRejectedValue(new Error('private preflight failure'));
+    const response = await ipc('prepare', 'bob', 'POST', consent);
+    expect((await response.json()).state).toBe('unavailable'); expect(driver.admitted('bob')).toBe(false);
+    expect(driver.ensured).toEqual([]);
+    preflight.mockResolvedValue('not_started');
+    expect((await ipc('prepare', 'bob', 'POST', JSON.stringify({ consentVersion: 1, sessionVersion: 7, owner: 'alice' }))).status).toBe(503);
+    expect(driver.admitted('bob')).toBe(false);
+  });
+  it('prepares distinct owners and restores admission but requires fresh token synchronization on restart', async () => {
+    capable();
+    for (const owner of ['alice', 'bob']) expect(await (await ipc('prepare', owner, 'POST', consent)).json()).toMatchObject({ state: 'ready', enrolled: true, runtimeState: 'running' });
+    expect(driver.ensured).toEqual(['alice', 'bob']);
+    expect(driver.tokens.size).toBe(0);
+    await broker!.close(); driver = new FixtureDriver([], socketPath, root); capable();
+    broker = await startPersonalBroker(driver);
+    expect(driver.admitted('alice')).toBe(true); expect(driver.admitted('bob')).toBe(true);
+    const status = await (await ipc('status', 'bob', 'GET')).json(); expect(status.siwc.credentialBinding).toBeUndefined();
+    expect(status.siwc.reason).toContain('synchronization');
+  });
+  it('rolls back fresh admission on uncertain setup and never creates token readiness on failure', async () => {
+    capable(); vi.spyOn(driver, 'ensure').mockRejectedValueOnce(new Error('private setup failure'));
+    expect((await ipc('prepare', 'bob', 'POST', consent)).status).toBe(503); expect(driver.admitted('bob')).toBe(false);
+    expect((await readdir(root)).filter(f => f.startsWith('codex-enrollment-'))).toEqual([]);
+    driver.provisioned.add('alice');
+    driver.failClearToken = true;
+    expect((await ipc('prepare', 'alice', 'POST', consent)).status).toBe(503);
+    expect((await (await ipc('status', 'alice', 'GET')).json()).siwc.credentialBinding).toBeUndefined();
+  });
+});
+
+it('failed prepare with unlink failure rejects dynamic owner in current broker and after restart', async () => {
+  await broker!.close(); driver = new FixtureDriver([], socketPath, root);
+  driver.config.allowSelfEnrollment = true; driver.config.siwcSandboxVerified = true;
+  vi.spyOn(driver, 'preflight').mockResolvedValue('not_started');
+  vi.spyOn(driver, 'ensure').mockRejectedValue(new Error('uncertain setup'));
+  broker = await startPersonalBroker(driver, new EnrollmentJournal(driver, async () => { throw new Error('unlink failure'); }));
+  expect((await ipc('prepare', 'bob', 'POST', JSON.stringify({ consentVersion: 1, sessionVersion: 9 }))).status).toBe(503);
+  expect(driver.admitted('bob')).toBe(false); expect((await ipc('status', 'bob', 'GET')).status).toBe(403);
+  await broker.close(); driver = new FixtureDriver([], socketPath, root);
+  driver.config.allowSelfEnrollment = true; driver.config.siwcSandboxVerified = true;
+  broker = await startPersonalBroker(driver);
+  expect((await ipc('status', 'bob', 'GET')).status).toBe(403); expect(driver.tokens.size).toBe(0);
+});
+
+it('connected preparation is idempotent and failed read-only preflight retains its token binding', async () => {
+  driver.config.siwcSandboxVerified = true;
+  const preflight = vi.spyOn(driver, 'preflight').mockResolvedValue('running');
+  const clear = vi.spyOn(driver, 'clearToken');
+  const accessToken = 'synthetic-existing-connection'; const credentialBinding = tokenFingerprint(accessToken);
+  expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken, credentialBinding }))).status).toBe(200);
+  const ensured = driver.ensured.length;
+  const consent = JSON.stringify({ consentVersion: 1, sessionVersion: 10 });
+  expect((await ipc('prepare', 'alice', 'POST', consent)).status).toBe(200);
+  expect(clear).not.toHaveBeenCalled(); expect(driver.ensured.length).toBe(ensured);
+  expect(driver.tokens.get('alice')).toBe(accessToken);
+  preflight.mockRejectedValue(new Error('private readiness error'));
+  expect((await (await ipc('prepare', 'alice', 'POST', consent)).json()).state).toBe('unavailable');
+  expect((await (await ipc('status', 'alice', 'GET')).json()).siwc.credentialBinding).toBe(credentialBinding);
+  expect(driver.tokens.get('alice')).toBe(accessToken); expect(clear).not.toHaveBeenCalled();
 });
