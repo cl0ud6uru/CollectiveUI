@@ -33,7 +33,7 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
   const policy = CodexPolicySchema.parse({ funding: raw.funding, model: raw.model, effort: raw.effort });
   const transcript = JSON.stringify(opts.history.map(m => ({ role: m.role, text: m.parts.filter(p => p.type === 'text').map(p => p.text).join('\n') })));
   if (transcript.length > 200000) throw new HttpError(409, 'This chat is too long for the Codex pilot. Start a new chat.');
-  const runtime = await callerRuntime(opts.principal.user.id, policy.funding);
+  const runtime = await callerRuntime(opts.principal.user.id, policy.funding, { synchronize: true });
   assertRuntimeOwner(runtime, opts.principal.user);
   if (!runtime.managed && opts.history.some(m => m.parts.some(p => p.type.startsWith('tool-') || p.type === 'dynamic-tool')))
     throw new HttpError(409, CODEX_DIRECT_ONLY);
@@ -93,6 +93,11 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
             computerAgent, authorizeComputerCall,
             totalUsage: u => { tokenTotals = u; },
             authorizeAccount: async identity => {
+              if (runtime.authMode === 'siwc') {
+                const settings = await getSetting('chatgpt');
+                const reason = accountRejection({ accountId: runtime.expectedWorkspaceId!, planType: null }, settings);
+                if (!userMayUseChatGPT(opts.principal, settings) || reason) throw new HttpError(403, reason ?? 'Personal ChatGPT access is unavailable.');
+              }
               if (identity?.type === 'chatgpt') {
                 const settings = await getSetting('chatgpt');
                 const reason = accountRejection({ accountId: runtime.expectedWorkspaceId!, planType: identity.planType }, settings);

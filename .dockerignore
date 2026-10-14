@@ -9,3 +9,10 @@ playwright-report
 certs
 docker-compose.override.yml
 *.tsbuildinfo
+# Operator release state contains database/upload backups. Never send it to an image build.
+.collectiveui-deploy
+release-input
+release-manifest.json
+
+# Protected Sign in with ChatGPT profile exports are runtime credentials, never image inputs.
+chatgpt-profile*.json

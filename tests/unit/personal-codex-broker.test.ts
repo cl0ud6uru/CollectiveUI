@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, readdir, rm, stat, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, chmod, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { BrokerConfig, PersonalCodexDriver } from '@/personal-codex/docker';
 import { startPersonalBroker } from '@/personal-codex/server';
 import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
+import { tokenFingerprint } from '@/personal-codex/contracts';
 
 vi.mock('server-only', () => ({}));
 
@@ -52,10 +54,15 @@ class FixtureDriver extends PersonalCodexDriver {
   readonly bridged: string[] = [];
   readonly children = new Set<ChildProcessWithoutNullStreams>();
   readonly provisioned = new Set<string>();
+  readonly stopped = new Set<string>();
+  readonly pauses: boolean[] = [];
+  computerEnabled = false;
   failProbe = false;
   connectedAccount = false;
   emitStaleCompletion = false;
   completeDuringCancel = false;
+  failClearToken = false;
+  readonly tokens = new Map<string, string>();
 
   constructor(owners: string[], socketPath: string, readonly logDir: string) {
     super(BrokerConfig.parse({
@@ -66,15 +73,27 @@ class FixtureDriver extends PersonalCodexDriver {
 
   override name(owner: string) { return super.name(owner); }
   override async inspect(owner: string) {
-    return this.provisioned.has(owner) ? { State: { Running: true } } as never : null;
+    return this.provisioned.has(owner) ? { State: { Running: !this.stopped.has(owner) } } as never : null;
   }
   override async ensure(owner: string) {
     this.ensured.push(owner);
     this.provisioned.add(owner);
+    this.stopped.delete(owner);
   }
   override async startRetained(owner: string) {
     if (!this.provisioned.has(owner)) throw new Error('No retained runtime is available.');
     this.retainedStarts.push(owner);
+    this.stopped.delete(owner);
+  }
+  override async computerStatus(owner: string) {
+    return { available: this.computerEnabled, running: this.provisioned.has(owner) && !this.stopped.has(owner), width: 1280 as const, height: 800 as const };
+  }
+  override async computerPause(_owner: string, paused: boolean) { this.pauses.push(paused); }
+  async stop(owner: string) { this.stopped.add(owner); this.tokens.delete(owner); }
+  override async synchronizeToken(owner: string, token: string) { this.tokens.set(owner, token); }
+  override async clearToken(owner: string) {
+    if (this.failClearToken) throw new Error('fixture token clear failure');
+    this.tokens.delete(owner);
   }
   override async bridge(owner: string): Promise<ChildProcessWithoutNullStreams> {
     this.bridged.push(owner);
@@ -141,7 +160,8 @@ describe('Personal Codex protected broker', () => {
     for (const owner of ['alice', 'bob']) {
       for (const action of ['status', 'connect', 'start', 'cancel', 'disconnect']) {
         const response = await ipc(action, owner, action === 'status' ? 'GET' : 'POST');
-        expect(response.status).toBe(503);
+        expect(response.status).toBe(403);
+        expect(await response.json()).toEqual({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' });
       }
     }
     expect(driver.ensured).toEqual([]);
@@ -161,9 +181,12 @@ describe('Personal Codex protected broker', () => {
   });
 
   it('admits only enrolled owners and does not provision on an unauthorized owner request', async () => {
+    const status = await ipc('status', 'bob', 'GET');
+    expect(status.status).toBe(403);
+    expect(await status.json()).toEqual({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' });
     const response = await ipc('connect', 'bob');
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'This account is not enrolled in Personal Codex.', code: 'not_enrolled' });
     expect(driver!.ensured).toEqual([]);
     expect(driver!.bridged).toEqual([]);
   });
@@ -218,6 +241,22 @@ describe('Personal Codex protected broker', () => {
     expect((await rpcLog()).match(/account\/login\/start/g)).toHaveLength(2);
   });
 
+  it('reapplies a persisted desktop pause before accepting broker requests after a crash', async () => {
+    driver.computerEnabled = true;
+    driver.provisioned.add('alice');
+    const record = path.join(root, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);
+    await writeFile(record, JSON.stringify({ version: 1, paused: true }), { mode: 0o600 });
+    await broker!.close();
+    broker = await startPersonalBroker(driver);
+
+    expect(driver.pauses).toEqual([true]);
+    const response = await socketFetch(socketPath)(`${LOCAL_ORIGIN}/computer/status`, {
+      method: 'GET', headers: { 'x-collective-owner': 'alice', 'x-collective-view-session': 'a'.repeat(64) },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ paused: true, control: 'other' });
+  });
+
   it('blocks connect when the native sandbox probe fails, before sign-in can start', async () => {
     driver.failProbe = true;
     const response = await ipc('connect');
@@ -260,6 +299,106 @@ describe('Personal Codex protected broker', () => {
     expect(methods).not.toContain('account/login/start');
     expect(driver.ensured).toEqual([]);
     expect(driver.retainedStarts).toEqual(['alice']);
+  });
+
+  it('disconnects an enrolled owner with no runtime without provisioning or native login', async () => {
+    const response = await ipc('disconnect');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'not_started' });
+    expect(driver.ensured).toEqual([]); expect(driver.bridged).toEqual([]); expect(driver.retainedStarts).toEqual([]);
+  });
+
+  it('clears the SIWC app-server token and broker binding without relying on native account/logout', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    const sync = await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: fingerprint }));
+    expect(sync.status).toBe(200);
+    expect((await sync.json()).siwc.credentialBinding).toBe(fingerprint);
+    expect(driver.tokens.get('alice')).toBe(token);
+    expect((await ipc('disconnect')).status).toBe(200);
+    expect(driver.tokens.has('alice')).toBe(false);
+    expect(await (await ipc('status', 'alice', 'GET')).json()).toEqual({ state: 'running', siwc: { available: true, reason: expect.any(String) } });
+    expect(driver.bridged).toEqual([]);
+    expect(await rpcLog()).not.toContain('account/logout');
+  });
+
+  it('removes trusted broker readiness even when clearing the SIWC runtime token fails, and allows explicit retry', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: fingerprint }))).status).toBe(200);
+    driver.failClearToken = true;
+    const failure = await ipc('disconnect');
+    expect(failure.status).toBe(503);
+    expect(await failure.text()).not.toContain('fixture token clear failure');
+    expect(driver.tokens.get('alice')).toBe(token);
+    expect((await (await ipc('status', 'alice', 'GET')).json()).siwc).not.toHaveProperty('credentialBinding');
+    expect(driver.bridged).toEqual([]);
+    driver.failClearToken = false;
+    expect((await ipc('disconnect')).status).toBe(200);
+    expect(driver.tokens.has('alice')).toBe(false);
+  });
+
+  it('drops SIWC readiness when status observes a stopped runtime', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: fingerprint }))).status).toBe(200);
+    driver.stopped.add('alice');
+
+    const response = await ipc('status', 'alice', 'GET');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'stopped', siwc: { available: true, reason: expect.any(String) } });
+  });
+
+  it('drops SIWC readiness before starting a stopped retained runtime', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: fingerprint }))).status).toBe(200);
+    driver.stopped.add('alice');
+
+    const response = await ipc('start');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ state: 'running', siwc: { available: true, reason: expect.any(String) } });
+    expect(driver.retainedStarts).toEqual(['alice']);
+  });
+
+  it('keeps SIWC status readable during takeover and revokes a paused desktop without resuming it', async () => {
+    driver.config.siwcSandboxVerified = true;
+    driver.computerEnabled = true;
+    const token = 'fixture-siwc-token', fingerprint = tokenFingerprint(token);
+    const syncBody = JSON.stringify({ accessToken: token, credentialBinding: fingerprint });
+    expect((await ipc('sync-token', 'alice', 'POST', syncBody)).status).toBe(200);
+    const takeover = await socketFetch(socketPath)(`${LOCAL_ORIGIN}/computer/control`, {
+      method: 'POST', headers: { 'x-collective-owner': 'alice', 'x-collective-view-session': 'a'.repeat(64) },
+      body: JSON.stringify({ action: 'takeover' }),
+    });
+    expect(takeover.status).toBe(200);
+    expect((await takeover.json()).paused).toBe(true);
+    const status = await ipc('status', 'alice', 'GET');
+    expect(status.status).toBe(200);
+    expect((await status.json()).siwc.credentialBinding).toBe(fingerprint);
+    expect((await ipc('sync-token', 'alice', 'POST', syncBody)).status).toBe(503);
+    const disconnect = await ipc('disconnect');
+    expect(disconnect.status).toBe(200);
+    expect(await disconnect.json()).toMatchObject({ state: 'stopped', siwc: { available: true } });
+    expect(driver.tokens.has('alice')).toBe(false);
+    expect(driver.stopped.has('alice')).toBe(true);
+    expect(driver.pauses).toEqual([true]);
+    expect(driver.retainedStarts).toEqual([]);
+    expect(driver.bridged).toEqual([]);
+    const later = await ipc('status', 'alice', 'GET');
+    expect((await later.json()).siwc).not.toHaveProperty('credentialBinding');
+  });
+
+  it('still clears a retained SIWC token when an operator has disabled capability admission', async () => {
+    driver.config.siwcSandboxVerified = true;
+    const token = 'fixture-siwc-token';
+    expect((await ipc('sync-token', 'alice', 'POST', JSON.stringify({ accessToken: token, credentialBinding: tokenFingerprint(token) }))).status).toBe(200);
+    driver.config.siwcSandboxVerified = false;
+    expect((await ipc('disconnect')).status).toBe(200);
+    expect(driver.tokens.has('alice')).toBe(false);
+    expect(await rpcLog()).toContain('account/logout');
+    driver.config.siwcSandboxVerified = true;
+    expect((await (await ipc('status', 'alice', 'GET')).json()).siwc).not.toHaveProperty('credentialBinding');
   });
 
   it('rejects unexpected request bodies and HTTP actions', async () => {

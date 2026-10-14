@@ -2,6 +2,7 @@
 """Add a private control-state mask without replacing stock Codex requirements."""
 
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -12,11 +13,35 @@ MASKS = [
     '"/tmp/.X11-unix" = "deny"',
     '"/tmp/collective-computer.Xauthority" = "deny"',
 ]
+SIWC_SOCKET = "/codex-home/.collective-codex-siwc.sock"
+
+
+def validate_siwc_requirements(text: str) -> None:
+    try:
+        config = tomllib.loads(text)
+        provider_name = config.get("model_provider")
+        provider = config.get("model_providers", {}).get(provider_name, {})
+        permissions = config.get("permissions", {}).get("filesystem", {})
+        shell = config.get("shell_environment_policy", {})
+        valid = (
+            provider.get("env_key") == "ACCESS_TOKEN"
+            and provider.get("base_url") == "https://api.openai.com/v1"
+            and provider.get("wire_api") == "responses"
+            and provider.get("requires_openai_auth") is False
+            and shell.get("inherit") == "none"
+            and shell.get("filters", {}).get("ACCESS_TOKEN") == "exclude"
+            and SIWC_SOCKET in permissions.get("deny_read", [])
+        )
+    except (tomllib.TOMLDecodeError, AttributeError, TypeError):
+        valid = False
+    if not valid:
+        raise SystemExit("stock Codex requirements lack unified SIWC protections; refusing to derive computer image")
 
 
 def main(path: str) -> None:
     target = Path(path)
     text = target.read_text()
+    validate_siwc_requirements(text)
     if text.count(TABLE) != 1 or '"/codex-home/auth.json"' not in text or '"/home/agent/workspace/.codex" = "deny"' not in text:
         raise SystemExit("unexpected stock Codex requirements; refusing to derive computer image")
     if any(mask in text for mask in MASKS):

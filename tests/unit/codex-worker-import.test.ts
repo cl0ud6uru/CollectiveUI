@@ -14,7 +14,7 @@ describe('Codex server modules in the standalone worker', () => {
     });
     expect(result.stderr).toBe('');
     expect(result.stdout).toContain('import in the plain Node worker');
-  });
+  }, 20000); // Let the subprocess's own 15-second deadline report cold-import failures first.
 
   it('keeps recovery and dispatch unavailable in a browser bundle', async () => {
     for (const [entry, builtin] of [['recovery', 'node:net'], ['run', 'node:async_hooks']]) {

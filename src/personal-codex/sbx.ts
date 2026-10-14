@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { ComputerInputSchema } from '../lib/computer/contracts';
-import { ownerId } from './contracts';
+import { ownerId, tokenFingerprint } from './contracts';
 import type { ComputerInput, ComputerStatus, PersonalCodexRuntimeDriver } from './driver';
 import { SbxBrokerConfigSchema, runtimeKey, type SbxBrokerConfig } from './docker';
 
@@ -278,6 +278,31 @@ export class SbxPersonalCodexDriver implements PersonalCodexRuntimeDriver {
     }
   }
 
+  async synchronizeToken(owner: string, accessToken: string, credentialBinding: string): Promise<void> {
+    const name = this.name(owner);
+    if (!this.config.siwcSandboxVerified) throw new Error('Personal Codex token sharing is unavailable until the SIWC sandbox environment and /proc isolation proof is approved by an operator.');
+    if (accessToken.length < 1 || accessToken.length > 16_384 || !/^[a-f0-9]{64}$/.test(credentialBinding) ||
+      tokenFingerprint(accessToken) !== credentialBinding) throw unavailable();
+    if (this.paused.has(name) || !(await this.inspect(owner))?.State.Running || this.paused.has(name)) throw unavailable();
+    const cwd = await this.protectedCwd();
+    if (this.paused.has(name)) throw unavailable();
+    const payload = Buffer.from(JSON.stringify({ accessToken, credentialBinding }));
+    await this.pipeAt(['exec', '--interactive', name, 'node', '/opt/collective-codex/server.mjs', '--sync-token'], payload, cwd,
+      () => { if (this.paused.has(name)) throw unavailable(); });
+  }
+
+  async clearToken(owner: string): Promise<void> {
+    const name = this.name(owner);
+    const current = await this.inspect(owner);
+    // Stopped or absent VMs have no live supervisor memory to clear.
+    if (!current?.State.Running) return;
+    if (this.paused.has(name)) { await this.stop(owner); return; }
+    const cwd = await this.protectedCwd();
+    if (this.paused.has(name)) { await this.stop(owner); return; }
+    await this.pipeAt(['exec', '--interactive', name, 'node', '/opt/collective-codex/server.mjs', '--clear-token'], Buffer.alloc(0), cwd,
+      () => { if (this.paused.has(name)) throw unavailable(); });
+  }
+
   async stop(owner: string) {
     const name = this.name(owner);
     if (!(await this.inspect(owner))) return;
@@ -301,6 +326,11 @@ export class SbxPersonalCodexDriver implements PersonalCodexRuntimeDriver {
 
   private async pipe(args: string[], input: Buffer): Promise<Buffer> {
     const cwd = await this.protectedCwd();
+    return this.pipeAt(args, input, cwd);
+  }
+
+  private pipeAt(args: string[], input: Buffer, cwd: string, beforeSpawn?: () => void): Promise<Buffer> {
+    beforeSpawn?.();
     return new Promise((resolve, reject) => {
       const child = spawn(this.config.sbxExecutable, args, { cwd, env: sbxEnv(this.config.sbxHome), stdio: 'pipe' });
       const chunks: Buffer[] = [];

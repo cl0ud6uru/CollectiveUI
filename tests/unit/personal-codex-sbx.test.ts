@@ -3,26 +3,29 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BrokerConfig, PersonalCodexBrokerConfig } from '@/personal-codex/docker';
+import { tokenFingerprint } from '@/personal-codex/contracts';
 import { SbxPersonalCodexDriver } from '@/personal-codex/sbx';
 
 const OWNER = 'member-101';
-const config = (sbxHome = '/tmp/sbx-fixture-home') => PersonalCodexBrokerConfig.parse({
+const config = (sbxHome = '/tmp/sbx-fixture-home', siwcSandboxVerified = false) => PersonalCodexBrokerConfig.parse({
   backend: 'sbx', socketPath: '/run/personal-codex-test.sock', namespace: 'cui-codex-test', owners: [OWNER],
-  template: `collectiveui/personal-codex@sha256:${'a'.repeat(64)}`, sbxHome, memoryMb: 4096, cpus: 2,
+  template: `collectiveui/personal-codex@sha256:${'a'.repeat(64)}`, sbxHome, memoryMb: 4096, cpus: 2, siwcSandboxVerified,
 });
 
 describe('personal Codex sbx adapter', () => {
   let directory: string | undefined;
-  afterEach(async () => { if (directory) await rm(directory, { recursive: true, force: true }); directory = undefined; });
+  const directories: string[] = [];
+  afterEach(async () => { await Promise.all(directories.map(path => rm(path, { recursive: true, force: true }))); directories.length = 0; directory = undefined; });
 
-  async function fixture(version = 'v0.48.0') {
+  async function fixture(version = 'v0.48.0', siwcSandboxVerified = false) {
     directory = await mkdtemp(join(tmpdir(), 'personal-codex-sbx-'));
+    directories.push(directory);
     const home = join(directory, 'home');
     await mkdir(home, { recursive: true, mode: 0o700 });
     await chmod(home, 0o700);
     const statePath = join(directory, 'state.json');
     const argsPath = join(directory, 'args.jsonl');
-    await writeFile(statePath, JSON.stringify({ rows: [], received: [] }), { mode: 0o600 });
+    await writeFile(statePath, JSON.stringify({ rows: [], received: [], synchronized: [], clears: 0 }), { mode: 0o600 });
     const script = `#!${process.execPath}
 const fs = require('node:fs');
 const statePath = ${JSON.stringify(statePath)};
@@ -44,6 +47,8 @@ if (args[0] === 'exec') {
   const s=read(); const row=s.rows.find(r=>r.name===name); if(row) row.status='running'; write(s);
   if (script.endsWith('control.py screenshot')) { process.stdout.write(Buffer.from([0xff,0xd8,0x01,0x02,0xff,0xd9])); process.exit(0); }
   if (script.endsWith('control.py input')) { let data=''; process.stdin.setEncoding('utf8'); process.stdin.on('data',c=>data+=c); process.stdin.on('end',()=>{ const n=read(); n.received.push(JSON.parse(data)); write(n); process.exit(0); }); return; }
+  if (script.endsWith('server.mjs --sync-token')) { let data=''; process.stdin.setEncoding('utf8'); process.stdin.on('data',c=>data+=c); process.stdin.on('end',()=>{ const n=read(); n.synchronized.push(JSON.parse(data)); write(n); process.exit(0); }); return; }
+  if (script.endsWith('server.mjs --clear-token')) { const n=read(); n.clears++; write(n); process.exit(0); }
   if (script.endsWith('control.py pause') || script.endsWith('control.py resume')) { process.exit(0); }
   if (script.endsWith('bridge.mjs')) { process.stdin.resume(); return; }
   process.exit(0);
@@ -53,7 +58,7 @@ process.exit(2);
     const executable = join(directory, 'sbx');
     await writeFile(executable, script, { mode: 0o700 });
     await chmod(executable, 0o700);
-    const parsed = config(home);
+    const parsed = config(home, siwcSandboxVerified);
     if (parsed.backend !== 'sbx') throw new Error('invalid fixture config');
     const driver = new SbxPersonalCodexDriver(parsed);
     (driver.config as { sbxExecutable: string }).sbxExecutable = executable;
@@ -83,6 +88,84 @@ process.exit(2);
     await expect(driver.ensure(OWNER)).rejects.toThrow(/unavailable/i);
     const calls = (await readFile(argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     expect(calls.map((row: { args: string[] }) => row.args[0])).toEqual(['version']);
+  });
+
+  it('keeps SIWC disabled by default and synchronizes a verified token only through stdin', async () => {
+    const disabled = await fixture();
+    expect(disabled.driver.config.siwcSandboxVerified).toBe(false);
+    await disabled.driver.ensure(OWNER);
+    await expect(disabled.driver.synchronizeToken(OWNER, 'test-access-token', tokenFingerprint('test-access-token')))
+      .rejects.toThrow(/unavailable until.*proof/i);
+    let calls = (await readFile(disabled.argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(calls.some((row: { args: string[] }) => row.args.includes('--sync-token'))).toBe(false);
+
+    const enabled = await fixture('v0.48.0', true);
+    await enabled.driver.ensure(OWNER);
+    const accessToken = 'test-access-token-value';
+    const binding = tokenFingerprint(accessToken);
+    await enabled.driver.synchronizeToken(OWNER, accessToken, binding);
+    await expect(enabled.driver.synchronizeToken(OWNER, accessToken, '0'.repeat(64))).rejects.toThrow(/unavailable/i);
+    const state = JSON.parse(await readFile(enabled.statePath, 'utf8'));
+    expect(state.synchronized).toEqual([{ accessToken, credentialBinding: binding }]);
+    calls = (await readFile(enabled.argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const syncCall = calls.find((row: { args: string[] }) => row.args.includes('--sync-token'));
+    expect(syncCall.args).toContain('--interactive');
+    expect(syncCall.args).not.toContain(accessToken);
+    expect(syncCall.env).not.toContain('ACCESS_TOKEN');
+    expect(JSON.stringify(syncCall)).not.toContain(accessToken);
+  });
+
+  it('refuses token sync if pause begins during async inspect or protected-cwd validation', async () => {
+    const afterInspect = await fixture('v0.48.0', true);
+    await afterInspect.driver.ensure(OWNER);
+    const paused = afterInspect.driver as unknown as { paused: Set<string>; protectedCwd: () => Promise<string> };
+    const originalInspect = afterInspect.driver.inspect.bind(afterInspect.driver);
+    const originalCwd = paused.protectedCwd.bind(afterInspect.driver);
+    let armCwdFence = false;
+    afterInspect.driver.inspect = async owner => {
+      const result = await originalInspect(owner);
+      armCwdFence = true;
+      return result;
+    };
+    paused.protectedCwd = async () => {
+      const cwd = await originalCwd();
+      if (armCwdFence) paused.paused.add(afterInspect.driver.name(OWNER));
+      return cwd;
+    };
+    await expect(afterInspect.driver.synchronizeToken(OWNER, 'test-access-token', tokenFingerprint('test-access-token')))
+      .rejects.toThrow(/unavailable/i);
+    const calls = (await readFile(afterInspect.argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(calls.some((row: { args: string[] }) => row.args.includes('--sync-token'))).toBe(false);
+  });
+
+  it('clears a live token through stdin, but stops a paused VM and does not restart it', async () => {
+    const live = await fixture('v0.48.0', true);
+    await live.driver.ensure(OWNER);
+    await live.driver.clearToken(OWNER);
+    let state = JSON.parse(await readFile(live.statePath, 'utf8'));
+    expect(state.clears).toBe(1);
+    let calls = (await readFile(live.argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const clearCall = calls.find((row: { args: string[] }) => row.args.includes('--clear-token'));
+    expect(clearCall.args).toContain('--interactive');
+
+    const stopped = await fixture('v0.48.0', true);
+    await stopped.driver.ensure(OWNER);
+    await stopped.driver.stop(OWNER);
+    await stopped.driver.clearToken(OWNER);
+    const stoppedState = JSON.parse(await readFile(stopped.statePath, 'utf8'));
+    expect(stoppedState.rows[0].status).toBe('stopped');
+    const stoppedCalls = (await readFile(stopped.argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(stoppedCalls.some((row: { args: string[] }) => row.args.includes('--clear-token'))).toBe(false);
+
+    const paused = await fixture('v0.48.0', true);
+    await paused.driver.ensure(OWNER);
+    await paused.driver.computerPause(OWNER, true);
+    await paused.driver.clearToken(OWNER);
+    state = JSON.parse(await readFile(paused.statePath, 'utf8'));
+    expect(state.rows[0].status).toBe('stopped');
+    calls = (await readFile(paused.argsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(calls.some((row: { args: string[] }) => row.args.includes('--clear-token'))).toBe(false);
+    expect(calls.some((row: { args: string[] }) => row.args[0] === 'exec' && row.args.at(-1) === '/bin/true')).toBe(false);
   });
 
   it('refuses to adopt a preexisting sandbox even when its name matches the owner mapping', async () => {

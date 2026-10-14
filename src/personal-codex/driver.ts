@@ -12,12 +12,14 @@ export type ComputerStatus = {
 
 /** Small broker-facing surface shared by the existing Docker runtime and optional local adapters. */
 export interface PersonalCodexRuntimeDriver {
-  readonly config: { socketPath: string; owners: string[] };
+  readonly config: { socketPath: string; owners: string[]; siwcSandboxVerified?: boolean };
   name(owner: string): string;
   inspect(owner: string): Promise<{ State: { Running: boolean } } | null>;
   ensure(owner: string): Promise<void>;
   startRetained(owner: string): Promise<void>;
   bridge(owner: string): Promise<ChildProcessWithoutNullStreams>;
+  synchronizeToken(owner: string, accessToken: string, credentialBinding: string): Promise<void>;
+  clearToken(owner: string): Promise<void>;
   computerStatus(owner: string): Promise<ComputerStatus>;
   computerFrame(owner: string): Promise<Buffer>;
   computerInput(owner: string, input: ComputerInput): Promise<void>;

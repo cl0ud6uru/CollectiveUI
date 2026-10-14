@@ -12,24 +12,29 @@ const { build } = require('esbuild');
 const { chromium, expect } = require('@playwright/test');
 const dir = await mkdtemp(path.join(tmpdir(), 'personal-codex-browser-'));
 const entry = path.join(dir, 'entry.tsx');
-const connectionView = { state: 'not_started' };
+const connectionView = {
+  allowed: true, reason: null, credential: null,
+  backends: { native: { state: 'ready' }, codex: { state: 'ready' } },
+  onboarding: { state: 'ready', reason: null },
+};
 const connectionActions = [];
 const approvalActions = [];
+let failAccountRead = false;
 
 await writeFile(entry, `
 import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client';
-import { PersonalCodexConnection } from '${root}/src/components/settings/personal-codex-connection';
+import { ChatGPTConnection } from '${root}/src/components/settings/chatgpt-connection';
 import { CodexApproval } from '${root}/src/components/chat/codex-approval';
 window.fixtureFetchCalls=[];
 const originalFetch=window.fetch.bind(window);
 window.fetch=(input,init={})=>{
   const url=String(input);
-  if(url.startsWith('/api/me/codex')) window.fixtureFetchCalls.push({url,method:init.method??'GET',headers:Object.fromEntries(new Headers(init.headers)),body:init.body??null});
+  if(url.startsWith('/api/me/codex') || url.startsWith('/api/me/chatgpt')) window.fixtureFetchCalls.push({url,method:init.method??'GET',headers:Object.fromEntries(new Headers(init.headers)),body:init.body??null});
   return originalFetch(input,init);
 };
 const approval=location.pathname==='/approval';
 createRoot(document.getElementById('root')).render(<main className="mx-auto max-w-2xl space-y-5 p-4 text-fg">
-  <PersonalCodexConnection />
+  <ChatGPTConnection />
   {approval && <section aria-label="Approval fixtures" className="space-y-3">
     <CodexApproval data={{id:'approval-deny',label:'Codex wants to run a command',state:'pending'}} />
     <CodexApproval data={{id:'approval-stop',label:'Codex wants to edit a file',state:'pending'}} />
@@ -53,19 +58,20 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__reset' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
     for (const key of Object.keys(connectionView)) delete connectionView[key];
-    Object.assign(connectionView, JSON.parse(body)); connectionActions.length = 0; approvalActions.length = 0; return json(res, { ok: true });
+    Object.assign(connectionView, JSON.parse(body)); connectionActions.length = 0; approvalActions.length = 0; failAccountRead = false; return json(res, { ok: true });
   }
-  if (url.pathname === '/api/me/codex' && req.method === 'GET') return json(res, connectionView);
-  if (url.pathname === '/api/me/codex' && req.method === 'POST') {
-    let body = ''; for await (const chunk of req) body += chunk;
-    const action = JSON.parse(body).action; connectionActions.push({ action, body });
-    if (action === 'connect') Object.assign(connectionView, { state: 'pending', login: { verificationUrl: 'https://auth.openai.com/codex/device', userCode: 'ABCD-EFGH' } });
-    else if (action === 'confirm') Object.assign(connectionView, { state: 'connected', email: 'alice@example.invalid', workspaceId: 'workspace-owned', planType: 'business', canConnect: true });
-    else if (action === 'cancel') Object.assign(connectionView, { state: 'signed_out', login: undefined });
-    else if (action === 'disconnect') Object.assign(connectionView, { state: 'stopped', email: undefined, workspaceId: undefined, planType: undefined, login: undefined });
-    else if (action === 'start') Object.assign(connectionView, { state: 'signed_out' });
+  if (url.pathname === '/api/me/chatgpt' && req.method === 'GET') {
+    if (failAccountRead) { failAccountRead = false; return json(res, { error: 'Synthetic account service outage.' }, 503); }
     return json(res, connectionView);
   }
+  if (url.pathname === '/api/me/chatgpt' && req.method === 'POST') {
+    let body = ''; for await (const chunk of req) body += chunk;
+    const action = JSON.parse(body).action; connectionActions.push({ action, body });
+    if (action === 'start') return json(res, { instructions: 'Use the local sign-in helper.', hostId: 'urn:uuid:123e4567-e89b-42d3-a456-426614174000', userId: 'alice' });
+    if (action === 'disconnect') Object.assign(connectionView, { credential: null });
+    return json(res, connectionView);
+  }
+  if (url.pathname === '/api/me/codex' && req.method === 'GET') return json(res, { state: 'unavailable' });
   const approval = url.pathname.match(/^\/api\/me\/codex\/approvals\/([^/]+)$/);
   if (approval && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -96,54 +102,46 @@ try {
   const page = await browser.newPage({ viewport: { width: 390, height: 1000 } });
   page.on('pageerror', error => pageErrors.push(error.message));
 
-  await reset({ state: 'not_started' });
+  await reset({
+    allowed: true, reason: null, credential: null,
+    backends: { native: { state: 'ready' }, codex: { state: 'ready' } },
+    onboarding: { state: 'ready', reason: null },
+  });
   await page.goto(origin);
-  await expect(page.getByRole('status').first()).toContainText('Connect your ChatGPT account');
-  await page.getByRole('button', { name: 'Connect ChatGPT', exact: true }).click();
-  await expect(page.getByRole('status').first()).toContainText('Finish sign-in on OpenAI');
-  await expect(page.getByText('ABCD-EFGH')).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Open ChatGPT sign-in' })).toHaveAttribute('href', 'https://auth.openai.com/codex/device');
-  Object.assign(connectionView, { state: 'confirm', email: 'alice@example.invalid', workspaceId: 'workspace-owned', planType: 'business' });
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByRole('status').first()).toContainText('Confirm the signed-in account');
-  await expect(page.getByRole('button', { name: 'Confirm my account', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Confirm my account', exact: true }).click();
-  await expect(page.getByRole('status').first()).toContainText('Connected for all of your Codex bots');
-  await expect(page.getByText('alice@example.invalid · business · Workspace workspace-owned')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'ChatGPT account', exact: true })).toBeVisible();
+  await expect(page.getByText('Connect once to use your ChatGPT account across supported backends.')).toBeVisible();
+  await expect(page.getByText('Native CollectiveUI harness:', { exact: false })).toBeVisible();
+  await expect(page.getByText('Stock Codex:', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Set up ChatGPT', exact: true })).toBeVisible();
+  await expect(page.getByText('Legacy Codex connection cleanup', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Connect ChatGPT', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Set up ChatGPT', exact: true }).click();
+  await expect(page.getByText('Finish ChatGPT setup', { exact: true })).toBeVisible();
+  await expect(page.getByText(/npm run chatgpt:sign-in -- --output/)).toBeVisible();
+  await expect(page.getByText(/chatgpt:import -- --user-id alice/)).toBeVisible();
   await expect(page.locator('input')).toHaveCount(0);
   await expect(page.getByText(/endpoint|token/i)).toHaveCount(0);
   expect(await page.evaluate(() => JSON.stringify(window.fixtureFetchCalls))).not.toMatch(/AUTH|token|endpoint/i);
   await noOverflow(page);
-  await page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true }).click();
-  await expect(page.getByRole('status').first()).toContainText('Your private workspace is retained');
-  await expect(page.getByText('alice@example.invalid')).toHaveCount(0);
-  expect(await page.evaluate(() => window.fixtureFetchCalls.filter(call => call.method === 'POST').map(call => JSON.parse(call.body).action)))
-    .toEqual(['connect', 'confirm', 'disconnect']);
-
-  await reset({ state: 'uncertain' });
+  await reset({
+    allowed: true, reason: null, credential: null,
+    backends: { native: { state: 'ready' }, codex: { state: 'ready' } },
+    onboarding: { state: 'ready', reason: null },
+  });
+  failAccountRead = true;
   await page.goto(origin);
-  await expect(page.getByRole('status').first()).toContainText('prior native sign-in may still be active');
-  await expect(page.getByRole('button', { name: 'Cancel sign-in', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
-  await expect(page.getByRole('status').first()).toContainText('runtime is ready to connect');
-  expect(await page.evaluate(() => window.fixtureFetchCalls.filter(call => call.method === 'POST').map(call => JSON.parse(call.body).action))).toEqual(['cancel']);
+  await expect(page.getByRole('alert')).toContainText('Synthetic account service outage.');
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'ChatGPT account', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Set up ChatGPT', exact: true })).toBeVisible();
+  await expect(page.getByText('Legacy Codex connection cleanup', { exact: true })).toBeVisible();
 
-  await reset({ state: 'connected', email: 'alice@example.invalid', workspaceId: 'workspace-owned', planType: 'business', canConnect: false });
-  await page.goto(origin);
-  await expect(page.getByText('New personal ChatGPT connections are disabled by your organization.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Connect ChatGPT', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Confirm my account', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true })).toBeVisible();
-  await noOverflow(page);
-
-  await reset({ state: 'signed_out', email: 'alice@example.invalid', workspaceId: 'workspace-owned', planType: 'business' });
-  await page.goto(origin);
-  await expect(page.getByText('Native sign-in ended. Disconnect the saved connection before signing in again.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Connect ChatGPT', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true }).click();
-  await expect(page.getByRole('status').first()).toContainText('Your private workspace is retained');
-
-  await reset({ state: 'not_started' });
+  await reset({
+    allowed: true, reason: null, credential: null,
+    backends: { native: { state: 'ready' }, codex: { state: 'ready' } },
+    onboarding: { state: 'ready', reason: null },
+  });
   await page.goto(`${origin}/approval`);
   await expect(page.getByText('Codex wants to run a command')).toBeVisible();
   const denyCard = page.locator('section[aria-label="Approval fixtures"] > div').nth(0);
@@ -160,7 +158,7 @@ try {
   expect(approvalActions).toEqual([{ id: 'approval-deny', decision: 'decline', body: '' }, { id: 'approval-stop', decision: 'cancel', body: '' }]);
   await noOverflow(page);
   expect(pageErrors).toEqual([]);
-  console.log('PASS Personal Codex connection and approval components: connect/pending/confirm/disconnect, uncertain cancel, policy-disabled metadata, fixed approval headers, and 320/390/768/1280 layouts. Synthetic endpoints only.');
+  console.log('PASS Unified ChatGPT account and approval components: shared account entry and local setup instructions, retry after status failure, legacy cleanup separation, fixed approval headers, and 320/390/768/1280 layouts. Synthetic endpoints only.');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

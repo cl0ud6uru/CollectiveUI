@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db, type DB, type Tx } from "@/db";
+import { db, type DbOrTx, type Tx } from "@/db";
 import { auditLog, localAuthBootstrap, localCredentials, localLoginAliases, users } from "@/db/schema";
 import { resolvePrincipal } from "./groups";
 import { localEnabled } from "./config";
@@ -94,7 +94,7 @@ export async function changeUserAccess(
   actor: AuthActor,
   userId: string,
   change: { isAdmin?: boolean; disabled?: boolean; revoke?: boolean },
-  options: { database?: DB; deferTeamReconciliation?: boolean } = {},
+  options: { database?: DbOrTx; deferTeamReconciliation?: boolean } = {},
 ): Promise<string[]> {
   const database = options.database ?? db;
   const teamBotIds = await database.transaction(async tx => {

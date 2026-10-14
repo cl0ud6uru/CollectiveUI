@@ -158,10 +158,10 @@ export type RefreshResult =
   | { ok: false; permanent: boolean; reason: string; rotatedRefreshToken?: string };
 
 /** One refresh. Refresh tokens rotate and are single-use: callers must hold the credential's row lock. */
-export async function refreshTokens(refreshToken: string, f: Fetch = fetch): Promise<RefreshResult> {
+export async function refreshTokens(refreshToken: string, f: Fetch = fetch, clientId = CHATGPT_CLIENT_ID): Promise<RefreshResult> {
   let res: Response;
   try {
-    res = await post(f, "/oauth/token", { grant_type: "refresh_token", refresh_token: refreshToken, client_id: CHATGPT_CLIENT_ID }, true);
+    res = await post(f, "/oauth/token", { grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId }, true);
   } catch {
     return { ok: false, permanent: false, reason: "network" };
   }
@@ -177,15 +177,15 @@ export async function refreshTokens(refreshToken: string, f: Fetch = fetch): Pro
 }
 
 /** Best-effort revoke (the refresh token revokes the whole sign-in). Never throws. */
-export async function revokeTokens(tokens: { refreshToken?: string; accessToken?: string }, f: Fetch = fetch): Promise<boolean> {
+export async function revokeTokens(tokens: { refreshToken?: string; accessToken?: string; clientId?: string }, f: Fetch = fetch): Promise<boolean> {
   const body: Record<string, string> | null = tokens.refreshToken
-    ? { token: tokens.refreshToken, token_type_hint: "refresh_token", client_id: CHATGPT_CLIENT_ID }
+    ? { token: tokens.refreshToken, token_type_hint: "refresh_token", client_id: tokens.clientId ?? CHATGPT_CLIENT_ID }
     : tokens.accessToken
-      ? { token: tokens.accessToken, token_type_hint: "access_token" }
+      ? { token: tokens.accessToken, token_type_hint: "access_token", client_id: tokens.clientId ?? CHATGPT_CLIENT_ID }
       : null;
   if (!body) return false;
   try {
-    const res = await post(f, "/oauth/revoke", body);
+    const res = await post(f, "/oauth/revoke", body, true);
     return res.ok;
   } catch {
     return false;

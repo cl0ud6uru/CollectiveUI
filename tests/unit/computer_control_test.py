@@ -17,9 +17,43 @@ spec = importlib.util.spec_from_file_location("computer_control", CONTROL_PATH)
 control = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(control)
+patch_spec = importlib.util.spec_from_file_location(
+    "computer_patch_requirements", ROOT / "docker/computer/patch-requirements.py"
+)
+patch_requirements = importlib.util.module_from_spec(patch_spec)
+assert patch_spec and patch_spec.loader
+patch_spec.loader.exec_module(patch_requirements)
 
 
 class ComputerControlTests(unittest.TestCase):
+    def test_desktop_image_requires_unified_siwc_runtime_guards(self):
+        original = (ROOT / "docker/personal-codex/requirements.toml").read_text()
+        with tempfile.TemporaryDirectory(prefix="computer-requirements-test-") as directory:
+            target = Path(directory) / "requirements.toml"
+            target.write_text(original)
+            patch_requirements.main(str(target))
+            self.assertIn('"/codex-home/computer-runtime-state" = "deny"', target.read_text())
+
+            incompatible = {
+                'model_provider = "openai_chatgpt_plan"': 'model_provider = "other"',
+                'model_providers.openai_chatgpt_plan.base_url = "https://api.openai.com/v1"':
+                    'model_providers.openai_chatgpt_plan.base_url = "https://example.invalid/v1"',
+                'model_providers.openai_chatgpt_plan.env_key = "ACCESS_TOKEN"':
+                    'model_providers.openai_chatgpt_plan.env_key = "OTHER_TOKEN"',
+                'model_providers.openai_chatgpt_plan.wire_api = "responses"':
+                    'model_providers.openai_chatgpt_plan.wire_api = "chat_completions"',
+                'model_providers.openai_chatgpt_plan.requires_openai_auth = false':
+                    'model_providers.openai_chatgpt_plan.requires_openai_auth = true',
+                'ACCESS_TOKEN = "exclude"': 'ACCESS_TOKEN = "include"',
+                ', "/codex-home/.collective-codex-siwc.sock"': '',
+            }
+            for expected, replacement in incompatible.items():
+                with self.subTest(requirement=expected):
+                    self.assertIn(expected, original)
+                    target.write_text(original.replace(expected, replacement, 1))
+                    with self.assertRaises(SystemExit):
+                        patch_requirements.main(str(target))
+
     def test_valid_inputs_map_to_fixed_argv_and_reject_shell_payloads(self):
         argv, body = control.command_for({"kind": "click", "x": 1279, "y": 799, "button": "right"})
         self.assertEqual(argv[-1], "3")

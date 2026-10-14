@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -15,6 +15,7 @@ beforeEach(async () => {
     config: { socketPath: join(dir, 'broker.sock'), owners: ['alice', 'bob'] },
     name: vi.fn(owner => { if (!['alice', 'bob'].includes(owner)) throw Error('Denied'); return owner; }),
     inspect: vi.fn(), ensure: vi.fn(), startRetained: vi.fn(), bridge: vi.fn(),
+    synchronizeToken: vi.fn(), clearToken: vi.fn(),
     computerStatus: vi.fn(async () => ({ available: true, running: true, width: 1280 as const, height: 800 as const })),
     computerPause: vi.fn(async () => {}), computerInput: vi.fn(async () => {}),
     computerFrame: vi.fn(async () => Buffer.from([0xff, 0xd8, 0xff, 0xd9])),
@@ -24,6 +25,36 @@ beforeEach(async () => {
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 
 describe('computer broker ownership and takeover', () => {
+  it('reapplies a persisted pause before admitting runtime access after a broker crash', async () => {
+    const record = join(dir, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);
+    await writeFile(record, JSON.stringify({ version: 1, paused: true }), { mode: 0o600 });
+    vi.mocked(driver.inspect).mockResolvedValue({ State: { Running: true } });
+    controller = new ComputerController(driver, () => now);
+
+    await controller.reconcilePersistedPauses(['alice', 'bob']);
+    expect(driver.computerPause).toHaveBeenCalledExactlyOnceWith('alice', true);
+    await expect(controller.agentBridge('alice')).rejects.toThrow('Return computer control');
+    expect(JSON.parse(await readFile(record, 'utf8'))).toEqual({ version: 1, paused: true });
+  });
+  it('stops and verifies a running runtime if persisted pause recovery fails, retaining the fence', async () => {
+    const record = join(dir, `computer-${createHash('sha256').update('alice').digest('hex')}.json`);
+    await writeFile(record, JSON.stringify({ version: 1, paused: true }), { mode: 0o600 });
+    vi.mocked(driver.inspect).mockResolvedValueOnce({ State: { Running: true } }).mockResolvedValueOnce({ State: { Running: false } });
+    vi.mocked(driver.computerPause).mockRejectedValueOnce(new Error('pause failed'));
+    driver.stop = vi.fn(async () => {});
+    controller = new ComputerController(driver, () => now);
+
+    await controller.reconcilePersistedPauses(['alice']);
+    expect(driver.stop).toHaveBeenCalledWith('alice');
+    expect(driver.inspect).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(await readFile(record, 'utf8'))).toEqual({ version: 1, paused: true });
+    await expect(controller.agentBridge('alice')).rejects.toThrow('Return computer control');
+  });
+  it('does no runtime inspection for configured owners without a pause record', async () => {
+    await controller.reconcilePersistedPauses(['alice', 'bob']);
+    expect(driver.inspect).not.toHaveBeenCalled();
+    expect(driver.computerPause).not.toHaveBeenCalled();
+  });
   it('viewing never provisions, starts or resumes a computer', async () => {
     expect((await controller.status('alice', session)).control).toBe('agent');
     await controller.frame('alice', session);
@@ -133,5 +164,28 @@ describe('computer broker ownership and takeover', () => {
     finish(); await operation;
     await controller.control('alice', session, { action: 'takeover' });
     await expect(controller.agentOperation('alice', async () => {})).rejects.toThrow('Return');
+  });
+  it('stops a paused runtime for revocation without resuming automation', async () => {
+    await controller.control('alice', session, { action: 'takeover' });
+    driver.stop = vi.fn(async () => {});
+    vi.mocked(driver.inspect).mockResolvedValue({ State: { Running: false } });
+    const revoke = vi.fn(async () => {});
+    await controller.agentOperation('alice', revoke, { revokePaused: true });
+    expect(driver.stop).toHaveBeenCalledWith('alice');
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(driver.computerPause).toHaveBeenCalledExactlyOnceWith('alice', true);
+    await expect(controller.input('alice', session, { kind: 'key', key: 'Enter' })).rejects.toThrow();
+    controller = new ComputerController(driver, () => now);
+    await expect(controller.assertAgentControl('alice')).resolves.toBeUndefined();
+  });
+  it('keeps the fence closed if a paused runtime cannot be stopped for revocation', async () => {
+    await controller.control('alice', session, { action: 'takeover' });
+    driver.stop = vi.fn(async () => {});
+    vi.mocked(driver.inspect).mockResolvedValue({ State: { Running: true } });
+    const revoke = vi.fn(async () => {});
+    await expect(controller.agentOperation('alice', revoke, { revokePaused: true })).rejects.toThrow('could not be stopped');
+    expect(revoke).not.toHaveBeenCalled();
+    await expect(controller.agentBridge('alice')).rejects.toThrow('Return');
+    await expect(controller.input('alice', session, { kind: 'key', key: 'Enter' })).rejects.toThrow();
   });
 });

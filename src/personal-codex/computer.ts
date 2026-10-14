@@ -67,6 +67,29 @@ export class ComputerController {
     await writeFile(temp, JSON.stringify({ version: 1, paused }), { mode: 0o600, flag: 'wx' });
     await rename(temp, path);
   }
+  /** Reapply durable takeover intent before the broker accepts bridges or input. */
+  async reconcilePersistedPauses(owners: readonly string[]) {
+    for (const owner of owners) {
+      const state = await this.state(owner);
+      if (!state.paused) continue;
+
+      // A missing or stopped runtime has nothing to suspend. Keep the durable fence in place;
+      // only an explicit disconnect may clear it.
+      const runtime = await this.driver.inspect(owner);
+      if (!runtime?.State.Running) continue;
+
+      try {
+        await this.driver.computerPause(owner, true);
+      } catch (pauseError) {
+        // If physical suspension cannot be restored, stop the runtime and verify it is gone.
+        // Never clear the durable intent here, even after a successful stop.
+        if (!this.driver.stop) throw pauseError;
+        await this.driver.stop(owner);
+        if ((await this.driver.inspect(owner))?.State.Running)
+          throw new ComputerError(503, 'A paused computer could not be safely reconciled.');
+      }
+    }
+  }
   private async serial<T>(owner: string, work: () => Promise<T>): Promise<T> {
     this.driver.name(owner);
     const prior = this.queues.get(owner) ?? Promise.resolve();
@@ -85,10 +108,22 @@ export class ComputerController {
       return this.driver.bridge(owner);
     });
   }
-  async agentOperation<T>(owner: string, work: () => Promise<T>): Promise<T> {
+  async agentOperation<T>(owner: string, work: () => Promise<T>, options: { revokePaused?: boolean } = {}): Promise<T> {
     // Reserve admission, then release the queue: account operations connect back through agentBridge.
     await this.serial(owner, async () => {
-      if ((await this.state(owner)).paused) throw new ComputerError(409, 'Return computer control before starting another agent operation.');
+      const state = await this.state(owner);
+      if (state.paused) {
+        if (!options.revokePaused) throw new ComputerError(409, 'Return computer control before starting another agent operation.');
+        // A paused token supervisor cannot service clear-token. Erase its memory by stopping
+        // the runtime, without resuming either automation or the user's desktop session.
+        if (!this.driver.stop) throw new ComputerError(503, 'The paused runtime needs operator reconciliation.');
+        state.lease = undefined;
+        await this.driver.stop(owner);
+        if ((await this.driver.inspect(owner))?.State.Running) throw new ComputerError(503, 'The paused runtime could not be stopped.');
+        await this.persist(owner, false);
+        state.paused = false;
+        state.lastFrameAt = null;
+      }
       this.operations.set(owner, (this.operations.get(owner) ?? 0) + 1);
     });
     try { return await work(); }

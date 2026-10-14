@@ -94,7 +94,23 @@ for (const name of ['.git', '.agents']) {
   // These no-input commands do not need a stdin socketpair. Restricted stock
   // seccomp denies shutdown(), which Node uses to close default piped stdin.
   // Keep rejecting every spawn error, even when a child also reports status0.
-  commands.activeHelperExecution = commands.activeHelperExecution.replace("{ encoding: 'utf8' }", "{ encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }");
+  // SIWC commands inherit no environment, including PATH. The stock sandbox
+  // exposes only its active arg0 helper directory beneath this synthetic parent.
+  // Require one exact alias to the pinned native binary; ambiguity cannot pass.
+  const helper = `
+const helperRoot = '/codex-home/tmp/arg0';
+const helpers = fs.readdirSync(helperRoot).filter(name => /^codex-arg0[^/]+$/.test(name));
+if (helpers.length !== 1) throw new Error('Active native helper missing or ambiguous.');
+const dir = helperRoot + '/' + helpers[0];
+if (!fs.lstatSync(dir + '/codex-linux-sandbox').isSymbolicLink()
+  || fs.realpathSync(dir + '/codex-linux-sandbox') !== '/opt/codex/bin/codex') throw new Error('Active native helper alias changed.');`;
+  commands.activeHelperExecution = program('activeHelperExecution', `${helper}
+const result = require('node:child_process').spawnSync(dir + '/codex-linux-sandbox', ['--help'], { encoding: 'utf8', stdio: ['ignore','pipe','pipe'] });
+if (result.error || result.signal || result.status !== 0 || result.stderr !== '' || !result.stdout.includes('sandbox')) throw new Error('Active native helper execution failed.');`);
+  commands.activeHelperReadOnly = program('activeHelperReadOnly', `${helper}
+fs.readdirSync(dir);
+deny(() => fs.writeFileSync(dir + '/new-fixture.txt', 'fixture-overwrite'));
+deny(() => fs.readFileSync('/codex-home/auth.json'));`);
   delete commands.kernelPathsDenied;
   commands.nativeNetworkDenied = networkCommand();
   commands.processIsolation = program('processIsolation', `

@@ -16,11 +16,11 @@ import type { Principal } from "@/lib/auth/groups";
 import type { RunHandle } from "@/lib/runs/types";
 import { getSetting } from "@/lib/settings";
 import { isAnthropicFamily, isEnabledKind, readChatGPTConfig, readProviderConfig, speaksResponses, supportsEmbeddings, type EnabledKind } from "./catalog";
-import { chatgptBackendUrl } from "./chatgpt/constants";
+import { OPENAI_API_BASE_URL } from "./chatgpt/constants";
 import { chatgptFetch } from "./chatgpt/fetch";
 import { chatgptMiddleware } from "./chatgpt/middleware";
 import { accountRejection, userMayUseChatGPT } from "./chatgpt/policy";
-import { getChatGPTAuth, saveRateLimits } from "./chatgpt/store";
+import { getChatGPTAuth } from "./chatgpt/store";
 import { ProviderConfigError, ProviderUnavailableError } from "./errors";
 import type { BillingSource, ModelPurpose, ProviderKind } from "./kinds";
 import { defaultsMiddleware, usageMiddleware } from "./middleware";
@@ -324,21 +324,16 @@ async function resolveChatGPT(app: AiApp, opts: ResolveModelOptions): Promise<Re
   if (rejection) throw new ProviderUnavailableError(rejection);
 
   const conversationId = opts.conversationId ?? null;
-  let first: typeof auth | undefined = auth;
   const fetch = chatgptFetch({
     conversationId,
     getAuth: async ({ rejectedToken }) => {
-      // Reuse the token fetched above for the first request; later steps re-check (and refresh) as needed.
-      if (first && !rejectedToken) {
-        const a = first;
-        first = undefined;
-        return a;
-      }
-      return getChatGPTAuth(userId, { rejectedToken });
+      const current = await getChatGPTAuth(userId, { rejectedToken });
+      if (current.credentialId !== auth.credentialId || current.accountId !== auth.accountId)
+        throw new ProviderUnavailableError('Your ChatGPT account changed during this turn. Start a new chat using the connected account.');
+      return current;
     },
-    onRateLimits: throttledRateLimitWriter(),
   });
-  const provider = await chatgpt.create({ baseURL: `${chatgptBackendUrl()}/codex`, fetch });
+  const provider = await chatgpt.create({ baseURL: OPENAI_API_BASE_URL, fetch });
   const { reasoningEffort } = readChatGPTConfig(app.providerConfig);
   const billing = { source: "chatgpt_plan" as const, credentialId: auth.credentialId };
   return {
@@ -358,14 +353,4 @@ async function resolveChatGPT(app: AiApp, opts: ResolveModelOptions): Promise<Re
 /** Stored on each ChatGPT reply; not reversible to the account id (message metadata reaches browsers and shares). */
 export function chatgptReplayKey(credentialId: string, accountId: string): string {
   return createHash("sha256").update(`${credentialId}:${accountId}`).digest("hex").slice(0, 16);
-}
-
-/** Saves the plan usage the backend reports at most every 30 s per connection (fire and forget). */
-function throttledRateLimitWriter() {
-  let last = 0;
-  return (credentialId: string, limits: Record<string, unknown>) => {
-    if (Date.now() - last < 30_000) return;
-    last = Date.now();
-    void saveRateLimits(credentialId, limits).catch(() => {});
-  };
 }
