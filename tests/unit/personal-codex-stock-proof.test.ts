@@ -3,10 +3,10 @@ import { runInNewContext } from 'node:vm';
 import { allStockChecksPass, MASK_STATES, networkCommand, passedProbe, STOCK_CASE_CHECKS, stockCommands } from '../../scripts/lib/personal-codex-stock-proof.mjs';
 
 const failure = (code: string) => Object.assign(new Error('Synthetic fixture ' + code), { code });
-const evaluate = (script: string, fs: Record<string, unknown>, cp: Record<string, unknown> = {}) => {
+const evaluate = (script: string, fs: Record<string, unknown>, cp: Record<string, unknown> = {}, env: Record<string, string> = {}) => {
   let stdout = '';
   runInNewContext(script, { require: (name: string) => name === 'node:fs' ? fs : cp,
-    process: { env: { PATH: '/codex-home/tmp/arg0/codex-arg0fixture:/usr/bin' }, stdout: { write: (bytes: string) => { stdout += bytes; } } } }, { timeout: 100 });
+    process: { env, stdout: { write: (bytes: string) => { stdout += bytes; } } } }, { timeout: 100 });
   return { result: { exitCode: 0, stdout, stderr: '' } };
 };
 
@@ -69,12 +69,32 @@ describe('stock native acceptance gate', () => {
       const cp = { spawnSync: (command: string, _args: string[], option: unknown) => {
         options.push(option); return { status: 0, signal: null, stderr: '', stdout: command === 'python3' ? 'fixture-python\n' : command === 'git' ? '' : 'Usage: codex-linux-sandbox' };
       } };
-      const fs = { mkdtempSync: () => '/home/agent/workspace/git-fixture-synthetic', readFileSync: () => 'ref: refs/heads/master\n' };
+      const fs = { mkdtempSync: () => '/home/agent/workspace/git-fixture-synthetic', readFileSync: () => 'ref: refs/heads/master\n',
+        readdirSync: () => ['codex-arg0fixture'], lstatSync: () => ({ isSymbolicLink: () => true }), realpathSync: () => '/opt/codex/bin/codex' };
       expect(passedProbe(evaluate(stockCommands('empty')[check], fs, cp), check)).toBe(true);
       for (const option of options) expect(option).toMatchObject({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       expect(() => evaluate(stockCommands('empty')[check], fs, { spawnSync: () => ({ status: 0, stderr: '', stdout: 'Usage: codex-linux-sandbox', error: failure('EPERM') }) })).toThrow(/execution failed/);
     }
     expect(() => evaluate(stockCommands('empty').gitExecution, { mkdtempSync: () => '/fixture', readFileSync: () => 'not a Git repository' },
       { spawnSync: () => ({ status: 0, stderr: '', stdout: '' }) })).toThrow('Git initialization did not create a repository.');
+  });
+
+  it('discovers the prepared helper without PATH and requires its exact pinned alias and write denial', () => {
+    const root = '/codex-home/tmp/arg0', reads: string[] = [], writes: string[] = [];
+    const fs = {
+      readdirSync: (path: string) => { reads.push(path); return path === root ? ['codex-arg0fixture'] : ['codex-linux-sandbox']; },
+      lstatSync: () => ({ isSymbolicLink: () => true }), realpathSync: () => '/opt/codex/bin/codex',
+      writeFileSync: (path: string) => { writes.push(path); throw failure('EROFS'); },
+      readFileSync: () => { throw failure('EACCES'); },
+    };
+    expect(passedProbe(evaluate(stockCommands('empty').activeHelperReadOnly, fs), 'activeHelperReadOnly')).toBe(true);
+    expect(reads).toEqual([root, root + '/codex-arg0fixture']);
+    expect(writes).toEqual([root + '/codex-arg0fixture/new-fixture.txt']);
+    for (const entries of [[], ['codex-arg0one', 'codex-arg0two'], ['codex-arg0/escape']]) {
+      expect(() => evaluate(stockCommands('empty').activeHelperReadOnly, { ...fs, readdirSync: () => entries })).toThrow('Active native helper missing or ambiguous.');
+    }
+    expect(() => evaluate(stockCommands('empty').activeHelperReadOnly, { ...fs, realpathSync: () => '/tmp/unreviewed-codex' })).toThrow('Active native helper alias changed.');
+    expect(() => evaluate(stockCommands('empty').activeHelperReadOnly, { ...fs, lstatSync: () => ({ isSymbolicLink: () => false }) })).toThrow('Active native helper alias changed.');
+    expect(() => evaluate(stockCommands('empty').activeHelperReadOnly, { ...fs, writeFileSync: () => undefined })).toThrow('Protected operation succeeded.');
   });
 });

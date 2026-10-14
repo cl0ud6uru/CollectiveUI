@@ -46,13 +46,13 @@ export function ChatGPTSettingsCard({
     <Card className="space-y-4">
       <div className="flex items-center gap-2">
         <h2 className="font-medium">Sign in with ChatGPT</h2>
-        <Badge tone="amber">unofficial</Badge>
+        <Badge tone="amber">token sharing preview</Badge>
       </div>
       <p className="text-sm text-muted">
-        Lets the people you choose connect their own ChatGPT plan (Business, Enterprise, Edu, and optionally personal plans such as Plus) and chat on it
-        through ChatGPT model connections you add under Connections. It signs in the way Codex CLI does and uses OpenAI&apos;s private Codex backend, so it may stop working
-        without notice, and OpenAI&apos;s sign-in page will say people are authorizing &quot;Codex&quot;. Usage counts against each person&apos;s plan limits,
-        not your API keys. Sign-ins are stored encrypted and never reach browsers; check that this fits your OpenAI agreement before turning it on.
+        Enable OpenAI&apos;s supported Sign in with ChatGPT token sharing for the people you choose. Each person authorizes
+        CollectiveUI locally and imports their own protected profile into this self-hosted installation. The same account
+        supports the native harness and a verified stock Codex runtime. Usage counts against their ChatGPT subscription;
+        access and refresh tokens stay encrypted on the server and are never returned to browsers.
       </p>
 
       <label className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
@@ -62,7 +62,7 @@ export function ChatGPTSettingsCard({
       {needsAck && (
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-1" checked={acknowledge} onChange={(e) => setAcknowledge(e.target.checked)} />
-          I understand this is unofficial, uses people&apos;s own ChatGPT plans, and may stop working.
+          I understand that this uses each person&apos;s own subscription allowance and requires their explicit authorization.
         </label>
       )}
       {initial.acknowledgedAt && (
@@ -87,12 +87,12 @@ export function ChatGPTSettingsCard({
           </Field>
         </>
       )}
-      <Field label="Allowed ChatGPT workspaces" hint="Workspace (account) IDs, one per line. Empty allows any Business / Enterprise / Edu workspace.">
+      <Field label="Legacy workspace allowlist" hint="SIWC does not expose workspace or plan metadata. A nonempty legacy allowlist blocks SIWC until you explicitly revise it; it is never silently ignored.">
         <Textarea aria-label="Allowed ChatGPT workspaces" rows={2} value={workspaces} onChange={(e) => setWorkspaces(e.target.value)} className="font-mono text-xs" />
       </Field>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm">
-          Allow personal plans (Free, Plus, Pro)
+          Allow personal ChatGPT subscription access
           <Switch aria-label="Allow personal plans" checked={s.allowPersonalPlans} onCheckedChange={(v) => set("allowPersonalPlans", v)} />
         </label>
         <label className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-2 text-sm" title="Routines run unattended on their owner's plan">

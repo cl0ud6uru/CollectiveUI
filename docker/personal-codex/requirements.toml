@@ -1,7 +1,15 @@
 # Immutable managed requirements; installed in the reviewed image, outside writable volumes.
 allowed_login_methods = ["chatgpt"]
 cli_auth_credentials_store = "file"
-model_provider = "openai"
+model_provider = "openai_chatgpt_plan"
+model_providers.openai_chatgpt_plan.name = "ChatGPT plan"
+model_providers.openai_chatgpt_plan.base_url = "https://api.openai.com/v1"
+model_providers.openai_chatgpt_plan.env_key = "ACCESS_TOKEN"
+model_providers.openai_chatgpt_plan.wire_api = "responses"
+model_providers.openai_chatgpt_plan.requires_openai_auth = false
+model_providers.openai_chatgpt_plan.supports_websockets = false
+# Never pass the app-server credential into a shell or its subprocesses.
+shell_environment_policy = { inherit = "none", filters = { ACCESS_TOKEN = "exclude" } }
 allowed_approval_policies = ["on-request"]
 allowed_approvals_reviewers = ["user"]
 allowed_sandbox_modes = ["workspace-write", "read-only"]
@@ -20,7 +28,7 @@ collective-personal = true
 [permissions.filesystem]
 # The private home is absent from the stock sandbox's read allowlist. Keep
 # credential masks as defense in depth without a conflicting parent mask.
-deny_read = ["/codex-home/auth.json", "/codex-home/config.toml", "/codex-home/sessions", "/codex-home/archived_sessions", "/codex-home/history.jsonl", "/codex-home/log", "/codex-home/logs", "/sys"]
+deny_read = ["/codex-home/auth.json", "/codex-home/config.toml", "/codex-home/sessions", "/codex-home/archived_sessions", "/codex-home/history.jsonl", "/codex-home/log", "/codex-home/logs", "/codex-home/.collective-codex-siwc.sock", "/sys"]
 
 [permissions.collective-personal.filesystem]
 ":minimal" = "read"

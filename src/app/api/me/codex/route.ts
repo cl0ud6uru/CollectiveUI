@@ -21,6 +21,7 @@ export async function POST(request: Request) {
     finally { reader.releaseLock(); }
     let input: z.infer<typeof connectionAction>;
     try { input = connectionAction.parse(JSON.parse(Buffer.concat(chunks).toString())); } catch { throw new HttpError(400, 'Invalid connection action.'); }
+    if (input.action === 'connect' || input.action === 'confirm') throw new HttpError(409, 'Use the unified ChatGPT account setup in Settings → Connected accounts. The older native sign-in is retained for cleanup only.');
     return reply(await changeConnection(p, input.action));
   } catch (e) { return failed(e); }
 }

@@ -5,6 +5,7 @@ import { MASK_STATES, allStockChecksPass, stockCommands, passedProbe, networkCom
 import { fixtureRpc, fixtureFailure, redactFixtureText } from './lib/personal-codex-fixture-rpc.mjs';
 import { commandEvidence, collectCommandEvidence, traceFixtureCommand } from './lib/personal-codex-command-evidence.mjs';
 import { heldProcessCommand, observeProcessCommand, passedProcessObservation } from './lib/personal-codex-process-proof.mjs';
+import { isReviewedFixtureImage } from './lib/personal-codex-fixture-image.mjs';
 
 // Disposable fixtures only. No enrollment/grants are read. Only synthetic command
 // failures produce bounded diagnostics; production native logs stay suppressed.
@@ -32,7 +33,7 @@ const docker = args => execFileSync(dockerPath, args, { encoding: 'utf8', timeou
 let security = { create: ['no-new-privileges:true'], inspect: ['no-new-privileges:true'] };
 
 try {
-  if (!/^collectiveui\/personal-codex(?::[a-z0-9-]+|@sha256:[a-f0-9]{64})$/.test(image)
+  if (!isReviewedFixtureImage(image)
     || !['/usr/local/bin/docker', '/usr/bin/docker'].includes(dockerPath)) throw new Error('Unreviewed fixture input.');
   if (process.env.PERSONAL_CODEX_SANDBOX_PROFILE !== undefined) {
     // Operator commit 946723b supplies this fixed, hash-verified module.
@@ -146,7 +147,10 @@ async function runCase(state) {
       return;
     }
     stage = 'nativeProtectionMatrix';
-    outside("const cp=require('node:child_process');const child=cp.spawn('node',['-e',\"const fs=require('node:fs');process.chdir('/codex-home');const fd=fs.openSync('/codex-home/unknown-sibling.txt','r');fs.writeFileSync('/home/agent/workspace/fixture-parent.json',JSON.stringify({pid:process.pid,fd,pidNamespace:fs.readlinkSync('/proc/self/ns/pid')}));setInterval(()=>{},1000)\"],{detached:true,stdio:'ignore',env:{PATH:process.env.PATH,CUI_PRIVATE_PARENT:'fixture-parent-process-sentinel'}});child.unref();");
+    docker(['exec', '-d', name, 'node', '-e', "require('node:net').createServer(socket=>socket.end('fixture-siwc-socket-control')).listen('/codex-home/.collective-codex-siwc.sock')"]);
+    for (let i=0; i<30 && outside("process.stdout.write(String(require('node:fs').existsSync('/codex-home/.collective-codex-siwc.sock')))")!=='true'; i++) await new Promise(resolve=>setTimeout(resolve,50));
+    checks.siwcSocketControlReachable = outside("const net=require('node:net'),s=net.connect('/codex-home/.collective-codex-siwc.sock');s.on('data',b=>{process.stdout.write(b);s.end()});s.on('error',()=>process.exit(1));") === 'fixture-siwc-socket-control';
+    outside("const cp=require('node:child_process');const child=cp.spawn('node',['-e',\"const fs=require('node:fs');process.chdir('/codex-home');const fd=fs.openSync('/codex-home/unknown-sibling.txt','r');fs.writeFileSync('/home/agent/workspace/fixture-parent.json',JSON.stringify({pid:process.pid,fd,pidNamespace:fs.readlinkSync('/proc/self/ns/pid')}));setInterval(()=>{},1000)\"],{detached:true,stdio:'ignore',env:{PATH:process.env.PATH,CUI_PRIVATE_PARENT:'fixture-parent-process-sentinel',ACCESS_TOKEN:'fixture-only-parent-siwc-token'}});child.unref();");
     for (let i=0; i<30 && outside("process.stdout.write(String(require('node:fs').existsSync('/home/agent/workspace/fixture-parent.json')))")!=='true'; i++) await new Promise(resolve=>setTimeout(resolve,50));
     evidence.processControls ??= {};
     evidence.processControls[state] = JSON.parse(outside("process.stdout.write(require('node:fs').readFileSync('/home/agent/workspace/fixture-parent.json','utf8'))"));

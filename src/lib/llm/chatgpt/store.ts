@@ -7,24 +7,26 @@
  * also single-flighted in process. The re-check inside the lock is what makes the web app and worker safe together.
  */
 import { and, eq } from "drizzle-orm";
-import { db, type DB } from "@/db";
-import { chatgptDeviceLogins, userCredentials, users, type UserCredential } from "@/db/schema";
+import { db, type DbOrTx } from "@/db";
+import { chatgptDeviceLogins, personalCodexAccounts, userCredentials, users, type UserCredential } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { AAD, decrypt, encrypt, needsRewrap } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
 import { REFRESH_WINDOW_MS } from "./constants";
 import { ChatGPTNotConnectedError, ChatGPTReauthRequiredError, ChatGPTUnavailableError } from "./errors";
-import { refreshTokens, revokeTokens, type TokenSet } from "./oauth";
-import { readChatGPTClaims, type ChatGPTClaims } from "./policy";
+import { revokeTokens, type TokenSet } from "./oauth";
+import { refreshSIWCTokens, revokeSIWCTokens } from './siwc';
+import { type ChatGPTClaims } from "./policy";
 
 type Fetch = typeof fetch;
 
-export type ChatGPTSecret = { access: string; refresh?: string; idToken?: string };
+export type SIWCBinding = { clientId: string; hostId: string; scope: string };
+export type ChatGPTSecret = { access: string; refresh?: string; idToken?: string; siwc?: SIWCBinding };
 
 const secretAad = (credentialId: string) => `${AAD.userCredentialSecret}|${credentialId}`;
 
 export function sealCredentialSecret(credentialId: string, s: ChatGPTSecret): string {
-  return encrypt(JSON.stringify({ v: 1, access: s.access, refresh: s.refresh, idToken: s.idToken }), secretAad(credentialId));
+  return encrypt(JSON.stringify({ v: 2, ...s }), secretAad(credentialId));
 }
 
 export function openCredentialSecret(row: Pick<UserCredential, "id" | "secretEnc">): ChatGPTSecret {
@@ -40,7 +42,23 @@ export function openCredentialSecret(row: Pick<UserCredential, "id" | "secretEnc
     access: obj.access,
     refresh: typeof obj.refresh === "string" && obj.refresh ? obj.refresh : undefined,
     idToken: typeof obj.idToken === "string" && obj.idToken ? obj.idToken : undefined,
+    siwc: validSIWCBinding(obj.siwc) ? obj.siwc : undefined,
   };
+}
+
+function validSIWCBinding(value: unknown): value is SIWCBinding {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.clientId === 'string' && !!v.clientId && v.clientId !== 'dynamic_agent_client' &&
+    typeof v.hostId === 'string' && !!v.hostId && typeof v.scope === 'string' &&
+    ['openid', 'profile', 'email', 'offline_access', 'resource.invoke', 'chatgpt.tokens.use.direct'].every(scope => v.scope!.toString().split(/\s+/).includes(scope));
+}
+
+/** Legacy Codex grants cannot be sent to the public Responses API. No automatic token conversion. */
+export function assertSIWCCredential(secret: ChatGPTSecret): asserts secret is ChatGPTSecret & { siwc: SIWCBinding } {
+  if (!secret.siwc) throw new ChatGPTReauthRequiredError('This older Codex authorization needs explicit migration. Sign in with ChatGPT using the supported local helper in Settings → Connected accounts.');
+  if (!process.env.CHATGPT_SIWC_HOST_ID || secret.siwc.hostId !== process.env.CHATGPT_SIWC_HOST_ID)
+    throw new ChatGPTReauthRequiredError('This ChatGPT profile belongs to a different installation. Reconnect using this installation’s host ID.');
 }
 
 export async function getChatGPTCredential(userId: string): Promise<UserCredential | undefined> {
@@ -93,6 +111,7 @@ async function refreshUnderLock(credentialId: string, rejectedToken: string | un
     if (!row) return { kind: "missing" };
     if (row.status !== "active") return { kind: "reauth" };
     const secret = openCredentialSecret(row);
+    assertSIWCCredential(secret);
     // Another request (or the worker) may have refreshed while we waited for the lock.
     if (isFresh(row) && (!rejectedToken || secret.access !== rejectedToken)) return { kind: "ok", auth: authOf(row, secret.access) };
 
@@ -102,7 +121,7 @@ async function refreshUnderLock(credentialId: string, rejectedToken: string | un
     };
     if (!secret.refresh) return markReauth("no_refresh_token");
 
-    const r = await refreshTokens(secret.refresh, f);
+    const r = await refreshSIWCTokens(secret.refresh, secret.siwc.clientId, f, row.externalSubject ?? undefined);
     if (!r.ok) {
       if (r.permanent) return markReauth(r.reason);
       if (r.rotatedRefreshToken) {
@@ -121,26 +140,16 @@ async function refreshUnderLock(credentialId: string, rejectedToken: string | un
       // The refresh token is kept when none comes back (it wasn't rotated).
       refresh: r.tokens.refreshToken ?? secret.refresh,
       idToken: r.tokens.idToken ?? secret.idToken,
+      siwc: secret.siwc,
     };
-    // Fresh tokens win; the retained id token only fills in id-token facts (FedRAMP, residency, email) when the
-    // refresh returned no id token.
-    const claims = readChatGPTClaims({ idToken: r.tokens.idToken, accessToken: next.access, fallbackIdToken: secret.idToken });
+    // SIWC access metadata is opaque. Refresh cannot silently rebind a workspace or identity.
     const [updated] = await tx
       .update(userCredentials)
       .set({
         secretEnc: sealCredentialSecret(row.id, next),
-        expiresAt: expiryOf(r.tokens, claims),
+        expiresAt: expiryOf(r.tokens, null),
         lastRefreshAt: new Date(),
         updatedAt: new Date(),
-        ...(claims
-          ? {
-              accountId: claims.accountId,
-              planType: claims.planType ?? row.planType,
-              email: claims.email ?? row.email,
-              residency: claims.residency,
-              isFedramp: claims.isFedramp,
-            }
-          : {}),
       })
       .where(eq(userCredentials.id, row.id))
       .returning();
@@ -176,6 +185,7 @@ export async function getChatGPTAuth(userId: string, opts: { rejectedToken?: str
   if (!row) throw new ChatGPTNotConnectedError();
   if (row.status !== "active") throw new ChatGPTReauthRequiredError();
   const secret = openCredentialSecret(row);
+  assertSIWCCredential(secret);
   if (isFresh(row) && (!opts.rejectedToken || secret.access !== opts.rejectedToken)) return authOf(row, secret.access);
   // A proactive refresh failed moments ago and the token still works: use it rather than hammering the sign-in service.
   const coolingDown = (refreshCooldown.get(row.id) ?? 0) > Date.now();
@@ -214,11 +224,11 @@ const isUniqueViolation = (err: unknown, constraint: string) => {
  * Throws ChatGPTAccountInUseError when another portal user already connected the same ChatGPT account, and
  * ChatGPTUserDisabledError when the person was disabled meanwhile.
  */
-export async function saveChatGPTConnection(userId: string, tokens: TokenSet, claims: ChatGPTClaims, f?: Fetch): Promise<UserCredential> {
+export async function saveChatGPTConnection(userId: string, tokens: TokenSet, claims: ChatGPTClaims, f?: Fetch, siwc?: SIWCBinding, database: DbOrTx = db, revokePrevious = true): Promise<UserCredential> {
   let previous: ChatGPTSecret | undefined;
   let saved: UserCredential;
   try {
-    saved = await db.transaction(async (tx) => {
+    saved = await database.transaction(async (tx) => {
       // Serializes with an admin disabling this person (which revokes their connection right after).
       const [person] = await tx.select({ disabled: users.disabled }).from(users).where(eq(users.id, userId)).for("share");
       if (!person || person.disabled) throw new ChatGPTUserDisabledError();
@@ -236,7 +246,7 @@ export async function saveChatGPTConnection(userId: string, tokens: TokenSet, cl
         }
       }
       const values = {
-        secretEnc: sealCredentialSecret(id, { access: tokens.accessToken, refresh: tokens.refreshToken, idToken: tokens.idToken }),
+        secretEnc: sealCredentialSecret(id, { access: tokens.accessToken, refresh: tokens.refreshToken, idToken: tokens.idToken, siwc }),
         accountId: claims.accountId,
         planType: claims.planType,
         email: claims.email,
@@ -262,12 +272,16 @@ export async function saveChatGPTConnection(userId: string, tokens: TokenSet, cl
     if (isUniqueViolation(err, "user_credentials_subject_idx")) throw new ChatGPTAccountInUseError();
     throw err;
   }
-  if (previous && previous.refresh !== tokens.refreshToken) void revokeTokens({ refreshToken: previous.refresh, accessToken: previous.access }, f);
+  if (revokePrevious && previous && previous.refresh !== tokens.refreshToken) void revokeCredentialSecret(previous, f);
   return saved;
 }
 
 /** Remove local credentials under the caller's connection and return a closure for best-effort remote revocation. */
-export async function removeChatGPTConnection(userId: string, database: DB = db, f?: Fetch): Promise<(() => Promise<void>) | null> {
+export async function revokeCredentialSecret(secret: ChatGPTSecret, f?: Fetch): Promise<boolean> {
+  return secret.siwc ? revokeSIWCTokens({ refreshToken: secret.refresh, accessToken: secret.access, clientId: secret.siwc.clientId }, f) : revokeTokens({ refreshToken: secret.refresh, accessToken: secret.access }, f);
+}
+
+export async function removeChatGPTConnection(userId: string, database: DbOrTx = db, f?: Fetch): Promise<(() => Promise<boolean>) | null> {
   const removed = await database.transaction(async (tx) => {
     const [row] = await tx
       .select()
@@ -283,16 +297,18 @@ export async function removeChatGPTConnection(userId: string, database: DB = db,
   return async () => {
     try {
       const s = openCredentialSecret(removed);
-      await revokeTokens({ refreshToken: s.refresh, accessToken: s.access }, f);
+      return await revokeCredentialSecret(s, f);
     } catch {
       // Unreadable secret: the row is gone either way.
+      return false;
     }
   };
 }
 
 /** Removes this person's connection and revokes the sign-in at OpenAI (best effort). Returns false if none. */
 export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promise<boolean> {
-  const revoke = await removeChatGPTConnection(userId, db, f);
+  const { invalidateChatGPTConnection } = await import('./invalidation');
+  const revoke = await invalidateChatGPTConnection(userId, db, f);
   if (!revoke) return false;
   await revoke();
   return true;
@@ -301,8 +317,10 @@ export async function deleteChatGPTConnection(userId: string, f?: Fetch): Promis
 /** Admin "disconnect everyone" (and turning the feature off): deletes every connection and revokes them. */
 export async function deleteAllChatGPTConnections(f?: Fetch): Promise<number> {
   const rows = await db.select({ userId: userCredentials.userId }).from(userCredentials).where(eq(userCredentials.provider, "chatgpt"));
+  const retained = await db.select({ userId: personalCodexAccounts.userId }).from(personalCodexAccounts);
   let n = 0;
-  for (const r of rows) if (await deleteChatGPTConnection(r.userId, f)) n++;
+  // Retained bindings must be invalidated even if an older portal already removed the credential row.
+  for (const owner of new Set([...rows, ...retained].map(row => row.userId))) if (await deleteChatGPTConnection(owner, f)) n++;
   await db.delete(chatgptDeviceLogins);
   return n;
 }

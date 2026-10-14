@@ -6,11 +6,11 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } fr
 import type { TargetOption } from "./types";
 import { BotAvatar } from "@/components/bots/bot-avatar";
 
-/** "Your ChatGPT plan · unofficial", plus what to do when the plan isn't connected. */
+/** Personal ChatGPT subscription, plus what to do when the account isn't connected. */
 function PlanNote({ plan }: { plan: NonNullable<TargetOption["personalPlan"]> }) {
   return (
     <span className="mt-0.5 block text-xs">
-      <span className="rounded-full bg-amber-500/15 px-1.5 py-px text-amber-700 dark:text-amber-300">Your ChatGPT plan · unofficial</span>
+      <span className="rounded-full bg-amber-500/15 px-1.5 py-px text-amber-700 dark:text-amber-300">Your ChatGPT plan</span>
       {plan.status !== "connected" && (
         <span className="ml-1 text-muted">{plan.status === "needs_reauth" ? "Reconnect in Settings" : "Connect in Settings first"}</span>
       )}

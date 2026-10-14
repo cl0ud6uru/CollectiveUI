@@ -38,7 +38,7 @@ export const RuntimeManifestSchema = z.object({ version: z.literal(1), runtimes:
     const accounts = runtimes.filter(r => r.funding === 'chatgpt_subscription' && r.expectedEmail).map(r => r.expectedEmail!.toLowerCase());
     if (new Set(accounts).size !== accounts.length) ctx.addIssue({ code: 'custom', message: 'A subscription account cannot be assigned to multiple callers' });
   });
-export type CodexRuntime = z.infer<typeof RuntimeSchema> & { managed?: true; socketPath?: string };
+export type CodexRuntime = z.infer<typeof RuntimeSchema> & { managed?: true; socketPath?: string; authMode?: 'siwc'; tokenFingerprint?: string };
 const unavailable = () => new HttpError(409, 'Your Codex runtime is unavailable or needs administrator verification. No other account was selected.');
 
 export function assertRuntimeOwner(runtime: CodexRuntime, user: { id: string; upn: string; email: string | null }) {
@@ -48,12 +48,26 @@ export function assertRuntimeOwner(runtime: CodexRuntime, user: { id: string; up
 }
 
 /** Server-installed manifest only. Never accept an endpoint, token or account from a browser or bot author. */
-export async function callerRuntime(ownerId: string, funding: CodexPolicy['funding']): Promise<CodexRuntime> {
+export async function callerRuntime(ownerId: string, funding: CodexPolicy['funding'], options: { synchronize?: boolean } = {}): Promise<CodexRuntime> {
   if (funding === 'chatgpt_subscription' && process.env.PERSONAL_CODEX_SOCKET) {
     const { personalAccount } = await import('@/personal-codex/accounts');
+    if (options.synchronize) {
+      const { loadPrincipal } = await import('@/lib/auth/groups');
+      const principal = await loadPrincipal(ownerId);
+      if (!principal) throw unavailable();
+      const { changeUnifiedAccount } = await import('@/lib/llm/chatgpt/account');
+      await changeUnifiedAccount(principal, 'sync-token');
+    }
     const account = await personalAccount(ownerId);
     if (!account) throw new HttpError(409, 'Connect your own ChatGPT account in Settings → Connected accounts before using Codex.');
-    return managedRuntimeForAccount(ownerId, account);
+    const runtime = await managedRuntimeForAccount(ownerId, account);
+    if (account.workspaceId.startsWith('siwc:')) {
+      const { getChatGPTAuth } = await import('@/lib/llm/chatgpt/store');
+      const auth = await getChatGPTAuth(ownerId);
+      const { tokenFingerprint } = await import('@/personal-codex/contracts');
+      return { ...runtime, authMode: 'siwc', tokenFingerprint: tokenFingerprint(auth.accessToken) };
+    }
+    throw new HttpError(409, 'This older Codex grant requires migration through the unified ChatGPT account entry.');
   }
   try {
     const path = process.env.CODEX_RUNTIME_MANIFEST;
@@ -80,5 +94,5 @@ export async function managedRuntimeForAccount(ownerId: string, account: { crede
   return { id: `personal:${ownerId}`, ownerId, funding: 'chatgpt_subscription', endpoint: 'ws://127.0.0.1/runtime', tokenFile: '',
     isolationId: `personal:${ownerId}`, credentialBinding: account.credentialBinding, cwd: '/home/agent/workspace', isolated: true,
     nativeMcpDisabled: true, expectedEmail: account.email, expectedWorkspaceId: account.workspaceId,
-    managed: true, socketPath: personalSocket() };
+    managed: true, socketPath: personalSocket(), ...(account.workspaceId.startsWith('siwc:') ? { authMode: 'siwc' as const } : {}) };
 }

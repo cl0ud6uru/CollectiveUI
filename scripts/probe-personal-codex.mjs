@@ -1,5 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { isReviewedFixtureImage } from './lib/personal-codex-fixture-image.mjs';
 import { sandboxPolicy, dockerExecutable } from '../src/personal-codex/sandbox-policy.mjs';
 import { fixtureRpc, fixtureFailure } from './lib/personal-codex-fixture-rpc.mjs';
 
@@ -10,7 +11,7 @@ const dockerEnv = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/nonexistent', 
 
 // Isolated, disposable fixtures only. The native grant is never populated and the network is none.
 const image = process.env.PERSONAL_CODEX_NATIVE_IMAGE ?? 'collectiveui/personal-codex:stock-runtime';
-if (!/^collectiveui\/personal-codex(?::[a-z0-9-]+|@sha256:[a-f0-9]{64})$/.test(image)) throw new Error('Reviewed personal Codex fixture image required.');
+if (!isReviewedFixtureImage(image)) throw new Error('Reviewed personal Codex fixture image required.');
 const name = `cui-codex-probe-${randomUUID()}`, home = `${name}-home`, workspace = `${name}-workspace`;
 const docker = (args) => execFileSync(executable, args, { encoding: 'utf8', timeout: 30000, env: dockerEnv });
 const common = ['--name', name, '--network', 'none', '--read-only', '--cap-drop', 'ALL', ...security,
