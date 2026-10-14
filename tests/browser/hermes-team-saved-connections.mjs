@@ -14,24 +14,32 @@ let rows=Array.from({length:101},(_,index)=>({id:id(index),name:index===0?`Remov
 const initial={connections:rows.slice(0,100),nextCursor:id(99)};
 await writeFile(stubs,`
 import React from 'react';export const useRouter=()=>({refresh:()=>{}});export const useSearchParams=()=>new URLSearchParams(location.search);export const useTheme=()=>({theme:'system',setTheme:()=>{}});
-const Empty=()=>null;export {Empty as WorkspacePanel,Empty as ChatGPTConnection,Empty as StartTargetSelect};
+const Empty=()=>null;export {Empty as WorkspacePanel,Empty as StartTargetSelect};
 export default function Link({children,href,...props}){return <a href={href} {...props}>{children}</a>;}
 export const archiveConversation=async()=>{},clearMemories=async()=>{},deleteAllConversations=async()=>{},deleteMemory=async()=>{},revokeToolGrant=async()=>{},saveMemory=async()=>{},setMemoryPinned=async()=>{},updatePrefs=async()=>{};
 `);
 await writeFile(entry,`
 import React,{useState} from 'react';import {createRoot} from '${root}/node_modules/react-dom/client';import {SettingsView} from '${root}/src/components/settings-view';import {HermesTeamSavedConnections} from '${root}/src/components/settings/hermes-team-connections';
-function App(){const [show,setShow]=useState(true);window.fixtureShowAccounts=setShow;return <SettingsView prefs={{}} apps={[]} bots={[]} memories={[]} archived={[]} grants={[]} user={{name:'Synthetic owner',upn:'owner@example.test',authSource:'local'}} chatgpt={null} workspace={null} security={null} hermes={null} teamConnections={show?<HermesTeamSavedConnections initial={${JSON.stringify(initial)}}/>:null}/>;}
+function App(){const [show,setShow]=useState(true);window.fixtureShowAccounts=setShow;return <SettingsView prefs={{}} apps={[]} bots={[]} memories={[]} archived={[]} grants={[]} user={{name:'Synthetic owner',upn:'owner@example.test',authSource:'local'}} workspace={null} security={null} hermes={null} teamConnections={show?<HermesTeamSavedConnections initial={${JSON.stringify(initial)}}/>:null}/>;}
 createRoot(document.getElementById('root')).render(<App/>);
 `);
-const aliases=Object.fromEntries(['next/navigation','next-themes','next/link','@/app/(chat)/actions','@/components/settings/chatgpt-connection','@/components/settings/workspace-panel','@/components/start-target-select'].map(source=>[source,stubs]));
+const aliases=Object.fromEntries(['next/navigation','next-themes','next/link','@/app/(chat)/actions','@/components/settings/workspace-panel','@/components/start-target-select'].map(source=>[source,stubs]));
 const bundle=await build({entryPoints:[entry],write:false,bundle:true,platform:'browser',format:'iife',jsx:'automatic',nodePaths:[path.join(root,'node_modules')],alias:{'@':path.join(root,'src'),...aliases}});
 const css=await postcss([tailwind({base:root})]).process(await readFile(path.join(root,'src/app/globals.css'),'utf8'),{from:path.join(root,'src/app/globals.css')});
-let holdRead=false,releaseRead,holdDelete=false,releaseDelete,deleteFailure=0,denyList=0;const requests=[],codexStatusRequests=[];
+let holdRead=false,releaseRead,holdDelete=false,releaseDelete,deleteFailure=0,denyList=0;const requests=[],codexStatusRequests=[],chatgptStatusRequests=[];
 const server=createServer(async(req,res)=>{
  if(req.url==='/bundle.js'){res.setHeader('Content-Type','application/javascript');res.end(bundle.outputFiles[0].contents);return;}
  if(req.url==='/style.css'){res.setHeader('Content-Type','text/css');res.end(css.css);return;}
  if(!req.url.startsWith('/api/')){res.setHeader('Content-Type','text/html');res.end('<html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><div id="root"></div><script src="/bundle.js"></script></html>');return;}
  res.setHeader('Content-Type','application/json');
+ if(req.url==='/api/me/chatgpt'){
+  chatgptStatusRequests.push({method:req.method,url:req.url});res.setHeader('Cache-Control','no-store');
+  if(req.method==='GET')res.end(JSON.stringify({allowed:false,reason:'ChatGPT connections are disabled for this fixture.',credential:null,
+   backends:{native:{state:'disabled'},codex:{state:'unavailable',reason:'Stock Codex requires an approved runtime installation.'}},
+   onboarding:{state:'blocked',reason:'ChatGPT account setup is disabled.'}}));
+  else{res.statusCode=405;res.end(JSON.stringify({error:'Fixture permits account readiness reads only.'}));}
+  return;
+ }
  if(req.url==='/api/me/codex'){
   codexStatusRequests.push({method:req.method,url:req.url});
   res.setHeader('Cache-Control','no-store');
@@ -60,7 +68,10 @@ try{
  await expect(page.getByText('Connection saved',{exact:true})).toBeVisible();await expect(page.getByText('Connection expired',{exact:true})).toBeVisible();
  await expect(page.getByText('Saved access does not confirm service or model availability.',{exact:true})).toBeVisible();
  await expect(page.getByRole('textbox')).toHaveCount(0);await expect(page.getByRole('combobox')).toHaveCount(0);
- await expect(page.getByText('Personal Codex requires an approved runtime installation.',{exact:true})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'ChatGPT account',exact:true})).toBeVisible();
+ await expect(page.getByText('Stock Codex requires an approved runtime installation.',{exact:false})).toBeVisible();
+ await expect(page.locator('#chatgpt-account > [role="status"]')).toHaveText('ChatGPT connections are disabled for this fixture.');
+ expect(chatgptStatusRequests).toEqual([{method:'GET',url:'/api/me/chatgpt'}]);
  expect(codexStatusRequests).toEqual([{method:'GET',url:'/api/me/codex'}]);
  await expect(page.getByRole('button',{name:/^(Connect|Reconnect)$/})).toHaveCount(0);expect(requests).toHaveLength(0);
  await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(100);
@@ -89,8 +100,11 @@ try{
  await expect(page.getByRole('region',{name:/^Saved connection for/})).toHaveCount(0);await expect(page.getByRole('button',{name:'Show more saved connections'})).toHaveCount(0);
  expect(requests.every(request=>request.url.startsWith('/api/hermes-team/member-connections'))).toBe(true);expect(requests.every(request=>request.method==='GET'||request.method==='DELETE')).toBe(true);
  await page.evaluate(()=>window.fixtureShowAccounts(false));await expect(page.getByRole('button',{name:'Connected accounts',exact:true})).toBeVisible();await expect(page.getByRole('region',{name:'Saved Team Bot connections'})).toHaveCount(0);
- await expect(page.getByText('Personal Codex requires an approved runtime installation.',{exact:true})).toBeVisible();
+ await expect(page.getByRole('heading',{name:'ChatGPT account',exact:true})).toBeVisible();
+ await expect(page.getByText('Stock Codex requires an approved runtime installation.',{exact:false})).toBeVisible();
+ await expect(page.locator('#chatgpt-account > [role="status"]')).toHaveText('ChatGPT connections are disabled for this fixture.');
+ expect(chatgptStatusRequests).toEqual([{method:'GET',url:'/api/me/chatgpt'}]);
  expect(codexStatusRequests).toEqual([{method:'GET',url:'/api/me/codex'}]);
  expect(errors).toEqual([]);
- console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, exact read-only personal Codex status and retained central tab, 320–1280px actual CSS; synthetic HTTP only');
+ console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, exact read-only unified ChatGPT readiness and legacy cleanup status and retained central tab, 320–1280px actual CSS; synthetic HTTP only');
 }finally{if(releaseRead)releaseRead();if(releaseDelete)releaseDelete();await browser.close();server.close();await rm(dir,{recursive:true,force:true});}

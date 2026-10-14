@@ -43,7 +43,7 @@ export class ChatGPTUsageLimitError extends ChatGPTError {
 
 export class ChatGPTPlanError extends ChatGPTError {
   constructor() {
-    super(403, "Your ChatGPT plan doesn't include Codex, which this model needs. Switch to a company model.");
+    super(403, "Your ChatGPT account is not eligible to share subscription tokens with this app. Check your ChatGPT account or choose another configured model.");
     this.name = "ChatGPTPlanError";
   }
 }
@@ -97,6 +97,12 @@ export function chatgptPlanErrorFrom(err: unknown): ChatGPTError | undefined {
   if (isUserFacingError(err)) return undefined;
   const { codes, resetsAt } = errorFacts(err);
   if (codes.includes("usage_not_included")) return new ChatGPTPlanError();
+  if (codes.includes("subscription_sharing_user_not_eligible")) return new ChatGPTPlanError();
   if (codes.includes("usage_limit_reached")) return new ChatGPTUsageLimitError(resetsAt ? new Date(resetsAt * 1000) : null);
+  if (codes.includes("usage_limit_exceeded") || codes.includes('subscription_sharing_usage_limit_exceeded')) return new ChatGPTUsageLimitError(resetsAt ? new Date(resetsAt * 1000) : null);
+  if (codes.includes("usage_unavailable") || codes.includes('subscription_sharing_usage_unavailable')) return new ChatGPTUnavailableError();
+  if (codes.includes("invalid_user")) return new ChatGPTReauthRequiredError();
+  if (codes.includes("chatpass_v2_scope_not_authorized")) return new ChatGPTError(403, 'This ChatGPT sign-in lacks the required permissions. Reconnect using the supported local helper.');
+  if (codes.includes("unsupported_capability") || codes.includes("route_not_supported")) return new ChatGPTError(400, 'This capability is not supported by ChatGPT subscription token sharing.');
   return undefined;
 }

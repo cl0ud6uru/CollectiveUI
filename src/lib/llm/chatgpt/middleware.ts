@@ -12,10 +12,8 @@ export type ChatGPTModelOptions = {
 };
 
 /**
- * Shapes calls for the ChatGPT Codex backend using the provider's own options: the portal's instructions go into the
- * top-level `instructions` field (not a developer message), nothing is stored upstream, encrypted reasoning is
- * requested so multi-step turns keep their reasoning, and sampling/length settings the backend rejects are dropped.
- * The backend only streams, so non-streaming calls are refused (ChatGPT apps are never used for background work).
+ * Shapes calls for the public Responses API: carry the full locally assembled history, avoid server storage, and
+ * keep the existing local function-tool loop. The native adapter supports streaming chat only.
  */
 export function chatgptMiddleware(opts: ChatGPTModelOptions): LanguageModelMiddleware {
   return {
@@ -29,9 +27,6 @@ export function chatgptMiddleware(opts: ChatGPTModelOptions): LanguageModelMiddl
         ...existing,
         instructions: instructions || FALLBACK_INSTRUCTIONS,
         store: false,
-        forceReasoning: true,
-        include: ["reasoning.encrypted_content"],
-        reasoningSummary: existing.reasoningSummary ?? "auto",
         ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
         ...(opts.conversationId ? { promptCacheKey: opts.conversationId.slice(0, 64) } : {}),
       };
@@ -39,14 +34,6 @@ export function chatgptMiddleware(opts: ChatGPTModelOptions): LanguageModelMiddl
         ...params,
         prompt: params.prompt.filter((m) => m.role !== "system"),
         providerOptions: { ...params.providerOptions, openai },
-        maxOutputTokens: undefined,
-        temperature: undefined,
-        topP: undefined,
-        topK: undefined,
-        presencePenalty: undefined,
-        frequencyPenalty: undefined,
-        stopSequences: undefined,
-        seed: undefined,
       };
     },
     wrapGenerate: async () => {

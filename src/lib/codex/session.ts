@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CodexClient, CodexNotification, CodexServerRequest } from './client';
 import type { CodexPolicy } from './config';
 import type { CodexRuntime } from './runtime';
+import type { SIWCDispatchIdentity } from '@/lib/llm/chatgpt/invalidation';
 
 type Client = Pick<CodexClient, 'request' | 'onNotification' | 'onFailure' | 'onServerRequest' | 'respond' | 'rejectRequest'>;
 const id = z.string().min(1).max(256);
@@ -39,6 +40,7 @@ const nativeTool = z.discriminatedUnion('type', [
 export async function executeCodexSession(client: Client, runtime: CodexRuntime, policy: CodexPolicy,
   input: string, instructions: string, hooks: SessionHooks, signal: AbortSignal) {
   let accountEpoch = 0, verifiedEpoch = -1;
+  let dispatched = false, siwcIdentity: SIWCDispatchIdentity | undefined;
   let accountFailure: Error | undefined, accountVerification: Promise<void> | undefined;
   const unwatchAccount = client.onNotification(e => { if (e.method === 'account/updated') accountEpoch++; });
   const verifyCurrentAccount = async () => {
@@ -46,6 +48,25 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       signal.throwIfAborted();
       if (accountFailure) throw accountFailure;
       const epoch = accountEpoch;
+      if (runtime.authMode === 'siwc') {
+        // The stock external-token provider has no native ChatGPT account/read identity. Trust only the
+        // owner-isolated broker's confirmed synchronization of the server-verified SIWC credential.
+        const { personalControl } = await import('@/personal-codex/control');
+        const status = await personalControl(runtime.ownerId, 'status');
+        if (!runtime.managed || !runtime.tokenFingerprint || status.state !== 'running' || !status.siwc?.available || status.siwc.credentialBinding !== runtime.tokenFingerprint)
+          throw new Error('Stock Codex is not synchronized with your verified ChatGPT connection. Enable it in Settings → Connected accounts.');
+        const { captureCurrentSIWCConnection, assertRetainedSIWCConnection } = await import('@/lib/llm/chatgpt/invalidation');
+        if (dispatched) {
+          if (!siwcIdentity) throw new Error('Codex dispatch has no verified ChatGPT identity.');
+          await assertRetainedSIWCConnection(siwcIdentity);
+        } else {
+          const current = await captureCurrentSIWCConnection(runtime.ownerId, runtime.credentialBinding, runtime.tokenFingerprint, siwcIdentity);
+          siwcIdentity ??= current;
+        }
+        await hooks.authorizeAccount?.(null);
+        if (epoch === accountEpoch) { verifiedEpoch = epoch; return; }
+        continue;
+      }
       const response = await client.request('account/read', { refreshToken: false });
       const identity = account.parse(response).account;
       if (runtime.managed) {
@@ -86,7 +107,16 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         allowedPermissionProfiles: z.record(z.string(), z.boolean()), allowedLoginMethods: z.array(z.literal('chatgpt')),
         allowedApprovalsReviewers: z.array(z.literal('user')), allowedApprovalPolicies: z.array(z.literal('on-request')) }) }).parse(await client.request('configRequirements/read', {}));
       if (Object.keys(requirements.allowedPermissionProfiles).length !== 1 || requirements.allowedPermissionProfiles['collective-personal'] !== true ||
-        config.forced_login_method !== 'chatgpt' || (Array.isArray(config.notify) && config.notify.length)) throw new Error('The managed Codex permission contract changed.');
+        (runtime.authMode !== 'siwc' && config.forced_login_method !== 'chatgpt') || (Array.isArray(config.notify) && config.notify.length)) throw new Error('The managed Codex permission contract changed.');
+      if (runtime.authMode === 'siwc') {
+        const providers = config.model_providers as Record<string, Record<string, unknown>> | undefined;
+        const provider = providers?.openai_chatgpt_plan;
+        const environment = config.shell_environment_policy as { inherit?: unknown; filters?: Record<string, unknown> } | undefined;
+        if (config.model_provider !== 'openai_chatgpt_plan' || !provider || provider.base_url !== 'https://api.openai.com/v1' ||
+          provider.env_key !== 'ACCESS_TOKEN' || provider.wire_api !== 'responses' || provider.requires_openai_auth !== false || provider.supports_websockets !== false ||
+          environment?.inherit !== 'none' || environment.filters?.ACCESS_TOKEN !== 'exclude')
+          throw new Error('The stock Codex SIWC provider configuration changed.');
+      }
     }
     for (const key of ['mcp_servers', 'plugins', 'apps']) {
       if (config[key] && Object.keys(config[key] as object).length) throw new Error('This Codex pilot requires a runtime without configured MCP servers, apps or plugins.');
@@ -102,16 +132,16 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
     signal.throwIfAborted();
     const thread = started.parse(await client.request(hooks.resumeThreadId ? 'thread/resume' : 'thread/start', {
       ...(hooks.resumeThreadId ? { threadId: hooks.resumeThreadId } : runtime.managed ? { historyMode: 'legacy' } : {}),
-      model: policy.model, modelProvider: 'openai', cwd: runtime.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user',
+      model: policy.model, modelProvider: runtime.authMode === 'siwc' ? 'openai_chatgpt_plan' : 'openai', cwd: runtime.cwd, approvalPolicy: 'on-request', approvalsReviewer: 'user',
       ...(runtime.managed ? { permissions: 'collective-personal' } : { sandbox: 'read-only' }), ephemeral: false, developerInstructions: instructions,
-      config: { service_tier: 'default', web_search: 'disabled', notify: [],
-        ...(runtime.managed ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: runtime.expectedWorkspaceId } : {}),
+      config: { ...(runtime.authMode === 'siwc' ? {} : { service_tier: 'default' }), web_search: 'disabled', notify: [],
+        ...(runtime.managed && runtime.authMode !== 'siwc' ? { forced_login_method: 'chatgpt', forced_chatgpt_workspace_id: runtime.expectedWorkspaceId } : {}),
         projects: { [runtime.cwd]: { trust_level: 'untrusted' } }, 'features.hooks': false, 'features.memories': false, 'features.shell_snapshot': false,
         'features.shell_tool': runtime.managed === true, 'features.view_image': false, 'features.multi_agent': false,
         'features.multi_agent_v2': false, 'features.plugins': false, 'features.plugin_hooks': false,
         'features.enable_mcp_apps': false, 'features.image_generation': false },
     }));
-    if (thread.model !== policy.model || thread.modelProvider !== 'openai' || thread.cwd !== runtime.cwd)
+    if (thread.model !== policy.model || thread.modelProvider !== (runtime.authMode === 'siwc' ? 'openai_chatgpt_plan' : 'openai') || thread.cwd !== runtime.cwd)
       throw new Error('Codex did not honor the selected model or workspace.');
     if (runtime.managed && (thread.activePermissionProfile?.id !== 'collective-personal' || thread.sandbox.type !== 'workspaceWrite'))
       throw new Error('Codex did not honor the managed workspace permission profile.');
@@ -232,8 +262,10 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
       // Persist uncertainty BEFORE the wire write. No retry is safe after this checkpoint.
       await verifyAccount();
       await hooks.checkpoint({ phase: 'dispatching' });
-      if (accountEpoch !== verifiedEpoch) await verifyAccount();
+      // The checkpoint can refresh portal tokens without a native account event. Keep the exact-token fence at the wire boundary.
+      if (runtime.authMode === 'siwc' || accountEpoch !== verifiedEpoch) await verifyAccount();
       signal.throwIfAborted();
+      dispatched = true;
       const response = z.object({ turn: z.object({ id }) }).parse(await client.request('turn/start', {
         threadId, clientUserMessageId: hooks.clientMessageId, input: [{ type: 'text', text: input, text_elements: [] }], model: policy.model, effort: policy.effort,
         serviceTierForTurn: 'default', approvalPolicy: 'on-request', approvalsReviewer: 'user',

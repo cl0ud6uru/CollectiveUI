@@ -17,6 +17,8 @@ export const BrokerConfig = z.object({
   // Admission is installed by an operator; an empty list starts with all owners denied.
   owners: z.array(ownerId).max(1000),
   sandboxProfile: z.literal('collectiveui-sandbox-v1').optional(),
+  // True only after the installed image passes the reviewed SIWC shell/proc isolation proof.
+  siwcSandboxVerified: z.boolean().default(false),
   dockerExecutable: z.enum(['/usr/local/bin/docker', '/usr/bin/docker']).default('/usr/local/bin/docker'),
   memoryMb: z.number().int().min(512).max(16384).default(2048),
   cpus: z.number().min(.25).max(8).default(2),
@@ -137,5 +139,31 @@ export class PersonalCodexDriver {
     if (!(await this.inspect(owner))?.State.Running) throw unavailable();
     return spawn(this.config.dockerExecutable, ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/bridge.mjs'],
       { env: dockerEnv, stdio: 'pipe' });
+  }
+  /** Token is sent only on docker exec stdin to the container's private, memory-only supervisor socket. */
+  async synchronizeToken(owner: string, accessToken: string, credentialBinding: string): Promise<void> {
+    this.name(owner);
+    if (!this.config.siwcSandboxVerified) throw new Error('Personal Codex token sharing is unavailable until the SIWC sandbox environment and /proc isolation proof is approved by an operator.');
+    if (accessToken.length < 1 || accessToken.length > 16_384 || credentialBinding.length < 1 || credentialBinding.length > 256) throw unavailable();
+    if (!(await this.inspect(owner))?.State.Running) throw unavailable();
+    const child = spawn(this.config.dockerExecutable, ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/server.mjs', '--sync-token'],
+      { env: dockerEnv, stdio: ['pipe', 'ignore', 'ignore'] });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(unavailable()); }, 10_000);
+      child.once('error', () => { clearTimeout(timer); reject(unavailable()); });
+      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(unavailable()); });
+      child.stdin.end(JSON.stringify({ accessToken, credentialBinding }));
+    });
+  }
+  async clearToken(owner: string): Promise<void> {
+    this.name(owner);
+    if (!(await this.inspect(owner))?.State.Running) throw unavailable();
+    const child = spawn(this.config.dockerExecutable, ['exec', '-i', this.name(owner), 'node', '/opt/collective-codex/server.mjs', '--clear-token'],
+      { env: dockerEnv, stdio: ['ignore', 'ignore', 'ignore'] });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(unavailable()); }, 10_000);
+      child.once('error', () => { clearTimeout(timer); reject(unavailable()); });
+      child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(unavailable()); });
+    });
   }
 }

@@ -4,52 +4,54 @@ import { Button } from '@/components/ui/button';
 import type { ConnectionView } from '@/personal-codex/contracts';
 
 const labels: Record<ConnectionView['state'], string> = {
-  unavailable: 'Personal Codex requires an approved runtime installation.', not_started: 'Connect your ChatGPT account to create your private Codex workspace.',
-  stopped: 'Your private workspace is retained. Start the runtime to reconnect.', signed_out: 'Your Codex runtime is ready to connect.',
-  uncertain: 'A prior native sign-in may still be active. Cancel it before starting another sign-in.', pending: 'Finish sign-in on OpenAI’s page, then return here.', confirm: 'Confirm the signed-in account below belongs to you.',
-  connected: 'Connected for all of your Codex bots.', changed: 'The native account changed. Disconnect before connecting a different account.',
+  unavailable: 'Legacy personal Codex runtime unavailable.', not_started: 'No legacy Codex grant is saved.',
+  stopped: 'The legacy private workspace is stopped.', signed_out: 'The legacy native Codex sign-in has ended.',
+  uncertain: 'A legacy native sign-in may still be active.', pending: 'A legacy sign-in is in progress.', confirm: 'A legacy account change needs confirmation.',
+  connected: 'Legacy native Codex is connected.', changed: 'The legacy native account changed.',
 };
+
+/** Cleanup controls for a native Codex grant saved by an older release. */
 export function PersonalCodexConnection() {
-  const [view, setView] = useState<ConnectionView>(), [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [view, setView] = useState<ConnectionView>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   async function refresh(signal?: AbortSignal) {
     const r = await fetch('/api/me/codex', { cache: 'no-store', signal });
-    const data = await r.json(); if (!r.ok) throw new Error(data.error); if (!signal?.aborted) setView(data);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not load legacy Codex status.');
+    if (!signal?.aborted) setView(data);
   }
   useEffect(() => {
     const ac = new AbortController();
-    void fetch('/api/me/codex', { cache: 'no-store', signal: ac.signal }).then(async r => {
-      const data = await r.json(); if (!r.ok) throw new Error(data.error);
-      if (!ac.signal.aborted) setView(data);
-    }).catch(e => { if (!ac.signal.aborted) setError(e.message); });
-    return () => ac.abort();
+    const timer = setTimeout(() => { void refresh(ac.signal).catch(e => { if (!ac.signal.aborted) setError(e instanceof Error ? e.message : 'Could not load legacy Codex status.'); }); }, 0);
+    return () => { clearTimeout(timer); ac.abort(); };
   }, []);
   useEffect(() => {
     if (!['pending', 'uncertain'].includes(view?.state ?? '')) return;
     const ac = new AbortController(), timer = setInterval(() => { void refresh(ac.signal).catch(() => {}); }, 3000);
     return () => { clearInterval(timer); ac.abort(); };
   }, [view?.state]);
-  async function act(action: 'connect' | 'confirm' | 'cancel' | 'disconnect' | 'start') {
+  async function act(action: 'cancel' | 'disconnect') {
     setBusy(true); setError('');
-    try { const r = await fetch('/api/me/codex', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
-      const data = await r.json(); if (!r.ok) throw new Error(data.error); setView(data);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Connection failed. Reload before retrying.'); } finally { setBusy(false); }
+    try {
+      const r = await fetch('/api/me/codex', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Legacy cleanup failed.');
+      setView(data);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Legacy cleanup failed.'); } finally { setBusy(false); }
   }
-  return <section id="personal-codex" aria-labelledby="personal-codex-title" className="space-y-4 rounded-2xl border border-border p-5">
-    <h2 id="personal-codex-title" className="font-semibold">Connect ChatGPT for Codex</h2>
-    <p className="text-sm text-muted">Connect once for all your Codex bots. Use your own ChatGPT subscription account matching your CollectiveUI email. Your workspace and Codex history are private to you and retained when you delete a bot or disconnect. Model access depends on your plan.</p>
-    <p role="status" className="text-sm">{view?.state === 'signed_out' && view.email ? 'Native sign-in ended. Disconnect the saved connection before signing in again.' : view ? labels[view.state] : 'Checking connection…'}</p>
-    {view?.canConnect === false && <p className="text-sm text-muted">New personal ChatGPT connections are disabled by your organization. You can still cancel or disconnect your own connection.</p>}
-    {view?.email && <p className="break-all text-sm">{view.email} · {view.planType} · Workspace {view.workspaceId}</p>}
-    {view?.login && <div className="space-y-2 rounded-xl bg-surface-2 p-4"><p>Enter <strong className="select-all font-mono">{view.login.userCode}</strong> on OpenAI’s page.</p><a href={view.login.verificationUrl} target="_blank" rel="noreferrer" className="text-accent underline">Open ChatGPT sign-in</a><p className="text-xs text-muted">Only enter this code if you started sign-in here. Codex stores and refreshes your sign-in inside your private runtime.</p></div>}
-    {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
-    <div className="flex flex-wrap gap-2">
-      {view && view.canConnect !== false && ['not_started', 'signed_out'].includes(view.state) && !view.email && <Button disabled={busy} onClick={() => void act('connect')}>Connect ChatGPT</Button>}
-      {view?.state === 'stopped' && <Button disabled={busy} onClick={() => void act('start')}>Start my Codex runtime</Button>}
-      {view?.state === 'confirm' && view.canConnect !== false && <Button disabled={busy} onClick={() => void act('confirm')}>Confirm my account</Button>}
-      {view && ['pending', 'uncertain'].includes(view.state) && <Button variant="outline" disabled={busy} onClick={() => void act('cancel')}>Cancel sign-in</Button>}
-      {view && (['connected', 'changed', 'confirm', 'stopped'].includes(view.state) || (view.state === 'signed_out' && !!view.email)) && <Button variant="outline" disabled={busy} onClick={() => void act('disconnect')}>Disconnect ChatGPT</Button>}
-      <Button variant="outline" disabled={busy} onClick={() => { setError(''); void refresh().catch(e => setError(e.message)); }}>Refresh</Button>
+  return <details className="rounded-xl border border-border px-4 py-3">
+    <summary className="cursor-pointer text-sm font-medium">Legacy Codex connection cleanup</summary>
+    <div className="mt-3 space-y-3">
+      <p role="status" className="text-sm">{view ? labels[view.state] : error ? 'Legacy Codex status unavailable.' : 'Checking legacy Codex status…'}</p>
+      {view?.email && <p className="break-all text-sm">{view.email}{view.planType ? ` · ${view.planType}` : ''}</p>}
+      {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
+      <div className="flex gap-2">
+        {view && ['pending', 'uncertain'].includes(view.state) && <Button variant="outline" disabled={busy} onClick={() => void act('cancel')}>Cancel legacy sign-in</Button>}
+        {view && (['connected', 'changed', 'confirm', 'stopped'].includes(view.state) || (view.state === 'signed_out' && !!view.email)) && <Button variant="outline" disabled={busy} onClick={() => void act('disconnect')}>Remove legacy grant</Button>}
+        {(error || !view) && <Button variant="outline" disabled={busy} onClick={() => { setError(''); void refresh().catch(e => setError(e instanceof Error ? e.message : 'Could not load legacy Codex status.')); }}>Retry legacy status</Button>}
+      </div>
+      <p className="text-xs text-muted">New sign-ins use the ChatGPT account controls above. This cleanup is only for grants saved by an older version.</p>
     </div>
-    <p className="text-xs text-muted">CollectiveUI login and other ChatGPT model connections are separate. Hermes keeps its own native sign-in grant; manage its profiles below. No account credentials are copied between engines.</p>
-  </section>;
+  </details>;
 }

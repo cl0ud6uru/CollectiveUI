@@ -189,7 +189,7 @@ Deployment, local accounts, recovery, directory setup, workspaces and webhook si
 <a id="your-mcp-servers"></a>
 <a id="peoples-own-chatgpt-plans-sign-in-with-chatgpt-unofficial"></a>
 <a id="hermes-agent-bots-from-your-hermes-profiles"></a>
-Model providers, MCP, the optional unofficial ChatGPT-plan connection and Hermes setup moved to the [connection guide](docs/connections.md).
+Model providers, MCP, the personal ChatGPT token sharing connection and Hermes setup moved to the [connection guide](docs/connections.md).
 
 <a id="architecture"></a>
 <a id="running-the-tests"></a>

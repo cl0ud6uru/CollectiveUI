@@ -32,6 +32,9 @@ const CLAIM_LEASE_SEC = 25;
 const MIN_REUSE_MS = 60_000;
 
 async function assertMayConnect(p: Principal) {
+  // Retained for old pending-login cleanup only. Codex's device grant is not a SIWC grant.
+  throw new HttpError(409, 'The older Codex device sign-in is retired. Use the unified ChatGPT account entry and supported local sign-in helper.');
+  /* istanbul ignore next -- legacy flow is intentionally inaccessible */
   const s = await getSetting("chatgpt");
   if (!s.enabled) throw new HttpError(403, "Sign in with ChatGPT is turned off.");
   if (!userMayUseChatGPT(p, s)) throw new HttpError(403, "Your organization hasn't allowed you to connect a ChatGPT plan.");

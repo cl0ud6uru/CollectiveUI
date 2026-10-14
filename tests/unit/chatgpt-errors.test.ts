@@ -53,7 +53,7 @@ describe("errors people can act on", () => {
       getAuth: async () => ({ credentialId: "c", accessToken: "t", accountId: "a", planType: "plus", residency: null, isFedramp: false }),
       baseFetch: base,
     });
-    const p = await chatgpt.create({ baseURL: "https://chatgpt.com/backend-api/codex", fetch: f });
+    const p = await chatgpt.create({ baseURL: "https://api.openai.com/v1", fetch: f });
     const errors: unknown[] = [];
     const result = streamText({
       model: wrapLanguageModel({ model: p.chat("gpt-codex"), middleware: chatgptMiddleware({ conversationId: "c1" }) }),

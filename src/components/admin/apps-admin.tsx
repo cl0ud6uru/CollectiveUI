@@ -262,8 +262,8 @@ function AppDialog({
           {personal && (
             <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
               <p>
-                <span className="font-medium">Unofficial.</span> Each person chats on their own ChatGPT plan after connecting it in Settings → Connected
-                accounts; usage counts against their plan&apos;s Codex limits. It uses OpenAI&apos;s private Codex backend and may stop working.
+                <span className="font-medium">Sign in with ChatGPT.</span> Each person connects their own account in Settings → Connected
+                accounts; usage counts against their subscription allowance through OpenAI&apos;s supported token sharing Responses API.
               </p>
               <Button variant="outline" onClick={test} disabled={testing}>
                 {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />} List my plan&apos;s models
