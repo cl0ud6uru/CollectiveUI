@@ -1,104 +1,94 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
-import { login, send, choose } from "./helpers";
+import { choose, login } from "./helpers";
 
-// Needs the app started with CHATGPT_AUTH_BASE_URL / CHATGPT_BACKEND_URL pointing at mock-llm (README → tests);
-// otherwise "Connect ChatGPT" would go to the real auth.openai.com, so the test is skipped.
-const envLocal = (() => {
-  try {
-    return readFileSync(".env.local", "utf8");
-  } catch {
-    return "";
-  }
-})();
-const pointsAtMock = !!process.env.CHATGPT_AUTH_BASE_URL || /^CHATGPT_AUTH_BASE_URL=\S+/m.test(envLocal);
-test.skip(!pointsAtMock, "Set CHATGPT_AUTH_BASE_URL and CHATGPT_BACKEND_URL to mock-llm for the app under test (README → Running the tests)");
+// Prerequisites: opt in with E2E_CHATGPT_SETUP=1 only on the disposable seeded E2E database with
+// alice (admin), bob and carol accounts, the real local auth/LDAP service and worker, and the same
+// CHATGPT_SIWC_HOST_ID configured for the app. This tests policy and local setup instructions only;
+// it never imports a profile, signs in to OpenAI, or runs inference, so no ChatGPT endpoint override is used.
+const enabled = process.env.E2E_CHATGPT_SETUP === "1";
+test.skip(!enabled,
+  "Set E2E_CHATGPT_SETUP=1 only for the seeded local app with its real database, LDAP, worker, and CHATGPT_SIWC_HOST_ID configured.");
 
-// Leave the feature off and nobody connected even if the test fails midway (the seed resets both).
 test.afterAll(() => {
+  if (!enabled) return;
+  // The seed restores the default disabled policy and clears any test account credentials.
   execFileSync("npx", ["tsx", "--env-file=.env.local", "tests/e2e/seed-e2e.ts"], { stdio: "inherit" });
 });
 
-test("admin turns on Sign in with ChatGPT; an allowed person connects their plan and chats on it", async ({ page, browser }) => {
-  test.setTimeout(120_000);
-  const name = `E2E ChatGPT ${Date.now()}`;
+test("one unified ChatGPT account card shows disabled, allowed and unlisted setup states", async ({ page, browser }) => {
+  test.setTimeout(90_000);
+  const chatgptRequests: string[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/api/me/chatgpt") && request.method() === "POST") chatgptRequests.push(request.postData() ?? "");
+  });
 
-  // Admin: turn it on for bob only, allowing personal plans (the mock signs people in on a Plus plan).
+  // Before the admin enables the feature, the same account card is visible but cannot start setup.
   await login(page, "alice");
+  await page.goto("/settings?tab=connected-accounts");
+  const adminCard = page.locator("#chatgpt-account");
+  await expect(adminCard.getByRole("heading", { name: "ChatGPT account", exact: true })).toBeVisible();
+  await expect(adminCard.getByRole("status")).toContainText("ChatGPT connections are disabled");
+  await expect(adminCard.getByRole("button", { name: /Set up ChatGPT|Continue ChatGPT setup/ })).toHaveCount(0);
+
+  // Admin policy allows Bob, while admins retain access to their own setup controls.
   await page.goto("/admin/settings");
-  await page.getByLabel("Enable Sign in with ChatGPT", { exact: true }).click();
-  await page.getByText("I understand this is unofficial").click();
+  await page.getByRole("switch", { name: "Enable Sign in with ChatGPT", exact: true }).click();
+  await page.getByText("I understand that this uses each person's own subscription allowance and requires their explicit authorization.", { exact: true }).click();
+  await choose(page, page.getByLabel("Who can connect", { exact: true }), "selected");
   await page.getByLabel("Allowed people", { exact: true }).fill("bob@corp.local");
-  await page.getByLabel("Allow personal plans", { exact: true }).click();
-  await page.getByRole("button", { name: "Save ChatGPT settings" }).click();
+  await page.getByRole("switch", { name: "Allow personal plans", exact: true }).click();
+  await page.getByRole("button", { name: "Save ChatGPT settings", exact: true }).click();
   await expect(page.getByText("Saved")).toBeVisible();
 
-  // Admin: add a ChatGPT plan app (no credentials to enter).
-  await page.goto("/admin/apps");
-  await page.getByRole("button", { name: "Add app" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Name", { exact: true }).fill(name);
-  await choose(page, dialog.getByLabel("Provider", { exact: true }), "chatgpt");
-  await expect(dialog.getByText("Unofficial.", { exact: true })).toBeVisible();
-  await expect(dialog.getByLabel("API key", { exact: true })).toHaveCount(0);
-  await expect(dialog.getByLabel("Temperature", { exact: true })).toHaveCount(0);
-  await dialog.getByRole("button", { name: "List my plan's models" }).click();
-  await expect(page.getByText(/Connect your own ChatGPT account/)).toBeVisible(); // alice hasn't connected
-  await dialog.getByLabel("Model", { exact: true }).fill("mock-codex");
-  await dialog.getByLabel("Sort order", { exact: true }).fill("30");
-  await dialog.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText("App saved")).toBeVisible();
-  await expect(page.getByRole("cell", { name, exact: true })).toBeVisible();
-
-  // bob: sees the app with the plan badge, connects with a device code, then chats on his plan.
-  const bobCtx = await browser.newContext();
-  const bob = await bobCtx.newPage();
+  // Bob gets the supported local sign-in and protected import instructions. The browser does not
+  // receive a device code, authorization URL, access token, refresh token, or profile import control.
+  const bobContext = await browser.newContext();
+  const bob = await bobContext.newPage();
+  const bobChatgptRequests: string[] = [];
+  bob.on("request", request => {
+    if (request.url().endsWith("/api/me/chatgpt") && request.method() === "POST") bobChatgptRequests.push(request.postData() ?? "");
+  });
   await login(bob, "bob");
-  await bob.getByRole("button", { name: /Mock GPT/ }).click();
-  const item = bob.getByRole("menuitem", { name: new RegExp(name) });
-  await expect(item).toContainText("Your ChatGPT plan · unofficial");
-  await expect(item).toContainText("Connect in Settings first");
-  await bob.getByRole("menuitem", { name: "Connect your ChatGPT plan…" }).click();
-  await bob.waitForURL(/\/settings\?tab=connected-accounts/);
-  await bob.getByRole("button", { name: "Connect ChatGPT" }).click();
-  await expect(bob.getByLabel("ChatGPT sign-in code")).toHaveText(/^MOCK-\d+$/);
-  await expect(bob.getByText("Connected", { exact: true })).toBeVisible({ timeout: 45_000 });
-  await expect(bob.getByText(/Plus · workspace/)).toBeVisible();
-  expect(await bob.content()).not.toContain("rt_mock_"); // tokens never reach the browser
-
-  await bob.goto("/");
-  await bob.getByRole("button", { name: /Mock GPT/ }).click();
-  await bob.getByRole("menuitem", { name: new RegExp(name) }).click();
-  await send(bob, "Hello from my plan");
-  await expect(bob.getByText('You said: "Hello from my plan"').first()).toBeVisible();
-
-  // A limit reached on the plan is explained, with no retry storm.
-  await send(bob, "[limit] one more");
-  await expect(bob.getByRole("main").getByText(/reached your ChatGPT plan's usage limit/)).toBeVisible();
-
-  // carol isn't allowed: the app isn't offered.
-  const carolCtx = await browser.newContext();
-  const carol = await carolCtx.newPage();
-  await login(carol, "carol");
-  await carol.getByRole("button", { name: /Mock GPT/ }).click();
-  await expect(carol.getByRole("menuitem", { name: new RegExp(name) })).toHaveCount(0);
-  await carolCtx.close();
-
-  // bob disconnects.
   await bob.goto("/settings?tab=connected-accounts");
-  bob.once("dialog", (d) => d.accept());
-  await bob.getByRole("button", { name: "Disconnect" }).click();
-  await expect(bob.getByRole("button", { name: "Connect ChatGPT" })).toBeVisible();
-  await bobCtx.close();
+  const bobCard = bob.locator("#chatgpt-account");
+  await expect(bobCard.getByRole("heading", { name: "ChatGPT account", exact: true })).toBeVisible();
+  await expect(bobCard.getByRole("status")).toContainText("Connect once to use your ChatGPT account");
+  await expect(bobCard.getByRole("button", { name: "Set up ChatGPT", exact: true })).toBeVisible();
+  await expect(bobCard.getByRole("button", { name: "Connect ChatGPT", exact: true })).toHaveCount(0);
+  const setupResponsePromise = bob.waitForResponse(response => response.url().endsWith("/api/me/chatgpt") && response.request().method() === "POST");
+  await bob.getByRole("button", { name: "Set up ChatGPT", exact: true }).click();
+  const setupResponse = await setupResponsePromise;
+  expect(setupResponse.ok()).toBe(true);
+  const setup = await setupResponse.json() as { hostId: string; userId: string };
+  expect(setup.userId).toBeTruthy();
+  await expect(bob.getByText("Finish ChatGPT setup", { exact: true })).toBeVisible();
+  await expect(bob.getByText(/npm run chatgpt:sign-in -- --output/)).toBeVisible();
+  await expect(bob.getByText(`npm run chatgpt:import -- --user-id ${setup.userId} --file /protected/path/chatgpt-profile.json`, { exact: true })).toBeVisible();
+  await expect(bob.getByText(/Transfer only your selected profile over your own secure SSH connection/)).toBeVisible();
+  await expect(bob.getByLabel("ChatGPT sign-in code")).toHaveCount(0);
+  await expect(bob.getByRole("link", { name: /Open ChatGPT sign-in/i })).toHaveCount(0);
+  expect(await bob.content()).not.toMatch(/accessToken|refreshToken|rt_mock_|MOCK-\d+|auth\.openai\.com/i);
 
-  // Admin: clean up.
-  await page.goto("/admin/apps");
-  page.once("dialog", (d) => d.accept());
-  await page.getByLabel(`Delete ${name}`).click();
-  await expect(page.getByRole("cell", { name, exact: true })).toHaveCount(0);
-  await page.goto("/admin/settings");
-  await page.getByLabel("Enable Sign in with ChatGPT", { exact: true }).click();
-  await page.getByRole("button", { name: "Save ChatGPT settings" }).click();
-  await expect(page.getByText("Saved")).toBeVisible();
+  // An unlisted member sees why policy blocks setup; the card itself remains present.
+  const carolContext = await browser.newContext();
+  const carol = await carolContext.newPage();
+  await login(carol, "carol");
+  await carol.goto("/settings?tab=connected-accounts");
+  const carolCard = carol.locator("#chatgpt-account");
+  await expect(carolCard.getByRole("heading", { name: "ChatGPT account", exact: true })).toBeVisible();
+  await expect(carolCard.getByRole("status")).toContainText("Your account is not enrolled");
+  await expect(carolCard.getByRole("button", { name: /Set up ChatGPT|Continue ChatGPT setup/ })).toHaveCount(0);
+
+  // The administrator is still allowed to use their own connection for administration.
+  await page.goto("/settings?tab=connected-accounts");
+  await expect(adminCard.getByRole("heading", { name: "ChatGPT account", exact: true })).toBeVisible();
+  await expect(adminCard.getByRole("button", { name: "Set up ChatGPT", exact: true })).toBeVisible();
+  await expect(adminCard.getByRole("status")).toContainText("Connect once to use your ChatGPT account");
+  expect(chatgptRequests).toEqual([]);
+  expect(bobChatgptRequests).toEqual([JSON.stringify({ action: "start" })]);
+  expect(await page.content()).not.toMatch(/accessToken|refreshToken|rt_mock_|MOCK-\d+|auth\.openai\.com/i);
+
+  await carolContext.close();
+  await bobContext.close();
 });

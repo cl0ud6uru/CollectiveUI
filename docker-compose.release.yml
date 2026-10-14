@@ -1,0 +1,82 @@
+# Image-based deployment. Supply immutable web/worker image references, preferably @sha256 digests.
+# Plain named volumes follow the Compose project name, matching docker-compose.yml for the same project.
+services:
+  db:
+    image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: portal
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U portal -d portal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    image: ${COLLECTIVEUI_WORKER_IMAGE:?Set COLLECTIVEUI_WORKER_IMAGE to an immutable worker image reference}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/portal
+      DATABASE_POOL_MAX: ${WORKER_DATABASE_POOL_MAX:-20}
+      STORAGE_DIR: /data/uploads
+    command: [node, --import, tsx, src/worker/index.ts]
+    volumes:
+      - uploads:/data/uploads
+      - ./certs:/etc/portal/certs:ro
+    depends_on:
+      db: { condition: service_healthy }
+
+  web:
+    image: ${COLLECTIVEUI_WEB_IMAGE:?Set COLLECTIVEUI_WEB_IMAGE to an immutable web image reference}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/portal
+      STORAGE_DIR: /data/uploads
+      PORT: "3000"
+    ports:
+      - "${WEB_BIND:-0.0.0.0}:${PORT:-3000}:3000"
+    volumes:
+      - uploads:/data/uploads
+      - ./certs:/etc/portal/certs:ro
+    depends_on:
+      db: { condition: service_healthy }
+      worker: { condition: service_healthy }
+
+  migrate:
+    profiles: [maintenance]
+    image: ${COLLECTIVEUI_WORKER_IMAGE:?Set COLLECTIVEUI_WORKER_IMAGE to an immutable worker image reference}
+    restart: "no"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/portal
+      STORAGE_DIR: /data/uploads
+    command: [node, --import, tsx, src/db/migrate.ts]
+    volumes:
+      - uploads:/data/uploads
+      - ./certs:/etc/portal/certs:ro
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      disable: true
+
+  backup:
+    profiles: [maintenance]
+    image: ${COLLECTIVEUI_WORKER_IMAGE:?Set COLLECTIVEUI_WORKER_IMAGE to an immutable worker image reference}
+    restart: "no"
+    command: [tar, -C, /data/uploads, -czf, -, .]
+    volumes:
+      - uploads:/data/uploads
+    healthcheck:
+      disable: true
+
+volumes:
+  pgdata:
+  uploads:

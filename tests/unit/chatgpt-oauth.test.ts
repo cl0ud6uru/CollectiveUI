@@ -37,7 +37,7 @@ describe("device code sign-in", () => {
     expect(calls[0].url).toBe("https://auth.openai.com/api/accounts/deviceauth/usercode");
     expect(JSON.parse(bodyOf(calls[0]))).toEqual({ client_id: "app_EMoamEEZ73f0CkXaXp7hrann" });
     const headers = calls[0].init.headers as Record<string, string>;
-    expect(headers["User-Agent"]).toMatch(/AIPortal/);
+    expect(headers["User-Agent"]).toBe("CollectiveUI/0.1.0");
     expect(calls[0].init.redirect).toBe("error");
   });
 
@@ -120,10 +120,10 @@ describe("refresh", () => {
   it("revokes the refresh token (with client id), else the access token, best effort", async () => {
     replies.push(json(200, {}));
     expect(await revokeTokens({ refreshToken: "rt", accessToken: "at" }, f)).toBe(true);
-    expect(JSON.parse(bodyOf(calls[0]))).toEqual({ token: "rt", token_type_hint: "refresh_token", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" });
+    expect(Object.fromEntries(new URLSearchParams(bodyOf(calls[0])))).toEqual({ token: "rt", token_type_hint: "refresh_token", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" });
     replies.push(json(200, {}));
     await revokeTokens({ accessToken: "at" }, f);
-    expect(JSON.parse(bodyOf(calls[1]))).toEqual({ token: "at", token_type_hint: "access_token" });
+    expect(Object.fromEntries(new URLSearchParams(bodyOf(calls[1])))).toEqual({ token: "at", token_type_hint: "access_token", client_id: "app_EMoamEEZ73f0CkXaXp7hrann" });
     expect(await revokeTokens({ accessToken: "at" }, f)).toBe(false); // network error swallowed
   });
 });

@@ -1,12 +1,9 @@
 import { and, eq } from 'drizzle-orm';
-import { aiApps, userCredentials,officialPlanConnections } from '@/db/schema';
+import { aiApps, officialPlanConnections } from '@/db/schema';
 import type { Tx } from '@/db';
 import { HttpError } from '@/lib/authz';
 import { providerContextFor } from '@/lib/llm/resolve';
 import { apiKeyOf } from '@/lib/llm/providers/shared';
-import { openCredentialSecret } from '@/lib/llm/chatgpt/store';
-import { chatgptFetch } from '@/lib/llm/chatgpt/fetch';
-import { chatgptBackendUrl } from '@/lib/llm/chatgpt/constants';
 import { OFFICIAL_PLAN_ORIGIN,OFFICIAL_PLAN_ADAPTER,openOfficialPlanSecret,officialPlanMetadata } from './official-plan';
 import type { CandidateContext } from './candidate-context';
 import type { TeamNativeModelProtocol } from './native-request';
@@ -32,16 +29,9 @@ export async function loadCandidateModelWire(context: CandidateContext, protocol
     return {secrets:[secret.access,secret.refresh??'',secret.idToken??''],send:(body,signal)=>baseFetch(`${OFFICIAL_PLAN_ORIGIN}/responses`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${secret.access}`},body:JSON.stringify(body),signal,redirect:'error'})};
   }
   if (route.integration === 'hermes_native_codex') {
-    if (route.billing !== 'personal' || route.adapterId !== 'collective-codex-responses-v1' || !context.personalConnectionId) throw new HttpError(409, 'Invalid personal Codex route.');
-    const [row] = await tx.select().from(userCredentials).where(and(eq(userCredentials.id,context.personalConnectionId),eq(userCredentials.userId,context.actorId),eq(userCredentials.provider,'chatgpt')));
-    if (!row || row.status !== 'active' || !row.expiresAt || row.expiresAt.getTime() <= Date.now()) throw new HttpError(409, 'Reconnect your personal ChatGPT connection.');
-    const secret = openCredentialSecret(row);
-    // Deliberately no refresh or 401 retry: changed access requires a fresh explicit connection.
-    const nativeFetch = chatgptFetch({ conversationId: context.runId, baseFetch, getAuth: async ({ rejectedToken }) => {
-      if (rejectedToken) throw new HttpError(409, 'Reconnect your personal ChatGPT connection.');
-      return { credentialId: row.id, accessToken: secret.access, accountId: row.accountId, planType: row.planType, residency: row.residency, isFedramp: row.isFedramp };
-    } });
-    return { secrets: [secret.access, row.accountId], send: (body,signal) => nativeFetch(`${chatgptBackendUrl()}/responses`, { method:'POST',body:JSON.stringify(body),signal,redirect:'error' }) };
+    // Retained private-backend grants are incompatible with the unified supported SIWC transport.
+    // Fail before loading/decrypting credentials; other Hermes routes keep their separate setup.
+    throw new HttpError(409, 'The retained Hermes route requires separate setup. Use your unified SIWC account with the native CollectiveUI harness or stock Codex.');
   }
   if (route.billing !== 'admin' || !route.id.startsWith('app:')) throw new HttpError(409, 'The admin gateway needs a fixed server provider connection.');
   const [app] = await tx.select().from(aiApps).where(eq(aiApps.id,route.id.slice(4)));

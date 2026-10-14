@@ -116,6 +116,9 @@ export function planLabel(plan: string | null | undefined): string {
  * as personal.
  */
 export function accountRejection(claims: { accountId: string; planType: string | null }, s: ChatGPTSettings): string | null {
+  if (claims.accountId.startsWith('siwc:') && s.allowedWorkspaceIds.some(value => value.trim())) {
+    return 'The legacy workspace allowlist cannot be verified from SIWC’s opaque metadata. An administrator must explicitly revise that policy.';
+  }
   if (isWorkspacePlan(claims.planType)) {
     const allowed = s.allowedWorkspaceIds.map((w) => w.trim()).filter(Boolean);
     if (allowed.length && !allowed.includes(claims.accountId)) {

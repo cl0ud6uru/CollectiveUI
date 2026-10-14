@@ -16,6 +16,9 @@ trap cleanup EXIT
 # Both the documented npm entry point and the default startup run against the production install.
 "${compose[@]}" run --rm --no-deps worker npm run db:migrate
 "${compose[@]}" run --rm --no-deps worker npm run db:migrate
+# Validate packaging only: --help creates no account/profile and makes no provider call.
+"${compose[@]}" run --rm --no-deps worker node --import tsx scripts/chatgpt-sign-in.ts --help
+"${compose[@]}" run --rm --no-deps worker node -e "require('node:fs').accessSync('/app/scripts/chatgpt-import.ts')"
 "${compose[@]}" up -d worker
 "${compose[@]}" run --rm --no-deps check
 "${compose[@]}" stop worker

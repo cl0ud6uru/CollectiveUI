@@ -169,6 +169,7 @@ See the [development status and backlog](TODO.md), [service-bot restrictions](do
 | Learn chat and bot controls | [User guide](docs/user-guide.md) |
 | Run the demo or troubleshoot startup | [Local setup](docs/getting-started.md) |
 | Deploy, update, back up or recover an installation | [Operator guide](docs/operations.md) |
+| Deploy published images without building on the VM | [Docker Hub deployment and updates](docs/docker-hub-deployment.md) |
 | Connect models, MCP tools or Hermes | [Connection guide](docs/connections.md) |
 | Set up an optional coordinator or The Queen starter | [Default coordinator](docs/features/default-coordinator.md) |
 | Configure narrowly scoped shared capabilities | [Service bots](docs/service-bots.md) |
@@ -209,7 +210,7 @@ Deployment, local accounts, recovery, directory setup, workspaces and webhook si
 <a id="your-mcp-servers"></a>
 <a id="peoples-own-chatgpt-plans-sign-in-with-chatgpt-unofficial"></a>
 <a id="hermes-agent-bots-from-your-hermes-profiles"></a>
-Model providers, MCP, the optional unofficial ChatGPT-plan connection and Hermes setup moved to the [connection guide](docs/connections.md).
+Model providers, MCP, the personal ChatGPT token sharing connection and Hermes setup moved to the [connection guide](docs/connections.md).
 
 <a id="architecture"></a>
 <a id="running-the-tests"></a>
