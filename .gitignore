@@ -53,3 +53,8 @@ __pycache__/
 !/certs/README.md
 # host-specific Compose overrides (auto-loaded by `docker compose`)
 /docker-compose.override.yml
+
+# Operator deployment journals, private backups and downloaded image manifests
+/.collectiveui-deploy/
+/release-input/
+/release-manifest.json

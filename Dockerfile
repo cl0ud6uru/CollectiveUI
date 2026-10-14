@@ -53,11 +53,12 @@ COPY scripts/local-account.ts ./scripts/local-account.ts
 RUN chmod -R a+rX /app && groupadd -r app && useradd -r -g app app && mkdir -p /data/uploads && chown -R app:app /data
 USER app
 ENV STORAGE_DIR=/data/uploads
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=3 CMD ["node", "src/worker/healthcheck.mjs"]
 # The explicit legacy-enrollment import is an operator command in the worker image.
 COPY --chmod=0644 scripts/migrate-docker-hermes-enrollment.ts ./scripts/migrate-docker-hermes-enrollment.ts
 # exec: node replaces the shell, so SIGTERM (docker stop) reaches the worker, which then saves running replies as
 # interrupted before it exits (see src/worker/index.ts). `npx tsx` would put a CLI process in between.
-CMD ["sh", "-c", "node --import tsx src/db/migrate.ts && exec node --import tsx src/worker/index.ts"]
+CMD ["sh", "-c", "rm -f /tmp/collectiveui-worker/ready && node --import tsx src/db/migrate.ts && exec node --import tsx src/worker/index.ts"]
 
 # ---------------------------------------------------------------------------
 # Full Debian Node includes /usr/bin/python3, git and procps for the synthetic native-process fixtures.

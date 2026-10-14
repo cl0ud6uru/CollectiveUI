@@ -9,3 +9,7 @@ playwright-report
 certs
 docker-compose.override.yml
 *.tsbuildinfo
+# Operator release state contains database/upload backups. Never send it to an image build.
+.collectiveui-deploy
+release-input
+release-manifest.json

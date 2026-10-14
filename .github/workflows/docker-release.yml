@@ -1,0 +1,268 @@
+name: Docker Hub release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Keep publication serialized so two trusted events cannot race to claim a tag.
+concurrency:
+  # Pull requests are independent; main pushes and release events share one publish queue.
+  group: docker-hub-release-${{ github.event_name == 'pull_request' && github.ref || 'trusted-publication' }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test exact release images
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      publish: ${{ steps.event.outputs.publish }}
+      revision: ${{ steps.event.outputs.revision }}
+      version: ${{ steps.event.outputs.version }}
+      migrations_sha256: ${{ steps.migrations.outputs.hash }}
+    steps:
+      - name: Check out the exact event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify event trust and revision
+        id: event
+        run: >-
+          python3 scripts/container-release.py event-check
+          --event-name "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" --sha "$GITHUB_SHA"
+          --event-path "$GITHUB_EVENT_PATH" --output "$GITHUB_OUTPUT"
+
+      - name: Fingerprint database migrations
+        id: migrations
+        run: echo "hash=$(python3 scripts/container-release.py migration-hash)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Build the offline test image
+        run: docker build --target test -t collectiveui-test:ci .
+
+      - name: Run typecheck, lint, unit, and release helper tests
+        run: >-
+          docker run --rm --init --network none collectiveui-test:ci
+          sh -lc 'npm run typecheck && npm run lint && npm test -- --project unit && python3 -m unittest discover -s tests/deployment -v'
+
+      - name: Build the web image that will be published
+        env:
+          REVISION: ${{ steps.event.outputs.revision }}
+          MIGRATIONS_SHA256: ${{ steps.migrations.outputs.hash }}
+        run: >-
+          docker buildx build --platform linux/amd64 --load --target web
+          --tag collectiveui-web:tested
+          --label "org.opencontainers.image.revision=$REVISION"
+          --label "io.collectiveui.migrations-sha256=$MIGRATIONS_SHA256" .
+
+      - name: Build the worker image that will be published
+        env:
+          REVISION: ${{ steps.event.outputs.revision }}
+          MIGRATIONS_SHA256: ${{ steps.migrations.outputs.hash }}
+        run: >-
+          docker buildx build --platform linux/amd64 --load --target worker
+          --tag collectiveui-worker:tested
+          --label "org.opencontainers.image.revision=$REVISION"
+          --label "io.collectiveui.migrations-sha256=$MIGRATIONS_SHA256" .
+
+      - name: Audit production worker dependencies
+        run: |
+          mkdir -p test-results/docker
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:tested npm query '*' --json > test-results/docker/worker-dependencies.json
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:tested npm ls --omit=dev --all --json > test-results/docker/worker-tree.json
+          docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:tested npm audit --omit=dev --json > test-results/docker/worker-audit.json
+
+      - name: Smoke test the web image
+        run: >-
+          WEB_IMAGE=collectiveui-web:tested WORKER_IMAGE=collectiveui-worker:tested
+          bash tests/docker/web-smoke.sh
+
+      - name: Smoke test the worker image
+        run: WORKER_IMAGE=collectiveui-worker:tested bash tests/docker/worker-smoke.sh
+
+      - name: Upload worker dependency audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: worker-dependency-audit
+          path: test-results/docker/*.json
+          if-no-files-found: ignore
+          retention-days: 2
+
+      - name: Test stopped-writer backups and full data restoration
+        run: >-
+          WEB_IMAGE=collectiveui-web:tested WORKER_IMAGE=collectiveui-worker:tested
+          python3 tests/docker/deployment-smoke.py
+
+      - name: Save tested image IDs and archive
+        if: steps.event.outputs.publish == 'true'
+        env:
+          REVISION: ${{ steps.event.outputs.revision }}
+          MIGRATIONS_SHA256: ${{ steps.migrations.outputs.hash }}
+        run: |
+          mkdir -p release-input
+          web_id="$(docker image inspect --format '{{.Id}}' collectiveui-web:tested)"
+          worker_id="$(docker image inspect --format '{{.Id}}' collectiveui-worker:tested)"
+          python3 scripts/container-release.py record-images \
+            --revision "$REVISION" --migrations-sha256 "$MIGRATIONS_SHA256" \
+            --web-id "$web_id" --worker-id "$worker_id" \
+            --output release-input/tested-images.json
+          docker save --output release-input/tested-images.tar collectiveui-web:tested collectiveui-worker:tested
+
+      - name: Upload exact tested images
+        if: steps.event.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tested-container-images
+          path: release-input/
+          if-no-files-found: error
+          retention-days: 2
+
+  # A published release tag gets its own build/test run. Its manifest records that run's
+  # tested image digests; publish loads that run's image archive without rebuilding and
+  # makes no claim that those digests match an earlier main-push digest.
+  publish:
+    name: Publish verified Docker Hub images
+    needs: test
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release') &&
+      needs.test.outputs.publish == 'true' && vars.DOCKERHUB_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: dockerhub-publish
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the verified event revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.test.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download the exact tested images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tested-container-images
+          path: release-input
+
+      - name: Repeat event trust and ancestry checks before registry login
+        env:
+          EXPECTED_REVISION: ${{ needs.test.outputs.revision }}
+          EXPECTED_VERSION: ${{ needs.test.outputs.version }}
+        run: |
+          python3 scripts/container-release.py event-check \
+            --event-name "$GITHUB_EVENT_NAME" --ref "$GITHUB_REF" --sha "$GITHUB_SHA" \
+            --event-path "$GITHUB_EVENT_PATH" --output "$GITHUB_OUTPUT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          test "$(sed -n 's/^revision=//p' "$GITHUB_OUTPUT" | tail -n 1)" = "$EXPECTED_REVISION"
+          test "$(sed -n 's/^version=//p' "$GITHUB_OUTPUT" | tail -n 1)" = "$EXPECTED_VERSION"
+          test "$(sed -n 's/^publish=//p' "$GITHUB_OUTPUT" | tail -n 1)" = true
+
+      - name: Validate configured Docker Hub namespace
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+        run: python3 scripts/container-release.py validate-namespace "$DOCKERHUB_NAMESPACE"
+
+      - name: Load and verify the exact tested image IDs and labels
+        env:
+          REVISION: ${{ needs.test.outputs.revision }}
+          MIGRATIONS_SHA256: ${{ needs.test.outputs.migrations_sha256 }}
+        run: |
+          docker load --input release-input/tested-images.tar
+          docker image inspect collectiveui-web:tested > release-input/web-inspect.json
+          docker image inspect collectiveui-worker:tested > release-input/worker-inspect.json
+          python3 scripts/container-release.py verify-loaded-images \
+            --evidence release-input/tested-images.json \
+            --web-inspect release-input/web-inspect.json \
+            --worker-inspect release-input/worker-inspect.json \
+            --revision "$REVISION" --migrations-sha256 "$MIGRATIONS_SHA256"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Refuse to overwrite existing version tags
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          VERSION: ${{ needs.test.outputs.version }}
+        run: |
+          set -euo pipefail
+          for image in collectiveui-web collectiveui-worker; do
+            ref="docker.io/$DOCKERHUB_NAMESPACE/$image:$VERSION"
+            if output="$(docker buildx imagetools inspect "$ref" 2>&1)"; then
+              echo "Refusing to overwrite existing tag $ref" >&2
+              exit 1
+            fi
+            if ! grep -Eiq 'manifest unknown|no such manifest' <<< "$output"; then
+              echo "Could not prove that $ref is absent: $output" >&2
+              exit 1
+            fi
+          done
+
+      - name: Push the already-tested images and verify registry digests
+        id: push
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          VERSION: ${{ needs.test.outputs.version }}
+        run: |
+          set -euo pipefail
+          for image in collectiveui-web collectiveui-worker; do
+            local_image="$image:tested"
+            remote_image="docker.io/$DOCKERHUB_NAMESPACE/$image:$VERSION"
+            docker tag "$local_image" "$remote_image"
+            push_output="$(docker push "$remote_image" 2>&1)" || { echo "$push_output" >&2; exit 1; }
+            printf '%s\n' "$push_output"
+            pushed_digest="$(sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' <<< "$push_output" | tail -n 1)"
+            test -n "$pushed_digest"
+            registry_digest="$(docker buildx imagetools inspect --raw "$remote_image" | sha256sum | cut -d ' ' -f 1)"
+            test "sha256:$registry_digest" = "$pushed_digest"
+            if [ "$image" = collectiveui-web ]; then
+              echo "web_digest=$pushed_digest" >> "$GITHUB_OUTPUT"
+            else
+              echo "worker_digest=$pushed_digest" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Write digest-pinned release manifest
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          REVISION: ${{ needs.test.outputs.revision }}
+          VERSION: ${{ needs.test.outputs.version }}
+          MIGRATIONS_SHA256: ${{ needs.test.outputs.migrations_sha256 }}
+          WEB_DIGEST: ${{ steps.push.outputs.web_digest }}
+          WORKER_DIGEST: ${{ steps.push.outputs.worker_digest }}
+        run: |
+          python3 scripts/container-release.py manifest \
+            --namespace "$DOCKERHUB_NAMESPACE" --revision "$REVISION" \
+            --version "$VERSION" --migrations-sha256 "$MIGRATIONS_SHA256" \
+            --web-digest "$WEB_DIGEST" --worker-digest "$WORKER_DIGEST" \
+            --output release-manifest.json
+
+      - name: Upload release manifest artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-release-manifest
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Attach manifest to the GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.test.outputs.version }}
+        run: gh release upload "$VERSION" release-manifest.json
