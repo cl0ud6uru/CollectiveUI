@@ -87,12 +87,12 @@ footer with the account name available to VoiceOver. `/new` and `/reset` retain 
 reconstruction or relaunch. After an uncertain `/yolo` toggle, inspect `/yolo status`
 and choose an explicit `/yolo on` or `/yolo off`.
 
-**Check Hermes status** runs only `/status` and keeps the current composer draft,
-attachments and any unconfirmed submission. It remains available after a command
-error or status result, including when ordinary message sending is guarded.
-An unconfirmed server cancellation remains unconfirmed; this inspection does not
-reset the conversation or authorize another reply. Follow the server's reported
-recovery instruction before retrying `/new` or `/reset`.
+The transcript does not add a Hermes status button after errors, command results,
+or interrupted replies. To inspect Hermes explicitly, send `/status` through the
+composer when sending is available. An unconfirmed server cancellation remains
+unconfirmed; a status result does not reset the conversation or authorize another
+reply. Follow the server's reported recovery instruction before retrying `/new`
+or `/reset`.
 
 `CollectiveUITests/ChatRecoveryTests.swift` uses synthetic transport failures,
 delayed snapshots, clean EOF and immutable requests. The standalone UI regressions

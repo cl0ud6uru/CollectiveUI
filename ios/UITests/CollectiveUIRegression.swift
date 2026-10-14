@@ -292,11 +292,12 @@ final class CollectiveUIRegression: XCTestCase {
     }
 
     func testStatusRecoveryClearsTheErrorAndAttentionHeader() {
-        launch("home-bot-atlas", extra: ["--demo-stream-scenario", "recovery"])
+        launch("home-bot-atlas", extra: ["--demo-hermes-cancellation", "--demo-stream-scenario", "recovery"])
         enterDraft("Recover the offline Hermes fixture")
         tap(app.buttons["Send"])
         let check = app.buttons["Check message status"]
         XCTAssertTrue(check.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Needs attention") == true)
         app.textViews["chatComposer"].typeText("Next draft remains separate")
         XCTAssertFalse(app.buttons["Send"].isEnabled)
@@ -304,6 +305,7 @@ final class CollectiveUIRegression: XCTestCase {
         tap(check)
         XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
         XCTAssertFalse(check.exists)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         XCTAssertFalse(app.staticTexts["Couldn't confirm the message status. Check again before sending another message."].exists)
         XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Next draft remains separate")
@@ -357,9 +359,10 @@ final class CollectiveUIRegression: XCTestCase {
         capture("commands-02-result")
     }
 
-    func testUnconfirmedHermesCancellationStatusPreservesResetDraft() {
+    func testUnconfirmedHermesCancellationKeepsDraftWithoutStatusButton() {
         launch("home-bot-atlas", extra: ["--demo-hermes-cancellation"])
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No files or prompt were sent")).firstMatch.exists)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         enterDraft("/reset")
         // Typing the initial slash opens the native command popover. Dismiss
         // that modal before interacting with the composer behind it.
@@ -371,25 +374,47 @@ final class CollectiveUIRegression: XCTestCase {
         let warning = app.staticTexts["Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing. Your draft has been kept."]
         XCTAssertTrue(warning.waitForExistence(timeout: 10))
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
-        let check = app.buttons["Check Hermes status"]
-        let fullyVisible = NSPredicate { _, _ in
-            check.exists && check.isEnabled && self.app.scrollViews["chat.transcript"].frame.contains(check.frame)
-        }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
-            "The full status target must fit above the composer with the keyboard visible")
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
+        XCTAssertFalse(app.staticTexts["Chat status"].exists, "An error must not submit a status command automatically")
+        XCTAssertTrue(send.isEnabled)
         capture("hermes-cancellation-01-reset-kept")
-        XCTAssertTrue(check.isHittable)
-        XCTAssertGreaterThanOrEqual(check.frame.height, 44)
-        tap(check)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
+        XCTAssertFalse(app.staticTexts["Chat status"].exists)
+    }
+
+    func testExplicitHermesStatusAndStreamingDoNotAddStatusButton() {
+        launch("home-bot-atlas", extra: ["--demo-hermes-cancellation", "--demo-stream-scenario", "long"])
+        enterDraft("/status")
+        tap(app.buttons["Close commands"])
+        XCTAssertFalse(app.staticTexts["Chat status"].exists)
+        tap(app.buttons["Send"])
         XCTAssertTrue(app.staticTexts["Portal reply: failed (stop requested)."].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles."].exists)
-        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
-        XCTAssertFalse(warning.exists)
-        XCTAssertTrue(check.exists, "Status inspection stays available while cancellation remains unconfirmed")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
-            "The status target remains fully visible after the result grows")
-        XCTAssertTrue(check.isEnabled)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "")
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         capture("hermes-cancellation-02-unconfirmed-status")
+        enterDraft("How is home assistant looking today?")
+        tap(app.buttons["Send"])
+        let stop = app.buttons["Stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Working") == true)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
+        XCTAssertTrue(app.buttons["Chat options"].exists)
+        XCTAssertTrue(app.buttons["Start voice"].exists)
+        capture("hermes-status-03-streaming-without-button")
+        tap(stop)
+        let stopped = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: stop)
+        wait(for: [stopped], timeout: 10)
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
+        // An empty, idle composer hides Send; typing a new draft reveals it.
+        enterDraft("Next request after stopping")
+        XCTAssertTrue(app.buttons["Send"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
     }
 
     // Also run on the dedicated iPad after simctl ui content_size sets the largest
