@@ -13,3 +13,6 @@ docker-compose.override.yml
 .collectiveui-deploy
 release-input
 release-manifest.json
+
+# Protected Sign in with ChatGPT profile exports are runtime credentials, never image inputs.
+chatgpt-profile*.json

@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -30,9 +31,11 @@ WEB_DIGEST = "c" * 64
 WORKER_DIGEST = "d" * 64
 NAMESPACE = "collectiveui"
 PROJECT = "portal"
+POSTGRES16_IMAGE = "pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a"
 
 
-def manifest(revision=REVISION, version=None, migrations=MIGRATIONS, namespace=NAMESPACE):
+def manifest(revision=REVISION, version=None, migrations=MIGRATIONS, namespace=NAMESPACE,
+             web_digest=WEB_DIGEST, worker_digest=WORKER_DIGEST):
     version = version or "sha-" + revision
     return {
         "format": 1,
@@ -40,8 +43,8 @@ def manifest(revision=REVISION, version=None, migrations=MIGRATIONS, namespace=N
         "version": version,
         "migrations_sha256": migrations,
         "images": {
-            "web": f"docker.io/{namespace}/collectiveui-web@sha256:{WEB_DIGEST}",
-            "worker": f"docker.io/{namespace}/collectiveui-worker@sha256:{WORKER_DIGEST}",
+            "web": f"docker.io/{namespace}/collectiveui-web@sha256:{web_digest}",
+            "worker": f"docker.io/{namespace}/collectiveui-worker@sha256:{worker_digest}",
         },
     }
 
@@ -57,6 +60,14 @@ class FixtureOperator(deploy.Operator):
         self.inspect = None
         self.app_started = False
         self.image_map = {"web": "sha256:web-id", "worker": "sha256:worker-id"}
+        self.db_image = POSTGRES16_IMAGE
+        self.db_version_result = "160000|t"
+        self.db_running = True
+        self.db_present = True
+
+    def is_ancestor(self, previous_revision, target_revision):
+        # Most updater-flow tests use synthetic revisions; Git ancestry has dedicated tests below.
+        return True
 
     def command(self, arguments, *, manifest=None, output=None, input_file=None, timeout=600):
         self.calls.append(("command", tuple(arguments)))
@@ -84,8 +95,11 @@ class FixtureOperator(deploy.Operator):
 
     def compose(self, release, *args, **kwargs):
         self.calls.append(("compose", tuple(args)))
+        if "psql" in args:
+            return self.db_version_result
         if args[-1:] == ("db",) and args[:2] == ("up", "-d"):
             self.app_started = True
+            self.db_running = True
         if self.fail_at == "migration" and args[-1:] == ("migrate",):
             raise deploy.DeploymentError("fixture migration failure")
         if self.fail_at == "db-up" and args[-1:] == ("db",):
@@ -122,7 +136,10 @@ class FixtureOperator(deploy.Operator):
     def containers(self, release, service):
         self.calls.append(("containers", service))
         if service == "db":
-            return [{"State": {"Running": True},
+            if not self.db_present:
+                return []
+            return [{"State": {"Running": self.db_running},
+                     "Config": {"Image": self.db_image},
                      "Mounts": [{"Name": f"{self.project}_pgdata", "Destination": "/var/lib/postgresql/data"}]}]
         if not self.app_started:
             return []
@@ -185,6 +202,252 @@ class ManifestValidationTests(unittest.TestCase):
                 deploy.validate_manifest(value, NAMESPACE)
 
 
+class ForwardReleaseTests(unittest.TestCase):
+    @staticmethod
+    def _built(revision, version):
+        web = hashlib.sha256((revision + "web").encode()).hexdigest()
+        worker = hashlib.sha256((revision + "worker").encode()).hexdigest()
+        return manifest(revision, version=version, web_digest=web, worker_digest=worker)
+
+    def test_exact_current_manifest_is_idempotent_without_downtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = FixtureOperator(tmp)
+            op.state.mkdir(mode=0o700)
+            (op.directory / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            current = manifest(version="v1.2.3")
+            deploy.atomic_json(op.current_path, current)
+            op.app_started = True
+            op.apply(current)
+            self.assertFalse(any(call[0] == "stop" for call in op.calls))
+            self.assertFalse(any(call[0] == "images" and call[1] for call in op.calls))
+            self.assertFalse(any(call[0] in {"backup", "helper"} for call in op.calls))
+
+    def test_forward_guard_rejects_equal_or_older_versions_and_metadata_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = FixtureOperator(tmp)
+            current = manifest(version="v1.2.3")
+            invalid = (
+                self._built("f" * 40, "v1.2.3"),
+                self._built("f" * 40, "v1.2.2"),
+                current | {"images": current["images"] | {"web": current["images"]["web"][:-1] + "e"}},
+                current | {"migrations_sha256": "f" * 64},
+            )
+            for candidate in invalid:
+                with self.subTest(candidate=candidate), self.assertRaises(deploy.DeploymentError):
+                    op.verify_forward(current, candidate)
+
+    def test_git_ancestry_allows_descendant_and_rejects_ancestor_or_divergent_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+
+            git("init", "--quiet")
+            git("config", "user.name", "Deployment Test")
+            git("config", "user.email", "fixture@invalid.example")
+            (repo / "history.txt").write_text("base\n")
+            git("add", "history.txt")
+            git("commit", "--quiet", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            (repo / "history.txt").write_text("base\nforward\n")
+            git("commit", "--quiet", "-am", "forward")
+            child = git("rev-parse", "HEAD")
+            git("checkout", "--quiet", "--detach", base)
+            (repo / "history.txt").write_text("base\ndivergent\n")
+            git("commit", "--quiet", "-am", "divergent")
+            divergent = git("rev-parse", "HEAD")
+
+            op = deploy.Operator(repo, PROJECT, NAMESPACE)
+            op.verify_forward(self._built(base, "v1.0.0"), self._built(child, "v1.1.0"))
+            with self.assertRaises(deploy.DeploymentError):
+                op.verify_forward(self._built(child, "v2.0.0"), self._built(base, "v3.0.0"))
+            with self.assertRaises(deploy.DeploymentError):
+                op.verify_forward(self._built(child, "v2.0.0"), self._built(divergent, "v3.0.0"))
+
+    def test_shallow_checkout_is_not_accepted_as_ancestry_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+            git("init", "--quiet")
+            git("config", "user.name", "Deployment Test")
+            git("config", "user.email", "fixture@invalid.example")
+            (repo / "history.txt").write_text("commit\n")
+            git("add", "history.txt")
+            git("commit", "--quiet", "-m", "commit")
+            revision = git("rev-parse", "HEAD")
+            (repo / ".git" / "shallow").write_text(revision + "\n")
+            op = deploy.Operator(repo, PROJECT, NAMESPACE)
+            with self.assertRaisesRegex(deploy.DeploymentError, "full reviewed Git checkout"):
+                op.is_ancestor(revision, revision)
+
+    def test_apply_rejects_v2_to_v1_before_pulling_or_stopping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            op = FixtureOperator(root)
+            op.state.mkdir(mode=0o700)
+            op.app_started = True
+            current = manifest(revision=PREVIOUS_REVISION, version="v2.0.0")
+            deploy.atomic_json(op.current_path, current)
+            with self.assertRaisesRegex(deploy.DeploymentError, "newer stable version"):
+                op.apply(manifest(revision=REVISION, version="v1.0.0"))
+            self.assertFalse(any(call[0] == "stop" for call in op.calls))
+            self.assertFalse(any(call[0] == "images" and call[1] for call in op.calls))
+            self.assertTrue(op.app_started)
+
+    def test_recorded_release_with_missing_database_is_not_treated_as_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            op = FixtureOperator(root)
+            op.state.mkdir(mode=0o700)
+            op.app_started = True
+            op.db_present = False
+            current = manifest(version="v1.2.3")
+            deploy.atomic_json(op.current_path, current)
+            with self.assertRaises(deploy.DeploymentError):
+                op.apply(current)
+            self.assertFalse(any(call[0] == "stop" for call in op.calls))
+            self.assertFalse(any(call[0] == "images" and call[1] for call in op.calls))
+            self.assertEqual(json.loads(op.current_path.read_text()), current)
+
+
+class DatabaseIdentityTests(unittest.TestCase):
+    def test_database_requires_supported_pg16_image_and_runtime_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = FixtureOperator(tmp)
+            deploy.Operator.verify_database(op, manifest(), require_running=False)
+
+            op.db_image = "pgvector/pgvector:pg14"
+            with self.assertRaises(deploy.DeploymentError):
+                deploy.Operator.verify_database(op, manifest(), require_running=False)
+
+            op.db_image = POSTGRES16_IMAGE
+            op.db_version_result = "140000|t"
+            with self.assertRaises(deploy.DeploymentError):
+                deploy.Operator.verify_database(op, manifest(), require_running=False)
+
+            op.db_version_result = "160000|f"
+            with self.assertRaises(deploy.DeploymentError):
+                deploy.Operator.verify_database(op, manifest(), require_running=False)
+
+    def test_stopped_pg16_is_checked_again_after_database_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            op = FixtureOperator(root)
+            op.state.mkdir(mode=0o700)
+            op.db_running = False
+            op.apply(manifest())
+
+            db_start = next(i for i, call in enumerate(op.calls)
+                            if call[0] == "compose" and call[1][:2] == ("up", "-d") and call[1][-1:] == ("db",))
+            psql = [i for i, call in enumerate(op.calls)
+                    if call[0] == "compose" and "psql" in call[1]]
+            self.assertEqual(len(psql), 1)
+            self.assertGreater(psql[0], db_start)
+
+    def test_apply_checks_existing_database_before_any_service_stop_or_image_pull(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            op = FixtureOperator(root)
+            op.state.mkdir(mode=0o700)
+            op.db_image = "pgvector/pgvector:pg14"
+            with self.assertRaises(deploy.DeploymentError):
+                op.apply(manifest())
+            self.assertFalse(any(call[0] == "stop" for call in op.calls))
+            self.assertFalse(any(call[0] == "images" and call[1] for call in op.calls))
+            self.assertFalse(any(call[0] == "helper" and call[1] == "migrate" for call in op.calls))
+
+    def test_adoption_does_not_record_a_pg14_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            op = FixtureOperator(root)
+            op.state.mkdir(mode=0o700)
+            op.app_started = True
+            op.db_image = "pgvector/pgvector:pg14"
+            with self.assertRaises(deploy.DeploymentError):
+                op.adopt(manifest())
+            self.assertFalse(op.current_path.exists())
+
+
+class BackupDurabilityTests(unittest.TestCase):
+    class BackupIOOperator(FixtureOperator):
+        def compose(self, release, *args, **kwargs):
+            self.calls.append(("compose", tuple(args)))
+            if "psql" in args:
+                return self.db_version_result
+            output = kwargs.get("output")
+            if "pg_dump" in args:
+                output.write(b"synthetic database dump")
+            return ""
+
+        def helper(self, release, service, *args, **kwargs):
+            self.calls.append(("helper", service, tuple(args)))
+            if service == "backup":
+                output = kwargs["output"]
+                archive = io.BytesIO()
+                with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+                    payload = b"synthetic uploads"
+                    entry = tarfile.TarInfo("uploads.txt")
+                    entry.size = len(payload)
+                    tar.addfile(entry, io.BytesIO(payload))
+                output.write(archive.getvalue())
+            return ""
+
+        def backup(self, release, destination):
+            return deploy.Operator.backup(self, release, destination)
+
+    def test_backup_fsyncs_archive_directory_and_parent_before_return(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = self.BackupIOOperator(tmp)
+            op.state.mkdir(mode=0o700)
+            destination = op.state / "backup-fixture"
+            original = deploy.fsync_directory
+            fsynced = []
+
+            def record_fsync(path):
+                fsynced.append(Path(path))
+                return original(path)
+
+            with patch.object(deploy, "fsync_directory", record_fsync):
+                checksums = op.backup(manifest(), destination)
+
+            self.assertEqual(set(checksums), {"database.dump", "uploads.tar.gz"})
+            self.assertIn(destination, fsynced)
+            self.assertIn(op.state, fsynced)
+            self.assertEqual(fsynced[-2:], [destination, op.state])
+            self.assertTrue((destination / "database.dump").stat().st_size)
+
+    def test_backup_directory_fsync_failure_blocks_migration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text("POSTGRES_PASSWORD=synthetic\n")
+            op = self.BackupIOOperator(root)
+            op.state.mkdir(mode=0o700)
+            original = deploy.fsync_directory
+
+            def fail_backup_directory(path):
+                if Path(path).name.startswith("backup-"):
+                    raise OSError("synthetic backup directory fsync failure")
+                return original(path)
+
+            with patch.object(deploy, "fsync_directory", fail_backup_directory):
+                with self.assertRaises((OSError, deploy.DeploymentError)):
+                    op.apply(manifest())
+
+            self.assertFalse(any(call[0] == "helper" and call[1] == "migrate" for call in op.calls))
+            self.assertTrue(op.journal_path.exists())
+
+
 class ProtectedStateTests(unittest.TestCase):
     def test_locked_state_and_atomic_json_are_private_and_replace_cleanly(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,6 +467,24 @@ class ProtectedStateTests(unittest.TestCase):
                 with self.assertRaisesRegex(deploy.DeploymentError, "Another deployment operation"):
                     with second.locked():
                         self.fail("second operator unexpectedly acquired lock")
+
+    def test_lock_fsyncs_install_directory_before_yielding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = deploy.Operator(tmp, PROJECT, NAMESPACE)
+            original = deploy.fsync_directory
+            events = []
+
+            def record_fsync(path):
+                events.append(("fsync", Path(path)))
+                return original(path)
+
+            with patch.object(deploy, "fsync_directory", record_fsync):
+                with op.locked():
+                    events.append(("yield", None))
+
+            self.assertEqual(events[0], ("fsync", op.directory))
+            self.assertEqual(events[1], ("yield", None))
+            self.assertTrue(op.state.is_dir())
 
 
 class ImageAndPreflightTests(unittest.TestCase):

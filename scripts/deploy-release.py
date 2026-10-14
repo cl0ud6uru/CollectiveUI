@@ -25,6 +25,14 @@ def read_json(path):
     return json.loads(path.read_text())
 
 
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def atomic_json(path, value):
     temporary = path.with_suffix(".tmp")
     with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as stream:
@@ -33,11 +41,7 @@ def atomic_json(path, value):
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
-    descriptor = os.open(path.parent, os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    fsync_directory(path.parent)
 
 
 def file_sha256(path):
@@ -136,6 +140,7 @@ class Operator:
         self.state.mkdir(mode=0o700, exist_ok=True)
         if self.state.stat().st_uid != os.getuid() or self.state.stat().st_mode & 0o077:
             raise DeploymentError("State directory must be owned by this operator with mode 700")
+        fsync_directory(self.directory)
         lock_path = self.state / "lock"
         descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
@@ -271,18 +276,61 @@ class Operator:
         if errors:
             print("Could not confirm all application/helper stops. Isolate ingress and inspect Docker locally immediately.", file=sys.stderr)
 
-    def verify_database(self, manifest):
+    def is_ancestor(self, previous_revision, target_revision):
+        # Local reviewed history is evidence, not a version-name guess. Never fetch implicitly.
+        environment = {key: value for key, value in os.environ.items() if key in {"PATH", "HOME"}}
+        prefix = ["git", "--no-replace-objects", "-C", str(self.directory)]
+        try:
+            shallow = subprocess.run(prefix + ["rev-parse", "--is-shallow-repository"],
+                                     env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     timeout=30, check=False)
+            if shallow.returncode or shallow.stdout.strip() != b"false":
+                raise DeploymentError("Forward update requires a full reviewed Git checkout; fetch complete history containing both release commits before retrying")
+            result = subprocess.run(prefix + ["merge-base", "--is-ancestor", previous_revision, target_revision],
+                                    env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise DeploymentError("Git history verification unavailable; install Git and fetch complete reviewed release history before retrying") from None
+        if result.returncode not in {0, 1}:
+            raise DeploymentError("Release commits unavailable in local Git history; fetch complete reviewed history before retrying")
+        return result.returncode == 0
+
+    def verify_forward(self, current, target):
+        if current == target:
+            return
+        if current["version"] == target["version"]:
+            raise DeploymentError("Release version metadata changed; use a new forward release or explicit rollback --restore-data")
+        if current["version"].startswith("v") and target["version"].startswith("v"):
+            current_version = tuple(map(int, current["version"][1:].split(".")))
+            target_version = tuple(map(int, target["version"][1:].split(".")))
+            if target_version <= current_version:
+                raise DeploymentError("Apply requires a newer stable version; downgrade requires explicit rollback --restore-data")
+        if current["revision"] == target["revision"]:
+            if current["migrations_sha256"] != target["migrations_sha256"]:
+                raise DeploymentError("The same source revision has different migrations; refuse this release and inspect its provenance")
+        elif not self.is_ancestor(current["revision"], target["revision"]):
+            raise DeploymentError("Target revision is older or divergent; apply requires a descendant and downgrade requires explicit rollback --restore-data")
+
+    def verify_database(self, manifest, require_running=True):
         database = self.containers(manifest, "db")
-        if len(database) != 1 or not database[0]["State"]["Running"] or not any(m.get("Name") == f"{self.project}_pgdata" and m["Destination"] == "/var/lib/postgresql/data" for m in database[0]["Mounts"]):
+        if len(database) != 1 or not any(m.get("Name") == f"{self.project}_pgdata" and m["Destination"] == "/var/lib/postgresql/data" for m in database[0]["Mounts"]):
             raise DeploymentError("Database volume does not match the explicit project")
+        image = database[0].get("Config", {}).get("Image", "")
+        if not re.fullmatch(r"(?:docker\.io/)?pgvector/pgvector:pg16(?:@sha256:[0-9a-f]{64})?", image):
+            raise DeploymentError("Existing database must use the supported pgvector PG16 image; back up and migrate unsupported databases separately before adoption/update")
+        if not database[0]["State"]["Running"]:
+            if require_running:
+                raise DeploymentError("Database must be running for version and pgvector verification")
+            return
+        version = self.compose(manifest, "exec", "-T", "db", "psql", "-X", "-At", "-v", "ON_ERROR_STOP=1",
+                               "-U", "portal", "-d", "portal", "-c",
+                               "SELECT current_setting('server_version_num'), EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector');").strip()
+        if not re.fullmatch(r"16\d{4}\|t", version):
+            raise DeploymentError("Live database must run PostgreSQL 16 with pgvector available; back up and migrate unsupported databases separately before adoption/update")
 
     def clear_pending(self):
         self.journal_path.unlink()
-        descriptor = os.open(self.state, os.O_DIRECTORY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_directory(self.state)
 
     def containers(self, manifest, service):
         ids = self.compose(manifest, "ps", "--all", "--quiet", service).split()
@@ -331,8 +379,12 @@ class Operator:
             output.flush()
             os.fsync(output.fileno())
         verify_archive(uploads)
-        return {"database.dump": file_sha256(dump),
-                "uploads.tar.gz": file_sha256(uploads)}
+        checksums = {"database.dump": file_sha256(dump),
+                     "uploads.tar.gz": file_sha256(uploads)}
+        # File fsync alone does not make their names or the new backup directory durable.
+        fsync_directory(destination)
+        fsync_directory(destination.parent)
+        return checksums
 
     def apply(self, manifest):
         if self.journal_path.exists():
@@ -340,9 +392,15 @@ class Operator:
         self.preflight(manifest)
         previous = validate_manifest(read_json(self.current_path), self.namespace) if self.current_path.exists() else None
         if previous:
+            self.verify_forward(previous, manifest)
             self.verify_running(previous, self.image_ids(previous, pull=False))
         elif any(self.containers(manifest, service) for service in ("web", "worker")):
             raise DeploymentError("Existing application has no recorded release; follow the documented manual transition and adopt it")
+        if previous or self.containers(manifest, "db"):
+            self.verify_database(manifest, require_running=bool(previous))
+        if previous == manifest:
+            print(f"Healthy paired release {manifest['version']} is already current; no update required")
+            return
         self.stop_helpers()
         images = self.image_ids(manifest)
         self.operation = str(time.time_ns())
@@ -376,6 +434,7 @@ class Operator:
         if self.journal_path.exists() or self.current_path.exists():
             raise DeploymentError("Adoption requires an untracked installation with no pending operation")
         self.preflight(manifest)
+        self.verify_database(manifest)
         self.verify_running(manifest, self.image_ids(manifest))
         atomic_json(self.identity_path, self.identity)
         atomic_json(self.current_path, manifest)

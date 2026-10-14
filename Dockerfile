@@ -50,6 +50,8 @@ COPY assets/pets ./assets/pets
 COPY tsconfig.json ./
 # The documented offline local-account bootstrap/recovery command also runs in this image.
 COPY scripts/local-account.ts ./scripts/local-account.ts
+# Existing owner-only SIWC helpers; credential profiles are excluded by .dockerignore.
+COPY scripts/chatgpt-sign-in.ts scripts/chatgpt-import.ts ./scripts/
 RUN chmod -R a+rX /app && groupadd -r app && useradd -r -g app app && mkdir -p /data/uploads && chown -R app:app /data
 USER app
 ENV STORAGE_DIR=/data/uploads

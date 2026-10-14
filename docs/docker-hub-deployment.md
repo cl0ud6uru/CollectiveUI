@@ -20,7 +20,7 @@ After both pushes, the workflow records the registry digests in one `release-man
 
 ## First image installation
 
-Prerequisites: Linux amd64, Docker Engine, Compose v2 supporting `up --wait` (2.24+), Python 3.11+, sufficient disk for images plus database/uploads backups, operator Docker access, HTTPS/reverse proxy and a maintenance window. Buildx is required on the publishing runner, not for VM pulls. The updater never installs packages, changes daemon settings, creates credentials or grants the web app socket access.
+Prerequisites: Linux amd64, Docker Engine, Compose v2 supporting `up --wait` (2.24+), Python 3.11+, Git with a full reviewed checkout containing both current and target release commits, sufficient disk for images plus database/uploads backups, operator Docker access, HTTPS/reverse proxy and a maintenance window. A shallow checkout is insufficient for updates between revisions; fetch complete reviewed history before running the updater. Buildx is required on the publishing runner, not for VM pulls. The updater never installs packages, changes daemon settings, creates credentials or grants the web app socket access.
 
 Keep an operator checkout of the reviewed release source (the scripts and Compose file), download its trusted manifest and prepare runtime configuration:
 
@@ -43,7 +43,7 @@ python3 scripts/deploy-release.py \
   apply /secure/path/release-manifest.json
 ```
 
-The updater restricts interpolation to `.env` and its explicit digest references; ambient exported application variables cannot override recorded configuration. It pulls/inspects both images before downtime, confirms labels/platform, journals the operation, stops web/worker, starts or preserves PostgreSQL, verifies its volume, backs up DB/uploads, migrates once, and waits for healthy worker then web. It neither rebuilds images nor upgrades an already-running database container. Images contain application code only; `.env`, certificates, database data, upload data and updater backups are excluded from image builds.
+The updater restricts interpolation to `.env` and its explicit digest references; ambient exported application variables cannot override recorded configuration. Before downtime it verifies any existing DB's volume, supported PG16 image and, when running, actual PostgreSQL 16/pgvector availability. It pulls/inspects both images, confirms labels/platform, journals the operation, stops web/worker, starts or preserves PostgreSQL, repeats the live DB check, backs up DB/uploads, migrates once, and waits for healthy worker then web. Unsupported databases require a separately backed-up database migration. The updater neither rebuilds images nor upgrades an existing database container. Images contain application code only; `.env`, certificates, database data, upload data and updater backups are excluded from image builds.
 
 For interactive bootstrap and other Compose operator commands, extract the manifest's two digest references as data (never `eval` downloaded content):
 
@@ -56,13 +56,15 @@ docker compose --env-file .env -p collectiveui -f docker-compose.release.yml \
   run --rm -e LOCAL_AUTH_OPERATOR=bootstrap worker npm run local-account -- bootstrap
 ```
 
-See [local-account setup](operations.md#standalone-vps-with-local-accounts). Keep publishing credentials off the VM. Verify browser sign-in, a direct worker-backed chat, existing files/logos and bot permissions before admitting users. Container health establishes database reachability and worker initialization, not provider/inference or end-user functionality.
+See [local-account setup](operations.md#standalone-vps-with-local-accounts). The worker image also bundles the existing Sign in with ChatGPT owner helpers from main; follow [the documented sign-in/profile import workflow](connections.md#peoples-own-chatgpt-plans-sign-in-with-chatgpt) as a separate authentication operation. Use `node --import tsx scripts/chatgpt-import.ts` in the worker with the protected profile supplied at runtime; the native npm alias expects a host `.env.local`. Keep profile exports outside the checkout/build context; `chatgpt-profile*.json` files are explicitly excluded from images. The release/updater performs no sign-in or enrollment. Keep publishing credentials off the VM. Verify browser sign-in, a direct worker-backed chat, existing files/logos and bot permissions before admitting users. Container health establishes database reachability and worker initialization, not provider/inference or end-user functionality.
 
 ## Existing source-build installations
 
 First back up the current database, uploads, runtime `.env`/encryption keys, certificates, Compose configuration and revision; rehearse restoration. Identify the current project and **both** actual volume names using local container inspection. The new file uses the same `pgdata`/`uploads` names under an explicit project. Custom mounts, managed/external databases, scaled applications, add-ons, changed database versions and custom overrides require a separately reviewed runbook; the stock updater rejects them.
 
-An untracked running application cannot be updated automatically: its previous digest pair is unknown. During the first manual transition, pull the manifest's digest pair, stop both old services, preserve the existing DB and volumes, run the new `migrate` service, then start the new healthy pair:
+An untracked running application cannot be updated automatically: its previous digest pair is unknown. Before the manual transition, inspect the actual database image (it must be `pgvector/pgvector:pg16`, optionally digest pinned) and query the running server. With the existing project's configuration, run `psql -X -At -U portal -d portal -c "SELECT current_setting('server_version_num'), EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector');"` through `docker compose exec -T db`; expect a PostgreSQL 16 version number such as `160014|t`. A PG14/PG15 database or missing pgvector requires a separately backed-up database migration before proceeding. Changing the Compose image field does not upgrade the existing server or its data.
+
+During the first manual transition, pull the manifest's digest pair, stop both old services, preserve the verified PG16 DB and volumes, run the new `migrate` service, then start the new healthy pair:
 
 ```bash
 # With the digest-reference exports above and the ACTUAL existing project name:
@@ -80,13 +82,15 @@ python3 scripts/deploy-release.py \
   adopt /secure/path/release-manifest.json
 ```
 
-Execute subsequent lines only after each command succeeds. If migration/readiness fails, stop both services and recover from the manual consistent snapshot; do not start the old worker against the changed database. `adopt` only records a manifest after verifying actual image IDs, volumes and health. It does not migrate or change services. Automated snapshots begin with the next `apply`.
+Execute subsequent lines only after each command succeeds. If migration/readiness fails, stop both services and recover from the manual consistent snapshot; do not start the old worker against the changed database. `adopt` only records a manifest after verifying actual image IDs, volumes, supported database image/live major and health. It does not migrate or change services. Automated snapshots begin with the next `apply`.
 
 ## Updating, interruption and rollback
 
 Use the same directory, project, namespace, Docker daemon, runtime `.env` and stock Compose file with the next trusted manifest. Runtime configuration changes require a separate manual reconciliation; the updater binds its installation to the original `.env` fingerprint so the previous image pair cannot be rolled back with silently changed credentials. Replacing the stock Compose contract or changing storage/daemon identity is a separate operator migration, not an ordinary updater run. Keep secrets/configuration stable during an update; a changed `.env` blocks rollback until the matching configuration is restored securely. The migration fingerprint identifies bundled migration files; **it does not promise downgrade compatibility**. Migrations also install pets, and workers initialize queues and rewrap stored credentials.
 
-The private `.collectiveui-deploy` directory holds atomic state, an exclusive operation lock, journals, custom-format PostgreSQL dumps and gzip uploads archives with checksums. Backups are made while web/worker are stopped and checked before migration. They are sensitive and consume disk: archive them to protected storage, back up encryption/session secrets and certificates separately, test restores, and prune only deliberately after retention requirements are satisfied. Never commit/publish these files or use `docker compose down -v` during upgrade/recovery.
+`apply` accepts forward releases only: stable versions must increase, and a different source revision must descend from the current commit in the local complete Git history. Older or divergent commits are refused before pulls/downtime. The exact current manifest is a healthy no-op. A differently named release of the same commit can be used when its migration fingerprint agrees, but reusing the same version with changed metadata is refused. Fetch reviewed history explicitly when needed; the updater performs no network Git operations. Use the explicit snapshot restore below for a downgrade, even when an old manifest is otherwise valid.
+
+The private `.collectiveui-deploy` directory holds atomic state, an exclusive operation lock, journals, custom-format PostgreSQL dumps and gzip uploads archives with checksums. Backups are made while web/worker are stopped, checked, and fsynced along with their directory entries before the journal permits migration. They are sensitive and consume disk: archive them to protected storage, back up encryption/session secrets and certificates separately, test restores, and prune only deliberately after retention requirements are satisfied. Never commit/publish these files or use `docker compose down -v` during upgrade/recovery.
 
 ```bash
 python3 scripts/deploy-release.py --directory "$PWD" --project collectiveui \
