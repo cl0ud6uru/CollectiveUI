@@ -18,7 +18,7 @@ function nonce(value) {
 }
 
 /** Observe the inherited child environment: never replace it with a filtered env. */
-export function siwcChildCommand(token, writerMode = 'stream') {
+export function siwcChildCommand(token, writerMode = 'sync') {
   nonce(token);
   if (!['stream','sync'].includes(writerMode)) throw new Error('Invalid SIWC diagnostic writer mode.');
   const json = `JSON.stringify({probe:'siwcChildEnvironment',nonce:${JSON.stringify(token)},pid:process.pid,accessTokenPresent:Object.prototype.hasOwnProperty.call(process.env,'ACCESS_TOKEN')})`;
@@ -61,9 +61,10 @@ function observeChild(writerMode,script){
   stdoutJsonParsed,stdoutJsonExact,stdoutJsonSchemaExact,
   accessTokenObserved:typeof parsed?.accessTokenPresent==='boolean'?parsed.accessTokenPresent:null,proof:childProof};
 }
-const child=observeChild('stream',${JSON.stringify(siwcChildCommand(token))});
-// Diagnostic comparison only: its output never substitutes for the primary stream writer.
-const comparison=observeChild('sync',${JSON.stringify(siwcChildCommand(token, 'sync'))});
+// The VM demonstrated that Node's stream writer can discard this observation; use the measured synchronous channel.
+const child=observeChild('sync',${JSON.stringify(siwcChildCommand(token))});
+// Diagnostic comparison only: its output never substitutes for the primary synchronous writer.
+const comparison=observeChild('stream',${JSON.stringify(siwcChildCommand(token, 'stream'))});
 let parentEnvironDenied=false,parentEnvironError=null;
 try{fs.readFileSync('/proc/${appServerPid}/environ');}catch(error){parentEnvironError=error.code??null;parentEnvironDenied=['EACCES','EPERM','ENOENT'].includes(parentEnvironError);}
 const result={probe:'siwcToolIsolation',nonce:${JSON.stringify(token)},pid:process.pid,accessTokenPresent:Object.prototype.hasOwnProperty.call(process.env,'ACCESS_TOKEN'),
@@ -91,7 +92,7 @@ export function siwcToolEvidence(reply, token) {
     toolObserved: exact(proof,['probe','nonce','pid','accessTokenPresent','child','comparison','parentEnvironDenied','parentEnvironError','socketDenied','socketError'])
       && proof.probe === 'siwcToolIsolation' && proof.nonce === token && pid(proof.pid),
     toolEnvironmentExcluded: proof?.accessTokenPresent === false,
-    childExecuted: exact(proof?.child,CHILD_FIELDS) && proof.child.writerMode === 'stream' && pid(proof.child.spawnPid)
+    childExecuted: exact(proof?.child,CHILD_FIELDS) && proof.child.writerMode === 'sync' && pid(proof.child.spawnPid)
       && proof.child.status === 0 && proof.child.signal === null && proof.child.spawnError === false
       && proof.child.spawnErrorCode === null && proof.child.spawnErrorSyscall === null && proof.child.spawnErrorMessage === null && proof.child.spawnExecutable === SIWC_NODE_EXECUTABLE
       && proof.child.stdoutType === 'string' && Number.isSafeInteger(proof.child.stdoutBytes) && proof.child.stdoutBytes > 0 && proof.child.stdoutBytes <= 4096

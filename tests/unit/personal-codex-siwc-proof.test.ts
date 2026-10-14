@@ -6,13 +6,13 @@ import { SIWC_NODE_EXECUTABLE, siwcChildCommand, siwcToolCommand, siwcToolEviden
   passedSiwcAppServerObservation, siwcSocketPositiveControl } from '../../scripts/lib/personal-codex-siwc-proof.mjs';
 
 const childProof = (nonce: string, pid = 21) => ({ probe: 'siwcChildEnvironment', nonce, pid, accessTokenPresent: false });
-const childObservation = (nonce: string, writerMode = 'stream', pid = 21) => ({ writerMode, spawnPid: pid,
+const childObservation = (nonce: string, writerMode = 'sync', pid = 21) => ({ writerMode, spawnPid: pid,
   status: 0, signal: null, spawnError: false, spawnErrorCode: null, spawnErrorSyscall: null, spawnErrorMessage: null,
   spawnExecutable: SIWC_NODE_EXECUTABLE, stdoutType: 'string', stdoutBytes: Buffer.byteLength(JSON.stringify(childProof(nonce, pid))), stdoutEmpty: false,
   stderrType: 'string', stderrBytes: 0, stderrEmpty: true, stdoutJsonParsed: true, stdoutJsonExact: true, stdoutJsonSchemaExact: true,
   accessTokenObserved: false, proof: childProof(nonce, pid) });
 const proof = (nonce: string) => ({ probe: 'siwcToolIsolation', nonce, pid: 20, accessTokenPresent: false,
-  child: childObservation(nonce), comparison: childObservation(nonce, 'sync', 22),
+  child: childObservation(nonce), comparison: childObservation(nonce, 'stream', 22),
   parentEnvironDenied: true, parentEnvironError: 'ENOENT', socketDenied: true, socketError: 'EACCES' });
 const reply = (value: unknown) => ({ result: { exitCode: 0, stderr: '', stdout: JSON.stringify(value) } });
 function generatedObservation(nonce: string, children: Array<Record<string, unknown>>) {
@@ -26,7 +26,7 @@ function generatedObservation(nonce: string, children: Array<Record<string, unkn
     if (module === 'node:child_process') return { spawnSync(file: string, args: string[], options: Record<string, unknown>) {
       expect(file).toBe(SIWC_NODE_EXECUTABLE); expect(options).not.toHaveProperty('env');
       expect(options.stdio).toEqual(['ignore','pipe','pipe']);
-      expect(args[1]).toContain(next === 0 ? 'process.stdout.write' : "require('node:fs').writeSync(1,");
+      expect(args[1]).toContain(next === 0 ? "require('node:fs').writeSync(1," : 'process.stdout.write');
       const index = next++;
       return { pid: 21 + index, status: 0, signal: null, stdout: JSON.stringify(childProof(nonce, 21 + index)), stderr: '', ...children[index] };
     } };
@@ -50,7 +50,7 @@ describe('synthetic SIWC parent and child observations', () => {
       { spawnErrorCode: 'ENOENT' }, { spawnErrorSyscall: 'spawnSync node' }, { spawnErrorMessage: 'spawnSync node ENOENT' }, { spawnExecutable: 'node' },
       { stderrEmpty: false }, { stderrBytes: 1 }, { stdoutType: 'buffer' }, { stdoutBytes: 0 }, { stdoutEmpty: true },
       { stdoutJsonParsed: false }, { stdoutJsonSchemaExact: false }, { stdoutJsonExact: false }, { spawnPid: 22 },
-      { writerMode: 'sync' }, { proof: null }, { proof: { passed: true } }]) {
+      { writerMode: 'stream' }, { proof: null }, { proof: { passed: true } }]) {
       expect(siwcToolEvidence(reply({ ...valid, child: { ...valid.child, ...patch } }), nonce).passed).toBe(false);
     }
     expect(siwcToolEvidence({ result: { exitCode: 0, stderr: '', stdout: '' } }, nonce).passed).toBe(false);
@@ -133,7 +133,8 @@ describe('synthetic SIWC parent and child observations', () => {
       expect(observed.child.proof.accessTokenPresent).toBe(present);
       expect(observed.child.proof.pid).toBeGreaterThan(0); expect(observed.child.proof.pid).not.toBe(run.pid);
       expect(observed.child.spawnPid).toBe(observed.child.proof.pid);
-      expect(observed.comparison).toMatchObject({ writerMode: 'sync', status: 0, stdoutJsonParsed: true, stdoutJsonExact: true,
+      expect(observed.child.writerMode).toBe('sync');
+      expect(observed.comparison).toMatchObject({ writerMode: 'stream', status: 0, stdoutJsonParsed: true, stdoutJsonExact: true,
         stdoutJsonSchemaExact: true, accessTokenObserved: present });
       expect(observed.comparison.spawnPid).toBe(observed.comparison.proof.pid);
       expect(observed.comparison.proof.pid).not.toBe(observed.child.proof.pid);
@@ -167,7 +168,7 @@ describe('synthetic SIWC parent and child observations', () => {
     }
   });
 
-  it('never lets a synchronous comparison rescue a missing primary, and rejects comparison tokens', () => {
+  it('never lets a stream comparison rescue a missing synchronous primary, and rejects comparison tokens', () => {
     const nonce = randomUUID();
     const missingPrimary = generatedObservation(nonce, [{ stdout: '' }, {}]);
     expect(missingPrimary.comparison.stdoutJsonSchemaExact).toBe(true);
@@ -184,6 +185,25 @@ describe('synthetic SIWC parent and child observations', () => {
     expect(observedToken.checks.comparisonTokenNotObserved).toBe(false); expect(observedToken.passed).toBe(false);
     expect(JSON.stringify(invalidComparisonToken)).not.toContain('fixture-only-private');
     expect(JSON.stringify(observedToken)).not.toContain('fixture-only-private');
+  });
+
+  it('accepts the VM-measured synchronous observation while a cleanly exited stream child emits no bytes', () => {
+    const nonce = randomUUID();
+    const generated = generatedObservation(nonce, [
+      { pid: 16, stdout: JSON.stringify(childProof(nonce, 16)) },
+      { pid: 9, stdout: '' },
+    ]);
+    const evidence = siwcToolEvidence(reply(generated), nonce);
+    expect(evidence.passed).toBe(true);
+    expect(evidence.observed.childDiagnostics).toMatchObject({ writerMode: 'sync', spawnPid: 16, proofPid: 16,
+      exitCode: 0, stdoutBytes: 115, stderrBytes: 0, jsonExact: true, schemaExact: true, nonceMatched: true, proofPassed: true,
+      accessTokenObserved: false });
+    expect(evidence.observed.comparisonDiagnostics).toMatchObject({ writerMode: 'stream', spawnPid: 9,
+      exitCode: 0, spawnError: false, stdoutBytes: 0, stderrBytes: 0, jsonParsed: false, proofPassed: false });
+    const wrongPid = { ...generated, child: { ...generated.child, spawnPid: 15 } };
+    expect(siwcToolEvidence(reply(wrongPid), nonce).passed).toBe(false);
+    const missingProof = { ...generated, child: { ...generated.child, proof: null, stdoutBytes: 0, stdoutEmpty: true } };
+    expect(siwcToolEvidence(reply(missingProof), nonce).passed).toBe(false);
   });
 
   it('projects both generated children without private stdout, stderr, nonce or probe text', () => {
