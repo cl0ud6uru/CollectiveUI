@@ -1,0 +1,7 @@
+-r hermes-native-requirements.txt
+# Actual dashboard assembly/ASGI transport and native image attachments.
+uvicorn==0.41.0
+websockets==16.0
+python-multipart==0.0.20
+Pillow==12.1.1
+psutil==7.2.2
