@@ -244,6 +244,7 @@ export async function nativeAdministration(ownerId: string, connectionId: string
         (input.bearerToken !== undefined && created.auth !== 'header'))
       throw new HttpError(502, 'Hermes did not confirm the custom server configuration. Refresh to check its outcome.');
     const current = await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000);
+    assertProfileLock();
     const nativeRows: unknown[] = Array.isArray(current.servers) ? current.servers : [];
     const nativeServer = nativeRows.map(value => record(value)).find(server => server.name === input.name);
     const server = mcpInventory(current, {}, {}).servers.find(s => s.name === input.name);

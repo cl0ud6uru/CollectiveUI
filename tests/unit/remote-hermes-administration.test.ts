@@ -193,6 +193,26 @@ describe('native administration protocol and isolation', () => {
     expect(f.profileAdvisoryHeld).toBe(false);
     expect(f.profileLockLoss).toBeNull();
   });
+  it('does not report a confirmed custom server if the lock client is lost during readback', async () => {
+    const configured = { name: 'new-server', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    let inventoryReads = 0;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') {
+        if (++inventoryReads === 3) f.profileLockLoss?.();
+        return { servers: inventoryReads <= 2 ? [] : [configured] };
+      }
+      if (method === 'mcp.servers.add') return { ok: true, name: 'new-server', server: configured };
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: configured.url, bearerToken: 'synthetic-token', confirmed: true,
+    })).rejects.toThrow('profile lock connection was lost');
+    expect(f.receipt).not.toBeNull();
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1);
+    expect(JSON.stringify(f.receipt)).not.toContain('synthetic-token');
+    expect(f.profileAdvisoryHeld).toBe(false);
+    expect(f.profileLockLoss).toBeNull();
+  });
   it('fails closed when an existing native name cannot be normalized safely', async () => {
     f.call.mockResolvedValue({ servers: [{ name: 'mcp-東京', source: 'config', transport: 'stdio', enabled: true, env: [] }] });
     await expect(nativeAdministration('owner', 'connection', 'session', {
