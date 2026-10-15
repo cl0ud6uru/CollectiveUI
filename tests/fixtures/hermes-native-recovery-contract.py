@@ -53,12 +53,14 @@ socket.socket.sendto = socket.socket.connect
 socket.getaddrinfo = lambda *args, **kw: (_ for _ in ()).throw(AssertionError("External DNS forbidden"))
 _popen = subprocess.Popen
 
-def local_process(argv, *args, **kwargs):
-    if not isinstance(argv, (list, tuple)) or Path(argv[0]).name != "git" or any(word in argv for word in ("fetch", "pull", "push", "clone", "ls-remote")):
-        raise AssertionError("Only local git inspection may spawn")
-    return _popen(argv, *args, **kwargs)
+class LocalPopen(_popen):
+    def __init__(self, argv, *args, **kwargs):
+        if not isinstance(argv, (list, tuple)) or Path(argv[0]).name != "git" or any(word in argv for word in ("fetch", "pull", "push", "clone", "ls-remote")):
+            raise AssertionError("Only local git inspection may spawn")
+        super().__init__(argv, *args, **kwargs)
 
-subprocess.Popen = local_process
+# Preserve the native type, including eagerly evaluated Popen | None annotations.
+subprocess.Popen = LocalPopen
 sys.path.insert(0, str(COPY))
 from tui_gateway import server
 from tui_gateway.synthetic_turn import SyntheticHeavyAgent
