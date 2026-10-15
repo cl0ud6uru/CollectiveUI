@@ -21,10 +21,16 @@ if (process.argv[1]?.endsWith("/index.ts")) {
   const runtime = new BrowserRuntime({ egress: unixEgress(egressSocket, egressSecret), executablePath: "/usr/bin/chromium" });
   const server = createBrowserServer(runtime, process.env.AGENT_BROWSER_SECRET ?? "");
   const sweep = setInterval(() => { void runtime.sweep(); }, 10_000);
-  await listenPrivateSocket(server, socket);
+  const startup = new AbortController();
   let stopping = false;
   for (const name of ["SIGTERM", "SIGINT"]) process.on(name, () => {
-    if (stopping) return; stopping = true; clearInterval(sweep);
-    server.close(); void runtime.shutdown().finally(() => { server.closeAllConnections(); });
+    if (stopping) return; stopping = true; startup.abort(); clearInterval(sweep);
+    server.close(() => {});
+    void runtime.shutdown().finally(async () => {
+      server.closeAllConnections();
+      const cleanup = await publication?.catch(() => undefined); await cleanup?.();
+    });
   });
+  const publication = listenPrivateSocket(server, socket, startup.signal);
+  try { await publication; } catch (error) { if (!stopping) throw error; }
 }

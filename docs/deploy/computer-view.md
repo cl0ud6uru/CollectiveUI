@@ -136,6 +136,9 @@ with mode `0600`. They bind in a private staging directory and use atomic hard-l
 publication after permissions are confirmed, so a readiness poll cannot race a later
 chmod. Publication never overwrites an existing listener. The disposable transport
 fixture retains its immediate mode and ownership assertions.
+Termination handlers are installed before publication starts. Startup cancellation
+closes the binding, prevents subsequent publication phases and waits for pending
+filesystem work and guarded cleanup before shutdown completes.
 
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium node tests/browser/computer-viewer.mjs` exercises the real viewer against fixture API responses, including takeover, expiry, sanitized input, reconnect, and delayed responses across conversation changes. It saves the labeled desktop/mobile screenshots.
 

@@ -74,3 +74,23 @@ describe('private Unix socket publication', () => {
     expect(await readdir(f.directory)).toEqual(['runtime.sock']);
   });
 });
+
+it('does not publish after startup cancellation and removes staging after the pending operation settles', async () => {
+  const f = await fixture(), controller = new AbortController(); let release!: () => void, entered!: () => void;
+  const wait = new Promise<void>(resolve => { entered = resolve; });
+  const pause = new Promise<void>(resolve => { release = resolve; });
+  barrier.chmod = async () => { entered(); await pause; };
+  const starting = listenPrivateSocket(f.server, f.path, controller.signal).then(() => false, () => true);
+  await wait; controller.abort(); release();
+  expect(await starting).toBe(true);
+  expect(f.server.listening).toBe(false); expect(await readdir(f.directory)).toEqual([]);
+});
+
+it('settles cancellation between bind and the listening event rather than hanging startup', async () => {
+  const f = await fixture(), controller = new AbortController(), listen = f.server.listen;
+  vi.spyOn(f.server, 'listen').mockImplementationOnce((...args) => {
+    const result = Reflect.apply(listen, f.server, args); controller.abort(); return result;
+  });
+  await expect(listenPrivateSocket(f.server, f.path, controller.signal)).rejects.toBeDefined();
+  expect(f.server.listening).toBe(false); expect(await readdir(f.directory)).toEqual([]);
+});
