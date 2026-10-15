@@ -13,10 +13,10 @@ const number = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v 
 const rows = (v: unknown) => Array.isArray(v) ? v.slice(0, 500).map(record) : [];
 export function projectProjection(value: unknown) {
   const result = record(value);
-  return { activeId: string(result.active_id), projects: rows(result.projects).map(p => ({ id: string(p.id), name: string(p.name), archived: p.archived === true, folders: rows(p.folders).map(f => ({ path: string(f.path, 2048), primary: f.is_primary === true })).filter(f => validDirectory(f.path)) })) };
+  return { activeId: string(result.active_id), projects: rows(result.projects).map(p => ({ id: string(p.id), slug: string(p.slug, 200), name: string(p.name), archived: p.archived === true, folders: rows(p.folders).map(f => ({ path: string(f.path, 2048), primary: f.is_primary === true })).filter(f => validDirectory(f.path)) })) };
 }
 export function scheduleProjection(value: unknown) {
-  return { schedules: rows(Array.isArray(value) ? value : record(value).jobs).map(p => ({ id: string(p.id ?? p.job_id), name: string(p.name), enabled: p.enabled !== false && p.paused !== true, schedule: string(typeof p.schedule === 'string' ? p.schedule : record(p.schedule).display), nextRun: string(p.next_run_at ?? p.next_run), lastStatus: string(p.last_status) })) };
+  return { schedules: rows(Array.isArray(value) ? value : record(value).jobs).map(p => ({ id: string(p.id ?? p.job_id), name: string(p.name), enabled: p.enabled !== false && p.paused !== true, state: string(p.state, 100), schedule: string(typeof p.schedule === 'string' ? p.schedule : record(p.schedule).display), nextRun: string(p.next_run_at ?? p.next_run), lastStatus: string(p.last_status) })) };
 }
 export function pluginProjection(value: unknown) {
   return { plugins: rows(record(value).plugins).map(p => ({ name: string(p.name), version: string(p.version), status: string(p.status) || (p.enabled === true ? 'enabled' : p.enabled === false ? 'disabled' : 'unknown'), source: string(p.source) })) };
@@ -45,9 +45,9 @@ export async function inspectNative(ownerId: string, connectionId: string, raw: 
   const input = inspectionQuery.parse(raw);
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(p => p.name === input.profile)) throw new HttpError(404, 'Hermes profile not found.');
-  const rpc = (method: 'projects.list' | 'plugins.list' | 'plugins.manage') => nativeHub(ownerId, connectionId).socket.call(method, { profile: input.profile, ...(method === 'plugins.manage' ? { action: 'list' } : {}) });
+  const rpc = (method: 'projects.list' | 'plugins.list' | 'plugins.manage' | 'cron.manage') => nativeHub(ownerId, connectionId).socket.call(method, { profile: input.profile, ...(method === 'plugins.manage' ? { action: 'list' } : method === 'cron.manage' ? { action: 'list', include_disabled: true } : {}) });
   const transport = dashboardFetch(access.baseUrl, access.policy);
-  const get = async (endpoint: '/api/fs/default-cwd' | '/api/fs/list' | '/api/cron/jobs' | '/api/system/stats', extra: Record<string, string> = {}) => {
+  const get = async (endpoint: '/api/fs/default-cwd' | '/api/fs/list' | '/api/system/stats', extra: Record<string, string> = {}) => {
     const query = new URLSearchParams({ profile: input.profile, ...extra });
     const headers: Record<string, string> = access.secrets.mode === 'sessionToken' ? { 'X-Hermes-Session-Token': access.secrets.sessionToken! } : { Authorization: `Bearer ${access.secrets.accessToken}` };
     const response = await transport(`${access.baseUrl}${endpoint}?${query}`, { headers, redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(15_000) });
@@ -60,7 +60,11 @@ export async function inspectNative(ownerId: string, connectionId: string, raw: 
   };
   if (input.panel === 'projects') return projectProjection(await rpc('projects.list'));
   if (input.panel === 'plugins') return pluginProjection(await rpc('plugins.manage').catch((e: unknown) => { if (e instanceof HttpError && e.status === 501) return rpc('plugins.list'); throw e; }));
-  if (input.panel === 'schedules') return scheduleProjection(await get('/api/cron/jobs'));
+  if (input.panel === 'schedules') {
+    const value = record(await rpc('cron.manage'));
+    if (value.scoped !== input.profile) throw new HttpError(501, 'This Hermes version cannot confirm profile-scoped schedules.');
+    return scheduleProjection(value);
+  }
   if (input.panel === 'system') return systemProjection(await get('/api/system/stats'));
   const home = record(await get('/api/fs/default-cwd'));
   const projects = projectProjection(await rpc('projects.list').catch((e: unknown) => { if (e instanceof HttpError && e.status === 501) return {}; throw e; }));
