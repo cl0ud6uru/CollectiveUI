@@ -1,16 +1,19 @@
-"""Opt-in, read-only native workspace file protocol for the pinned Hermes gateway.
+"""Opt-in, bounded native workspace file protocols for the pinned Hermes gateway.
 
 This is an exact-pin extension, not an upstream Hermes method or a dashboard HTTP proxy.
 Access is bound to the owner-fenced profile and the currently attached native session.
 Only a persisted local session cwd inside a registered, unarchived project folder is
 eligible. All client paths are relative to that root and are opened descriptor-relative
-with no symlink following.
+with no symlink following. The versioned write method only replaces an existing UTF-8
+file after an explicit digest precondition; it never creates or renames files.
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
 import re
+import secrets
 import sqlite3
 import stat
 from pathlib import Path
@@ -67,7 +70,26 @@ class WorkspaceFilesResult(Result):
     path: str
     entries: list[Entry] = Field(default_factory=list)
     content: str | None = None
+    sha256: str | None = None
     truncated: bool = False
+
+
+class WorkspaceFileWriteParams(Params):
+    profile: str = Field(min_length=1, max_length=100)
+    session_id: str = Field(min_length=1, max_length=200)
+    workspace_id: str = Field(min_length=16, max_length=64)
+    path: str = Field(min_length=1, max_length=MAX_RELATIVE_PATH)
+    expected_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content: str = Field(max_length=MAX_READ_BYTES)
+
+
+class WorkspaceFileWriteResult(Result):
+    protocol: Literal["collective.workspace-file-write.v1"] = "collective.workspace-file-write.v1"
+    written: bool
+    workspace_id: str
+    path: str
+    sha256: str
+    bytes: int
 
 
 def _within(path: str, root: str) -> bool:
@@ -228,7 +250,7 @@ def _list(root: str, parts: list[str]) -> tuple[list[dict], bool]:
         os.close(fd)
 
 
-def _read(root: str, parts: list[str]) -> str:
+def _read(root: str, parts: list[str]) -> tuple[str, str]:
     if not parts:
         raise ValueError("A file path is required.")
     if not _NONBLOCK:
@@ -257,9 +279,92 @@ def _read(root: str, parts: list[str]) -> str:
         raw = b"".join(chunks)
         if len(raw) > MAX_READ_BYTES or b"\x00" in raw:
             raise ValueError("This file is not an eligible small text file.")
-        return raw.decode("utf-8", errors="strict")
+        return raw.decode("utf-8", errors="strict"), hashlib.sha256(raw).hexdigest()
     finally:
         os.close(file_fd)
+
+
+def _read_target(parent_fd: int, name: str, root_device: int) -> tuple[int, bytes, os.stat_result]:
+    if not _NONBLOCK:
+        raise OSError("nonblocking file access is unavailable")
+    fd = os.open(name, os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=parent_fd)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_dev != root_device or info.st_nlink != 1 or info.st_size > MAX_READ_BYTES:
+            raise ValueError("This file is not an eligible small text file.")
+        chunks = []
+        size = 0
+        while size <= MAX_READ_BYTES:
+            chunk = os.read(fd, min(64 * 1024, MAX_READ_BYTES + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        raw = b"".join(chunks)
+        if size > MAX_READ_BYTES or b"\x00" in raw:
+            raise ValueError("This file is not an eligible small text file.")
+        raw.decode("utf-8", errors="strict")
+        return fd, raw, info
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _write(root: str, parts: list[str], expected_sha256: str, content: str) -> tuple[str, int]:
+    """Replace one existing UTF-8 file after a digest check; never create paths."""
+    if not parts:
+        raise ValueError("A file path is required.")
+    raw = content.encode("utf-8", errors="strict")
+    if len(raw) > MAX_READ_BYTES or b"\x00" in raw:
+        raise ValueError("This file is not an eligible small text file.")
+    parent_fd, root_device = _open_directory(root, parts[:-1])
+    temp_name = ".collective-edit-" + secrets.token_hex(16)
+    temp_fd = None
+    original_fd = None
+    try:
+        original_fd, original, original_info = _read_target(parent_fd, parts[-1], root_device)
+        if not hmac.compare_digest(hashlib.sha256(original).hexdigest(), expected_sha256):
+            raise ValueError("The file changed after review. Reload it before saving.")
+        temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600, dir_fd=parent_fd)
+        # The replacement inode should retain the existing file's permission
+        # bits; the restrictive create mode is only the safe intermediate state.
+        os.fchmod(temp_fd, stat.S_IMODE(original_info.st_mode))
+        view = memoryview(raw)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise OSError("short workspace write")
+            view = view[written:]
+        os.fsync(temp_fd)
+
+        # Re-open and hash the target immediately before the atomic replacement. The
+        # descriptor identity check also rejects replacement with another inode.
+        check_fd, current, current_info = _read_target(parent_fd, parts[-1], root_device)
+        try:
+            if ((current_info.st_dev, current_info.st_ino) != (original_info.st_dev, original_info.st_ino)
+                    or not hmac.compare_digest(hashlib.sha256(current).hexdigest(), expected_sha256)):
+                raise ValueError("The file changed after review. Reload it before saving.")
+        finally:
+            os.close(check_fd)
+        os.replace(temp_name, parts[-1], src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+        result_fd, saved, saved_info = _read_target(parent_fd, parts[-1], root_device)
+        try:
+            if not stat.S_ISREG(saved_info.st_mode) or saved != raw:
+                raise OSError("workspace write readback did not match")
+        finally:
+            os.close(result_fd)
+        return hashlib.sha256(raw).hexdigest(), len(raw)
+    finally:
+        if original_fd is not None:
+            os.close(original_fd)
+        if temp_fd is not None:
+            os.close(temp_fd)
+        try:
+            os.unlink(temp_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
 
 
 def install(server):
@@ -299,9 +404,10 @@ def install(server):
                     project_name=project_name, action="list", path="/".join(parts) or ".",
                     entries=entries, truncated=truncated)
                 return server._ok(rid, result.model_dump())
-            content = _read(root, parts)
+            content, digest = _read(root, parts)
             result = WorkspaceFilesResult(available=True, workspace_id=workspace_id,
                 project_name=project_name, action="read", path="/".join(parts), content=content)
+            result.sha256 = digest
             return server._ok(rid, result.model_dump())
         except ValueError as exc:
             # Contract/domain messages are deliberately generic; never echo paths or native exceptions.
@@ -316,4 +422,49 @@ def install(server):
     from tui_gateway import rpc_dispatch
     rpc_dispatch._LONG_HANDLERS = rpc_dispatch._LONG_HANDLERS | frozenset({"collective.workspace.files"})
     server._collective_workspace_files = handle
+
+    def write(rid, raw):
+        try:
+            params = WorkspaceFileWriteParams.model_validate(raw)
+            owner_module = __import__("tui_gateway.collective_hub_owner", fromlist=["_active_binding"])
+            binding = owner_module._active_binding.get()
+            transport = current_transport()
+            if (binding is None or binding.phase != "full" or binding.profile != params.profile
+                    or binding.transport is not transport or str(binding.home) != str(Path(binding.home).resolve())):
+                return server._err(rid, 4030, "Workspace edits require current full profile ownership.")
+            if server._effective_terminal_backend() != "local":
+                return server._err(rid, 4030, "Workspace edits are unavailable for non-local terminal sessions.")
+            attached_transport, session = server._current_session_steer_authority(params.session_id)
+            if attached_transport is not transport or session is None:
+                return server._err(rid, 4030, "Workspace edits require the attached native session.")
+            if (server._session_live_status(params.session_id, session) != "idle"
+                    or server._inflight_snapshot(session) or server._queued_prompt_snapshot(session)
+                    or server._session_has_active_delegations(params.session_id, session)):
+                return server._err(rid, 4090, "Finish this native turn before editing its workspace.")
+            root_info = _project_root(server, params.profile, session)
+            if root_info is None:
+                return server._err(rid, 4030, "Workspace edits are unavailable for this session.")
+            workspace_id, _project_name, root, _cwd_relative = root_info
+            if params.workspace_id != workspace_id:
+                return server._err(rid, 4030, "The approved workspace changed; refresh before editing.")
+            parts = _relative_parts(params.path)
+            if parts is None or not parts:
+                return server._err(rid, 4000, "Choose an existing safe root-relative file.")
+            digest, size = _write(root, parts, params.expected_sha256, params.content)
+            return server._ok(rid, WorkspaceFileWriteResult(written=True, workspace_id=workspace_id,
+                path="/".join(parts), sha256=digest, bytes=size).model_dump())
+        except ValueError as exc:
+            allowed = {"A file path is required.", "This file is not an eligible small text file.",
+                       "The file changed after review. Reload it before saving."}
+            return server._err(rid, 4090 if "changed after review" in str(exc) else 4000,
+                str(exc) if str(exc) in allowed else "Invalid workspace edit request.")
+        except (OSError, sqlite3.Error, RuntimeError, UnicodeDecodeError):
+            return server._err(rid, 4030, "Workspace edit is unavailable; no path was opened.")
+
+    method("collective.workspace.files.write.v1", params=WorkspaceFileWriteParams,
+        result=WorkspaceFileWriteResult, doc="Explicit opt-in native edit of an existing small UTF-8 workspace file with digest precondition.")
+    server.register_method("collective.workspace.files.write.v1", write)
+    server._LONG_HANDLERS = server._LONG_HANDLERS | frozenset({"collective.workspace.files.write.v1"})
+    rpc_dispatch._LONG_HANDLERS = rpc_dispatch._LONG_HANDLERS | frozenset({"collective.workspace.files.write.v1"})
+    server._collective_workspace_files_write = write
     return handle

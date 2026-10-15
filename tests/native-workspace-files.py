@@ -6,6 +6,7 @@ Runs without a live Hermes gateway, network, profile grant, or external file fix
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -179,6 +180,17 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
             owner_module._active_binding.reset(owner_token)
             _current_transport.reset(token)
 
+    def write(self, owner_phase="full", **params):
+        token = _current_transport.set(self.transport_obj)
+        binding = types.SimpleNamespace(phase=owner_phase, profile="test-profile", home=str(self.home), transport=self.transport_obj)
+        owner_token = owner_module._active_binding.set(binding)
+        try:
+            return self.server._collective_workspace_files_write("request-write", {
+                "profile": "test-profile", "session_id": "runtime-session", **params})
+        finally:
+            owner_module._active_binding.reset(owner_token)
+            _current_transport.reset(token)
+
     def test_list_and_read_are_root_relative_and_bounded(self):
         listing = self.call(action="list")
         if "error" in listing:
@@ -191,6 +203,89 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
         workspace_id = result["workspace_id"]
         read = self.call(action="read", workspace_id=workspace_id, path="README.md")["result"]
         self.assertEqual(read["content"], "Synthetic read-only fixture\n")
+        self.assertEqual(read["sha256"], hashlib.sha256(b"Synthetic read-only fixture\n").hexdigest())
+
+    def test_confirmed_native_write_replaces_only_existing_file_after_digest_check(self):
+        workspace_id = self.call(action="list")["result"]["workspace_id"]
+        target = self.workspace / "README.md"
+        original = target.read_bytes()
+        original_mode = target.stat().st_mode
+        expected = hashlib.sha256(original).hexdigest()
+        updated = "Explicitly reviewed synthetic update\n"
+        result = self.write(workspace_id=workspace_id, path="README.md", expected_sha256=expected, content=updated)
+        self.assertNotIn("error", result)
+        self.assertTrue(result["result"]["written"])
+        self.assertEqual(result["result"]["sha256"], hashlib.sha256(updated.encode()).hexdigest())
+        self.assertEqual(target.read_text(), updated)
+        self.assertEqual(target.stat().st_mode, original_mode)
+
+        stale = self.write(workspace_id=workspace_id, path="README.md", expected_sha256=expected, content="stale write\n")
+        self.assertEqual(stale["error"]["code"], 4090)
+        self.assertEqual(target.read_text(), updated)
+        missing = self.write(workspace_id=workspace_id, path="new-file.txt", expected_sha256=expected, content="no create\n")
+        self.assertIn("error", missing)
+        self.assertFalse((self.workspace / "new-file.txt").exists())
+
+    def test_write_refuses_target_inode_replacement_during_digest_preflight(self):
+        target = self.workspace / "README.md"
+        expected = hashlib.sha256(target.read_bytes()).hexdigest()
+        replacement = self.workspace / "replacement.tmp"
+        replacement.write_text("Concurrent writer content\n", encoding="utf8")
+        original_read_target = workspace_module._read_target
+        replaced = False
+
+        def replace_after_initial_read(parent_fd, name, root_device):
+            nonlocal replaced
+            opened = original_read_target(parent_fd, name, root_device)
+            if not replaced:
+                os.replace(replacement, target)
+                replaced = True
+            return opened
+
+        workspace_module._read_target = replace_after_initial_read
+        try:
+            with self.assertRaisesRegex(ValueError, "changed after review"):
+                workspace_module._write(str(self.workspace), ["README.md"], expected, "must not overwrite concurrent writer\n")
+        finally:
+            workspace_module._read_target = original_read_target
+        self.assertEqual(target.read_text(), "Concurrent writer content\n")
+        self.assertFalse(any(path.name.startswith(".collective-edit-") for path in self.workspace.iterdir()))
+
+    def test_edit_rejects_secret_and_wrong_workspace_paths(self):
+        workspace_id = self.call(action="list")["result"]["workspace_id"]
+        digest = hashlib.sha256(b"never-return").hexdigest()
+        for path in (".env", "my-secret.txt", "access-token.txt", "../outside.txt", "outside-link", "ordinary-name.txt"):
+            response = self.write(workspace_id=workspace_id, path=path, expected_sha256=digest, content="overwrite")
+            self.assertIn("error", response, path)
+        response = self.write(workspace_id="0" * 32, path="README.md", expected_sha256=digest, content="overwrite")
+        self.assertIn("error", response)
+
+    def test_edit_requires_full_owner_idle_local_session_and_preserves_file_on_denial(self):
+        workspace_id = self.call(action="list")["result"]["workspace_id"]
+        target = self.workspace / "README.md"
+        original = target.read_bytes()
+        digest = hashlib.sha256(original).hexdigest()
+        denied = self.write(owner_phase="recovery", workspace_id=workspace_id, path="README.md",
+                            expected_sha256=digest, content="must not write\n")
+        self.assertIn("error", denied)
+        self.assertEqual(target.read_bytes(), original)
+
+        self.server._session_live_status = lambda _sid, _session: "working"
+        denied = self.write(workspace_id=workspace_id, path="README.md", expected_sha256=digest, content="must not write\n")
+        self.assertIn("error", denied)
+        self.assertEqual(target.read_bytes(), original)
+        self.server._session_live_status = lambda _sid, _session: "idle"
+
+        previous = os.environ.pop("TERMINAL_ENV", None)
+        try:
+            self.server._session_workdir.config_backend = "ssh"
+            denied = self.write(workspace_id=workspace_id, path="README.md", expected_sha256=digest, content="must not write\n")
+            self.assertIn("error", denied)
+            self.assertEqual(target.read_bytes(), original)
+        finally:
+            self.server._session_workdir.config_backend = "local"
+            if previous is not None:
+                os.environ["TERMINAL_ENV"] = previous
 
     def test_traversal_secret_symlink_and_wrong_workspace_fail_closed(self):
         listing = self.call(action="list")["result"]

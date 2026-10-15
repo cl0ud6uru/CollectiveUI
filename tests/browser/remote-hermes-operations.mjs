@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(path.join(root, 'package.json'));
 const { build } = require('esbuild');
@@ -15,6 +16,7 @@ const bundle = await build({ entryPoints: [entry], write: false, bundle: true, p
 const requests = [];
 let scheduleEnabled = true;
 let scheduleState = 'scheduled';
+let fileContent = 'Synthetic file before edit\n';
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
@@ -26,7 +28,8 @@ const server = createServer((req, res) => {
     req.on('data', chunk => { request.body += chunk; });
     req.on('end', () => {
       const envelope = JSON.parse(request.body); request.input = envelope.input;
-      if (envelope.input.operation === 'prepare') { res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'schedule' : envelope.input.action, enabled: envelope.input.action === 'resume', name: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'Fixture schedule' : envelope.input.name, profile: 'default', title: 'Fixture chat' })); return; }
+      if (envelope.input.operation === 'prepare') { res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'schedule' : envelope.input.action, enabled: envelope.input.action === 'resume', name: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'Fixture schedule' : envelope.input.name, profile: 'default', title: 'Fixture chat', bytes: Buffer.byteLength(envelope.input.content || '') })); return; }
+      if (envelope.input.operation === 'confirm-file-edit') { fileContent = envelope.input.content; res.end(JSON.stringify({ accepted: true, path: 'README.md', output: 'File saved and verified.' })); return; }
       if (requests.at(-2)?.input?.action === 'pause') { scheduleEnabled = false; scheduleState = 'paused'; }
       if (requests.at(-2)?.input?.action === 'resume') { scheduleEnabled = true; scheduleState = 'scheduled'; }
       res.end(JSON.stringify({ accepted: true, duplicate: false, schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled, state: scheduleState }, { id: 'done', name: 'Completed schedule', enabled: false, state: 'completed' }], projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }], activeId: '' }));
@@ -40,7 +43,7 @@ const server = createServer((req, res) => {
     schedules: { schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled, state: scheduleState, schedule: '0 7 * * *' }, { id: 'done', name: 'Completed schedule', enabled: false, state: 'completed', schedule: 'once' }] },
     plugins: { plugins: [{ name: 'Fixture plugin', version: '1.0', status: 'enabled' }] },
     system: { version: 'Fixture version', cpuCount: 4, cpuPercent: 10, memory: { total: 1000, used: 500, percent: 50 } },
-    files: { roots: ['/workspace'], directory: url.searchParams.get('path') || '/workspace', entries: url.searchParams.get('path') === '/workspace/src' ? [{ name: 'example.ts', path: '/workspace/src/example.ts', directory: false }] : [{ name: 'src', path: '/workspace/src', directory: true }] },
+    files: url.searchParams.get('action') === 'read' ? { available: true, workspaceId: '0123456789abcdef0123456789abcdef', projectName: 'Synthetic project', action: 'read', path: 'README.md', content: fileContent, sha256: createHash('sha256').update(fileContent).digest('hex'), entries: [] } : { available: true, workspaceId: '0123456789abcdef0123456789abcdef', projectName: 'Synthetic project', action: 'list', path: '.', entries: [{ name: 'README.md', path: 'README.md', directory: false }, { name: 'src', path: 'src', directory: true }] },
   };
   res.end(JSON.stringify(fixtures[panel]));
 });
@@ -60,10 +63,16 @@ try {
   await expect.poll(() => requests.filter(r => r.method === 'POST').map(r => r.input.operation)).toEqual(['prepare', 'confirm']);
   expect(requests.filter(r => r.method === 'POST').map(r => r.input.action)).toEqual(['create', undefined]);
   await page.getByRole('button', { name: 'Directories', exact: true }).click();
-  await page.getByRole('button', { name: 'src/', exact: true }).click();
-  await expect(page.getByText('example.ts', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Parent directory' }).click();
-  await expect(page.getByRole('button', { name: 'src/', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'README.md', exact: true }).click();
+  await expect(page.getByLabel('Edit README.md')).toHaveValue('Synthetic file before edit\n');
+  await page.getByLabel('Edit README.md').fill('Reviewed browser edit\n');
+  await page.getByRole('button', { name: 'Review save' }).click();
+  await expect(page.getByRole('button', { name: 'Confirm file save' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Confirm workspace file save' })).toContainText('README.md');
+  expect(requests.filter(r => r.method === 'POST').at(-1).input.operation).toBe('prepare');
+  await page.getByRole('button', { name: 'Confirm file save' }).click();
+  await expect.poll(() => requests.filter(r => r.method === 'POST').map(r => r.input.operation)).toContain('confirm-file-edit');
+  await expect(page.getByLabel('Edit README.md')).toHaveValue('Reviewed browser edit\n');
   await page.getByRole('button', { name: 'Schedules', exact: true }).click();
   await expect(page.getByText('Fixture schedule', { exact: false })).toBeVisible();
   await expect(page.locator('article').filter({ hasText: 'Completed schedule' }).getByRole('button')).toHaveCount(0);
@@ -89,7 +98,7 @@ try {
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByText('Fixture version', { exact: true })).toBeVisible();
   expect(requests.filter(r => r.method === 'GET').length).toBeGreaterThan(0);
-  expect(requests.some(r => r.path === '/workspace/src')).toBe(true);
+  expect(requests.some(r => r.path === 'README.md')).toBe(true);
   expect(errors).toEqual([]);
-  console.log('PASS: explicit two-step empty-project creation, schedule pause/resume confirmation and usage warning, completed schedule has no resume control, shared-profile warning, directories, schedules, plugins, system, profile switch, refresh; no browser errors.');
+  console.log('PASS: explicit two-step empty-project creation and digest-confirmed file save, schedule pause/resume confirmation and usage warning, completed schedule has no resume control, shared-profile warning, directories, schedules, plugins, system, profile switch, refresh; no browser errors.');
 } finally { await browser?.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

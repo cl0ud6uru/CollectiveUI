@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review-first exact-pin composition of the native read-only workspace browser.
+"""Review-first exact-pin composition of the native bounded workspace file methods.
 
 Default mode validates the pinned Hermes source and installer composition without
 writing. Applying requires the separately reviewed #247 recovery and #96 owner
@@ -27,7 +27,7 @@ OWNER_IMPORT = (
     "_install_collective_hub_owner(sys.modules[__name__])"
 )
 WORKSPACE_IMPORT = (
-    "# Explicit optional CollectiveUI read-only workspace files adapter; not an upstream Hermes method.\n"
+    "# Explicit optional CollectiveUI workspace files adapter; not an upstream Hermes method.\n"
     "from .collective_workspace_files import install as _install_collective_workspace_files\n"
     "_install_collective_workspace_files(sys.modules[__name__])"
 )
