@@ -41,6 +41,7 @@ import { memoryTools } from "@/lib/agent/tools/memory";
 import { toolShortlisting } from "@/lib/agent/tool-shortlisting";
 import { getSetting } from "@/lib/settings";
 import { AAD, encrypt } from "@/lib/crypto";
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 
 let owner: Principal; let member: Principal; let boss: Principal;
 const content = {
@@ -308,6 +309,16 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect(await correct({ id: row.id, fact: "Stale request." }, { toolCallId: "stale", messages: [], context: undefined } as never))
       .toMatchObject({ corrected: false, status: "conflict", recordType: "ordinary_memory" });
     expect((await db.select({ content: schema.memories.content }).from(schema.memories).where(eq(schema.memories.id, row.id)))[0].content).toBe("Concurrent correction.");
+  });
+
+  it("preserves ordinary memory when its correction embedding is refused by the root budget", async () => {
+    const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
+    const [row] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: "Original memory." }).returning();
+    const denied = new NativeRunBudgetError("This native request tree reached its configured company model budget. No provider request was sent and no billing fallback was selected.");
+    fixture.embed.mockRejectedValueOnce(denied);
+    const correct = memoryTools({ principal: member, bot, conversationId: "chat" } as AgentCtx).find(entry => entry.name === "correct_memory")!.tool.execute!;
+    await expect(correct({ id: row.id, fact: "Updated detail." }, { toolCallId: "budget-denied", messages: [], context: undefined } as never)).rejects.toBe(denied);
+    expect((await db.select({ content: schema.memories.content }).from(schema.memories).where(eq(schema.memories.id, row.id)))[0].content).toBe("Original memory.");
   });
 
   it("uses recent-recall fallback when embedding a corrected ordinary memory is unavailable", async () => {

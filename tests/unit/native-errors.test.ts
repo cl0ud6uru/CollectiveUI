@@ -6,11 +6,13 @@ import { nativeErrorText } from "@/lib/llm/native-errors";
 import { ProviderUnavailableError } from "@/lib/llm/errors";
 import { ChatGPTNotConnectedError, ChatGPTUsageLimitError } from "@/lib/llm/chatgpt/errors";
 import { McpToolError } from "@/lib/mcp/errors";
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 const privateText = "arbitrary-fixture-secret https://private.fixture.invalid/request-data";
 afterEach(() => vi.restoreAllMocks());
 describe("native error boundary", () => {
   it.each([
     new Error(privateText), new McpToolError(privateText), { message: privateText },
+    { name: "NativeRunBudgetError", userFacing: true, message: privateText },
     new APICallError({ message: privateText, url: "https://private.fixture.invalid", requestBodyValues: { privateText }, responseBody: privateText, statusCode: 500 }),
   ])("uses a correlated safe fallback and bounded diagnostics for %j", err => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -31,5 +33,10 @@ describe("native error boundary", () => {
   });
   it("preserves trusted local approval guidance", () => {
     expect(nativeErrorText(new Error(privateText), "Review the new approval card.")).toBe("Review the new approval card.");
+  });
+  it("preserves application-owned native budget guidance across retries", () => {
+    const error = new NativeRunBudgetError("This native request tree reached its configured company model budget. No provider request was sent and no billing fallback was selected.");
+    expect(nativeErrorText(error)).toBe(error.message);
+    expect(nativeErrorText(new RetryError({ message: privateText, reason: "maxRetriesExceeded", errors: [error] }))).toBe(error.message);
   });
 });
