@@ -2,6 +2,9 @@
 import { z } from "zod";
 import { DECISIONS_BASE, DECISIONS_MODEL } from "@/lib/decisions-policy";
 import type { ProviderContext } from "./types";
+import { mapUsage, recordUsage, type UsageContext } from "../usage";
+import { nativeRunBudgetPolicy, NativeRunBudgetError } from "../run-budget-policy";
+import { nativeBudgetHandle, reserveNativeBudget, markNativeBudgetDispatched, releaseNativeBudget, settleNativeBudget, type NativeBudgetReceipt } from "../run-budget-store";
 
 export type DecisionQuestion = { type: "predicate"; name: string; instructions: string } |
   { type: "choice"; name: string; instructions: string; choices: { value: string; description: string }[] };
@@ -13,17 +16,38 @@ const answer = z.discriminatedUnion("type", [
   z.object({ type: z.literal("refusal"), name: z.string().nullable() }),
 ]);
 const response = z.object({ model: z.literal(DECISIONS_MODEL), answers: z.array(answer),
-  usage: z.object({ input_tokens: z.number().int().nonnegative() }).optional() });
+  usage: z.object({ input_tokens: z.number().int().nonnegative().safe(), output_tokens: z.number().int().nonnegative().safe().optional() }).optional() });
 export type DecisionResult = { status: "ok"; answers: z.infer<typeof answer>[]; inputTokens: number | null } |
   { status: "unavailable" | "timeout" | "invalid" | "refusal"; inputTokens?: number | null };
 
 /** Direct Decisions wire contract; never uses Responses/tool execution or environment credentials. */
 export async function requestDecision(ctx: ProviderContext, input: string, questions: DecisionQuestion[],
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<DecisionResult> {
+  options: { signal?: AbortSignal; timeoutMs?: number; contextWindowTokens?: number; maxOutputTokens?: number; usage?: UsageContext } = {}): Promise<DecisionResult> {
   if (ctx.kind !== "openai" || ctx.secret?.type !== "api-key" || !ctx.secret.apiKey ||
       (ctx.baseUrl && ctx.baseUrl.replace(/\/$/, "") !== DECISIONS_BASE)) return { status: "unavailable" };
   if (!input.trim() || input.length > 6000 || !questions.length || questions.length > 32) return { status: "invalid" };
   const config = ctx.config as { organization?: string; project?: string };
+  const contextWindowTokens = options.contextWindowTokens ?? 16_384;
+  const maxOutputTokens = options.maxOutputTokens ?? 1_024;
+  if (!Number.isSafeInteger(contextWindowTokens) || !Number.isSafeInteger(maxOutputTokens) ||
+      contextWindowTokens < 1 || maxOutputTokens < 1 || maxOutputTokens >= contextWindowTokens ||
+      contextWindowTokens - maxOutputTokens < 1_024) return { status: "invalid" };
+  const body = JSON.stringify({ model: DECISIONS_MODEL, input, questions, max_output_tokens: maxOutputTokens });
+  // This fixed-model endpoint bypasses the AI SDK's per-step context guard. Budget its exact request JSON with
+  // a two-byte-per-token safety factor, reserve bounded output, and reject before dispatch when it cannot fit.
+  const estimatedInputTokens = Math.ceil(new TextEncoder().encode(body).byteLength * 2);
+  if (estimatedInputTokens + maxOutputTokens > contextWindowTokens) return { status: "invalid" };
+  if (nativeRunBudgetPolicy() && !options.usage?.scope?.rootBudgetId) throw new NativeRunBudgetError("Decision calls require a native root budget context. No provider request was sent.");
+  const usage = options.usage ? { ...options.usage, purpose: "decision" as const, providerKind: "openai" as const, model: DECISIONS_MODEL, appId: ctx.appId } : undefined;
+  const handle = usage ? await nativeBudgetHandle(usage) : null;
+  let receipt: NativeBudgetReceipt | undefined;
+  let dispatched = false;
+  let reportedInput: number | null = null; let reportedOutput: number | null = null;
+  // Reserve the exact direct-wire input and output cap before starting the timed provider attempt.
+  if (handle) {
+    options.signal?.throwIfAborted();
+    receipt = await reserveNativeBudget(handle, usage!, JSON.parse(body), maxOutputTokens);
+  }
   const controller = new AbortController();
   const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -33,12 +57,14 @@ export async function requestDecision(ctx: ProviderContext, input: string, quest
   try {
     return await Promise.race([timeout, (async (): Promise<DecisionResult> => {
       signal.throwIfAborted();
+      if (receipt) await markNativeBudgetDispatched(receipt);
+      dispatched = true;
       const res = await (ctx.fetch ?? globalThis.fetch)(`${DECISIONS_BASE}/decisions`, {
         method: "POST", redirect: "error", signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${ctx.secret!.type === "api-key" ? ctx.secret!.apiKey : ""}`,
           ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
           ...(config.project ? { "OpenAI-Project": config.project } : {}) },
-        body: JSON.stringify({ model: DECISIONS_MODEL, input, questions }),
+        body,
       });
       // Error bodies can echo private input. Do not read or log them.
       if (!res.ok) { await res.body?.cancel(); return { status: "unavailable" }; }
@@ -57,6 +83,7 @@ export async function requestDecision(ctx: ProviderContext, input: string, quest
       const parsed = response.safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       if (!parsed.success) return { status: "invalid" };
       const data = parsed.data; const inputTokens = data.usage?.input_tokens ?? null;
+      reportedInput = inputTokens; reportedOutput = data.usage?.output_tokens ?? null;
       if (data.answers.length !== questions.length) return { status: "invalid", inputTokens };
       if (data.answers.some(a => a.type === "refusal")) return { status: "refusal", inputTokens };
       for (let i = 0; i < questions.length; i++) {
@@ -73,5 +100,12 @@ export async function requestDecision(ctx: ProviderContext, input: string, quest
       }
       return { status: "ok", answers: data.answers, inputTokens };
     })().catch((): DecisionResult => ({ status: controller.signal.aborted ? "timeout" : "unavailable" }))]);
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (receipt) {
+      if (dispatched) await settleNativeBudget(receipt, reportedInput, reportedOutput);
+      else await releaseNativeBudget(receipt);
+    }
+    if (usage && dispatched) await recordUsage(usage, { ...mapUsage(undefined), inputTokens: reportedInput, outputTokens: reportedOutput });
+  }
 }

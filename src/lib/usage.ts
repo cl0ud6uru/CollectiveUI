@@ -11,7 +11,7 @@ import { db } from "@/db";
  * or "chatgpt_plan" (the person's own ChatGPT plan, no cost to the company).
  */
 
-const BACKGROUND = sql`('title', 'memory', 'draft', 'embedding')`;
+const BACKGROUND = sql`('title', 'memory', 'draft', 'embedding', 'decision')`;
 
 /** One row per token-bearing record (ledger event or legacy reply) plus reply counts, since `since`. */
 function tokenRows(since: SQL) {

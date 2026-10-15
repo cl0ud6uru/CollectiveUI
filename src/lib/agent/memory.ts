@@ -1,3 +1,4 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { generateText, Output } from "ai";
 import { z } from "zod";
@@ -19,6 +20,7 @@ export async function selectMemories(opts: {
   query?: string;
   limit?: number;
   conversationId?: string;
+  usage?: UsageScope;
 }, q: DbOrTx = db): Promise<MemoryRow[]> {
   const limit = opts.limit ?? 20;
   const scope = and(
@@ -33,7 +35,7 @@ export async function selectMemories(opts: {
 
   let rest: MemoryRow[] = [];
   const vec = opts.query
-    ? await embedTexts([opts.query], { userId: opts.userId, botId: opts.botId, conversationId: opts.conversationId }, q !== db ? { q } : {}).catch(() => null)
+    ? await embedTexts([opts.query], { userId: opts.userId, botId: opts.botId, conversationId: opts.conversationId }, { ...(q !== db ? { q } : {}), ...(opts.usage ? { usage: opts.usage } : {}) }).catch(error => { if (error instanceof NativeRunBudgetError) throw error; return null; })
     : null;
   if (vec) {
     rest = await q
@@ -57,7 +59,7 @@ export async function selectMemories(opts: {
 }
 
 export async function addMemory(userId: string, botId: string | null, content: string, sourceConversationId?: string, q: DbOrTx = db, abortSignal?: AbortSignal, usage?: UsageScope, mayWrite?: () => Promise<boolean>) {
-  const [emb] = (await embedTexts([content], { userId, botId, conversationId: sourceConversationId }, { ...(abortSignal ? { abortSignal } : {}), ...(usage ? { usage } : {}), ...(q !== db ? { q, maxRetries: 0 } : {}) }).catch(() => null)) ?? [];
+  const [emb] = (await embedTexts([content], { userId, botId, conversationId: sourceConversationId }, { ...(abortSignal ? { abortSignal } : {}), ...(usage ? { usage } : {}), ...(q !== db ? { q, maxRetries: 0 } : {}) }).catch(error => { if (error instanceof NativeRunBudgetError) throw error; return null; })) ?? [];
   // Background embeddings can finish after consent changes, too.
   if (mayWrite && !(await mayWrite())) return null;
   const [row] = await q

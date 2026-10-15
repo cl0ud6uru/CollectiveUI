@@ -34,7 +34,7 @@ describe("Decisions supported configuration and wire contract", () => {
       expect(init).toMatchObject({ method: "POST", redirect: "error", headers: {
         Authorization: "Bearer fixture-key", "OpenAI-Organization": "org-fixture", "OpenAI-Project": "project-fixture",
       } });
-      expect(JSON.parse(String(init?.body))).toEqual({ model: "gpt-6-luna", input: "fixture request", questions });
+      expect(JSON.parse(String(init?.body))).toEqual({ model: "gpt-6-luna", input: "fixture request", questions, max_output_tokens: 1024 });
       return Response.json(data());
     });
     expect(await requestDecision(provider(fetcher), "fixture request", questions)).toMatchObject({ status: "ok", inputTokens: 123 });
