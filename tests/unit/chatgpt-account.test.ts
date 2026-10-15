@@ -361,6 +361,35 @@ describe('unified ChatGPT account', () => {
   });
 });
 
+describe('independent native and stock account lifecycle', () => {
+  async function bindStock() {
+    await db.insert(schema.personalCodexAccounts).values({ userId: 'alice', credentialBinding: 'stock-binding',
+      email: 'stock@test.invalid', workspaceId: 'verified-stock-workspace', planType: 'pro', connected: true });
+  }
+  it('preserves the device account and binding when importing or disconnecting Native SIWC', async () => {
+    await bindStock();
+    await importOwnProfile();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: true, credentialBinding: 'stock-binding' });
+    await changeUnifiedAccount(alice!, 'disconnect-native');
+    expect(await savedCredential()).toBeUndefined();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: true, credentialBinding: 'stock-binding' });
+    expect(fixture.control).not.toHaveBeenCalled();
+    expect(fixture.revoke).toHaveBeenCalledTimes(1);
+  });
+  it('refuses to replace a connected device grant with a SIWC synchronization', async () => {
+    await bindStock(); await importOwnProfile();
+    await expect(changeUnifiedAccount(alice!, 'sync-token')).rejects.toMatchObject({ status: 409 });
+    expect(fixture.control).not.toHaveBeenCalled();
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: true, credentialBinding: 'stock-binding' });
+  });
+  it('still disconnects device grants when an administrator disables their local owner', async () => {
+    await bindStock(); await importOwnProfile();
+    await setUserDisabled('alice', true);
+    expect(fixture.control).toHaveBeenCalledWith('alice', 'disconnect');
+    expect((await db.select().from(schema.personalCodexAccounts))[0]).toMatchObject({ connected: false });
+  });
+});
+
 describe('consented private runtime preparation', () => {
   const consent = { accepted: true as const, consentVersion: 1 as const };
 

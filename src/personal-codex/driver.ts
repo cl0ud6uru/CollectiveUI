@@ -12,7 +12,7 @@ export type ComputerStatus = {
 
 /** Small broker-facing surface shared by the existing Docker runtime and optional local adapters. */
 export interface PersonalCodexRuntimeDriver {
-  readonly config: { socketPath: string; owners: string[]; siwcSandboxVerified?: boolean };
+  readonly config: { socketPath: string; owners: string[]; siwcSandboxVerified?: boolean; authenticationMode?: 'native' | 'siwc' };
   name(owner: string): string;
   /** Current in-memory admission, usable at the final synchronous bridge boundary. */
   admitted?(owner: string): boolean;

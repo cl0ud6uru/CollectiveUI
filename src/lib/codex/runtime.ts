@@ -38,11 +38,13 @@ export const RuntimeManifestSchema = z.object({ version: z.literal(1), runtimes:
     const accounts = runtimes.filter(r => r.funding === 'chatgpt_subscription' && r.expectedEmail).map(r => r.expectedEmail!.toLowerCase());
     if (new Set(accounts).size !== accounts.length) ctx.addIssue({ code: 'custom', message: 'A subscription account cannot be assigned to multiple callers' });
   });
-export type CodexRuntime = z.infer<typeof RuntimeSchema> & { managed?: true; socketPath?: string; authMode?: 'siwc'; tokenFingerprint?: string };
+export type CodexRuntime = z.infer<typeof RuntimeSchema> & { managed?: true; socketPath?: string; authMode?: 'siwc' | 'chatgpt'; tokenFingerprint?: string };
 const unavailable = () => new HttpError(409, 'Your Codex runtime is unavailable or needs administrator verification. No other account was selected.');
 
 export function assertRuntimeOwner(runtime: CodexRuntime, user: { id: string; upn: string; email: string | null }) {
-  if (runtime.ownerId !== user.id || (runtime.funding === 'chatgpt_subscription' &&
+  // Managed device accounts are bound by an explicit confirmation under the owner's row lock.
+  // A local login's email/upn is neither an OpenAI identity nor a required email binding.
+  if (runtime.ownerId !== user.id || (!runtime.managed && runtime.funding === 'chatgpt_subscription' &&
     ![user.upn, user.email].some(email => email?.toLowerCase() === runtime.expectedEmail?.toLowerCase())))
     throw new HttpError(403, 'The assigned Codex account does not match your signed-in identity. A different person’s account cannot be used.');
 }
@@ -51,14 +53,20 @@ export function assertRuntimeOwner(runtime: CodexRuntime, user: { id: string; up
 export async function callerRuntime(ownerId: string, funding: CodexPolicy['funding'], options: { synchronize?: boolean } = {}): Promise<CodexRuntime> {
   if (funding === 'chatgpt_subscription' && process.env.PERSONAL_CODEX_SOCKET) {
     const { personalAccount } = await import('@/personal-codex/accounts');
-    if (options.synchronize) {
+    let account = await personalAccount(ownerId);
+    if (options.synchronize && !account) {
+      const { personalControl } = await import('@/personal-codex/control');
+      const status = await personalControl(ownerId, 'status');
+      if (!status.siwc?.available) throw new HttpError(409, 'Connect stock Codex in Settings → Connected accounts before using this bot.');
+    }
+    if (options.synchronize && (!account || account.workspaceId.startsWith('siwc:'))) {
       const { loadPrincipal } = await import('@/lib/auth/groups');
       const principal = await loadPrincipal(ownerId);
       if (!principal) throw unavailable();
       const { changeUnifiedAccount } = await import('@/lib/llm/chatgpt/account');
       await changeUnifiedAccount(principal, 'sync-token');
+      account = await personalAccount(ownerId);
     }
-    const account = await personalAccount(ownerId);
     if (!account) throw new HttpError(409, 'Connect your own ChatGPT account in Settings → Connected accounts before using Codex.');
     const runtime = await managedRuntimeForAccount(ownerId, account);
     if (account.workspaceId.startsWith('siwc:')) {
@@ -67,7 +75,7 @@ export async function callerRuntime(ownerId: string, funding: CodexPolicy['fundi
       const { tokenFingerprint } = await import('@/personal-codex/contracts');
       return { ...runtime, authMode: 'siwc', tokenFingerprint: tokenFingerprint(auth.accessToken) };
     }
-    throw new HttpError(409, 'This older Codex grant requires migration through the unified ChatGPT account entry.');
+    return { ...runtime, authMode: 'chatgpt' };
   }
   try {
     const path = process.env.CODEX_RUNTIME_MANIFEST;
@@ -94,5 +102,5 @@ export async function managedRuntimeForAccount(ownerId: string, account: { crede
   return { id: `personal:${ownerId}`, ownerId, funding: 'chatgpt_subscription', endpoint: 'ws://127.0.0.1/runtime', tokenFile: '',
     isolationId: `personal:${ownerId}`, credentialBinding: account.credentialBinding, cwd: '/home/agent/workspace', isolated: true,
     nativeMcpDisabled: true, expectedEmail: account.email, expectedWorkspaceId: account.workspaceId,
-    managed: true, socketPath: personalSocket(), ...(account.workspaceId.startsWith('siwc:') ? { authMode: 'siwc' as const } : {}) };
+    managed: true, socketPath: personalSocket(), authMode: account.workspaceId.startsWith('siwc:') ? 'siwc' : 'chatgpt' };
 }

@@ -71,7 +71,8 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         if (epoch === accountEpoch) { verifiedEpoch = epoch; return; }
         continue;
       }
-      const response = await client.request('account/read', { refreshToken: false });
+      // Codex owns native token persistence and refresh; the portal never imports its grant.
+      const response = await client.request('account/read', { refreshToken: runtime.authMode === 'chatgpt' && verifiedEpoch < 0 });
       const identity = account.parse(response).account;
       if (runtime.managed) {
         const { nativeAccount } = await import('@/personal-codex/contracts');
@@ -111,7 +112,7 @@ export async function executeCodexSession(client: Client, runtime: CodexRuntime,
         allowedPermissionProfiles: z.record(z.string(), z.boolean()), allowedLoginMethods: z.array(z.literal('chatgpt')),
         allowedApprovalsReviewers: z.array(z.literal('user')), allowedApprovalPolicies: z.array(z.literal('on-request')) }) }).parse(await client.request('configRequirements/read', {}));
       if (Object.keys(requirements.allowedPermissionProfiles).length !== 1 || requirements.allowedPermissionProfiles['collective-personal'] !== true ||
-        (runtime.authMode !== 'siwc' && config.forced_login_method !== 'chatgpt') || (Array.isArray(config.notify) && config.notify.length)) throw new Error('The managed Codex permission contract changed.');
+        (runtime.authMode !== 'siwc' && (config.forced_login_method !== 'chatgpt' || config.model_provider !== 'openai')) || (Array.isArray(config.notify) && config.notify.length)) throw new Error('The managed Codex permission contract changed.');
       if (runtime.authMode === 'siwc') {
         const providers = config.model_providers as Record<string, Record<string, unknown>> | undefined;
         const provider = providers?.openai_chatgpt_plan;

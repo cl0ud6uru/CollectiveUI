@@ -17,9 +17,9 @@ export function personalSocket() {
 }
 export function personalControl(owner: string, action: 'readiness'): Promise<EnrollmentReadiness>;
 export function personalControl(owner: string, action: 'prepare', consent: z.infer<typeof enrollmentRequest>): Promise<EnrollmentReadiness>;
-export function personalControl(owner: string, action: 'status' | 'connect' | 'cancel' | 'disconnect' | 'start'): Promise<BrokerStatus>;
+export function personalControl(owner: string, action: 'status' | 'connect' | 'cancel' | 'disconnect' | 'start' | 'refresh'): Promise<BrokerStatus>;
 export function personalControl(owner: string, action: 'sync-token', credential: z.infer<typeof tokenSyncRequest>): Promise<SiwcSyncResult>;
-export async function personalControl(owner: string, action: 'status' | 'connect' | 'cancel' | 'disconnect' | 'start' | 'sync-token' | 'readiness' | 'prepare', credential?: z.infer<typeof tokenSyncRequest> | z.infer<typeof enrollmentRequest>): Promise<PersonalControlResult | EnrollmentReadiness> {
+export async function personalControl(owner: string, action: 'status' | 'connect' | 'cancel' | 'disconnect' | 'start' | 'refresh' | 'sync-token' | 'readiness' | 'prepare', credential?: z.infer<typeof tokenSyncRequest> | z.infer<typeof enrollmentRequest>): Promise<PersonalControlResult | EnrollmentReadiness> {
   try {
     ownerId.parse(owner);
     if (action === 'prepare') enrollmentRequest.parse(credential);
