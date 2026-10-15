@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import subprocess
@@ -83,7 +84,14 @@ class GuardedPopen(_popen):
     # annotations eagerly on Python 3.13 (3.14 defers those annotations).
     def __init__(self, argv, *args, **kwargs):
         command = Path(argv[0]).name if isinstance(argv, (list, tuple)) else ""
-        if command not in {"git", "pdftoppm"} or (command == "git" and any(word in argv for word in ("fetch", "pull", "push", "clone", "ls-remote"))):
+        # Native profile creation checks for an alias before writing its wrapper.
+        # Permit only this local lookup for the pool-one test's canonical name;
+        # arbitrary lookups, shell commands and executable overrides stay denied.
+        profile_lookup = (isinstance(argv, (list, tuple)) and len(argv) == 2
+                          and argv[0] == "which" and isinstance(argv[1], str)
+                          and re.fullmatch(r"pool-one-[a-z0-9]{8}", argv[1])
+                          and not kwargs.get("shell") and kwargs.get("executable") is None)
+        if not profile_lookup and (command not in {"git", "pdftoppm"} or (command == "git" and any(word in argv for word in ("fetch", "pull", "push", "clone", "ls-remote")))):
             raise AssertionError("Only local git inspection and PDF rendering may spawn")
         super().__init__(argv, *args, **kwargs)
 
