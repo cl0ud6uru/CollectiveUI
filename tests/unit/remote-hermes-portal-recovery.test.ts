@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import type { PGlite } from '@electric-sql/pglite';
-const f = vi.hoisted(() => ({ client: null as PGlite | null, socketEpoch: 2, portalSocketEpoch: 5, nativeFence: true, nativeGeneration: 11, phase: 'none', recoveryId: '', failCompletionOnce: false, claims: vi.fn(), completions: vi.fn(), call: vi.fn(), invalidated: vi.fn(), prepareRefresh: vi.fn() }));
+const f = vi.hoisted(() => ({ client: null as PGlite | null, socketEpoch: 2, portalSocketEpoch: 5, nativeFence: true, nativeGeneration: 11, phase: 'none', recoveryId: '', failCompletionOnce: false, claimOverride: {} as Record<string, unknown>, completionOverride: {} as Record<string, unknown>, claims: vi.fn(), completions: vi.fn(), call: vi.fn(), invalidated: vi.fn(), prepareRefresh: vi.fn() }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'); const { drizzle } = await import('drizzle-orm/pglite');
   f.client = new PGlite(); return { db: drizzle(f.client) };
@@ -25,15 +25,20 @@ vi.mock('@/lib/remote-hermes/hub', async () => {
   const hub = {
     refresh: f.prepareRefresh, lockBoundary: connection,
     prepareRecoveryOwnership: async () => { if (!f.nativeFence) throw new Error('exclusive recovery ownership unavailable'); return snapshot(); },
-    claimRecoveryOwnership: async (_row: unknown, recoveryId: string) => {
+    claimRecoveryOwnership: async (candidate: { sessionRevision: number }, recoveryId: string) => {
+      const [intent] = (await db.execute(sql`SELECT state, confirmed_at FROM remote_hermes_recoveries WHERE id = ${recoveryId}`)).rows;
+      expect(intent.state).toMatch(/pending|uncertain/); expect(intent.confirmed_at).not.toBeNull();
+      if ((await snapshot()).sessionRevision !== candidate.sessionRevision) throw new Error('candidate changed');
       f.claims(); if (!f.nativeFence) throw new Error('native ownership unavailable');
-      f.phase = 'recovery'; f.recoveryId = recoveryId; return snapshot();
+      f.phase = 'recovery'; f.recoveryId = recoveryId; const value = await snapshot(); return { ...value, nativeFence: { ...value.nativeFence, ...f.claimOverride } };
     },
     completeRecoveryOwnership: async () => {
+      const [intent] = (await db.execute(sql`SELECT receipt FROM remote_hermes_recoveries WHERE id = ${f.recoveryId}`)).rows;
+      expect(intent.receipt).toMatchObject({ state: 'drained', reason: 'drained' });
       f.completions(); if (!f.nativeFence) throw new Error('native ownership unavailable');
       if (f.phase !== 'full') { f.phase = 'full'; f.nativeGeneration++; }
       if (f.failCompletionOnce) { f.failCompletionOnce = false; throw new Error('full claim reply lost'); }
-      return snapshot();
+      const value = await snapshot(); return { ...value, nativeFence: { ...value.nativeFence, ...f.completionOverride } };
     },
     assertCurrentOwnership: async (tx: typeof db, expected: unknown) => { const { nativeFence: _actual, ...actual } = await snapshot(tx); const { nativeFence: _expected, ...wanted } = expected as Awaited<ReturnType<typeof snapshot>>; void _actual; void _expected; if (JSON.stringify(actual) !== JSON.stringify(wanted)) throw new Error('ownership changed'); },
     assertNativeOwnership: async (expected: { nativeFence: unknown; socketEpoch: number }) => { if (!f.nativeFence || !expected.nativeFence || expected.socketEpoch !== f.socketEpoch || JSON.stringify(expected.nativeFence) !== JSON.stringify({ protocol: 'collective.native-hub-owner.v1', generation: 3, socketEpoch: f.portalSocketEpoch, nativeGeneration: f.nativeGeneration, phase: f.phase, recoveryId: f.recoveryId, recoverySessionId: 'runtime', recoveryStoredSessionId: 'stored' })) throw new Error('native owner changed'); },
@@ -62,7 +67,7 @@ beforeEach(async () => {
     INSERT INTO remote_hermes_sessions(id,connection_id,profile,stored_id,runtime_id,title,status,admission_request_id,revision,ownership_generation,queue_request_id,queue_status)
       VALUES ('session','connection','default','stored','runtime','Synthetic','uncertain','request-a',7,4,'request-q','uncertain');
     INSERT INTO remote_hermes_turns(id,session_id,request_id,digest) VALUES ('receipt','session','request-a','digest');`);
-  vi.clearAllMocks(); f.prepareRefresh.mockReset(); f.socketEpoch = 2; f.portalSocketEpoch = 5; f.nativeFence = true; f.nativeGeneration = 11; f.phase = 'none'; f.recoveryId = ''; f.failCompletionOnce = false; nativeBinding = {};
+  vi.clearAllMocks(); f.prepareRefresh.mockReset(); f.socketEpoch = 2; f.portalSocketEpoch = 5; f.nativeFence = true; f.nativeGeneration = 11; f.phase = 'none'; f.recoveryId = ''; f.failCompletionOnce = false; f.claimOverride = {}; f.completionOverride = {}; nativeBinding = {};
   f.call.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     if (method === 'collective.recovery.capabilities') return { protocol: 'collective.cancel-drain.v1', scope: 'inline_prompt_runtime', durable: true };
     if (method === 'collective.recovery.cancel_and_drain') nativeBinding = params;
@@ -198,4 +203,20 @@ it('database refuses applied state without terminal receipt and full ownership p
   const intent = await prepare();
   await expect(db.update(remoteHermesRecoveries).set({ state: 'applied' }).where(eq(remoteHermesRecoveries.id, intent.intentId))).rejects.toMatchObject({ cause: { constraint: 'remote_hermes_recovery_terminal_check' } });
   expect((await read()).status).toBe('uncertain');
+});
+
+it.each([
+  { phase: 'full' }, { recoveryId: '731f96d8-1350-4b70-9f76-e6e4e55c101a' }, { recoverySessionId: 'wrong' },
+  { recoveryStoredSessionId: 'wrong' }, { generation: 99 }, { socketEpoch: 99 }, { nativeGeneration: 0 },
+])('rejects incomplete/foreign recovery-only claim proof %j before cancel', async proof => {
+  const intent = await prepare(); f.claimOverride = proof;
+  expect(await confirm(intent.intentId)).toMatchObject({ state: 'uncertain' });
+  expect(f.call.mock.calls.some(([method]) => method === 'collective.recovery.cancel_and_drain')).toBe(false);
+  expect(f.completions).not.toHaveBeenCalled(); expect((await read()).runtime_id).toBe('runtime');
+});
+it.each([{ phase: 'recovery' }, { nativeGeneration: 13 }, { recoverySessionId: 'wrong' }])('retains terminal receipt but rejects foreign/nonadjacent full claim proof %j', async proof => {
+  const intent = await prepare(); f.completionOverride = proof;
+  expect(await confirm(intent.intentId)).toMatchObject({ state: 'uncertain' });
+  expect((await db.select().from(remoteHermesRecoveries))[0].receipt).toMatchObject({ state: 'drained' });
+  expect((await read()).runtime_id).toBe('runtime'); expect(f.invalidated).not.toHaveBeenCalled();
 });

@@ -127,6 +127,7 @@ TOKENS = {}
 REFRESH = {}
 DROP_ACK = False
 CONNECTIONS = set()
+FAULTED_TRANSPORTS = set()
 RECOVERY_RELEASE = threading.Event()
 
 class FixtureProvider(DashboardAuthProvider):
@@ -170,7 +171,7 @@ class FixtureAgent(SyntheticHeavyAgent):
         text = str(message)
         if "fixture-protected" in text:
             answer = server._ask("secret", self.sid, {"prompt": "Synthetic protected value"}, timeout=10)
-            METRICS["protected_answers"] += int(bool(answer and answer.get("value")))
+            METRICS["protected_answers"] += int(bool(answer))  # Native _ask unwraps the result to a string.
         elif "fixture-clarify" in text:
             server._ask("clarify", self.sid, {"questions": [{"qid": "q1", "question": "Synthetic question", "choices": ["One", "Two"]}]}, timeout=10)
         elif "fixture-approval" in text:
@@ -184,7 +185,19 @@ class FixtureAgent(SyntheticHeavyAgent):
         final = "Synthetic fixture reply"
         if stream_callback:
             stream_callback(final)
-        self.history = [*(conversation_history or []), {"role": "user", "content": text}, {"role": "assistant", "content": final}]
+        user = {"role": "user", "content": text}
+        assistant = {"role": "assistant", "content": final}
+        if RECOVERY_ADAPTERS:
+            # The real agent owns assistant persistence. The synthetic seam must
+            # implement that contract to test retained completed output, using the
+            # actual profile-scoped native SessionDB rather than a fake history API.
+            user = getattr(self, "_pending_cli_user_message", None) or user
+            session = server._sessions[self.sid]
+            with server._session_db(session) as database:
+                assert database is not None
+                assistant["_row_id"] = database.append_message(self.session_id, "assistant", content=final)
+            assistant[server._DB_PERSISTED_MARKER] = True
+        self.history = [*(conversation_history or []), user, assistant]
         return {"final_response": final, "messages": self.history, "interrupted": self._interrupt.is_set(), "completed": True, "error": None, "last_reasoning": None}
 
 # Only construction/inference is replaced. Registry, admission, persistence,
@@ -202,16 +215,31 @@ def observe_attachment(frame):
         if digest not in METRICS["attachment_hashes"]:
             METRICS["attachment_hashes"].append(digest)
 
+async def close_after_lost_ack(transport, observed_turns):
+    if RECOVERY_ADAPTERS:
+        # The native callback runs after a successful write. Drop the bytes while
+        # returning success, then allow actual deferred admission to enter its agent
+        # before disconnecting. This removes a reconnect/queued-worker race from the
+        # active-worker recovery case without inventing a native completion result.
+        deadline = time.monotonic() + 1
+        while METRICS["agent_turns"] <= observed_turns and time.monotonic() < deadline:
+            await asyncio.sleep(.005)
+    await transport._ws.close(code=1012)
+
 _original_write = native_ws.WSTransport.write
 
 def fault_write(self, frame):
     global DROP_ACK
     CONNECTIONS.add(self)
     observe_attachment(frame)
+    if RECOVERY_ADAPTERS and frame.get("method") == "event" and frame.get("params", {}).get("type") != "gateway.ready" and (DROP_ACK or self in FAULTED_TRANSPORTS):
+        return True  # The same lost transport cannot deliver terminal evidence around its missing ACK.
     if DROP_ACK and isinstance(frame.get("id"), int) and frame.get("result", {}).get("status") in {"streaming", "queued"}:
         DROP_ACK = False
+        if RECOVERY_ADAPTERS:
+            FAULTED_TRANSPORTS.add(self)
         METRICS["dropped_acks"] += 1
-        asyncio.run_coroutine_threadsafe(self._ws.close(code=1012), self._loop)
+        asyncio.run_coroutine_threadsafe(close_after_lost_ack(self, METRICS["agent_turns"]), self._loop)
         return True
     return _original_write(self, frame)
 
@@ -222,10 +250,17 @@ async def fault_write_async(self, frame):
     global DROP_ACK
     CONNECTIONS.add(self)
     observe_attachment(frame)
+    if RECOVERY_ADAPTERS and frame.get("method") == "event" and frame.get("params", {}).get("type") != "gateway.ready" and (DROP_ACK or self in FAULTED_TRANSPORTS):
+        return True  # The same lost transport cannot deliver terminal evidence around its missing ACK.
     if DROP_ACK and isinstance(frame.get("id"), int) and frame.get("result", {}).get("status") in {"streaming", "queued"}:
         DROP_ACK = False
+        if RECOVERY_ADAPTERS:
+            FAULTED_TRANSPORTS.add(self)
         METRICS["dropped_acks"] += 1
-        await self._ws.close(code=1012)
+        if RECOVERY_ADAPTERS:
+            asyncio.create_task(close_after_lost_ack(self, METRICS["agent_turns"]))
+        else:
+            await self._ws.close(code=1012)
         return True
     return await _original_write_async(self, frame)
 
@@ -245,6 +280,11 @@ async def control(request: Request):
         DROP_ACK = True
     elif RECOVERY_ADAPTERS and body == {"release_recovery_worker": True}:
         RECOVERY_RELEASE.set()
+    elif RECOVERY_ADAPTERS and set(body) == {"probe_unowned_stdio", "request_id"} and body["probe_unowned_stdio"] is True and isinstance(body["request_id"], str) and 0 < len(body["request_id"]) <= 200:
+        create = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-create", "method": "session.create", "params": {"profile": "default"}})
+        answer = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-answer", "method": "request.answer", "params": {"id": body["request_id"], "result": {"value": "synthetic-stdio-rejected"}}})
+        response = server_requests.resolve_response({"jsonrpc": "2.0", "id": body["request_id"], "result": {"value": "synthetic-stdio-rejected"}})
+        return {"create_rejected": "error" in create, "answer_rejected": "error" in answer, "response_resolved": bool(response)}
     elif body == {"disconnect": True}:
         for connection in list(CONNECTIONS):
             with contextlib.suppress(Exception):

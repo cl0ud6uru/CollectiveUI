@@ -1,19 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { remoteHermesRecoveries } from '@/db/remote-hermes-recovery-schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
-import { DashboardClient, type DashboardSecrets } from '@/lib/remote-hermes/client';
+import type { DashboardSecrets } from '@/lib/remote-hermes/client';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
 import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
 const f = vi.hoisted(() => ({ base: '' }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [f.base] }) }));
 const enabled = process.env.REMOTE_HERMES_PORTAL_RECOVERY_CONFORMANCE === '1';
-const owner = newId(), connection = newId();
+let owner = '', connection = '';
 let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
+let DashboardClient: typeof import('@/lib/remote-hermes/client').DashboardClient;
+let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket;
 let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
 let openNativeSession: typeof import('@/lib/remote-hermes/sessions').openNativeSession;
 let nativeHistory: typeof import('@/lib/remote-hermes/sessions').nativeHistory;
@@ -29,20 +31,26 @@ describe.skipIf(!enabled)('exact-pin composed ownership/drain adapters and produ
     // Reject driver overrides BEFORE any module that constructs a PostgreSQL pool is imported.
     assertDisposableHermesDatabase(process.env.DATABASE_URL);
     ({ db, pool } = await import('@/db'));
+    ({ DashboardClient } = await import('@/lib/remote-hermes/client'));
+    ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
     ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
     ({ openNativeSession, nativeHistory, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
     ({ nativeRecovery } = await import('@/lib/remote-hermes/recovery'));
+  });
+  beforeEach(async () => {
+    owner = newId(); connection = newId();
     fixture = await startPinnedDashboard({ recoveryAdapters: true }); f.base = fixture.base;
     secrets = await new DashboardClient(f.base, fetch).passwordLogin('synthetic', 'synthetic-password');
     await db.insert(users).values({ id: owner, upn: `recovery-conformance-${owner}`, name: 'Synthetic fixture', identityRealm: 'local', authSource: 'local' });
     await db.insert(remoteHermesConnections).values({ id: connection, userId: owner, name: 'Synthetic recovery dashboard', baseUrl: f.base, authMode: 'password',
       secretEnc: encrypt(JSON.stringify(secrets), remoteConnectionAAD(connection, owner)) });
   }, 45000);
-  afterAll(async () => {
+  afterEach(async () => {
     if (f.base) nativeHub(owner, connection).close();
     if (f.base) await db.delete(users).where(eq(users.id, owner));
-    await fixture?.stop(); await pool?.end();
+    await fixture?.stop(); f.base = '';
   });
+  afterAll(async () => { await pool?.end(); });
   it('recovers actual accepted/completed work after a lost acknowledgement using terminal proof, retains history and never replays the old turn', async () => {
     const session = await openNativeSession(owner, connection, 'default');
     const requestId = randomUUID(), text = 'fixture-recovery-original', before = (await metrics()).agent_turns;
@@ -104,5 +112,31 @@ describe.skipIf(!enabled)('exact-pin composed ownership/drain adapters and produ
     expect(await submitNativePrompt(owner, connection, session.id, requestId, text)).toEqual({ accepted: true, duplicate: true });
     expect((await nativeHistory(owner, connection, session.id, 0)).messages.some(message => message.text.includes(text))).toBe(true);
     expect((await metrics()).external_attempts).toBe(0);
+  }, 45000);
+  it('rejects unclaimed WebSocket and stdio dispatch/answers while the full owner alone resolves its native protected request', async () => {
+    const session = await openNativeSession(owner, connection, 'default'), hub = nativeHub(owner, connection);
+    const auth = new DashboardClient(f.base, fetch, secrets);
+    const unclaimed = new DashboardSocket(async () => ({ url: new URL(`${f.base.replace('http:', 'ws:')}/api/ws?ticket=${encodeURIComponent(await auth.websocketTicket())}`), options: {} }), () => {});
+    try {
+      await unclaimed.connect();
+      await expect(unclaimed.call('session.create', { profile: 'default' })).rejects.toThrow();
+      await submitNativePrompt(owner, connection, session.id, randomUUID(), 'fixture-protected');
+      await vi.waitFor(() => expect(hub.sessions.get(session.id)?.pending.size).toBe(1), { timeout: 10_000 });
+      const pending = [...hub.sessions.get(session.id)!.pending.values()][0];
+      await unclaimed.answer(pending.nativeId, { value: 'synthetic-unclaimed-rejected' });
+      await unclaimed.call('ping'); // FIFO barrier after the unclaimed response frame.
+      await expect(unclaimed.call('request.answer', { id: String(pending.nativeId), result: { value: 'synthetic-unclaimed-rejected' } })).rejects.toThrow();
+      const probe = await fetch(f.base + '/api/__fixture/control', { method: 'POST', headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ probe_unowned_stdio: true, request_id: String(pending.nativeId) }) });
+      expect(await probe.json()).toEqual({ create_rejected: true, answer_rejected: true, response_resolved: false });
+      expect((await metrics()).protected_answers).toBe(0);
+      await expect(hub.socket.call('request.answer', { id: 'srq-synthetic-missing', result: { value: 'synthetic-missing-rejected' } })).rejects.toThrow();
+      expect(await hub.socket.call('request.answer', { id: String(pending.nativeId), result: { value: 'synthetic-owner-only' }, profile: 'default' })).toMatchObject({ status: 'ok' });
+      await vi.waitFor(async () => expect((await metrics()).protected_answers).toBe(1), { timeout: 10_000 });
+      await expect(hub.socket.call('request.answer', { id: String(pending.nativeId), result: { value: 'synthetic-stale-rejected' } })).rejects.toThrow();
+      expect((await metrics()).protected_answers).toBe(1);
+      const history = JSON.stringify(await nativeHistory(owner, connection, session.id, 0));
+      expect(history).not.toContain('synthetic-unclaimed-rejected'); expect(history).not.toContain('synthetic-stdio-rejected'); expect(history).not.toContain('synthetic-owner-only');
+    } finally { unclaimed.close(); }
   }, 45000);
 });
