@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { browserAcceptanceEnvironment, ACCEPTED_APP_SHA } from '../../scripts/lib/docker-hermes-browser-guard.mjs';
+import { AcceptanceRefusal, acceptanceDiagnostic, browserAcceptanceEnvironment, ACCEPTED_APP_SHA } from '../../scripts/lib/docker-hermes-browser-guard.mjs';
 const base = {
   CI: 'true', GITHUB_ACTIONS: 'true', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', DOCKER_HERMES_BROWSER: '1',
   ACCEPTANCE_APP_SHA: ACCEPTED_APP_SHA, ACCEPTANCE_HARNESS_SHA: 'b'.repeat(40), DISPOSABLE_PG_PORT: '25432',
@@ -27,4 +27,20 @@ for (const [name, patch] of Object.entries({
 });
 test('refuses macOS because the real fixture cleanup requires Linux procfs', () => {
   assert.throws(() => browserAcceptanceEnvironment(base, 'darwin'), /environment refused/);
+});
+
+test('diagnostics expose only fixed reason codes and known key names', () => {
+  assert.throws(() => browserAcceptanceEnvironment({ ...base, PGHOST: 'private-value-do-not-echo' }, 'linux'), error => {
+    assert.deepEqual(acceptanceDiagnostic(error), { reasonCode: 'pg_environment_override', environmentKeys: ['PGHOST'] });
+    assert.ok(!JSON.stringify(acceptanceDiagnostic(error)).includes('private-value'));
+    return true;
+  });
+  assert.deepEqual(acceptanceDiagnostic(new AcceptanceRefusal('arbitrary-private-code', ['PGprivate-name', 'AUTH_SECRET'])), { reasonCode: 'unexpected_failure', environmentKeys: ['AUTH_SECRET'] });
+  assert.deepEqual(acceptanceDiagnostic(new Error('private error body')), { reasonCode: 'unexpected_failure' });
+});
+test('known ambient configuration reports its name while unknown names remain hidden', () => {
+  assert.throws(() => browserAcceptanceEnvironment({ ...base, AZURE_HTTP_USER_AGENT: 'private-value', AZURE_private_name: 'private-value' }, 'linux'), error => {
+    assert.deepEqual(acceptanceDiagnostic(error), { reasonCode: 'ambient_configuration', environmentKeys: ['AZURE_HTTP_USER_AGENT'] });
+    return true;
+  });
 });

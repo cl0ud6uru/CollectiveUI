@@ -4,14 +4,14 @@ import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, access, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { browserAcceptanceEnvironment, EXPECTED_BROWSER_CASES } from './lib/docker-hermes-browser-guard.mjs';
+import { AcceptanceRefusal, acceptanceDiagnostic, browserAcceptanceEnvironment, EXPECTED_BROWSER_CASES } from './lib/docker-hermes-browser-guard.mjs';
 
 const children = [], logs = [];
 let phase = 'environment guard', evidencePath;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const git = (root, args) => {
   const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
-  if (result.status !== 0) throw new Error('Source identity could not be verified.');
+  if (result.status !== 0) throw new AcceptanceRefusal('source_git_failed');
   return result.stdout.trim();
 };
 async function start(root, executable, args, env, label) {
@@ -32,19 +32,22 @@ async function until(check, timeout = 120000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
     if (await check()) return;
-    if (children.some(child => child.exitCode !== null && child.fixtureService)) throw new Error('A disposable fixture service exited.');
+    if (children.some(child => child.exitCode !== null && child.fixtureService)) throw new AcceptanceRefusal('fixture_service_exited');
     await sleep(500);
   }
-  throw new Error('Disposable fixture readiness timed out.');
+  throw new AcceptanceRefusal('fixture_readiness_timeout');
 }
 async function main() {
   // This must run before loading pg, the application, its fixtures, or any connection-capable dependency.
   const accepted = browserAcceptanceEnvironment(process.env);
+  phase = 'source guard';
   const workspace = await realpath(process.env.GITHUB_WORKSPACE);
   const appRoot = await realpath(path.join(workspace, 'acceptance-target'));
-  if (path.dirname(appRoot) !== workspace || git(appRoot, ['rev-parse', 'HEAD']) !== accepted.appSha || git(appRoot, ['status', '--porcelain', '--untracked-files=no'])) throw new Error('Accepted source checkout changed.');
+  if (path.dirname(appRoot) !== workspace) throw new AcceptanceRefusal('source_location');
+  if (git(appRoot, ['rev-parse', 'HEAD']) !== accepted.appSha) throw new AcceptanceRefusal('source_pin_mismatch');
+  if (git(appRoot, ['status', '--porcelain', '--untracked-files=no'])) throw new AcceptanceRefusal('source_dirty');
   for (const name of ['.env', '.env.local', '.env.production', '.env.production.local', '.env.development', '.env.development.local']) {
-    if (await access(path.join(appRoot, name)).then(() => true, () => false)) throw new Error('Ambient app environment files refused.');
+    if (await access(path.join(appRoot, name)).then(() => true, () => false)) throw new AcceptanceRefusal('ambient_app_env_file');
   }
   if (process.argv.includes('--guard-only')) { console.log(`Disposable boundary verified for ${accepted.appSha}.`); return; }
   const temp = await mkdtemp(path.join(await realpath(process.env.RUNNER_TEMP), 'hermes-browser-'));
@@ -69,19 +72,19 @@ async function main() {
   try {
     await db.connect();
     const { rows } = await db.query("SELECT count(*)::int n FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p')");
-    if (rows[0].n !== 0) throw new Error('Database is not fresh.');
+    if (rows[0].n !== 0) throw new AcceptanceRefusal('database_not_fresh');
   } finally { await db.end(); }
   const node = path.join(appRoot, 'node_modules/.bin/tsx');
-  phase = 'migrations'; if (await finished(await start(appRoot, node, ['src/db/migrate.ts'], env, phase)) !== 0) throw new Error('Migration failed.');
+  phase = 'migrations'; if (await finished(await start(appRoot, node, ['src/db/migrate.ts'], env, phase)) !== 0) throw new AcceptanceRefusal('migration_failed');
   phase = 'synthetic broker';
   const broker = await start(appRoot, node, ['tests/fixtures/docker-hermes-browser.ts'], env, phase); broker.fixtureService = true;
   await until(() => access(env.DOCKER_HERMES_BROWSER_ENV).then(() => true, () => false));
   const brokerEnv = await readFile(env.DOCKER_HERMES_BROWSER_ENV, 'utf8');
   const match = /^DOCKER_HERMES_SOCKET=(\/[^\r\n]+)\n$/.exec(brokerEnv);
-  if (!match || !match[1].startsWith(`${temp}/`)) throw new Error('Synthetic broker address refused.');
+  if (!match || !match[1].startsWith(`${temp}/`)) throw new AcceptanceRefusal('synthetic_broker_address');
   env.DOCKER_HERMES_SOCKET = match[1];
   phase = 'worker';
-  if (await access('/tmp/collectiveui-worker/ready').then(() => true, () => false)) throw new Error('Unexpected existing worker readiness marker.');
+  if (await access('/tmp/collectiveui-worker/ready').then(() => true, () => false)) throw new AcceptanceRefusal('unexpected_worker_marker');
   const worker = await start(appRoot, node, ['src/worker/index.ts'], env, phase); worker.fixtureService = true;
   await until(() => access('/tmp/collectiveui-worker/ready').then(() => true, () => false));
   phase = 'real app';
@@ -102,15 +105,17 @@ async function main() {
   evidence.phase = phase;
   evidence.sourceUnchanged = git(appRoot, ['rev-parse', 'HEAD']) === accepted.appSha && !git(appRoot, ['status', '--porcelain', '--untracked-files=no']);
   await save();
-  if (code !== 0 || evidence.passed !== EXPECTED_BROWSER_CASES || evidence.failed || evidence.skipped || !evidence.sourceUnchanged) throw new Error('Browser acceptance did not pass every case.');
+  if (code !== 0 || evidence.passed !== EXPECTED_BROWSER_CASES || evidence.failed || evidence.skipped || !evidence.sourceUnchanged) throw new AcceptanceRefusal('browser_cases_not_passed');
   console.log(`PASS: ${EXPECTED_BROWSER_CASES} browser cases on accepted app/spec ${accepted.appSha}.`);
 }
 try { await main(); }
-catch {
-  if (evidencePath) {
-    const evidence = JSON.parse(await readFile(evidencePath, 'utf8')); evidence.phase = phase; evidence.outcome = 'not_passed'; await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
+catch (error) {
+  const diagnostic = acceptanceDiagnostic(error);
+  try { if (evidencePath) {
+    const evidence = JSON.parse(await readFile(evidencePath, 'utf8')); evidence.phase = phase; evidence.outcome = 'not_passed'; evidence.diagnostic = diagnostic; await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
   }
-  console.error(`Docker Hermes acceptance did not pass (${phase}); no skipped case counts as evidence.`); process.exitCode = 1;
+  } catch { /* A failed evidence write must not expose raw filesystem errors. */ }
+  console.error(JSON.stringify({ outcome: 'not_passed', phase, ...diagnostic })); process.exitCode = 1;
 } finally {
   for (const child of children.reverse()) {
     if (child.exitCode !== null || !child.pid) continue;
