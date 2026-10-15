@@ -25,6 +25,8 @@ const server = createServer(async (req, res) => {
   const input = JSON.parse(Buffer.concat(bytes).toString()).input; received.push(input);
   if (input.operation === 'setting') inventory[input.scope][input.key].value = input.value;
   if (input.operation === 'install') inventory.mcp.catalog[0].installed = true;
+  if (input.operation === 'remove') { inventory.mcp.servers = inventory.mcp.servers.filter(server => server.name !== input.name); res.end(JSON.stringify({ accepted: true, removed: true })); return; }
+  if (input.operation === 'reload') { res.end(JSON.stringify({ accepted: true, reloaded: true })); return; }
   if (input.operation === 'test') {
     ++probeCount;
     res.end(JSON.stringify(probeCount === 1
@@ -35,9 +37,9 @@ const server = createServer(async (req, res) => {
   res.end(JSON.stringify({ accepted: true }));
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
 try {
-  const page = await browser.newPage(); const errors = []; page.on('pageerror', e => errors.push(e.message));
+  const page = await browser.newPage(); const errors = []; page.on('pageerror', e => errors.push(e.message)); page.on('dialog', dialog => dialog.accept());
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByRole('button', { name: 'Native settings & MCP' }).click();
   await expect(page.getByText('Hermes profile: default')).toBeVisible();
@@ -58,7 +60,6 @@ try {
   expect(received[0]).toMatchObject({ scope: 'session', key: 'reasoning', value: 'high' });
   expect(received[3]).toMatchObject({ name: 'fixture-server', envVar: 'FIXTURE_KEY', value: 'synthetic-protected-value' });
   await page.getByLabel('Setting key', { exact: true }).click(); await page.getByRole('option', { name: 'Speed tier', exact: true }).click();
-  page.on('dialog', dialog => dialog.accept());
   for (const [scope, label] of [['session', 'This chat'], ['profile', 'Profile defaults']]) {
     await page.getByLabel('Setting scope', { exact: true }).click(); await page.getByRole('option', { name: label, exact: true }).click();
     for (const tier of ['auto', 'cold']) {
@@ -76,13 +77,19 @@ try {
   await page.getByRole('button', { name: 'Test connection' }).click();
   await expect(page.getByText('fixture-server: Connection failed; check the server in Hermes')).toBeVisible();
   await expect(page.getByText('fixture-server: OAuth sign-in required in Hermes')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Remove server' }).click();
+  await expect(page.getByText('Hermes removed the server from this profile.')).toBeVisible();
+  await expect(page.getByText('fixture-server', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reload MCP for live sessions' }).click();
+  await expect(page.getByText('Hermes reloaded MCP for its live sessions.')).toBeVisible();
+  expect(received.map(input => input.operation)).toEqual(['setting', 'test', 'install', 'credential', 'setting', 'setting', 'setting', 'setting', 'test', 'test', 'test', 'remove', 'reload']);
   const countBeforePending = received.length;
   await page.evaluate(() => window.fixtureSetRunning(true));
-  for (const name of ['Apply setting', 'Test connection', 'Install preset', 'Save protected credential']) {
+  for (const name of ['Apply setting', 'Install preset', 'Save protected credential', 'Reload MCP for live sessions']) {
     await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
   }
   await expect(page.getByRole('button', { name: 'Refresh settings' })).toBeEnabled();
   expect(received.length).toBe(countBeforePending);
   expect(errors).toEqual([]);
-  console.log('PASS: native settings including auto/cold in both scopes, safe MCP inventory, token-aware probes, preset install, protected credential clearing, and active-work disablement; no browser errors.');
+  console.log('PASS: native settings including auto/cold in both scopes, safe MCP inventory, token-aware probes, preset install, protected credential clearing, confirmed removal/reload, and active-work disablement; no browser errors.');
 } finally { await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

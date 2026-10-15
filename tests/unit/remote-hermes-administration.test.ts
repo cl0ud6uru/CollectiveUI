@@ -6,7 +6,7 @@ const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default',
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string) => { if (owner !== 'owner') throw new Error('not found'); return { id: 'session', profile: f.profile, status: f.status, queueRequestId: f.queueRequestId }; } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { profiles: f.profiles } }; } }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
 vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown) => run({
   select: () => ({ from: (table: { [key: symbol]: unknown }) => {
     const name = table[Symbol.for('drizzle:Name')];
@@ -26,6 +26,8 @@ describe('native administration protocol and isolation', () => {
     expect(administrationInput.safeParse({ operation: 'inspect', profile: 'other' }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'setting', requestId, key: 'yolo', value: 'on', scope: 'profile' }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'once' }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'remove', requestId, name: 'example' }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'reload', requestId, confirmed: false }).success).toBe(false);
   });
   it('sends chat settings only with the bound runtime session and explicit session scope', async () => {
     await nativeAdministration('owner', 'connection', 'session', { operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'session' });
@@ -127,5 +129,44 @@ describe('native administration protocol and isolation', () => {
     f.call.mockResolvedValue({ servers: [{ name: 'example', source: 'config', env: ['EXAMPLE_KEY'] }] });
     await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'credential', requestId, name: 'example', envVar: 'UNRELATED_KEY', value: 'synthetic-secret' })).rejects.toThrow('existing credential key');
     expect(f.receipt).toBeNull(); expect(f.call).toHaveBeenCalledExactlyOnceWith('mcp.servers.list', { profile: 'default' });
+  });
+  it('removes only an inventoried config server and verifies it disappeared before success', async () => {
+    f.call.mockImplementation(async (method: string, params: { profile?: string; name?: string }) => {
+      if (method === 'mcp.servers.list') return { servers: params.profile === 'default' && f.call.mock.calls.filter(([m]) => m === 'mcp.servers.list').length === 1 ? [{ name: 'example', source: 'config' }] : [] };
+      if (method === 'mcp.servers.remove') return { ok: true, removed: true };
+      return {};
+    });
+    const result = await nativeAdministration('owner', 'connection', 'session', { operation: 'remove', requestId, name: 'example', confirmed: true });
+    expect(result).toEqual({ accepted: true, removed: true });
+    expect(f.call).toHaveBeenCalledWith('mcp.servers.remove', { profile: 'default', name: 'example' });
+    expect(f.call).toHaveBeenCalledTimes(3); // profile ownership read, native removal, authoritative native readback
+  });
+  it.each([{ name: 'example', source: 'plugin' }, { name: 'example' }])('refuses removal when the server is not authoritatively config-owned (%o)', async server => {
+    f.call.mockResolvedValue({ servers: [server] });
+    await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'remove', requestId, name: 'example', confirmed: true })).rejects.toThrow('removed here');
+    expect(f.receipt).toBeNull(); expect(f.call).toHaveBeenCalledExactlyOnceWith('mcp.servers.list', { profile: 'default' });
+  });
+  it('does not report removal complete when authoritative inventory still contains the server', async () => {
+    f.call.mockImplementation(async method => method === 'mcp.servers.list' ? { servers: [{ name: 'example', source: 'config' }] } : { ok: true, removed: true });
+    await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'remove', requestId, name: 'example', confirmed: true })).rejects.toThrow('still reports');
+    expect(f.receipt).not.toBeNull(); expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.remove')).toHaveLength(1);
+  });
+  it('does not replay a removal when Hermes loses its acknowledgement', async () => {
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: [{ name: 'example', source: 'config' }] };
+      if (method === 'mcp.servers.remove') throw new Error('Synthetic lost acknowledgement');
+      return {};
+    });
+    const input = { operation: 'remove', requestId, name: 'example', confirmed: true } as const;
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    expect(await nativeAdministration('owner', 'connection', 'session', input)).toEqual({ accepted: true, duplicate: true });
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.remove')).toHaveLength(1);
+  });
+  it('reloads MCP only after explicit confirmation and uses the server-owned runtime identity', async () => {
+    await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'reload', requestId, confirmed: false })).rejects.toThrow();
+    f.call.mockResolvedValue({ status: 'reloaded' });
+    const result = await nativeAdministration('owner', 'connection', 'session', { operation: 'reload', requestId, confirmed: true });
+    expect(result).toEqual({ accepted: true, reloaded: true });
+    expect(f.call).toHaveBeenCalledExactlyOnceWith('reload.mcp', { session_id: 'runtime', confirm: true });
   });
 });
