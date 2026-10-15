@@ -9,11 +9,14 @@ import { PetUpload, petControl } from "@/components/pets/pet-upload";
 import { BotDefaultEditor, defaultKey } from "@/components/pets/bot-default-editor";
 import { catalogPreview, catalogSpriteUrl, type BotPetDefault, type CatalogPet } from "@/lib/pets/shared";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
+import { PetGenerationBuilder } from "./pet-generation-builder";
+import type { PetGenerationSettings } from "@/lib/settings";
 
 type AdminCatalogPet = CatalogPet & { defaultCount: number; personalCount: number; preferenceCount: number; builtIn: boolean };
 type Deleted = { displayName: string; defaultsReset: number; selectionsReset: number };
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-export function PetsAdmin({ catalog, bots }: { catalog: AdminCatalogPet[]; bots: (BotPetDefault & { id: string; name: string; avatar: string | null; enabled: boolean; sharedIdentity: boolean })[] }) {
+export function PetsAdmin({ catalog, bots, generation }: { catalog: AdminCatalogPet[]; bots: (BotPetDefault & { id: string; name: string; avatar: string | null; enabled: boolean; sharedIdentity: boolean })[];
+  generation: { settings: PetGenerationSettings; connections: { id: string; name: string; provider: string; baseUrl: string | null; enabled: boolean }[] } }) {
   const router = useRouter();
   const [botId, setBotId] = useState(bots[0]?.id ?? "");
   const bot = bots.find((b) => b.id === botId);
@@ -23,6 +26,7 @@ export function PetsAdmin({ catalog, bots }: { catalog: AdminCatalogPet[]; bots:
   const [deleteError, setDeleteError] = useState("");
   return <div className="space-y-6">
     <AdminHeader title="Pets" description="Upload, review and publish shared avatar artwork. Private user imports stay private until their owner explicitly copies them here." />
+    <PetGenerationBuilder initial={generation} />
     <section className="rounded-xl border border-border p-4"><h2 className="mb-3 font-medium">Upload a catalog draft</h2><PetUpload endpoint="/api/admin/pets" shared onSaved={() => { setNotice("Draft uploaded. Review its animation and credit before publishing."); router.refresh(); }} /><p role="status" className="mt-3 text-sm text-muted">{notice}</p></section>
     <section className="space-y-3 rounded-xl border border-border p-4">
       <h2 className="font-medium">Assign a bot default</h2>
