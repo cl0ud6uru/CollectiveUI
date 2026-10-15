@@ -6,6 +6,7 @@ import { Input, Select, Textarea } from '@/components/ui/input';
 import { Markdown } from '@/components/chat/markdown';
 import type { RemoteHermesProfile } from '@/lib/remote-hermes/client';
 import type { NativePrompt, NativeSessionView } from '@/lib/remote-hermes/view';
+import { NativeRecovery } from './native-recovery';
 import { NativeAdministration } from './native-administration';
 import { parseNativeInput, type NativeCommandCatalog } from '@/lib/remote-hermes/commands';
 import { insertCommandIntoDraft } from '@/lib/chat/composer-commands';
@@ -22,6 +23,8 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
 }) {
   const [profile, setProfile] = useState(saved.find(s => s.id === initialSession)?.profile ?? profiles[0]?.name ?? saved[0]?.profile ?? 'default');
   const [sessionId, setSessionId] = useState(initialSession);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryGeneration, setRecoveryGeneration] = useState(0);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [browse, setBrowse] = useState<Browse>({ sessions: [], linked: saved });
   const [older, setOlder] = useState<NativeSessionView['messages']>([]);
@@ -69,7 +72,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     return () => { abort.abort(); clearTimeout(timer); };
   }, [loadBrowse]);
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || recoveryOpen) return;
     const generation = selection.current;
     const abort = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -81,7 +84,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
       finally { if (!abort.signal.aborted && generation === selection.current) timer = setTimeout(poll, document.hidden ? 5000 : 1000); }
     }
     void poll(); return () => { abort.abort(); clearTimeout(timer); };
-  }, [endpoint, sessionId]);
+  }, [endpoint, sessionId, recoveryOpen, recoveryGeneration]);
   useEffect(() => {
     if (!sessionId || !allowed) return;
     const abort = new AbortController(), generation = selection.current;
@@ -105,7 +108,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     setOlder([]); setHistoryOffset(0); setHistoryMore(true); setHistoryBusy(false);
     setSnapshot(null); setSessionId(id); setProfile(selectedProfile); setDetails(null); setError('');
     setCatalog(null); setShowCommands(false); setCommandSearch(''); setCommandIndex(0); commandAttempt.current = null;
-    closeYolo();
+    closeYolo(); setRecoveryOpen(false);
     setText(''); setFiles([]); if (fileInput.current) fileInput.current.value = '';
     if (selectedProfile !== profile) setBrowse({ sessions: [], linked: saved });
     const url = new URL(location.href);
@@ -221,6 +224,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     <section className="min-w-0 space-y-4">
       {!enabled && <p role="status" className="rounded-lg border border-border p-3 text-sm">Personal remote Hermes is disabled. Active turns can finish; you can still answer their prompts or stop them.</p>}
       {error && <p role="alert" className="rounded-lg border border-danger p-3 text-sm">{error}</p>}
+      {sessionId && (recoveryOpen || snapshot?.uncertain || !snapshot && (error || browse.linked.some(item => item.id === sessionId && ['uncertain', 'admitting'].includes(item.status)))) && <NativeRecovery key={`recovery-${sessionId}`} connectionId={connectionId} sessionId={sessionId} disabled={busy} onOpenChange={setRecoveryOpen} onApplied={() => { setSnapshot(null); setError(''); setRecoveryGeneration(value => value + 1); }} />}
       {!sessionId ? <p className="text-muted">Choose a conversation or start a new Hermes chat.</p> : !snapshot ? <p role="status">Opening Hermes conversation…</p> : <>
         <header className="flex flex-wrap items-center gap-2">
           <h2 className="font-medium">{snapshot.title}</h2><span className="text-xs text-muted">{snapshot.model} · {snapshot.connection}</span>
