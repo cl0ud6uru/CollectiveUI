@@ -38,11 +38,16 @@ sys.exit(1)
 
 prepare_device() {
   local udid="$1"
-  xcrun simctl boot "$udid" >/dev/null 2>&1 || true
-  xcrun simctl bootstatus "$udid" -b
-  xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 \
-    --cellularMode active --cellularBars 4 --wifiBars 3 || true
-  xcrun simctl install "$udid" "$APP_PATH"
+  local attempt
+  for attempt in 1 2; do
+    xcrun simctl boot "$udid" >/dev/null 2>&1 || true
+    xcrun simctl bootstatus "$udid" -b
+    xcrun simctl status_bar "$udid" override --time 9:41 --batteryState charged --batteryLevel 100 \
+      --cellularMode active --cellularBars 4 --wifiBars 3 || true
+    if xcrun simctl install "$udid" "$APP_PATH"; then break; fi
+    if [ "$attempt" -eq 2 ]; then return 1; fi
+    log "Simulator installation failed after startup; retrying startup once"
+  done
   # Warm-up launch so the first real scenario isn't slowed by a cold start.
   xcrun simctl launch "$udid" "$BUNDLE_ID" --demo >/dev/null 2>&1 || true
   sleep 6
