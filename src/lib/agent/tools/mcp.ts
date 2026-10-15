@@ -1,3 +1,4 @@
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import type { MCPClient } from "@ai-sdk/mcp";
 import { dynamicTool, jsonSchema, type JSONSchema7 } from "ai";
 import type { BotToolConfig, McpServer } from "@/db/schema";
@@ -123,7 +124,9 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
               options: { signal: abortSignal, timeout: server.timeoutMs },
             });
             if (ctx) await audit(ctx.principal.user.id, "mcp.call.completed", server.id, details);
-            return capResult(redactMcpValue(result as McpCallResult, server), budget);
+            return capResult(result.isError === true
+              ? { isError: true, content: [{ type: "text", text: nativeErrorText(new Error()) }] }
+              : redactMcpValue(result as McpCallResult, server), budget);
           } catch (err) {
             if (ctx) await audit(ctx.principal.user.id, "mcp.call.failed", server.id, details);
             if (abortSignal?.aborted) throw err;

@@ -134,7 +134,7 @@ export class NativeHub {
     if (!observed) throw new HttpError(404, 'Native Hermes chat not found.');
     row = observed;
     const eventRevision = this.sessions.get(row.id)?.eventRevision ?? 0;
-    const { result: snapshot, epoch: socketEpoch } = await this.socket.callWithEpoch('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, inline_images: false, close_on_disconnect: false });
+    const { result: snapshot, epoch: socketEpoch } = await this.socket.callWithEpoch('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, close_on_disconnect: false });
     await this.assertIdentity();
     const runtimeId = typeof snapshot.session_id === 'string' ? snapshot.session_id : '';
     const storedId = typeof snapshot.stored_session_id === 'string' ? snapshot.stored_session_id : row.storedId;

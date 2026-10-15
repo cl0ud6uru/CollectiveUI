@@ -32,6 +32,7 @@ vi.mock("@/lib/runs/log", () => ({
   },
 }));
 
+import { closeOpenParts, rebuildMessage } from "@/lib/runs/replay";
 import { RunEventWriter } from "@/lib/runs/events";
 
 const delta = (d: string, id = "0"): UIMessageChunk => ({ type: "text-delta", id, delta: d });
@@ -164,18 +165,33 @@ describe("RunEventWriter", () => {
     expect(b.w.leaseLost).toBe(true);
   });
 
-  it("a batch Postgres refuses as data (SQLSTATE 22) is dropped once; the run keeps its lease and goes on", async () => {
+  it("fails closed on rejected durable data and retains the committed prefix for uncertain-effect recovery", async () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const a = track(writer());
-    log.script.push("bad-data");
-    await a.w.push({ type: "start", messageId: "m1" });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(log.appends).toHaveLength(0);
-    await a.w.push({ type: "finish" });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(log.appends.map(chunksOf)).toEqual([[{ type: "finish" }]]);
-    expect(a.onLeaseLost).not.toHaveBeenCalled();
-    errSpy.mockRestore();
+    try {
+      const a = track(writer());
+      await a.w.push({ type: "start", messageId: "m1" });
+      await a.w.push({ type: "text-start", id: "text" });
+      await a.w.push(delta("Saved partial", "text"));
+      await a.w.push({ type: "text-end", id: "text" });
+      await a.w.push({ type: "tool-input-available", toolCallId: "c1", toolName: "send_mail", input: {} });
+      await a.w.flush();
+      const committed = log.appends.flatMap(chunksOf) as UIMessageChunk[];
+      log.script.push("bad-data");
+      await a.w.push({ type: "tool-output-available", toolCallId: "c1", output: { sent: true } });
+      await a.w.flush();
+      expect(a.onLeaseLost).toHaveBeenCalledTimes(1);
+      expect(a.w.leaseLost).toBe(true);
+      await a.w.push({ type: "finish" });
+      await a.w.close();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(log.appends.flatMap(chunksOf)).toEqual(committed);
+      const partial = await rebuildMessage(null, committed, "m1");
+      const closed = closeOpenParts(partial, "interrupted", { stoppedText: "Stopped while it was running: it may have run." });
+      expect(closed.message.parts).toContainEqual({ type: "text", text: "Saved partial", state: "done" });
+      expect(closed.message.parts).toContainEqual(expect.objectContaining({ toolCallId: "c1", state: "output-error", errorText: expect.stringMatching(/may have run/) }));
+      const replayed = await rebuildMessage(null, [...committed, ...closed.chunks], "m1");
+      expect(replayed.parts).toEqual(closed.message.parts);
+    } finally { errSpy.mockRestore(); }
   });
 
   it("keeps the heartbeat fresh with an empty fenced append when idle", async () => {

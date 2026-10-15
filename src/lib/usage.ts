@@ -11,7 +11,7 @@ import { db } from "@/db";
  * or "chatgpt_plan" (the person's own ChatGPT plan, no cost to the company).
  */
 
-const BACKGROUND = sql`('title', 'memory', 'draft', 'embedding')`;
+const BACKGROUND = sql`('title', 'memory', 'draft', 'embedding', 'decision')`;
 
 /** Shared rolling period for the admin dashboard and its CSV download. */
 export const ADMIN_USAGE_DAYS = 30;

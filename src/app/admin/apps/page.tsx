@@ -41,6 +41,7 @@ export default async function AdminAppsPage() {
             systemPrompt: a.systemPrompt,
             temperature: a.temperature,
             maxTokens: a.maxTokens,
+            contextWindowTokens: a.contextWindowTokens,
             supportsVision: a.supportsVision,
             supportsTools: a.supportsTools,
             embeddingModel: a.embeddingModel,

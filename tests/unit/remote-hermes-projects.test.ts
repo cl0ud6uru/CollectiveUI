@@ -11,7 +11,7 @@ vi.mock('@/lib/remote-hermes/sessions', async () => ({
 }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ client: { profiles: f.profiles } }) }));
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
-  lockBoundary: async () => { ++f.locks; if (f.concurrentReceipt) { f.receipt = { requestId: f.concurrentReceipt.requestId, digest: f.concurrentReceipt.digest }; f.list.push(f.concurrentReceipt.project); f.concurrentReceipt = null; } if (f.locks === f.runAt) f.cached.view.running = true; }, refresh: async () => f.cached.view, sessions: new Map([['session', f.cached]]),
+  lockBoundary: async () => { ++f.locks; if (f.concurrentReceipt) { f.receipt = { requestId: f.concurrentReceipt.requestId, digest: f.concurrentReceipt.digest }; f.list.push(f.concurrentReceipt.project); f.rawProjects.push(f.concurrentReceipt.project); f.concurrentReceipt = null; } if (f.locks === f.runAt) f.cached.view.running = true; }, refresh: async () => f.cached.view, sessions: new Map([['session', f.cached]]),
   socket: { state: 'connected', get connectionEpoch() { return f.cached.socketEpoch; },
     callConnected: async (method: string, params: Record<string, unknown>) => {
       if (method === 'projects.list') return { active_id: f.activeId || null, projects: f.list };
@@ -137,6 +137,17 @@ describe('confirmed native Hermes workspace operations', () => {
     f.receipt = { requestId: claim.requestId, digest: hmacSha256Hex('synthetic-receipt-key', JSON.stringify(claim)) };
     f.rawProjects = [{ id: 'native-project-id', slug: claim.slug, name: claim.name, folders: [{ path: '/workspace/.private' }], archived: false }];
     f.list = [{ id: 'native-project-id', slug: claim.slug, name: claim.name, folders: [], archived: false }];
+    const result = await confirm(prepared.confirmation!);
+    expect(result).toMatchObject({ accepted: false, duplicate: true });
+    expect(JSON.stringify(result)).not.toContain('/workspace/.private');
+    expect(f.calls).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a concurrent duplicate when projects.get reveals a hidden folder', async () => {
+    const prepared = await prepareCreate();
+    const claim = JSON.parse(decrypt(prepared.confirmation!, JSON.stringify(['remote-hermes-workspace:v1', 'owner', 'connection', 'session'])));
+    f.concurrentReceipt = { requestId: claim.requestId, digest: hmacSha256Hex('synthetic-receipt-key', JSON.stringify(claim)),
+      project: { id: 'native-project-id', slug: claim.slug, name: claim.name, folders: [{ path: '/workspace/.private' }], archived: false } };
     const result = await confirm(prepared.confirmation!);
     expect(result).toMatchObject({ accepted: false, duplicate: true });
     expect(JSON.stringify(result)).not.toContain('/workspace/.private');
