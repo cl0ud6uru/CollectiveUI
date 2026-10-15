@@ -3,6 +3,7 @@ import { HttpError } from '@/lib/authz';
 import type { Tx } from '@/db';
 
 export type DispatchBoundary = <T>(method: string, params: RpcRecord, dispatch: () => T, tx?: Tx) => Promise<{ value: T }>;
+export type DispatchPreparation = (method: string, params: RpcRecord) => Promise<void>;
 
 export type RpcRecord = Record<string, unknown>;
 export type NativeFrame = { jsonrpc: '2.0'; id?: string | number; method?: string; params?: RpcRecord; result?: RpcRecord; error?: { code?: number } };
@@ -37,16 +38,19 @@ export class DashboardSocket {
   serverRequests: string[] = [];
   private epoch = 0;
   private closed = false;
+  private suppressReconnectCallback = false;
   get connectionEpoch() { return this.epoch; }
-  constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame) => void,
+  constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame, socketEpoch: number) => void,
     private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {},
     private authorize: (method: string, params: RpcRecord) => Promise<void> = async () => {},
-    private boundary: DispatchBoundary = async (method, params, dispatch) => { await this.authorize(method, params); return { value: dispatch() }; }) {}
+    private boundary: DispatchBoundary = async (method, params, dispatch) => { await this.authorize(method, params); return { value: dispatch() }; },
+    private prepare: DispatchPreparation = async () => {}) {}
   private setState(state: SocketState) { this.state = state; this.changed(state); }
-  async connect(): Promise<void> {
+  async connect(options: { suppressReconnectCallback?: boolean } = {}): Promise<void> {
     if (this.closed) throw new HttpError(409, 'Hermes connection was retired. Sign in again.');
     this.wanted = true;
     if (this.ready) return;
+    if (options.suppressReconnectCallback) this.suppressReconnectCallback = true;
     if (this.connecting) return this.connecting;
     this.connecting = this.open();
     try { await this.connecting; } finally { this.connecting = undefined; }
@@ -80,7 +84,7 @@ export class DashboardSocket {
           if (f.method === 'event' && f.params?.type === 'gateway.ready') {
             clearTimeout(timeout); this.transportReady = true; resolve(); return;
           }
-          if (f.method) { this.frame(f); return; }
+          if (f.method) { this.frame(f, this.epoch); return; }
           if (typeof f.id !== 'number') return;
           const pending = this.pending.get(f.id);
           if (!pending) return;
@@ -96,19 +100,19 @@ export class DashboardSocket {
       this.ready = true;
       ++this.epoch;
       const wasReconnect = this.everConnected;
+      const suppressReconnectCallback = this.suppressReconnectCallback;
+      this.suppressReconnectCallback = false;
       this.everConnected = true; this.attempt = 0; this.setState('connected');
       this.heartbeat = setInterval(() => { void this.call('ping', {}, 10_000).catch(() => ws.terminate()); }, 20_000);
       this.heartbeat.unref();
       // Recovery may join a refresh already waiting on this connect(). Do not make
       // completion of the connection depend on completion of that same refresh.
-      if (wasReconnect) void this.reconnected().catch(() => {});
+      if (wasReconnect && !suppressReconnectCallback) void this.reconnected().catch(() => {});
     } catch (e) {
       this.ready = false; this.transportReady = false; this.ws?.terminate();
       if (e instanceof HttpError && [401, 403, 501].includes(e.status)) { this.wanted = false; this.setState(e.status === 501 ? 'disconnected' : 'auth_required'); }
       else this.schedule();
-      // Node URL/upgrade/target errors may embed token or ticket query values.
-      // Keep trusted, deliberately phrased application errors; discard raw errors and causes.
-      throw e instanceof HttpError ? e : new HttpError(502, 'The Hermes socket could not connect. Check the dashboard URL and proxy WebSocket support.');
+      throw e;
     }
   }
   private schedule() {
@@ -140,6 +144,7 @@ export class DashboardSocket {
   }
   private async dispatch(method: string, params: RpcRecord, timeoutMs: number, tx?: Tx): Promise<{ reply: Promise<RpcRecord> }> {
     if (!this.ws || !this.transportReady || this.ws.readyState !== WebSocket.OPEN) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
+    await this.prepare(method, params);
     const ws = this.ws;
     const { value: reply } = await this.boundary(method, params, () => {
       if (this.ws !== ws || !this.transportReady || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
@@ -158,11 +163,11 @@ export class DashboardSocket {
     }, tx);
     return { reply };
   }
-  /** A write callback confirms transport delivery only, never native acceptance.
-   * Values are not retained and responses are never replayed after reconnect. */
+  /** Only server-verified pending requests are answered; values are never logged or retained. */
   async answer(id: string | number, result?: RpcRecord, expectedEpoch = this.epoch) {
     if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) throw new HttpError(409, 'Reconnect and reload the pending prompt before answering.');
     const ws = this.ws;
+    await this.prepare('$answer', { id });
     const { value: written } = await this.boundary('$answer', { id }, () => {
       if (this.ws !== ws || !this.ready || ws.readyState !== WebSocket.OPEN || this.epoch !== expectedEpoch) throw new NativeConnectionChanged();
       const write = new Promise<void>((resolve, reject) => {
@@ -176,7 +181,6 @@ export class DashboardSocket {
           });
         } catch { fail(new HttpError(502, 'Hermes prompt delivery is uncertain. Refresh instead of resending the answer.')); }
       });
-      // A socket failure can precede the policy/identity transaction commit.
       void write.catch(() => {});
       return write;
     });
