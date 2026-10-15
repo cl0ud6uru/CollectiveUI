@@ -45,7 +45,7 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
     f.epoch = 7;
     const refresh = hub.refresh(await row());
     await vi.waitFor(() => expect(f.call).toHaveBeenCalledWith('session.resume', {
-      session_id: 'stored', profile: 'default', cols: 80, inline_images: false, close_on_disconnect: false,
+      session_id: 'stored', profile: 'default', cols: 80, close_on_disconnect: false,
     }));
     f.epoch = 8; snapshot.resolve(idle); await refresh;
     expect(hub.sessions.get(session)?.socketEpoch).toBe(7);
