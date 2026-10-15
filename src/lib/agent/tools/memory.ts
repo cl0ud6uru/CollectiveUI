@@ -7,6 +7,7 @@ import { addMemory } from "../memory";
 import { embedTexts } from "@/lib/llm";
 import type { AgentCtx, ToolEntry } from "../types";
 import { changeLearning } from "../learning/store";
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 
 export function memoryTools(ctx: AgentCtx): ToolEntry[] {
   const userId = ctx.principal.user.id;
@@ -84,7 +85,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
           if (memory) {
             const embedded = await embedTexts([fact], { userId, botId: memory.botId, conversationId: ctx.conversationId }, {
               ...(abortSignal ? { abortSignal } : {}), ...(ctx.usage ? { usage: ctx.usage } : {}),
-            }).catch(() => null);
+            }).catch(error => { if (error instanceof NativeRunBudgetError) throw error; return null; });
             abortSignal?.throwIfAborted();
             const [embedding] = embedded ?? [];
             const [updated] = await db.update(memories).set({ content: fact, embedding: embedding ?? null, updatedAt: new Date() })
