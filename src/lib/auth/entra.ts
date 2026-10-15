@@ -41,8 +41,10 @@ export async function saveEntraTokens(userId: string, account: OAuthAccount) {
 }
 
 /** Returns a valid delegated Graph token for the user, refreshing it if needed. */
-export async function getGraphToken(userId: string): Promise<string | null> {
+export async function getGraphToken(userId: string, signal?: AbortSignal | null): Promise<string | null> {
+  signal?.throwIfAborted();
   const [row] = await db.select().from(userTokens).where(eq(userTokens.userId, userId));
+  signal?.throwIfAborted();
   if (!row) return null;
   if (row.expiresAt.getTime() - Date.now() > 120_000) return decrypt(row.accessTokenEnc, AAD.userAccessToken);
 
@@ -52,6 +54,7 @@ export async function getGraphToken(userId: string): Promise<string | null> {
   const tokenUrl = issuer.replace(/\/v2\.0\/?$/, "") + "/oauth2/v2.0/token";
   const res = await fetch(tokenUrl, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: process.env.AUTH_MICROSOFT_ENTRA_ID_ID ?? "",
@@ -72,13 +75,18 @@ export async function getGraphToken(userId: string): Promise<string | null> {
   return t.access_token;
 }
 
-export async function graphFetch<T>(userId: string, path: string, init?: RequestInit): Promise<T> {
-  const token = await getGraphToken(userId);
+export async function graphFetch<T = void>(userId: string, path: string, init?: RequestInit): Promise<T> {
+  init?.signal?.throwIfAborted();
+  const token = await getGraphToken(userId, init?.signal);
+  init?.signal?.throwIfAborted();
   if (!token) throw new Error("Microsoft 365 is not connected for this user. Sign in with Microsoft to enable it.");
   const res = await fetch(path.startsWith("http") ? path : `${GRAPH}${path}`, {
     ...init,
     headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
   });
   if (!res.ok) throw new Error(`Microsoft Graph error ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return (await res.json()) as T;
+  // Graph sendMail acknowledges acceptance with 202 and no JSON. Do not infer success from parse errors.
+  const body = await res.text();
+  if (!body && (res.status === 202 || res.status === 204)) return undefined as T;
+  return JSON.parse(body) as T;
 }
