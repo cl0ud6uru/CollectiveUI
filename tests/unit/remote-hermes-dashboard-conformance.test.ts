@@ -42,7 +42,7 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
     socket?.close();
     await processFixture?.stop();
   });
-  it('uses actual native password/PKCE, refresh rotation, authenticated profiles and one-use WS tickets', async () => {
+  it('uses actual native password login, refresh rotation, authenticated profiles and one-use WS tickets', async () => {
     expect((await auth.profiles()).map(p => p.name)).toContain('default');
     const old = auth; secrets = await auth.refresh(); auth = new DashboardClient(base, fetch, secrets);
     await expect(old.profiles()).rejects.toThrow('sign-in');

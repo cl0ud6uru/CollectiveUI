@@ -2,10 +2,8 @@
 
 The opt-in harness runs the complete upstream dashboard at Hermes source
 `f97608f178d1ffeca59860195ab7da295f7c8e5f` (v0.21.5, desktop contract 8).
-The password client runs native authorize with an S256 challenge/state, the
-password callback and native token exchange with the matching verifier. It verifies
-the production CollectiveUI dashboard client and WebSocket transport
-against the native FastAPI application, authentication/PKCE and ticket routes,
+It verifies the production CollectiveUI dashboard client and WebSocket transport
+against the native FastAPI application, password authentication and ticket routes,
 RPC validation, attachment handlers, session registry, SQLite history, prompt
 requests, queue and interrupt implementation. It also exercises the production
 hub and durable reservation code with a disposable PostgreSQL database.
@@ -62,7 +60,7 @@ before database access. CI checks out the pin and creates a disposable
 
 ## Evidence and limits
 
-The native suite covers password/PKCE and refresh rotation, single-use WS tickets,
+The native suite covers password login and refresh rotation, single-use WS tickets,
 image/file/PDF delivery, persisted history, reconnect without resubmission,
 protected/clarification/approval responses across reconnect, queue/stop, and native
 acceptance followed by a lost acknowledgement. The PostgreSQL suite adds actual
