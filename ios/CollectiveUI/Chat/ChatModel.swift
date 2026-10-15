@@ -89,6 +89,11 @@ final class ChatModel {
     var commandCatalog: ChatCommandCatalog?
     var commandError: String?
     var isExecutingCommand = false
+
+    func dismissCommandResult() {
+        commandResult = nil
+    }
+
     var skills: [ChatSkill] = []
     @ObservationIgnored private var commandRevision = 0
     private var commandAttempt: PendingCommandAttempt? {

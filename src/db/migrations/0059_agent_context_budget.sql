@@ -1,0 +1,1 @@
+ALTER TABLE "ai_apps" ADD COLUMN "context_window_tokens" integer;

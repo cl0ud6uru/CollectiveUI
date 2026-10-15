@@ -6,7 +6,7 @@ export function teamRuntimeApp(bot: Bot, model: string, attributionId = bot.appI
   const now = new Date();
   return { id: attributionId, name: bot.name, description: null, icon: bot.avatar, kind: 'runtime', provider: 'hermes',
     providerConfig: { teamNative: true }, credentialMode: 'org', baseUrl: LOCAL_ORIGIN, apiKeyEnc: null, providerConnectionId: null,
-    model, systemPrompt: null, temperature: null, maxTokens: null, supportsVision: true, supportsTools: true, embeddingModel: null,
+    model, systemPrompt: null, temperature: null, maxTokens: null, contextWindowTokens: null, supportsVision: true, supportsTools: true, embeddingModel: null,
     isPublic: false, enabled: true, sortOrder: 0, createdAt: now, updatedAt: now };
 }
 export const isTeamRuntimeApp = (app: Pick<AiApp, 'provider'|'providerConfig'>) =>

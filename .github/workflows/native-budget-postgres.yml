@@ -1,0 +1,38 @@
+name: Native budget PostgreSQL proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native-budget-postgres:
+    name: Native budget multiprocess PostgreSQL and execution paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: native_budget_fixture
+          POSTGRES_PASSWORD: synthetic-fixture-only
+          POSTGRES_DB: collective_native_budget_proof_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U native_budget_fixture -d collective_native_budget_proof_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Prove target guards without database imports
+        run: npx vitest run --project unit tests/unit/native-budget-disposable-database.test.ts
+      - name: Require actual multiprocess locks, migration upgrades, group and worker approval paths
+        env:
+          NATIVE_BUDGET_POSTGRES_PROOF: '1'
+          NATIVE_BUDGET_POSTGRES_TEST_URL: postgres://native_budget_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_native_budget_proof_test
+        run: npx vitest run --project integration tests/integration/native-budget-postgres.test.ts --maxWorkers=1
