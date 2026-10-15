@@ -78,13 +78,16 @@ socket.getaddrinfo = guarded_getaddrinfo
 socket.socket.connect, socket.socket.connect_ex, socket.socket.sendto = guarded_connect, guarded_connect_ex, guarded_sendto
 _popen = subprocess.Popen
 
-def guarded_popen(argv, *args, **kwargs):
-    command = Path(argv[0]).name if isinstance(argv, (list, tuple)) else ""
-    if command not in {"git", "pdftoppm"} or (command == "git" and any(word in argv for word in ("fetch", "pull", "push", "clone", "ls-remote"))):
-        raise AssertionError("Only local git inspection and PDF rendering may spawn")
-    return _popen(argv, *args, **kwargs)
+class GuardedPopen(_popen):
+    # Keep Popen a class: the actual pinned dashboard evaluates Popen | None
+    # annotations eagerly on Python 3.13 (3.14 defers those annotations).
+    def __init__(self, argv, *args, **kwargs):
+        command = Path(argv[0]).name if isinstance(argv, (list, tuple)) else ""
+        if command not in {"git", "pdftoppm"} or (command == "git" and any(word in argv for word in ("fetch", "pull", "push", "clone", "ls-remote"))):
+            raise AssertionError("Only local git inspection and PDF rendering may spawn")
+        super().__init__(argv, *args, **kwargs)
 
-subprocess.Popen = guarded_popen
+subprocess.Popen = GuardedPopen
 sys.path.insert(0, str(SOURCE))
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, InvalidCredentialsError, RefreshExpiredError, Session

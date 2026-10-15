@@ -80,3 +80,8 @@ live infrastructure, upstream credential revocation or deployed network security
 Native interrupt still does not provide an operation-correlated terminal receipt;
 an idle snapshot cannot release an uncertain admission. The harness deliberately
 does not add a timeout/idle force reset. See the recovery contract for that gap.
+
+The subprocess guard remains a `Popen` subclass. Python 3.13 eagerly evaluates
+native `Popen | None` annotations; replacing the class with a function breaks
+the actual dashboard import even though Python 3.14 defers those annotations.
+Both local 3.13 and 3.14 execute the same native fixture; CI requires 3.13.
