@@ -19,7 +19,7 @@ import { createRoot } from '${root}/node_modules/react-dom/client';
 import { Tooltip } from 'radix-ui';
 import { ShellProvider, useShell } from '${root}/src/components/chat/shell-context';
 import { ChatShell } from '${root}/src/components/chat/chat-shell';
-function Controls() { const shell=useShell(); return <><button id="open" onClick={()=>shell.setMobileOpen(true)}>Open sidebar</button><button id="start-side-chat">Start side chat</button></>; }
+function Controls() { const shell=useShell(); return <><button id="open" onClick={()=>shell.setMobileOpen(true)}>Open sidebar</button><button id="start-side-chat">Start side chat</button><button onClick={()=>shell.setSidebarOpen(false)}>Collapse desktop sidebar</button><button onClick={()=>shell.setSidebarOpen(true)}>Expand desktop sidebar</button></>; }
 const bots=[{kind:'bot',id:'bot-a',name:'Alpha',icon:null,description:'Fixture bot',label:null,pinned:true},{kind:'bot',id:'bot-b',name:'Beta',icon:null,description:'Fixture bot',label:null,pinned:true}];
 const conversations=[{id:'chat-fixture',title:'Fixture chat',pinned:false,folderId:null,botId:null,appId:null,source:'chat',updatedAt:'2026-10-15T00:00:00.000Z'}];
 const folders=[{id:'folder-fixture',name:'Example project'}];
@@ -126,7 +126,25 @@ try {
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
-  console.log('Responsive sidebar containment, nested dialogs/menus, close/focus restoration, and desktop resize recovery passed.');
+  // A collapsed desktop sidebar remains mounted for animation, but must leave the accessibility tree and tab order.
+  await page.setViewportSize({width:1280,height:900});
+  const desktopSidebar = page.locator('#root > div > div').first();
+  await page.getByRole('button',{name:'Collapse desktop sidebar',exact:true}).click();
+  await expect(desktopSidebar).toHaveJSProperty('inert',true);
+  await expect(desktopSidebar).toHaveAttribute('aria-hidden','true');
+  await expect(desktopSidebar.getByRole('link')).toHaveCount(0);
+  expect(await page.locator('body').ariaSnapshot()).not.toContain('navigation "Main navigation"');
+  await desktopSidebar.locator('a').first().evaluate(element=>element.focus());
+  expect(await desktopSidebar.evaluate(element=>element.contains(document.activeElement))).toBe(false);
+  for (let i=0;i<16;i++) {
+    await page.keyboard.press('Tab');
+    expect(await desktopSidebar.evaluate(element=>element.contains(document.activeElement))).toBe(false);
+  }
+  await page.getByRole('button',{name:'Expand desktop sidebar',exact:true}).click();
+  await expect(desktopSidebar).toHaveJSProperty('inert',false);
+  await expect(desktopSidebar).toHaveAttribute('aria-hidden','false');
+  expect(await page.locator('body').ariaSnapshot()).toContain('navigation "Main navigation"');
+  console.log('Responsive sidebar containment, nested portals, resize recovery, and collapsed desktop accessibility/tab exclusion passed.');
 } finally {
   await browser.close();
   await new Promise(resolve=>server.close(resolve));
