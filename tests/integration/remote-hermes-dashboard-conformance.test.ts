@@ -16,7 +16,9 @@ let DashboardClient: typeof import('@/lib/remote-hermes/client').DashboardClient
 let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket;
 let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
 let nativeControl: typeof import('@/lib/remote-hermes/sessions').nativeControl, submitNativePrompt: typeof import('@/lib/remote-hermes/sessions').submitNativePrompt;
-const enabled = process.env.REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE === '1';
+let nativeAdministration: typeof import('@/lib/remote-hermes/administration').nativeAdministration;
+// This conformance suite explicitly exercises the worst-case production pool slot budget.
+const enabled = process.env.REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE === '1' && process.env.DATABASE_POOL_MAX === '1';
 const owner = newId(), connection = newId();
 let processFixture: Awaited<ReturnType<typeof startPinnedDashboard>>, bootstrapSocket: Socket;
 let secrets: DashboardSecrets, auth: import('@/lib/remote-hermes/client').DashboardClient;
@@ -26,10 +28,10 @@ async function control(body: unknown) {
   if (!response.ok) throw new Error('Synthetic control failed');
 }
 async function metrics() { return (await fetch(f.base + '/api/__fixture/metrics', { headers: { Authorization: `Bearer ${secrets.accessToken}` } })).json(); }
-async function session() {
-  const created = await bootstrapSocket.call('session.create', { profile: 'default', close_on_disconnect: false });
+async function session(profile = 'default') {
+  const created = await bootstrapSocket.call('session.create', { profile, close_on_disconnect: false });
   const id = newId();
-  await db.insert(remoteHermesSessions).values({ id, connectionId: connection, profile: 'default', storedId: String(created.stored_session_id) });
+  await db.insert(remoteHermesSessions).values({ id, connectionId: connection, profile, storedId: String(created.stored_session_id) });
   return id;
 }
 describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL admission/reservations', () => {
@@ -40,6 +42,7 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
     ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
     ({ nativeControl, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
+    ({ nativeAdministration } = await import('@/lib/remote-hermes/administration'));
     processFixture = await startPinnedDashboard(); f.base = processFixture.base;
     const bootstrap = new DashboardClient(f.base, fetch);
     expect((await bootstrap.status()).version).toBe('0.21.5');
@@ -77,4 +80,35 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     await vi.waitFor(async () => expect((await metrics()).agent_turns).toBe(before + 1), { timeout: 10_000 });
     expect((await metrics()).external_attempts).toBe(0);
   }, 20000);
+  it('completes concurrent custom-server writes with one pooled DB client across profiles', async () => {
+    expect(pool.options.max).toBe(1);
+    const profileName = `pool-one-${owner.slice(0, 8)}`;
+    const createProfile = await fetch(f.base + '/api/profiles', { method: 'POST', headers: {
+      Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json',
+    }, body: JSON.stringify({ name: profileName, no_skills: true }) });
+    expect(createProfile.ok).toBe(true);
+    await createProfile.body?.cancel();
+    expect((await auth.profiles()).some(profile => profile.name === profileName)).toBe(true);
+    const defaultSession = await session('default');
+    const secondSession = await session(profileName);
+    const operation = (sessionId: string, name: string, token: string) => nativeAdministration(owner, connection, sessionId, {
+      operation: 'customServer', requestId: randomUUID(), name,
+      url: 'https://mcp.example.invalid/v1', bearerToken: token, confirmed: true,
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const outcomes = await Promise.race([
+      Promise.all([
+        operation(defaultSession, 'fixture-pool-default', 'synthetic-pool-default-key'),
+        operation(secondSession, 'fixture-pool-second', 'synthetic-pool-second-key'),
+      ]),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('pool-one MCP admin dispatch stalled')), 15_000); }),
+    ]).finally(() => clearTimeout(timer));
+    expect(outcomes).toEqual([
+      expect.objectContaining({ accepted: true, added: true }),
+      expect.objectContaining({ accepted: true, added: true }),
+    ]);
+    expect(pool.waitingCount).toBe(0);
+    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, defaultSession))).toHaveLength(1);
+    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, secondSession))).toHaveLength(1);
+  }, 25000);
 });

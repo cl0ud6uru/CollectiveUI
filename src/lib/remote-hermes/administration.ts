@@ -155,20 +155,28 @@ export async function nativeAdministration(ownerId: string, connectionId: string
       throw error;
     }
   }
+  const assertProfileLock = () => {
+    if (profileLockAcquired && profileLockLost)
+      throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
+  };
+  const callWithProfileLock = async (method: string, params: RpcRecord, timeoutMs = 30_000) => {
+    assertProfileLock();
+    const dispatched = await transactionDb.transaction(tx => hub.socket.dispatchConnected(method, params, epoch, timeoutMs, tx));
+    const reply = (dispatched as { reply: Promise<RpcRecord> }).reply;
+    const result = await reply;
+    assertProfileLock();
+    return result;
+  };
   try {
   if (profileLock) {
     // The unlocked preflight above keeps the normal fast rejection path. Repeat
     // it after acquiring the cross-process lock; this result controls whether a
     // receipt or native write may be created.
     if (profileLockLost) throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
-    const currentInventory = await hub.socket.call('mcp.servers.list', { profile: row.profile });
+    const currentInventory = await callWithProfileLock('mcp.servers.list', { profile: row.profile });
     if (profileLockLost) throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
     assertCustomServerInventory(currentInventory, input as CustomServerInput);
   }
-  const assertProfileLock = () => {
-    if (profileLockAcquired && profileLockLost)
-      throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
-  };
   const lock = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     assertProfileLock();
     const connection = await hub.lockBoundary(tx);
@@ -295,7 +303,7 @@ export async function nativeAdministration(ownerId: string, connectionId: string
         created.source !== 'config' || created.transport !== 'http' ||
         (input.bearerToken !== undefined && created.auth !== 'header'))
       throw new HttpError(502, 'Hermes did not confirm the custom server configuration. Refresh to check its outcome.');
-    const current = await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000);
+    const current = await callWithProfileLock('mcp.servers.list', { profile: row.profile });
     assertProfileLock();
     const nativeRows: unknown[] = Array.isArray(current.servers) ? current.servers : [];
     const nativeServer = nativeRows.map(value => record(value)).find(server => server.name === input.name);
