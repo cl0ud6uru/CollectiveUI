@@ -10,7 +10,7 @@ This integration provides a native **remote dashboard workspace**, separate from
 
 ## Available now
 
-- Admin → Settings: **Allow personal remote Hermes connections**, off by default. Public dashboards require HTTPS. Private dashboard bases require explicit approval because requests originate from the portal server. DNS answers are validated and pinned for HTTP and WebSocket connections; metadata destinations and automatic redirects are blocked.
+- Admin → Settings: **Allow personal remote Hermes connections**, off by default. Public dashboards require HTTPS. Private dashboard bases require explicit approval because requests originate from the portal server. Non-loopback private HTTP additionally requires a separate exact-URL attestation that an encrypted tunnel is verified; loopback HTTP uses the private URL approval as its explicit local policy. DNS answers are validated and pinned for HTTP and WebSocket connections; metadata destinations and automatic redirects are blocked.
 - **Allow confirmed session YOLO changes** is a separate administrator gate, off by default. On verified native runtimes, owners can confirm an explicit session on/off change from `/yolo` or Approval mode. The [command documentation](remote-hermes-commands.md) describes effective/inherited bypass, shared-client effects, compatibility and no-replay boundaries. Profile/process policy changes remain unavailable.
 - Settings → Connected accounts: native username/password sign-in and dashboard session-token access. Password sign-in selects the single advertised password provider and exchanges a PKCE authorization code. Cookies remain scoped to the attempt. Passwords are not stored. Access/refresh tokens use row/owner-bound authenticated encryption and never enter UI projections or audit payloads. Sign-in verifies authenticated profile discovery before saving, and token rotation is serialized and committed before later requests can fail.
 - **Open Hermes**: profile selection, native saved conversation browsing, new chats, native history, live assistant/tool output, native usage and context inspection. Local bindings retain both stored and runtime native identities. A connection uses one server-owned dashboard socket, negotiates readiness and server-request support, sends heartbeats and reconnects with session snapshots. The browser polls projected views; no dashboard credential is sent to the browser.
@@ -41,7 +41,7 @@ Apply migrations `0030_remote_hermes_connections`, `0031_remote_hermes_sessions`
 
 These migrations follow the merged Live Activities migration `0029_live_activities`. Disposable databases that applied earlier, unmerged PR34 migration numbers must be rebuilt; a database that retained that preview schema needs a separate migration bridge before using this sequence.
 
-1. Enable personal remote Hermes in Admin → Settings; approve a private dashboard base if required.
+1. Enable personal remote Hermes in Admin → Settings; approve a private dashboard base if required. For non-loopback private HTTP, also attest that the exact base URL traverses a verified encrypted tunnel. Existing HTTP routes are not implicitly treated as trusted from older private URL approvals.
 2. Sign in under Settings → Connected accounts → Remote Hermes.
 3. Select **Open Hermes**, select a profile, then open an existing chat or create one.
 
@@ -153,7 +153,7 @@ loopback WebSocket test verifies retired socket-reference release and no
 reconnection. Browser/assistive-technology validation and real-dashboard
 revocation are not established by these checks. No real connection was removed.
 
-### Transport trust and authentication URL diagnostics (#99, partial)
+### Transport trust and authentication URL handling (#99, partial)
 
 Private-address approval permits the portal to route to a dashboard. It does not
 prove encryption, including for LAN, loopback, container or VPN-looking names.
@@ -162,7 +162,7 @@ encrypted, that administrator approval does not encrypt it, and that passwords,
 tokens and protected replies can be exposed unless a separately verified tunnel
 protects the route. The administrator hint makes the same distinction. HTTPS
 remains the public-address requirement and the connection-form example. This
-change does not alter enabled policy, private approvals or trusted tunnels.
+code change does not edit live policy or an external tunnel configuration.
 
 Invalid base URLs and malformed native sign-in callback URLs now become bounded
 application errors without retaining Node's raw `input` URL property. Unexpected
@@ -183,10 +183,35 @@ must omit query strings and redact `token`, `ticket`, `code`, `state` and
 `code_verifier`, plus Authorization/Cookie headers, from logs and diagnostics.
 Never paste actual upgrade or callback URLs into issues or documentation.
 
-Remaining implementation/acceptance work: choose and encode an explicit verified
-TLS/tunnel trust policy for approved private HTTP without blindly breaking trusted
-tunnels; verify any additional short-lived credential exchange against pinned
-runtime capability; and validate external proxy/upstream log handling. No proxy
-configuration, live transport policy, credential exchange/grant, paid inference
-or production deployment was changed or exercised here. These unit/SSR and
-loopback checks do not establish live encrypted transport or log-system hygiene.
+The code now distinguishes destination approval from tunnel trust. Admins can
+record exact private HTTP bases whose separately managed encrypted tunnel they
+have verified. HTTP connections to non-loopback private addresses fail closed
+until both settings approve that same base. Loopback HTTP requires the ordinary
+private URL approval and remains local to the portal host. HTTPS is still used
+for public endpoints and does not require the tunnel attestation. Removing a
+tunnel attestation fences new HTTP requests and new socket admission; an existing
+socket retains only the previously documented active-turn recovery allowance.
+This app setting records an administrator assertion; it neither creates nor
+cryptographically verifies an external tunnel. Existing private HTTP entries
+are not silently promoted, so administrators must review and record trusted
+tunnels before those non-loopback connections can be used after upgrade.
+
+The pinned Hermes contract at `f97608f178d1ffeca59860195ab7da295f7c8e5f`
+supports an authenticated `POST /api/auth/ws-ticket` that returns a one-use,
+30-second ticket for the bearer/OAuth session. The upgrade sends it in the
+`hermes-gateway-ticket.<ticket>` WebSocket subprotocol together with
+`hermes-gateway-v1`, keeping it out of the request URL. The pinned ungated
+legacy session-token WebSocket accepts only `?token=`; the gated path rejects
+that legacy token, and no session-token exchange endpoint exists. That mode is
+therefore retained only for HTTPS, approved loopback, or an explicitly attested
+encrypted tunnel. The remaining query-string exposure applies to that legacy
+mode and to native auth/callback flows that require query credentials.
+
+External proxy, tunnel and upstream access-log configuration still requires
+operator validation. Those systems must omit query strings and redact `token`,
+`ticket`, `code`, `state` and `code_verifier`, plus Authorization, Cookie and
+Sec-WebSocket-Protocol headers (which carry the short-lived OAuth ticket).
+No proxy configuration, live transport policy, credential grant, paid inference
+or production deployment was changed or exercised here. Unit checks prove the
+app's policy gate and URL/header projection, not encrypted transport or external
+log hygiene.

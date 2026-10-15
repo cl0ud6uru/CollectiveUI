@@ -18,6 +18,27 @@ function blocked(address: string) {
   return isBlockedAddress(normalized);
 }
 
+function loopback(address: string) {
+  const normalized = isIP(address) === 6 ? new URL(`http://[${address}]/`).hostname.slice(1, -1).toLowerCase() : address.toLowerCase();
+  if (isIP(normalized) === 4) return Number(normalized.split('.')[0]) === 127;
+  if (normalized === '::1') return true;
+  if (normalized.startsWith('::ffff:')) {
+    const mapped = normalized.slice(7);
+    if (isIP(mapped) === 4) return Number(mapped.split('.')[0]) === 127;
+    const words = mapped.split(':').map(s => parseInt(s, 16));
+    return words.length === 2 && Number.isInteger(words[0]) && Number.isInteger(words[1]) && (words[0] >> 8) === 127;
+  }
+  return false;
+}
+
+/** HTTP to non-loopback private hosts is trusted only when the exact base is attested. */
+export function privateHttpTransportTrusted(base: string, address: string, policy: RemoteHermesSettings) {
+  const url = new URL(dashboardBase(base));
+  if (url.protocol !== 'http:') return true;
+  if (loopback(address)) return true;
+  return Array.isArray(policy.privateHttpTunnels) && policy.privateHttpTunnels.includes(url.toString().replace(/\/$/, ''));
+}
+
 /** Shared validation for HTTP and WebSocket upgrades. The caller pins this exact DNS answer. */
 export async function dashboardAddress(base: string, policy: RemoteHermesSettings) {
   const normalized = dashboardBase(base);
@@ -30,7 +51,12 @@ export async function dashboardAddress(base: string, policy: RemoteHermesSetting
   if (addresses.some(a => isPrivateAddress(a.address)) && !policy.privateGateways.includes(normalized))
     throw new HttpError(403, 'Ask an administrator to approve this private Hermes dashboard URL.');
   if (url.protocol !== 'https:' && !privateHost) throw new HttpError(400, 'Public Hermes servers require HTTPS.');
-  return addresses.find(a => a.family === 4) ?? addresses[0];
+  const chosen = addresses.find(a => a.family === 4) ?? addresses[0];
+  const nonLoopback = addresses.find(a => !loopback(a.address));
+  if (url.protocol === 'http:' && addresses.some(a => isPrivateAddress(a.address)) && nonLoopback &&
+      !privateHttpTransportTrusted(normalized, nonLoopback.address, policy))
+    throw new HttpError(403, 'Private HTTP requires a separately verified encrypted tunnel or a loopback dashboard.');
+  return chosen;
 }
 
 /** Resolve once per request and pin the connection. Redirects are handled by the dashboard client. */
