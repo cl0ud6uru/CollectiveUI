@@ -52,7 +52,7 @@ describe('native workspace inspection', () => {
     f.fetch.mockResolvedValueOnce(new Response('private upstream details', { status: 404 }));
     await expect(inspectNative('owner', 'connection', { panel: 'system', profile: 'default' })).rejects.toThrow('does not support');
     f.fetch.mockResolvedValueOnce(new Response('x'.repeat(1024 * 1024 + 1)));
-    await expect(inspectNative('owner', 'connection', { panel: 'schedules', profile: 'default' })).rejects.toThrow('too large');
+    await expect(inspectNative('owner', 'connection', { panel: 'system', profile: 'default' })).rejects.toThrow('too large');
     f.fetch.mockResolvedValueOnce(new Response('<html>private</html>'));
     await expect(inspectNative('owner', 'connection', { panel: 'system', profile: 'default' })).rejects.toThrow('invalid panel');
   });
@@ -63,11 +63,16 @@ describe('native workspace inspection', () => {
     f.call.mockClear(); f.call.mockRejectedValueOnce(new HttpError(401, 'Sign in again'));
     await expect(inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).rejects.toThrow('Sign in again'); expect(f.call).toHaveBeenCalledOnce();
   });
-  it('sends an explicit profile for schedules and authenticates session-token dashboards without exposing the token', async () => {
-    f.access.mockResolvedValueOnce({ baseUrl: 'https://example.com/hermes', policy: { enabled: true, privateGateways: [] }, secrets: { mode: 'sessionToken', sessionToken: 'synthetic-session' }, client: { profiles: async () => [{ name: 'default' }] } });
-    f.fetch.mockResolvedValueOnce(new Response(JSON.stringify([{ job_id: 'j', name: 'Example', enabled: false, schedule: '0 7 * * *', next_run_at: '2026-10-06T07:00:00Z', prompt: 'synthetic-hidden-prompt' }])));
+  it('lists schedules only from a profile-proven native cron RPC and projects out prompts and delivery data', async () => {
+    f.call.mockResolvedValueOnce({ scoped: 'default', jobs: [{ job_id: 'j', name: 'Example', enabled: false, state: 'paused', schedule: '0 7 * * *', next_run_at: '2026-10-06T07:00:00Z', prompt: 'synthetic-hidden-prompt', deliver: 'synthetic-secret' }] });
     const view = await inspectNative('owner', 'connection', { panel: 'schedules', profile: 'default' });
-    const [url, options] = f.fetch.mock.calls[0]; expect(new URL(url).searchParams.get('profile')).toBe('default'); expect(options.headers).toEqual({ 'X-Hermes-Session-Token': 'synthetic-session' });
-    expect(JSON.stringify(view)).not.toContain('synthetic'); expect(view).toEqual({ schedules: [{ id: 'j', name: 'Example', enabled: false, schedule: '0 7 * * *', nextRun: '2026-10-06T07:00:00Z', lastStatus: '' }] });
+    expect(f.call).toHaveBeenCalledExactlyOnceWith('cron.manage', { profile: 'default', action: 'list', include_disabled: true });
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(JSON.stringify(view)).not.toContain('synthetic'); expect(view).toEqual({ schedules: [{ id: 'j', name: 'Example', enabled: false, state: 'paused', schedule: '0 7 * * *', nextRun: '2026-10-06T07:00:00Z', lastStatus: '' }] });
+  });
+  it('fails closed when a native gateway cannot prove cron profile scoping', async () => {
+    f.call.mockResolvedValueOnce({ jobs: [{ job_id: 'j', name: 'Other profile' }] });
+    await expect(inspectNative('owner', 'connection', { panel: 'schedules', profile: 'default' })).rejects.toThrow('cannot confirm profile-scoped');
+    expect(f.fetch).not.toHaveBeenCalled();
   });
 });
