@@ -33,6 +33,17 @@ describe('native Hermes socket', () => {
     await expect(socket.answer('old-request', { choice: 'once' })).rejects.toThrow('Authorization revoked');
     expect(received).toHaveLength(2);
   });
+  it('drops the closed socket reference containing its authentication URL on retirement', async () => {
+    const { server, url } = await fixture(); url.searchParams.set('token', 'synthetic-token');
+    server.on('connection', ws => { ws.send(ready); ws.on('message', raw => ws.send(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(String(raw)).id, result: { server_requests: ['approval'] } }))); });
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
+    await socket.connect();
+    expect(Object.getOwnPropertyDescriptor(socket, 'ws')?.value?.url).toContain('synthetic-token');
+    socket.close();
+    expect(Object.getOwnPropertyDescriptor(socket, 'ws')?.value).toBeUndefined();
+    expect(socket.serverRequests).toEqual([]);
+    await expect(socket.connect()).rejects.toThrow('retired');
+  });
   it('pins the WebSocket upgrade to the validated address instead of resolving the URL host again', async () => {
     const { server, url } = await fixture(); url.hostname = 'dashboard.example.invalid';
     const lookup = vi.fn<NonNullable<RequestOptions['lookup']>>((_host, _options, callback) => callback(null, '127.0.0.1', 4));

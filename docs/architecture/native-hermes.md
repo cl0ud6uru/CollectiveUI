@@ -78,3 +78,40 @@ Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac0853
 - Implement distributed hub ownership before multi-instance deployment; the sidebar roster and paged remote history are now implemented. Native remote chats remain distinct from Runs API conversation records and bot homes.
 
 References reviewed: Vory `622c9b41d1fcb2cee3564a328c11cd72cff7ee18` and Hermes native contracts at `79af3f6cea8067284a7ea5725078578b3f790adb`. No real credentials or private deployment configuration are included.
+
+### Owner removal and disconnect (#89)
+
+Settings → Connected accounts → Remote Hermes provides **Remove connection**, even
+when personal remote admission is disabled. The confirmation explains that local
+credentials, conversation links and submission receipts are deleted. Native
+conversations remain on Hermes, and active/queued work can continue there. This
+operation does not interrupt native work or revoke an upstream token/sign-in;
+use verified native account controls separately for that. No upstream revocation
+API is assumed or called.
+
+The server derives the owner from the authenticated principal and checks the
+mutation origin. Preview returns only the count of linked active/queued/uncertain
+portal sessions, not native IDs or credentials. Removal repeats that check under
+policy → owned connection → session locks. Active, waiting, admitting, uncertain
+or reserved queue work requires a separate checkbox confirmation. If work became
+active after an idle preview, the first removal attempt returns a fresh count
+without deleting anything. Counts describe linked portal state, not all work in
+other native clients.
+
+Credential-row deletion, cascading local bindings/receipts and the safe removal audit are atomic. Failed
+transactions, including failed audit inserts, leave the hub usable and local records intact. Only after commit
+does the current process retire its socket/hub; the closed socket reference and
+its authentication URL are released. Existing durable identity checks fence old
+references and other processes before their next dispatch/view. No distributed
+broadcast or recall of already-dispatched operations is claimed. Database/backups
+follow their normal retention policy; this is logical credential deletion, not a
+claim of storage-media zeroization. Reconnecting creates a fresh authorization
+identity and independently discovers retained native conversations.
+
+PGlite regressions execute migrations 0030–0032 and prove owner isolation,
+credential/binding/receipt cascades, all durable active states, activity appearing
+after preview, disabled-admission removal, rollback and post-commit retirement.
+Action tests prove principal/origin binding and honest audit outcomes. A real
+loopback WebSocket test verifies retired socket-reference release and no
+reconnection. Browser/assistive-technology validation and real-dashboard
+revocation are not established by these checks. No real connection was removed.

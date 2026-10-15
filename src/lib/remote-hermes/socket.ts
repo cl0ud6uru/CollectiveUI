@@ -168,5 +168,5 @@ export class DashboardSocket {
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new HttpError(502, 'Hermes disconnected. The operation may have been accepted; refresh instead of resending it.')); }
     this.pending.clear();
   }
-  close() { this.closed = true; this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
+  close() { this.closed = true; this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; const ws = this.ws; this.ws = undefined; this.serverRequests = []; ws?.terminate(); this.setState('disconnected'); }
 }
