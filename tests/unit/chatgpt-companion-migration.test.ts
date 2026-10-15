@@ -14,7 +14,9 @@ describe('0057 companion attempt storage migration', () => {
       expect(after.prevId).toBe(before.id);
       const { 'public.chatgpt_companion_attempts': added, ...rest } = after.tables;
       expect(rest).toEqual(before.tables); expect(added).toBeDefined();
-      expect(journal.entries.at(-1)).toMatchObject({ idx: 57, tag: '0057_chatgpt_companion' });
+      expect(journal.entries[57]).toMatchObject({ idx: 57, tag: '0057_chatgpt_companion' });
+      expect(journal.entries.filter((entry: { tag: string }) => entry.tag === '0057_chatgpt_companion')).toHaveLength(1);
+      expect(journal.entries[57].when).toBeGreaterThan(journal.entries[56].when);
       await pg.exec("CREATE TABLE users(id text PRIMARY KEY); INSERT INTO users VALUES ('alice'),('bob');");
       await pg.exec(sql);
       const insert = (id: string, owner: string, hash = "repeat('a',64)", expires = "now()+interval '10 minutes'") =>

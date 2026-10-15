@@ -8,7 +8,7 @@ it("adds OpenRouter without rewriting existing provider credentials, destination
   const sql = (file: string) => readFileSync(`${folder}/${file}`, "utf8").replace("CREATE EXTENSION IF NOT EXISTS vector;", "").replace(/\bvector\b/g, "real[]");
   try {
     await client.waitReady;
-    for (const file of readdirSync(folder).filter(f => f.endsWith(".sql") && !f.startsWith("0058_")).sort()) await client.exec(sql(file));
+    for (const file of readdirSync(folder).filter(f => f.endsWith(".sql") && f < "0058_").sort()) await client.exec(sql(file));
     await client.exec(`INSERT INTO users(id,upn,name,auth_source,identity_realm) VALUES ('admin','admin@fixture.invalid','Synthetic admin','local','local');
       INSERT INTO groups(id,name) VALUES ('audience','Synthetic audience');
       INSERT INTO provider_connections(id,name,provider,base_url,secret_enc) VALUES
@@ -28,6 +28,11 @@ it("adds OpenRouter without rewriting existing provider credentials, destination
     }
     const prior = JSON.parse(readFileSync(`${folder}/meta/0057_snapshot.json`, "utf8"));
     const next = JSON.parse(readFileSync(`${folder}/meta/0058_snapshot.json`, "utf8"));
+    const journal = JSON.parse(readFileSync(`${folder}/meta/_journal.json`, "utf8"));
+    expect(journal.entries[58]).toMatchObject({ idx: 58, tag: "0058_openrouter_models" });
+    expect(journal.entries.filter((entry: { tag: string }) => entry.tag === "0058_openrouter_models")).toHaveLength(1);
+    expect(journal.entries[58].when).toBeGreaterThan(journal.entries[57].when);
+    expect(journal.entries.map((entry: { idx: number }) => entry.idx)).toEqual(journal.entries.map((_: unknown, index: number) => index));
     expect(next.prevId).toBe(prior.id);
     for (const name of Object.keys(prior.tables)) {
       const a = structuredClone(prior.tables[name]), b = structuredClone(next.tables[name]);
