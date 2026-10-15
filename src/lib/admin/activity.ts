@@ -1,3 +1,4 @@
+import { auditActorLabel } from "@/lib/audit-view";
 import "server-only";
 import { and, count, desc, eq, gte, ilike, lt, or, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
@@ -86,7 +87,7 @@ export async function listAdminActivity(principal: Principal, filters: ReturnTyp
       .leftJoin(users, eq(users.id, auditLog.actorId)).where(where)
       .orderBy(desc(auditLog.createdAt), desc(auditLog.id)).limit(ADMIN_PAGE_SIZE).offset(window.offset);
     return { window, rows: rows.map(({ entry, user, upn }): ActivityRow => ({
-      id: entry.id, createdAt: entry.createdAt, user, upn, subject: entry.action, bot: null,
+      id: entry.id, createdAt: entry.createdAt, user: auditActorLabel(user, entry.details), upn, subject: entry.action, bot: null,
       status: null, target: entry.target, conversationId: null,
       details: formatAdminDiagnostic({ id: entry.id, actorId: entry.actorId, action: entry.action, target: entry.target, details: entry.details }),
     })) };

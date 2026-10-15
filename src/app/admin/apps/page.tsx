@@ -1,6 +1,7 @@
 import { asc, inArray } from "drizzle-orm";
 import { AppsAdmin, type AppRow } from "@/components/admin/apps-admin";
 import { ProviderConnectionsAdmin } from "@/components/admin/provider-connections-admin";
+import { ArchitectProviderConnectionForm } from "@/components/admin/architect-provider-connection-form";
 import { providerConnectionView } from "@/lib/llm/provider-connections";
 import { AdminHeader } from "@/components/admin/ui";
 import { db } from "@/db";
@@ -8,9 +9,13 @@ import { aiApps, appAccess, groups, providerConnections, users } from "@/db/sche
 import { isAppProvider, isEnabledKind, readChatGPTConfig, readProviderConfig } from "@/lib/llm/catalog";
 import { requireAdminPage } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
+import { loadArchitectProviderConnectionDraft } from "@/lib/admin/architect-connections";
 
-export default async function AdminAppsPage() {
-  await requireAdminPage();
+export default async function AdminAppsPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> } = {}) {
+  const principal = await requireAdminPage();
+  const query = await searchParams;
+  const draft = await loadArchitectProviderConnectionDraft(principal.user.id, principal.user.sessionVersion,
+    Array.isArray(query?.architectConnectionDraft) ? query.architectConnectionDraft[0] : query?.architectConnectionDraft);
   const [apps, access, groupRows, chatgpt, connections] = await Promise.all([
     db.select().from(aiApps).orderBy(asc(aiApps.sortOrder), asc(aiApps.name)),
     db.select().from(appAccess),
@@ -59,6 +64,7 @@ export default async function AdminAppsPage() {
         title="Connections"
         description="Configure models for New Chat and native bots, and agent backends for bots. Provider connections select a model or deployment; Hermes runs its own models and tools. Keys stay encrypted on the server."
       />
+      {draft && <ArchitectProviderConnectionForm draft={draft} />}
       <ProviderConnectionsAdmin connections={connections.map(c => ({ ...providerConnectionView(c), creatorName: creators.find(u => u.id === c.createdBy)?.name ?? null,
         models: apps.filter(a => a.providerConnectionId === c.id).map(a => ({ id: a.id, name: a.name })) }))} />
       <AppsAdmin connections={connections.map(providerConnectionView)} groups={groupRows} apps={rows} chatgptEnabled={chatgpt.enabled} />

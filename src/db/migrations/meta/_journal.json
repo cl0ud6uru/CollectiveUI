@@ -456,6 +456,13 @@
       "when": 1792060395448,
       "tag": "0064_pet_generation_preview_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1792061535138,
+      "tag": "0065_architect_provider_connection_drafts",
+      "breakpoints": true
     }
   ]
 }
