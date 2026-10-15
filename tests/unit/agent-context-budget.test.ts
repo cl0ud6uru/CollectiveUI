@@ -74,6 +74,16 @@ describe("bounded model context", () => {
     expect(result.notice).toBeUndefined();
   });
 
+  it("charges image bytes by size and fails closed above the inline image cap", () => {
+    const modelMessage = (size: number) => [{
+      role: "user",
+      content: [{ type: "file", mediaType: "image/png", data: new Uint8Array(size) }],
+    }] as unknown as ModelMessage[];
+    expect(estimateModelContextTokens(modelMessage(256 * 1024), "Policy"))
+      .toBeGreaterThan(estimateModelContextTokens(modelMessage(1), "Policy"));
+    expect(() => estimateModelContextTokens(modelMessage(8 * 1024 * 1024 + 1), "Policy")).toThrow(/8 MiB/i);
+  });
+
   it("fails closed when the protected latest turn cannot fit", () => {
     const messages = [text("user", "a request too large to fit")];
     expect(() => compactModelContext(messages, { inputBudgetTokens: 10, instructions: "Policy" })).toThrow(/latest turn/i);
