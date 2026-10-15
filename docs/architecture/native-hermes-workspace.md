@@ -22,11 +22,14 @@ Optional endpoints missing on older Hermes versions show an unavailable-panel er
 
 The project and schedule RPC capabilities are established by the pinned Hermes desktop contract (`f97608f178d1ffeca59860195ab7da295f7c8e5f`) and probed on the current socket with `projects.list`, exact-target `projects.get`, and profile-scoped `cron.manage` list; unsupported or unscoped methods fail closed. The visible project list is capped at 500 rows, but creation and duplicate reconciliation use `projects.get` on the server-generated slug (and final readback uses the returned native ID), so a valid result beyond that UI window is not reported as uncertain merely because it is not displayed. The targeted raw result is used only for exact ID/name/slug and empty-folder validation; it is never returned to the browser, and privacy-filtered folder lists are not treated as authoritative proof of emptiness. This increment does not add folder attachment, project editing/archive/deletion, file writes, schedule creation/removal, plugin toggles/install/uninstall, or discovery-policy changes.
 
+The composed adapter regression harness additionally runs the pinned Hermes `rpc_dispatch.py`, `register_method`, session transport authority helper, and bound `session_workdir` helpers with the published PR #266 owner adapter installed after the workspace handler. It exercises a full owner claim and authorized reads plus unclaimed/foreign/busy denials, configured Docker/SSH fallback, traversal/symlink/hidden/hardlink rejection, and timeout-bounded FIFO/replacement races. The harness uses an in-memory server namespace for profile/session state; it does not start or modify a Hermes gateway and does not claim full gateway startup conformance.
+
 Validation:
 
 ```sh
 npx vitest run --configLoader runner tests/unit/remote-hermes-operations.test.ts tests/unit/remote-hermes-projects.test.ts
 python3 tests/native-workspace-files.py
+python3 tests/native-workspace-files-composed.py --hermes-source /path/to/hermes-at-the-pin --owner-checkout /path/to/CollectiveUI-at-PR266
 node tests/browser/remote-hermes-operations.mjs
 npm run typecheck
 ```
