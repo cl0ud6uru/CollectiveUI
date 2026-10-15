@@ -3,7 +3,8 @@ import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { DashboardClient } from '@/lib/remote-hermes/client';
 import { assertRemoteHermesAdmission, assertRemoteHermesOperation, assertSessionYoloAdmission, dashboardBase, remoteHermesSettingsSchema } from '@/lib/remote-hermes/policy';
-import { dashboardFetch } from '@/lib/remote-hermes/transport';
+import { dashboardAddress, dashboardFetch } from '@/lib/remote-hermes/transport';
+import { websocketAuthentication } from '@/lib/remote-hermes/websocket-auth';
 
 const disabled = { enabled: false, privateGateways: [] };
 describe('personal remote Hermes admission', () => {
@@ -22,6 +23,7 @@ describe('personal remote Hermes admission', () => {
     expect(() => dashboardBase('https://example.com?token=secret')).toThrow();
     expect(() => dashboardBase('file:///etc/passwd')).toThrow();
     expect(remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: ['http://hermes:9119/', 'http://hermes:9119'] }).privateGateways).toEqual(['http://hermes:9119']);
+    expect(remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: [], privateHttpTunnels: ['http://hermes:9119/', 'http://hermes:9119'] }).privateHttpTunnels).toEqual(['http://hermes:9119']);
   });
   it('keeps confirmed session YOLO off for legacy settings and requires both policy gates', () => {
     const legacy = remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: [] });
@@ -33,6 +35,14 @@ describe('personal remote Hermes admission', () => {
 });
 
 describe('remote dashboard transport', () => {
+  it('requires explicit encrypted-tunnel trust for private HTTP except approved loopback', async () => {
+    const lan = 'http://192.168.1.42:9119';
+    const destinationApproved = { enabled: true, privateGateways: [lan] };
+    await expect(dashboardAddress(lan, destinationApproved)).rejects.toThrow('verified encrypted tunnel');
+    await expect(dashboardAddress(lan, { ...destinationApproved, privateHttpTunnels: [lan] })).resolves.toMatchObject({ address: '192.168.1.42' });
+    await expect(dashboardAddress(`${lan}/hermes`, { ...destinationApproved, privateHttpTunnels: [lan] })).rejects.toThrow('approve');
+    await expect(dashboardAddress('http://127.0.0.1:9119', { enabled: true, privateGateways: ['http://127.0.0.1:9119'] })).resolves.toMatchObject({ address: '127.0.0.1' });
+  });
   it('blocks private destinations until explicitly approved, public HTTP and metadata even when approved', async () => {
     await expect(dashboardFetch('http://127.0.0.1:9119', disabled)('http://127.0.0.1:9119/api/status')).rejects.toThrow('approve');
     await expect(dashboardFetch('http://8.8.8.8', disabled)('http://8.8.8.8/api/status')).rejects.toThrow('HTTPS');
@@ -55,6 +65,21 @@ describe('remote dashboard transport', () => {
       await expect(transport(`http://127.0.0.1:${address.port}/outside`)).rejects.toThrow('outside');
       await expect(transport('http://169.254.169.254/secret')).rejects.toThrow('outside');
     } finally { await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve())); }
+  });
+});
+
+describe('native WebSocket authentication projection', () => {
+  it('sends OAuth tickets in pinned native subprotocols without placing them in the URL', () => {
+    const auth = websocketAuthentication(new URL('wss://hermes.example/api/ws?old=value'), { mode: 'password', accessToken: 'synthetic-access' }, 'synthetic-private-ticket');
+    expect(auth.url.toString()).toBe('wss://hermes.example/api/ws?old=value');
+    expect(auth.protocols).toEqual(['hermes-gateway-v1', 'hermes-gateway-ticket.synthetic-private-ticket']);
+    expect(auth.url.toString()).not.toMatch(/ticket|synthetic-private-ticket/);
+  });
+  it('retains the pinned legacy session-token query contract and rejects unsafe ticket text', () => {
+    const auth = websocketAuthentication(new URL('ws://127.0.0.1/api/ws'), { mode: 'sessionToken', sessionToken: 'synthetic-session-token' });
+    expect(auth.url.searchParams.get('token')).toBe('synthetic-session-token');
+    expect(auth.protocols).toBeUndefined();
+    expect(() => websocketAuthentication(new URL('wss://hermes.example/api/ws'), { mode: 'password', accessToken: 'synthetic-access' }, 'ticket\r\nInjected: true')).toThrow('invalid WebSocket ticket');
   });
 });
 
