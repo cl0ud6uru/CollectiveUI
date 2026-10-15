@@ -7,7 +7,7 @@ import type { AgentCtx, ToolEntry } from "../types";
 import { changeBotStatus } from "@/lib/admin/bot-status";
 import { authorizeArchitectCall, lockArchitectActor, runArchitectCall } from "./admin-guard";
 import { architectBotCreateInput, architectBotSkillsInput, architectBotToolsInput, architectBotUpdateInput, assignArchitectBotSkills, assignArchitectBotTools, createArchitectBot, updateArchitectBot } from "@/lib/admin/bot-config";
-import { architectProviderConnectionTestInput, architectProviderConnectionUpdateInput, testArchitectProviderConnection, updateArchitectProviderConnection } from "@/lib/admin/architect-connections";
+import { architectProviderConnectionDraftInput, architectProviderConnectionTestInput, architectProviderConnectionUpdateInput, prepareArchitectProviderConnection, testArchitectProviderConnection, updateArchitectProviderConnection } from "@/lib/admin/architect-connections";
 import { architectGroupProfileInput, architectUserDisabledInput, setArchitectUserDisabled, updateArchitectGroupProfile } from "@/lib/admin/architect-people";
 import { adminDiagnosticBundle } from "@/lib/admin/architect-diagnostics";
 import { adminGetArchitectSettings, architectSettingsUpdateInput, updateArchitectSettings } from "@/lib/admin/architect-settings";
@@ -80,6 +80,11 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
       description: "Test an enabled existing saved provider connection using only its stored credential and a metadata-only endpoint check. Read admin_list_connections first and pass its exact updatedAt value. Does not accept or reveal a credential, send a model prompt, or generate content. Always requires exact per-call approval.",
       inputSchema: architectProviderConnectionTestInput,
       execute: guarded("admin_test_provider_connection", (p, i: z.output<typeof architectProviderConnectionTestInput>, signal) => testArchitectProviderConnection(ctx, p, i, signal)),
+    }) },
+    { name: "admin_prepare_provider_connection", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Prepare a short-lived, one-use Admin form for a new OpenAI, OpenRouter or OpenAI-compatible provider connection. This tool accepts metadata only and never accepts an API key. The administrator must enter the credential directly in the authenticated Admin form; the result is a setup handoff, not a saved connection. Always requires exact per-call approval.",
+      inputSchema: architectProviderConnectionDraftInput,
+      execute: guarded("admin_prepare_provider_connection", (p, i: z.output<typeof architectProviderConnectionDraftInput>, signal) => prepareArchitectProviderConnection(ctx, p, i, signal)),
     }) },
     { name: "admin_set_user_disabled", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
       description: "Disable or re-enable one user account. Read admin_list_users first and pass its exact sessionVersion. This revokes sessions and follows existing workspace, ChatGPT and Team lifecycle handling; self-disable and removal of the last enabled local admin are refused. Always requires exact per-call approval.",

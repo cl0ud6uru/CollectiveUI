@@ -78,7 +78,7 @@ beforeEach(async () => {
   ctx = { principal: admin, bot, app, conversationId: 'chat', depth: 0, background: false, toolSettings: await getSetting('tools') };
 });
 afterAll(async () => { await fixture.client?.close(); });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
 describe('worker-safe Architect diagnostic summary', () => {
   it('invokes without importing server-only portal probes and returns only bounded aggregates', async () => {
@@ -114,6 +114,18 @@ describe('worker-safe Architect diagnostic summary', () => {
     expect(services.brokerReadiness).toHaveBeenCalled();
     expect(results[calls.findIndex(([name]) => name === 'admin_jobs')]).toMatchObject({ available: true, queues: [{ name: 'agent.run', ready: 1, deferred: 2, active: 3, failed: 4, total: 10 }] });
     expect(JSON.stringify(results)).not.toContain('opaque-credential-sentinel');
+  });
+
+  it('executes provider credential preparation in the worker with server-only unmocked and no credential input', async () => {
+    const fetcher = vi.fn(async () => { throw new Error('External provider calls forbidden in this worker fixture'); });
+    vi.stubGlobal('fetch', fetcher);
+    const result = await executeReadTool('admin_prepare_provider_connection', {
+      provider: 'openai-compatible', name: 'Worker fixture', baseUrl: 'https://provider.fixture.invalid/v1',
+    }) as { status: string; draftId: string; formPath: string; note: string };
+    expect(result).toMatchObject({ status: 'setup_required', formPath: `/admin/apps?architectConnectionDraft=${result.draftId}` });
+    expect(result.note).toContain('never sent through this conversation');
+    expect(await db.select().from(s.architectProviderConnectionDrafts)).toMatchObject([{ name: 'Worker fixture', provider: 'openai-compatible', conversationId: 'chat' }]);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('reports queue counters unavailable without initializing pg-boss when its catalog is absent', async () => {

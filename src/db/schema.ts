@@ -399,6 +399,31 @@ export const providerConnections = pgTable("provider_connections", {
   check("provider_connections_compatible_target_check", sql`${t.provider} not in ('openai-compatible', 'openrouter') or (${t.baseUrl} is not null and ${t.organization} is null and ${t.project} is null)`),
 ]);
 
+/** Metadata-only, one-use handoff for an administrator to enter a provider key in the secure Admin form. */
+export const architectProviderConnectionDrafts = pgTable("architect_provider_connection_drafts", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionVersion: integer("session_version").notNull(),
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  provider: text("provider").$type<import("@/lib/llm/catalog").SavedProviderKind>().notNull(),
+  name: text("name").notNull(),
+  baseUrl: text("base_url"),
+  organization: text("organization"),
+  project: text("project"),
+  createdAt: createdAt(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  connectionId: text("connection_id"),
+}, (t) => [
+  index("architect_provider_drafts_owner_expiry_idx").on(t.userId, t.expiresAt),
+  index("architect_provider_drafts_context_idx").on(t.botId, t.conversationId),
+  check("architect_provider_drafts_session_check", sql`${t.sessionVersion} >= 0`),
+  check("architect_provider_drafts_provider_check", sql`${t.provider} in ('openai', 'openai-compatible', 'openrouter')`),
+  check("architect_provider_drafts_name_check", sql`length(trim(${t.name})) between 1 and 80`),
+  check("architect_provider_drafts_consumed_check", sql`(${t.consumedAt} is null) = (${t.connectionId} is null)`),
+]);
+
 /** Dedicated read-only billing credentials; never an inference connection or bot credential. */
 export const providerBillingAccounts = pgTable("provider_billing_accounts", {
   id: id(),

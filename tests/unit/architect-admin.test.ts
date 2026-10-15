@@ -34,7 +34,8 @@ import { getAccessibleBot, listAccessibleBots } from "@/lib/authz";
 import { resolveApproval } from "@/lib/agent/approvals";
 import { isGrantable } from "@/lib/agent/tool-names";
 import { applyApprovalDecisions, decisionsFromClientParts } from "@/lib/agent/approval-merge";
-import { sealProviderCredential } from "@/lib/llm/provider-connections";
+import { openProviderCredential, sealProviderCredential } from "@/lib/llm/provider-connections";
+import { completeArchitectProviderConnectionDraft, loadArchitectProviderConnectionDraft } from "@/lib/admin/architect-connections";
 
 let admin: Principal, member: Principal, ctx: AgentCtx;
 const secret = "arbitrary-secret-KEEP-PRIVATE";
@@ -130,7 +131,7 @@ describe("The Architect using real migrated PostgreSQL state", () => {
   it("offers read tools and approval-gated writes only to a fresh admin", async () => {
     const set = await buildToolset(ctx);
     try {
-      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(23);
+      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(24);
       expect(set.approval({ toolCall: { toolName: "admin_set_bot_enabled", input: { botId: "target", enabled: false, expectedRevision: 1 } } })).toBe("user-approval");
       expect(set.approval({ toolCall: { toolName: "admin_get_bot", input: { botId: "target" } } })).toBeUndefined();
     } finally { await set.close(); }
@@ -177,8 +178,8 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
   it("always asks for exact write approval, ignoring grants and auto modes", () => {
-    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills", "admin_update_provider_connection", "admin_test_provider_connection", "admin_set_user_disabled", "admin_update_group_profile", "admin_update_settings"].includes(e.name));
-    expect(writes).toHaveLength(10);
+    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills", "admin_prepare_provider_connection", "admin_update_provider_connection", "admin_test_provider_connection", "admin_set_user_disabled", "admin_update_group_profile", "admin_update_settings"].includes(e.name));
+    expect(writes).toHaveLength(11);
     for (const write of writes) {
       expect(write).toMatchObject({ sensitive: true, grantable: false });
       expect(isGrantable(write.name)).toBe(false);
@@ -287,6 +288,73 @@ describe("The Architect using real migrated PostgreSQL state", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.test" && JSON.stringify(audit.details).includes('"modelsFound":1'))).toBe(true);
     } finally { vi.unstubAllGlobals(); }
+  });
+  it("prepares only metadata and completes a one-use encrypted credential handoff without chat or audit leakage", async () => {
+    const prepared = await execute("admin_prepare_provider_connection", {
+      provider: "openai-compatible", name: "Fixture endpoint", baseUrl: "https://provider.example/v1/path",
+    }) as { status: string; draftId: string; formPath: string; expiresAt: string };
+    expect(prepared).toMatchObject({ status: "setup_required", formPath: `/admin/apps?architectConnectionDraft=${prepared.draftId}` });
+    expect(prepared).not.toHaveProperty("name");
+    expect(Date.parse(prepared.expiresAt)).toBeGreaterThan(Date.now());
+    const [draft] = await db.select().from(s.architectProviderConnectionDrafts).where(eq(s.architectProviderConnectionDrafts.id, prepared.draftId));
+    expect(draft).toMatchObject({ userId: "admin", sessionVersion: 0, botId: ctx.bot!.id, conversationId: "chat", provider: "openai-compatible", name: "Fixture endpoint" });
+    expect(Object.keys(draft)).not.toContain("secret");
+    expect(await loadArchitectProviderConnectionDraft("admin", 0, prepared.draftId)).toMatchObject({ id: prepared.draftId, name: "Fixture endpoint" });
+    expect(await loadArchitectProviderConnectionDraft("member", 0, prepared.draftId)).toBeNull();
+    expect(await loadArchitectProviderConnectionDraft("admin", 1, prepared.draftId)).toBeNull();
+    const opaqueKey = "provider-credential-that-has-no-recognizable-token-prefix-742";
+    await expect(completeArchitectProviderConnectionDraft("member", 0, { draftId: prepared.draftId, apiKey: opaqueKey })).rejects.toThrow(/expired or was already used/);
+    expect(await db.select().from(s.providerConnections)).toHaveLength(0);
+    const result = await completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: opaqueKey });
+    expect(result).toMatchObject({ status: "verified", name: "Fixture endpoint", provider: "openai-compatible" });
+    expect(JSON.stringify(result)).not.toContain(opaqueKey);
+    const [created] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, result.id));
+    expect(created).toMatchObject({ name: "Fixture endpoint", provider: "openai-compatible", baseUrl: "https://provider.example/v1/path", enabled: true, createdBy: "admin" });
+    expect(created.credentialEnc).not.toContain(opaqueKey);
+    expect(openProviderCredential(created)).toBe(opaqueKey);
+    const [consumed] = await db.select().from(s.architectProviderConnectionDrafts).where(eq(s.architectProviderConnectionDrafts.id, prepared.draftId));
+    expect(consumed).toMatchObject({ consumedAt: expect.any(Date), connectionId: created.id });
+    await expect(completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: opaqueKey })).rejects.toThrow(/expired or was already used/);
+    const audits = await db.select().from(s.auditLog);
+    expect(audits.some(row => row.action === "architect.provider_connection.create" && row.actorId === "admin" && row.target === created.id)).toBe(true);
+    expect(JSON.stringify(audits)).not.toContain(opaqueKey);
+    expect(JSON.stringify(prepared)).not.toContain(opaqueKey);
+  });
+  it.each([
+    ["session revoked", async () => { await db.update(s.users).set({ sessionVersion: 1 }).where(eq(s.users.id, "admin")); }],
+    ["administrator demoted", async () => { await db.update(s.users).set({ isAdmin: false }).where(eq(s.users.id, "admin")); }],
+    ["installation removed", async () => { await db.delete(s.settings).where(eq(s.settings.key, "architectBot")); }],
+    ["Architect disabled", async () => { await db.update(s.bots).set({ enabled: false }).where(eq(s.bots.id, ctx.bot!.id)); }],
+    ["conversation redirected", async () => { await db.update(s.conversations).set({ userId: "member" }).where(eq(s.conversations.id, "chat")); }],
+    ["conversation changed to group", async () => { await db.update(s.conversations).set({ isGroup: true }).where(eq(s.conversations.id, "chat")); }],
+  ])("refuses credential handoff when %s and creates no connection", async (_name, change) => {
+    const prepared = await execute("admin_prepare_provider_connection", { name: "Denied fixture" }) as { draftId: string };
+    await change();
+    await expect(completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: "opaque-fixture-secret-123" })).rejects.toThrow();
+    expect(await db.select().from(s.providerConnections)).toHaveLength(0);
+    expect(await db.select().from(s.auditLog).then(rows => rows.filter(row => row.action === "architect.provider_connection.create"))).toHaveLength(0);
+  });
+  it("rejects API-key fields from the model tool schema and expired metadata drafts", async () => {
+    await expect(execute("admin_prepare_provider_connection", { name: "Bad", apiKey: secret })).rejects.toThrow(/could not be verified/);
+    expect(await db.select().from(s.architectProviderConnectionDrafts)).toHaveLength(0);
+    const prepared = await execute("admin_prepare_provider_connection", { name: "Expired fixture" }) as { draftId: string };
+    await db.update(s.architectProviderConnectionDrafts).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(s.architectProviderConnectionDrafts.id, prepared.draftId));
+    await expect(completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: secret })).rejects.toThrow(/expired or was already used/);
+    expect(await db.select().from(s.providerConnections)).toHaveLength(0);
+  });
+  it("rolls back the connection and draft consumption if its transactional audit fails", async () => {
+    const prepared = await execute("admin_prepare_provider_connection", { name: "Audit rollback fixture" }) as { draftId: string };
+    await fixture.client!.exec(`CREATE FUNCTION architect_provider_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.action = 'architect.provider_connection.create' THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER architect_provider_audit_failure BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION architect_provider_audit_failure();`);
+    try {
+      await expect(completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: "opaque-rollback-key-917" })).rejects.toThrow();
+      expect(await db.select().from(s.providerConnections)).toHaveLength(0);
+      expect((await db.select().from(s.architectProviderConnectionDrafts).where(eq(s.architectProviderConnectionDrafts.id, prepared.draftId)))[0]).toMatchObject({ consumedAt: null, connectionId: null });
+      expect((await db.select().from(s.auditLog)).some(row => row.action === "architect.provider_connection.create")).toBe(false);
+    } finally {
+      await fixture.client!.exec("DROP TRIGGER architect_provider_audit_failure ON audit_log; DROP FUNCTION architect_provider_audit_failure();");
+    }
   });
   it("rolls back provider metadata and test audits when their transaction barriers are cancelled", async () => {
     const credentialEnc = sealProviderCredential("provider", secret);
