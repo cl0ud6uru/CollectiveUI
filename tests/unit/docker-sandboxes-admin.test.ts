@@ -81,6 +81,15 @@ describe('Docker Sandboxes admin service', () => {
     f.request.mockRejectedValue(new Error('synthetic host path/secret'));
     const data = await readDockerSandboxes();
     expect(data.available).toBe(false); expect(data.reason).not.toContain('synthetic');
+    expect(data.backend).toBe('unconfigured');
+  });
+
+  it('does not infer SBX from a configured socket when the broker is unreachable', async () => {
+    vi.stubEnv('PERSONAL_CODEX_SOCKET', '/tmp/configured-socket');
+    try {
+      f.request.mockRejectedValue(new Error('unreachable'));
+      expect((await readDockerSandboxes()).backend).toBe('unconfigured');
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it('bounds protected broker response bytes before parsing JSON', async () => {

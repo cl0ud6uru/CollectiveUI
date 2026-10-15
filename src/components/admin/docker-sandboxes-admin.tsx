@@ -46,7 +46,7 @@ function StateBadge({ state, label: customLabel }: { state: string; label?: stri
 }
 
 function CheckList({ checks }: { checks: AdminCheck[] }) {
-  if (!checks.length) return <p className="text-sm text-muted">No host checks have been recorded yet.</p>;
+  if (!checks.length) return <p className="text-sm text-muted">No current host checks are available.</p>;
   return <div className="divide-y divide-border rounded-xl border border-border">
     {checks.map((check) => <div key={check.id} className="flex items-start gap-3 px-3 py-3">
       {check.state === "passed" ? <Check aria-hidden className="mt-0.5 h-4 w-4 text-success" /> : check.state === "failed" ? <X aria-hidden className="mt-0.5 h-4 w-4 text-danger" /> : <CircleHelp aria-hidden className="mt-0.5 h-4 w-4 text-muted" />}
@@ -75,6 +75,7 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [diagnosticDialog, setDiagnosticDialog] = useState(false);
+  const [setupDialog, setSetupDialog] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ ownerId: string; name: string } | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [diagnosticResult, setDiagnosticResult] = useState<SandboxAdminResult["diagnostics"] | null>(null);
@@ -109,13 +110,17 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
   const currentRuntime = data.runtimes.find((runtime) => runtime.ownerId === selectedOwner) ?? null;
   const currentPerson = data.people.find((person) => person.id === selectedOwner);
   const lifecycleBlocked = !!currentRuntime && (!currentRuntime.admitted || !!currentPerson?.disabled);
+  const runningCount = data.available && data.runtimes.every((runtime) => runtime.state !== "unavailable")
+    ? data.runtimes.filter((runtime) => runtime.state === "running").length : "Unknown";
   const hostReady = data.available && data.checks.length > 0 && data.checks.every((check) => check.state === "passed");
-  const disabledReason = !data.available ? data.reason ?? "Set up the Docker sandbox host before managing computers." : null;
+  const disabledReason = !data.available ? data.reason ?? "The SBX broker could not be read." : null;
 
   async function loadNetwork(ownerId: string) {
     const requestId = ++networkRequestId.current;
     try {
-      const { result } = await performDockerSandboxAction({ action: "network-read", ownerId });
+      const response = await performDockerSandboxAction({ action: "network-read", ownerId });
+      if (!response.ok) throw new Error(response.error);
+      const { result } = response;
       if (requestId === networkRequestId.current && ownerId === selectedOwnerRef.current) {
         setNetwork(result.network ?? null);
         setNetworkLoad(result.network ? "ready" : "error");
@@ -129,10 +134,10 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
   }
 
   useEffect(() => {
-    if (!selectedOwner) return;
+    if (!selectedOwner || !data.available) return;
     const request = window.setTimeout(() => { void loadNetwork(selectedOwner); }, 0);
     return () => window.clearTimeout(request);
-  }, [selectedOwner]);
+  }, [selectedOwner, data.available]);
 
   async function submit(action: SandboxAdminAction, successFallback?: string) {
     const isNetworkAction = action.action === "network-add" || action.action === "network-remove" || action.action === "network-check" || action.action === "network-read";
@@ -142,6 +147,7 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
     setNotice(null);
     try {
       const response = await performDockerSandboxAction(action);
+      if (!response.ok) throw new Error(response.error);
       setData(response.data);
       if (action.action === "network-add" || action.action === "network-remove" || action.action === "network-read") {
         if (networkRequest === networkRequestId.current && networkOwner === selectedOwnerRef.current) {
@@ -174,6 +180,7 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
 
   async function refresh() {
     setBusy(true);
+    setNotice(null);
     try {
       const fresh = await readDockerSandboxes();
       setData(fresh);
@@ -181,12 +188,25 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
       setCpus(String(fresh.settings.cpus));
       setMemoryMb(String(fresh.settings.memoryMb));
       setMaxRunning(String(fresh.settings.maxRunning));
-      setNotice({ ok: true, text: "Host and owner inventory refreshed." });
-      if (tab === "network" && selectedOwnerRef.current) {
+      setNotice(fresh.available
+        ? { ok: true, text: "Host and owner inventory refreshed." }
+        : { ok: false, text: "Host inventory could not be verified. " + (fresh.reason ?? "The SBX broker is unavailable.") });
+      if (!fresh.available) {
+        networkRequestId.current += 1;
+        setNetwork(null);
+        setNetworkCheck(null);
+        setNetworkLoad("idle");
+      }
+      if (fresh.available && tab === "network" && selectedOwnerRef.current) {
         setNetworkLoad("loading");
         void loadNetwork(selectedOwnerRef.current);
       }
     } catch (error) {
+      setData((previous) => ({ ...previous, available: false, reason: "Current host state could not be verified.", backend: "unconfigured", version: null, checks: [], checkedAt: new Date().toISOString() }));
+      networkRequestId.current += 1;
+      setNetwork(null);
+      setNetworkCheck(null);
+      setNetworkLoad("idle");
       setNotice({ ok: false, text: error instanceof Error ? error.message : "Could not refresh the host status." });
     } finally { setBusy(false); }
   }
@@ -237,26 +257,28 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
   return <div className="space-y-5">
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-surface-2/50 p-4">
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold">Docker Sandboxes</h2><Badge tone={data.available ? "green" : "red"}>{data.available ? "Connected" : "Unavailable"}</Badge><Badge>{data.backend === "sbx" ? "SBX" : data.backend === "docker" ? "Docker" : "Not configured"}</Badge></div>
-        <p className="mt-1 text-xs text-muted">Checked {date(data.checkedAt)}{data.version ? ` · host ${data.version}` : ""}</p>
+        <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold">Docker Sandboxes</h2><Badge tone={data.available ? "green" : "red"}>{data.available ? "Connected" : "Unavailable"}</Badge><Badge>{data.backend === "sbx" ? "SBX" : data.backend === "docker" ? "Docker" : "Backend unknown"}</Badge></div>
+        <p className="mt-1 text-xs text-muted">{data.available ? "Checked" : "Last attempted"} {date(data.checkedAt)}{data.version ? ` · host ${data.version}` : ""}</p>
       </div>
       <div className="flex flex-wrap gap-2">
         <Button variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />Refresh</Button>
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => void diagnose()}><ArrowDownToLine aria-hidden className="h-4 w-4" />Diagnostics</Button>
+        <Button variant="ghost" size="sm" onClick={() => setSetupDialog(true)}><CircleHelp aria-hidden className="h-4 w-4" />SBX setup help</Button>
       </div>
     </div>
     {notice && <p role={notice.ok ? "status" : "alert"} className={`rounded-xl border px-3 py-2 text-sm ${notice.ok ? "border-success/30 bg-success/5 text-success" : "border-danger/30 bg-danger/5 text-danger"}`}>{notice.text}</p>}
     {!data.available && <div role="status" className="flex gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
       <AlertTriangle aria-hidden className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
-      <div><p className="font-medium">Computer host setup is needed</p><p className="mt-1 text-muted">{disabledReason} Owner and template information already on file remains visible. Provisioning and host controls are disabled until the host is available.</p><a className="mt-2 inline-flex items-center gap-1 font-medium underline underline-offset-4" href="/admin/sandboxes">Open the host setup runbook <ChevronRight aria-hidden className="h-3.5 w-3.5" /></a></div>
+      <div><p className="font-medium">SBX status unavailable</p><p className="mt-1 text-muted">{disabledReason} Host inventory and settings could not be verified. Host controls are disabled until the broker responds.</p><button type="button" className="mt-2 inline-flex items-center gap-1 font-medium underline underline-offset-4" onClick={() => setSetupDialog(true)}>Open SBX host setup <ChevronRight aria-hidden className="h-3.5 w-3.5" /></button></div>
     </div>}
     {tabs}
+    {tab !== "overview" && !data.available && <section {...panelProps(tab)}><Card><p className="text-sm text-muted">Host settings and inventory are unavailable. Reconnect the SBX broker and refresh before reviewing {TABS.find((item) => item.id === tab)?.label.toLowerCase()}.</p></Card></section>}
     {tab === "overview" && <section {...panelProps("overview")}>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat label="Host health" value={data.available ? hostReady ? "Ready" : "Needs attention" : "Unavailable"} sub={`${data.checks.filter((check) => check.state === "passed").length} of ${data.checks.length} checks passed`} />
-        <Stat label="Owners admitted" value={data.settings.admittedOwners.length} sub="Eligible for a computer" />
-        <Stat label="Computers running" value={data.runtimes.filter((runtime) => runtime.state === "running").length} sub={`Maximum ${data.settings.maxRunning} at once`} />
-        <Stat label="Templates" value={data.templates.length} sub={`${data.templates.filter((template) => template.available).length} available on host`} />
+        <Stat label="Host health" value={data.available ? hostReady ? "Ready" : "Needs attention" : "Unavailable"} sub={data.checks.length ? `${data.checks.filter((check) => check.state === "passed").length} of ${data.checks.length} checks passed` : "No current host checks"} />
+        <Stat label="Owners admitted" value={data.available ? data.settings.admittedOwners.length : "Unknown"} sub={data.available ? "Eligible for a computer" : "Admission could not be read"} />
+        <Stat label="Computers running" value={runningCount} sub={data.available ? `Maximum ${data.settings.maxRunning} at once` : "Runtime inventory unavailable"} />
+        <Stat label="Templates" value={data.available ? data.templates.length : "Unknown"} sub={!data.available ? "Template catalog unavailable" : data.templates.some((template) => template.available === null) ? "Some host availability unknown" : `${data.templates.filter((template) => template.available).length} available on host`} />
       </div>
       <Card className={`mt-4 ${hostReady ? "border-success/30 bg-success/5" : "border-amber-500/30 bg-amber-500/5"}`}>
         <div className="flex items-start gap-3"><ShieldCheck aria-hidden className={`mt-0.5 h-5 w-5 shrink-0 ${hostReady ? "text-success" : "text-amber-600"}`} /><div className="min-w-0 flex-1"><h3 className="font-medium">Computer readiness</h3><p className="mt-1 text-sm text-muted">Host health and runtime checks describe setup readiness. They do not indicate that a person is signed in or that a computer task has succeeded.</p><div className="mt-4"><CheckList checks={data.checks} /></div></div></div>
@@ -265,7 +287,7 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
         <Card className="min-w-0 p-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4"><div><h3 className="font-medium">Owner inventory</h3><p className="mt-1 text-xs text-muted">Provisioned computers and access assignments.</p></div><div className="relative w-full sm:w-56"><Search aria-hidden className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-subtle" /><Input aria-label="Search computer owners" placeholder="Search people" value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" /></div></div>
           <div className="max-h-[520px] overflow-y-auto">
-            {filteredRuntimes.map((runtime) => {
+            {data.available && filteredRuntimes.map((runtime) => {
               const person = data.people.find((entry) => entry.id === runtime.ownerId);
               return <button type="button" key={runtime.ownerId} disabled={busy} onClick={() => selectOwner(runtime.ownerId)} aria-pressed={selectedOwner === runtime.ownerId} className={`flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors hover:bg-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-fg disabled:opacity-60 ${selectedOwner === runtime.ownerId ? "bg-surface-2" : ""}`}>
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-muted"><Users aria-hidden className="h-4 w-4" /></div>
@@ -273,12 +295,12 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
                 <span className="hidden sm:block"><StateBadge state={runtime.state} /></span><ChevronRight aria-hidden className="h-4 w-4 shrink-0 text-subtle" />
               </button>;
             })}
-            {!filteredRuntimes.length && <p className="p-8 text-center text-sm text-muted">{data.runtimes.length ? "No owners match that search." : "No computers are registered yet. Admit a person in Access & validation to get started."}</p>}
+            {(!data.available || !filteredRuntimes.length) && <p className="p-8 text-center text-sm text-muted">{!data.available ? "Owner inventory unavailable. Refresh after the SBX broker is reachable." : data.runtimes.length ? "No owners match that search." : "No computers are registered yet. Admit a person in Access & validation to get started."}</p>}
           </div>
         </Card>
         <Card className="space-y-4">
           <div><p className="text-xs font-medium uppercase tracking-wide text-muted">Selected owner</p><h3 className="mt-1 text-lg font-semibold">{currentPerson?.name ?? (selectedOwner ? "Unknown owner" : "Choose a person")}</h3><p className="text-sm text-muted">{currentPerson?.email ?? "Select a person from the inventory."}</p></div>
-          {currentRuntime ? <>
+          {data.available && currentRuntime ? <>
             <div className="flex flex-wrap items-center gap-2"><StateBadge state={currentRuntime.state} /><StateBadge state={currentRuntime.credentialState} /><StateBadge state={currentRuntime.computer.control} /></div>
             {currentRuntime.computer.paused && <p className="rounded-xl bg-blue-500/10 px-3 py-2 text-sm text-blue-800 dark:text-blue-300">Automation is paused. The owner can return control from their computer viewer.</p>}
             {!currentRuntime.admitted && <p className="text-xs text-muted">Admit this owner before provisioning or starting a computer.</p>}
@@ -292,11 +314,11 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
               {currentRuntime.state === "running" && <Button size="sm" variant="outline" disabled={actionDisabled} onClick={() => void submit({ action: "lifecycle", ownerId: currentRuntime.ownerId, operation: "stop" })}>Stop computer</Button>}
               {currentRuntime.state !== "missing" && <Button size="sm" variant="danger" disabled={actionDisabled} onClick={() => { setDeleteConfirmation(""); setDeleteTarget({ ownerId: currentRuntime.ownerId, name: currentPerson?.name ?? "this owner" }); }}>Delete computer</Button>}
             </div>
-          </> : <p className="text-sm text-muted">No computer is registered for this person.</p>}
+          </> : <p className="text-sm text-muted">{data.available ? "No computer is registered for this person." : "Computer state is unknown while the host is unavailable."}</p>}
         </Card>
       </div>
     </section>}
-    {tab === "templates" && <section {...panelProps("templates")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
+    {tab === "templates" && data.available && <section {...panelProps("templates")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
       <Card className="space-y-4"><div><h3 className="font-medium">Approved image templates</h3><p className="mt-1 text-sm text-muted">Only pinned image digests can be selected for new computers. Changing the default affects new runtimes, not computers already running.</p></div>
         <Field label="Default template for new computers"><Select value={defaultTemplate} onChange={(event) => setDefaultTemplate(event.target.value)} disabled={!data.templates.length}><option value="">Choose an approved template</option>{data.templates.map((template) => <option key={template.reference} value={template.reference} disabled={!template.available}>{template.label} · {template.available === null ? "availability unknown" : template.available ? "available" : "not on host"}</option>)}</Select></Field>
         <Button disabled={actionDisabled || !defaultTemplate} onClick={() => void submit({ action: "settings", revision: data.settings.revision, cpus: Number(cpus), memoryMb: Number(memoryMb), maxRunning: Number(maxRunning), defaultTemplate })}>Save default template</Button>
@@ -305,7 +327,7 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
       <Card className="space-y-4"><div><h3 className="font-medium">Add a pinned template</h3><p className="mt-1 text-sm text-muted">Use a lowercase registry/name@sha256 digest so the image contents cannot change after approval.</p></div><div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]"><Field label="Template name"><Input maxLength={100} aria-invalid={!!templateLabel && !validTemplateLabel} aria-describedby="template-label-error" value={templateLabel} onChange={(event) => setTemplateLabel(event.target.value)} placeholder="Browser computer" /></Field><Field label="Pinned image reference"><Input aria-invalid={!!templateRef.trim() && !PINNED_IMAGE.test(templateRef.trim())} aria-describedby="template-reference-error" value={templateRef} onChange={(event) => setTemplateRef(event.target.value)} placeholder="registry.example/browser@sha256:…" className="font-mono text-xs" /></Field><div className="flex items-end"><Button disabled={actionDisabled || !validTemplateLabel || !PINNED_IMAGE.test(templateRef.trim())} onClick={() => void submit({ action: "template-add", revision: data.settings.revision, label: templateLabel, reference: templateRef })}><Plus aria-hidden className="h-4 w-4" />Approve</Button></div></div>{!!templateLabel && !validTemplateLabel && <p id="template-label-error" role="alert" className="text-xs text-danger">Enter a template name up to 100 characters without control characters.</p>}{!!templateRef.trim() && !PINNED_IMAGE.test(templateRef.trim()) && <p id="template-reference-error" role="alert" className="text-xs text-danger">Enter a lowercase image name pinned to a 64-character sha256 digest.</p>}</Card>
       <Card className="space-y-4"><div><h3 className="font-medium">Import from host inbox</h3><p className="mt-1 text-sm text-muted">Import a reviewed tar archive already present in the host inbox. This does not upload local files.</p></div><div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]"><Field label="Host inbox archive"><Select value={archive} onChange={(event) => setArchive(event.target.value)}><option value="">Choose an archive</option>{data.archives.map((item) => <option key={item.name} value={item.name}>{item.name} · {formatBytes(item.sizeBytes)}</option>)}</Select></Field><Field label="Pinned image reference"><Input aria-invalid={!!importTemplateRef.trim() && !PINNED_IMAGE.test(importTemplateRef.trim())} aria-describedby="import-reference-error" value={importTemplateRef} onChange={(event) => setImportTemplateRef(event.target.value)} placeholder="registry.example/browser@sha256:…" className="font-mono text-xs" /></Field><div className="flex items-end"><Button variant="outline" disabled={actionDisabled || !archive || !PINNED_IMAGE.test(importTemplateRef.trim())} onClick={() => void submit({ action: "template-import", revision: data.settings.revision, archive, reference: importTemplateRef })}>Import archive</Button></div></div>{!!importTemplateRef.trim() && !PINNED_IMAGE.test(importTemplateRef.trim()) && <p id="import-reference-error" role="alert" className="text-xs text-danger">Enter a lowercase image name pinned to a 64-character sha256 digest.</p>}{!data.archives.length && <p className="text-xs text-muted">The host inbox is empty.</p>}</Card>
     </section>}
-    {tab === "network" && <section {...panelProps("network")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
+    {tab === "network" && data.available && <section {...panelProps("network")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
       <Card className="space-y-4"><div><h3 className="font-medium">Owner network policy</h3><p className="mt-1 text-sm text-muted">Rules are evaluated by the sandbox network boundary. Observed logs are host-reported and may be unavailable.</p></div><Field label="Choose computer owner"><Select value={selectedOwner} disabled={busy} onChange={(event) => selectOwner(event.target.value)}><option value="">Choose a person</option>{data.runtimes.map((runtime) => { const person = data.people.find((entry) => entry.id === runtime.ownerId); return <option key={runtime.ownerId} value={runtime.ownerId}>{person?.name ?? runtime.ownerId} · {person?.email ?? "unknown email"}</option>; })}</Select></Field>
         <div className="grid gap-3 sm:grid-cols-[180px_1fr_auto]"><Field label="Rule"><Select value={networkEffect} onChange={(event) => setNetworkEffect(event.target.value as "allow" | "deny")}><option value="allow">Allow</option><option value="deny">Deny</option></Select></Field><Field label="Host or IP address"><Input aria-invalid={!!destination.trim() && !validDestination(destination)} aria-describedby="network-destination-error" value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="docs.example.com or *.example.com:443" onKeyDown={(event) => { if (event.key === "Enter" && selectedOwner && validDestination(destination)) void submit({ action: "network-add", ownerId: selectedOwner, effect: networkEffect, destination }); }} /></Field><div className="flex items-end"><Button disabled={actionDisabled || !selectedOwner || !validDestination(destination)} onClick={() => void submit({ action: "network-add", ownerId: selectedOwner, effect: networkEffect, destination })}><Plus aria-hidden className="h-4 w-4" />Add rule</Button></div></div>{!!destination.trim() && !validDestination(destination) && <p id="network-destination-error" role="alert" className="text-xs text-danger">Enter a hostname or IPv4 address, optionally with a port from 1 to 65535.</p>}
         {!network && networkLoad === "loading" && <p role="status" className="text-sm text-muted">Loading owner policy…</p>}
@@ -317,11 +339,11 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
         <div><h4 className="mb-2 text-sm font-medium">Recent network events</h4>{!network.eventsObserved ? <p className="text-sm text-muted">Network activity unavailable because the host response was not verified.</p> : network.events.length ? <div className="divide-y divide-border rounded-xl border border-border">{network.events.map((event, index) => <div key={`${event.at}-${event.destination}-${index}`} className="grid gap-1 px-3 py-2 text-sm sm:grid-cols-[160px_1fr_auto]"><span className="text-xs text-muted">{date(event.at)}</span><code className="break-all">{event.destination}</code><StateBadge state={event.decision} /></div>)}</div> : <p className="text-sm text-muted">No recent network events.</p>}</div></>}
       </Card>
     </section>}
-    {tab === "resources" && <section {...panelProps("resources")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
+    {tab === "resources" && data.available && <section {...panelProps("resources")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
       <Card className="space-y-4"><div><h3 className="font-medium">Defaults for new computers</h3><p className="mt-1 text-sm text-muted">These limits apply when a computer is provisioned. Saving them does not resize active computers.</p></div><div className="grid gap-3 sm:grid-cols-3"><Field label="CPU cores"><Input type="number" min={1} max={64} step={1} aria-invalid={!validInteger(cpus, 1, 64)} aria-describedby="resource-limit-error" value={cpus} onChange={(event) => setCpus(event.target.value)} /></Field><Field label="Memory (MB)"><Input type="number" min={512} max={65536} step={1} aria-invalid={!validInteger(memoryMb, 512, 65536)} aria-describedby="resource-limit-error" value={memoryMb} onChange={(event) => setMemoryMb(event.target.value)} /></Field><Field label="Maximum running"><Input type="number" min={1} max={1000} step={1} aria-invalid={!validInteger(maxRunning, 1, 1000)} aria-describedby="resource-limit-error" value={maxRunning} onChange={(event) => setMaxRunning(event.target.value)} /></Field></div>{(!validInteger(cpus, 1, 64) || !validInteger(memoryMb, 512, 65536) || !validInteger(maxRunning, 1, 1000)) && <p id="resource-limit-error" role="alert" className="text-sm text-danger">Enter whole numbers within the allowed limits: CPU 1–64, memory 512–65,536 MB, and maximum running 1–1,000.</p>}<div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted">Current defaults: {data.settings.cpus} CPU · {humanMemory(data.settings.memoryMb)} memory · {data.settings.maxRunning} running.</p><Button disabled={actionDisabled || !data.settings.defaultTemplate || !resourcesValid} title={!data.settings.defaultTemplate ? "Set a default approved template first." : !resourcesValid ? "Correct the resource limits first." : undefined} onClick={() => void submit({ action: "settings", revision: data.settings.revision, cpus: Number(cpus), memoryMb: Number(memoryMb), maxRunning: Number(maxRunning), defaultTemplate: data.settings.defaultTemplate })}>Save resource defaults</Button></div>{!data.settings.defaultTemplate && <p className="text-xs text-muted">Choose and save a default approved template in Templates before saving resource defaults.</p>}</Card>
-      <Card className="space-y-3"><h3 className="font-medium">Capacity and running computers</h3><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-surface-2 p-3"><p className="text-xs text-muted">Running</p><p className="mt-1 text-xl font-semibold tabular-nums">{data.runtimes.filter((runtime) => runtime.state === "running").length}</p></div><div className="rounded-xl bg-surface-2 p-3"><p className="text-xs text-muted">Configured maximum</p><p className="mt-1 text-xl font-semibold tabular-nums">{data.settings.maxRunning}</p></div><div className="rounded-xl bg-surface-2 p-3"><p className="text-xs text-muted">Admitted owners</p><p className="mt-1 text-xl font-semibold tabular-nums">{enabledRuntimes.length}</p></div></div></Card>
+      <Card className="space-y-3"><h3 className="font-medium">Capacity and running computers</h3><div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-surface-2 p-3"><p className="text-xs text-muted">Running</p><p className="mt-1 text-xl font-semibold tabular-nums">{runningCount}</p></div><div className="rounded-xl bg-surface-2 p-3"><p className="text-xs text-muted">Configured maximum</p><p className="mt-1 text-xl font-semibold tabular-nums">{data.settings.maxRunning}</p></div><div className="rounded-xl bg-surface-2 p-3"><p className="text-xs text-muted">Admitted owners</p><p className="mt-1 text-xl font-semibold tabular-nums">{enabledRuntimes.length}</p></div></div></Card>
     </section>}
-    {tab === "access" && <section {...panelProps("access")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
+    {tab === "access" && data.available && <section {...panelProps("access")} className="mt-5 space-y-4 rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-fg/30">
       <Card className="space-y-4"><div><h3 className="font-medium">Owner enrollment</h3><p className="mt-1 text-sm text-muted">Admitting a person lets them use an isolated computer with this default template. Disabled accounts cannot be enrolled.</p></div>
         {data.people.length ? <div className="divide-y divide-border rounded-xl border border-border">{data.people.map((person) => { const runtime = data.runtimes.find((entry) => entry.ownerId === person.id); const admitted = runtime?.admitted ?? data.settings.admittedOwners.includes(person.id); return <div key={person.id} className="flex flex-wrap items-center gap-3 px-3 py-3"><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{person.name}{person.disabled && <span className="ml-2 text-xs text-muted">Disabled</span>}</p><p className="truncate text-xs text-muted">{person.email}</p></div><StateBadge state={admitted ? "admitted" : "not enrolled"} /><Button size="sm" variant={admitted ? "outline" : "secondary"} disabled={actionDisabled || (!admitted && person.disabled) || busy} title={!admitted && person.disabled ? "Disabled accounts cannot be enrolled." : undefined} onClick={() => void submit({ action: "enrollment", revision: data.settings.revision, ownerId: person.id, admitted: !admitted })}>{admitted ? "Remove access" : "Admit owner"}</Button></div>; })}</div> : <p className="text-sm text-muted">No eligible people were found.</p>}
       </Card>
@@ -331,6 +353,7 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
       <Card className="space-y-3"><div><h3 className="font-medium">What readiness means</h3><p className="text-sm text-muted">Host checks confirm required software and isolation setup. Computer availability and session control are reported separately per owner. Enrollment does not verify an external identity or sign-in; record evidence here only after an operator completes the corresponding manual check.</p></div><div className="flex flex-wrap gap-2">{data.validation.map((item) => <span key={`${item.id}-${item.checkedAt}`} className="inline-flex items-center gap-2 rounded-full bg-surface-2 px-3 py-1 text-xs"><span>{CHECK_LABELS[item.id]}</span><StateBadge state={item.result} /></span>)}</div></Card>
     </section>}
 
+    <SbxSetupHelp open={setupDialog} onOpenChange={setSetupDialog} />
     <Dialog open={diagnosticDialog} onOpenChange={setDiagnosticDialog}>
       <DialogContent title="Sanitized host diagnostics" description="The report includes host readiness checks only. It does not include owner credentials, computer screenshots, or sign-in data." className="max-w-2xl">
         <div className="space-y-4">{diagnosticResult ? <><p className="text-xs text-muted">Captured {date(diagnosticResult.checkedAt)} · source: {diagnosticResult.source} · live computer use verified: no</p><CheckList checks={diagnosticResult.checks} /><div className="flex justify-end"><Button onClick={() => downloadDiagnostics({ message: "", diagnostics: diagnosticResult })}><ArrowDownToLine aria-hidden className="h-4 w-4" />Download report</Button></div></> : <div className="flex items-center gap-2 text-sm text-muted"><Loader2 className="h-4 w-4 animate-spin" />Collecting host checks…</div>}</div>
@@ -347,6 +370,23 @@ export function DockerSandboxesAdmin({ initialData }: { initialData: SandboxAdmi
       </DialogContent>
     </Dialog>
   </div>;
+}
+
+function SbxSetupHelp({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent title="SBX host setup" description="A host operator prepares the optional personal Codex computer runtime. Deploying CollectiveUI does not install SBX or grant host access." className="max-w-2xl">
+      <div className="space-y-5 text-sm">
+        <p className="rounded-xl bg-surface-2 p-3">Unavailable can mean a stopped or unreachable broker, administration disabled by the operator, or host/state reconciliation needed. This page cannot determine which prerequisite failed without a broker response. Workspaces uses a separate sandbox service; its readiness does not establish SBX readiness.</p>
+        <ol className="list-decimal space-y-4 pl-5">
+          <li><p className="font-medium">Prepare Linux, Docker, and KVM</p><p className="mt-1 text-muted">Use a supported Linux host with a working Docker daemon and hardware virtualization (nested virtualization for a VM). Verify that the intended SBX/broker service account can use /dev/kvm and Docker. A device existing on the host does not establish service-account access.</p></li>
+          <li><p className="font-medium">Install and verify the pinned SBX runtime</p><p className="mt-1 text-muted">The implemented adapter requires the official SBX CLI v0.48.0 at /usr/local/bin/sbx or /usr/bin/sbx. As the service account, using the configured sbxHome as HOME, verify the daemon and version, then inspect these settings:</p><pre className="mt-2 overflow-x-auto rounded-lg bg-surface-2 p-3 text-xs"><code>{'sbx version --format json\nsbx settings get ssh.agentForwardingEnabled --json\nsbx settings get ssh.agentSocketPath --json'}</code></pre><p className="mt-1 text-muted">SSH agent forwarding must be false and the socket path empty. The broker checks these values and never changes them.</p></li>
+          <li><p className="font-medium">Prepare the image and protected broker configuration</p><p className="mt-1 text-muted">Build the reviewed desktop image from docker/computer/Dockerfile, pin its immutable sha256 digest, and verify that exact digest in the local SBX template catalog. Give the broker account a private sbxHome (0700) and protected JSON configuration (0600). Set backend to sbx, the pinned executable/version, namespace, socketPath, reviewed template, resource limits, and intended staging owner IDs. Point PERSONAL_CODEX_BROKER_CONFIG at that file and PERSONAL_CODEX_SOCKET in the web app at the matching protected socket. The broker creates its own ledger and admin state; do not prepopulate or edit them.</p></li>
+          <li><p className="font-medium">Verify in staging before enabling access</p><p className="mt-1 text-muted">With operator approval, adminEnabled exposes the panel through the protected broker socket. It is off by default and does not prove runtime readiness. Start/restart the configured broker and refresh this page. Complete the runbook’s disposable-owner boot, inspect-schema, desktop/control, isolation, credential-containment, and authenticated-inference checks for the exact image. Keep siwcSandboxVerified and COMPUTER_VIEW_ENABLED off until their respective live preflight gates pass; the viewer also requires AUTH_WEB_SESSION_REGISTRY_ENABLED. Panel validation records cannot enable these gates.</p></li>
+        </ol>
+        <a href="https://github.com/cl0ud6uru/CollectiveUI/blob/main/docs/deploy/computer-view.md" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-medium underline underline-offset-4">Full SBX deployment runbook <ChevronRight aria-hidden className="h-3.5 w-3.5" /></a>
+      </div>
+    </DialogContent>
+  </Dialog>;
 }
 
 function TemplateRow({ template, isDefault, disabled, onRemove }: { template: AdminTemplate; isDefault: boolean; disabled: boolean; onRemove: () => void }) {

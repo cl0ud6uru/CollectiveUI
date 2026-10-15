@@ -15,13 +15,16 @@ export async function readDockerSandboxes() {
 }
 
 export async function performDockerSandboxAction(input: unknown) {
-  await requireAdmin();
   try {
+    await requireAdmin();
     const result = await perform(input);
-    revalidatePath('/admin/docker-sandboxes');
-    return result;
+    const action = input as { action?: string };
+    if (!['diagnose', 'network-read', 'network-check'].includes(action.action ?? '')) revalidatePath('/admin/docker-sandboxes');
+    return { ok: true as const, ...result };
   } catch (error) {
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(503, 'The SBX administration request could not be completed. Refresh before retrying.');
+    // Expected failures must cross the production Server Action boundary as data.
+    // Thrown errors are redacted by React into an opaque server-render error.
+    return { ok: false as const, error: error instanceof HttpError ? error.message
+      : 'The SBX administration request could not be completed. Refresh before retrying.' };
   }
 }

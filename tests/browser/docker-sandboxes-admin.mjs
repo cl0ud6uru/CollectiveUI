@@ -11,7 +11,7 @@ const { build } = require('esbuild');
 const { chromium, expect } = require('@playwright/test');
 const postcss = require('postcss'), tailwind = require('@tailwindcss/postcss');
 const dir = await import('node:fs/promises').then(fs => fs.mkdtemp(path.join(tmpdir(), 'docker-sandboxes-admin-')));
-const screenshotDir = path.join(root, 'docs/screenshots/docker-sandboxes');
+const screenshotDir = process.env.SBX_SCREENSHOT_DIR ?? path.join(root, 'docs/screenshots/docker-sandboxes');
 await mkdir(screenshotDir, { recursive: true });
 
 const template = `registry.example.invalid/collectiveui/codex-computer@sha256:${'a'.repeat(64)}`;
@@ -47,6 +47,8 @@ const snapshot = {
     { id: 'fixture-owner-casey', name: 'Casey Fixture', email: 'casey@example.invalid', disabled: false },
   ],
 };
+
+const unavailable = { ...snapshot, available: false, reason: 'Synthetic fixture · broker unavailable; host state not observed', backend: 'unconfigured', version: null, checks: [], runtimes: [], templates: [], archives: [], validation: [], settings: { revision: 0, cpus: 2, memoryMb: 4096, maxRunning: 1, defaultTemplate: '', admittedOwners: [] } };
 
 const actionKeys = {
   settings: ['action', 'revision', 'cpus', 'memoryMb', 'maxRunning', 'defaultTemplate'],
@@ -84,7 +86,7 @@ import { createRoot } from '${root}/node_modules/react-dom/client';
 import { DockerSandboxesAdmin } from '${root}/src/components/admin/docker-sandboxes-admin';
 function App() {
   const params = new URLSearchParams(location.search);
-  const initial = params.get('state') === 'empty'
+  const initial = ['unavailable', 'read-error'].includes(params.get('state')) ? ${JSON.stringify(unavailable)} : params.get('state') === 'partial' ? { ...${JSON.stringify(snapshot)}, runtimes: ${JSON.stringify(snapshot)}.runtimes.map(runtime => ({ ...runtime, state: 'unavailable' })) } : params.get('state') === 'empty'
     ? { ...${JSON.stringify(snapshot)}, runtimes: [], templates: [], archives: [], validation: [], settings: { ...${JSON.stringify(snapshot)}.settings, admittedOwners: [] } }
     : params.get('state') === 'denied'
       ? { ...${JSON.stringify(snapshot)}, available: false, reason: 'Synthetic fixture · access denied', checks: [], runtimes: [], templates: [], archives: [], validation: [], settings: { ...${JSON.stringify(snapshot)}.settings, admittedOwners: [] } }
@@ -103,15 +105,15 @@ const bundle = await build({
       build.onResolve({ filter: /docker-sandboxes\/actions$/ }, () => ({ path: 'fixture-admin-actions', namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
         export async function readDockerSandboxes() {
-          const response = await fetch('/fixture/read', { cache: 'no-store' });
+          const response = await fetch('/fixture/read' + location.search, { cache: 'no-store' });
           if (!response.ok) throw new Error('Synthetic read failed');
           return response.json();
         }
         export async function performDockerSandboxAction(action) {
           const response = await fetch('/fixture/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(action) });
           const data = await response.json();
-          if (!response.ok) throw new Error(data.error || 'Synthetic action failed');
-          return data;
+          if (!response.ok) return { ok: false, error: data.error || 'Synthetic action failed' };
+          return { ok: true, ...data };
         }
       `, loader: 'js' }));
     },
@@ -126,7 +128,8 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/fixture/error' && req.method === 'POST') { nextError = true; json(res, { ok: true }); return; }
   if (url.pathname === '/fixture/delay-network' && req.method === 'POST') { delayOwnerRead = true; json(res, { ok: true }); return; }
   if (url.pathname === '/fixture/read') {
-    json(res, { ...currentSnapshot }); return;
+    if (['read-error', 'refresh-error'].includes(url.searchParams.get('state'))) { json(res, { error: 'Synthetic read failed' }, 503); return; }
+    json(res, url.searchParams.get('state') === 'unavailable' ? unavailable : { ...currentSnapshot }); return;
   }
   if (url.pathname === '/fixture/action' && req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;
@@ -292,9 +295,72 @@ try {
   await expect(empty.getByText(/No approved templates yet/)).toBeVisible();
   const denied = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   await denied.goto(`${address}/?state=denied`);
-  await expect(denied.getByText('Computer host setup is needed', { exact: true })).toBeVisible();
+  await expect(denied.getByText('SBX status unavailable', { exact: true })).toBeVisible();
   await expect(denied.getByRole('button', { name: 'Diagnostics' })).toBeEnabled();
   await expect(denied.getByRole('button', { name: 'Delete computer' })).toHaveCount(0);
+
+  // Unobserved data never becomes a zero count or a green refresh confirmation.
+  const unavailablePage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+  unavailablePage.on('pageerror', error => errors.push(error.message));
+  await unavailablePage.goto(`${address}/?state=unavailable`);
+  await expect(unavailablePage.getByText('Backend unknown', { exact: true })).toBeVisible();
+  await expect(unavailablePage.getByText('Unknown', { exact: true })).toHaveCount(3);
+  await expect(unavailablePage.getByText('No current host checks', { exact: true })).toBeVisible();
+  await expect(unavailablePage.getByText(/No computers are registered yet/)).toHaveCount(0);
+  await expect(unavailablePage.locator('a[href="/admin/sandboxes"]')).toHaveCount(0);
+  await unavailablePage.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(unavailablePage.getByRole('alert').last()).toContainText('Host inventory could not be verified.');
+  await expect(unavailablePage.getByText('Host and owner inventory refreshed.')).toHaveCount(0);
+  await unavailablePage.screenshot({ path: path.join(screenshotDir, 'admin-unavailable-light-desktop.png'), fullPage: true });
+  await unavailablePage.getByRole('button', { name: 'Open SBX host setup', exact: true }).click();
+  const setup = unavailablePage.getByRole('dialog', { name: 'SBX host setup', exact: true });
+  await expect(setup).toBeVisible();
+  await expect(setup).toContainText('v0.48.0');
+  await expect(setup).toContainText('/dev/kvm');
+  await expect(setup).toContainText('PERSONAL_CODEX_SOCKET');
+  await expect(setup).toContainText('Deploying CollectiveUI does not install SBX');
+  await expect(setup.getByRole('link', { name: 'Full SBX deployment runbook' })).toHaveAttribute('href', /docs\/deploy\/computer-view\.md$/);
+  await unavailablePage.screenshot({ path: path.join(screenshotDir, 'admin-sbx-setup-light-desktop.png'), fullPage: true });
+  await unavailablePage.keyboard.press('Escape');
+  await expect(setup).toBeHidden();
+  // Expected unavailable diagnostics errors stay in the page with usable controls.
+  await unavailablePage.request.post(`${address}/fixture/error`);
+  await unavailablePage.getByRole('button', { name: 'Diagnostics', exact: true }).click();
+  await expect(unavailablePage.getByRole('alert').last()).toContainText('Synthetic fixture · operation unavailable');
+  await expect(unavailablePage.getByRole('dialog')).toHaveCount(0);
+  await expect(unavailablePage.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+  for (const name of ['Templates', 'Network', 'Resources', 'Access & validation']) {
+    await unavailablePage.getByRole('tab', { name, exact: true }).click();
+    await expect(unavailablePage.getByRole('tabpanel')).toContainText('Host settings and inventory are unavailable.');
+    await expect(unavailablePage.getByText('Current defaults:', { exact: false })).toHaveCount(0);
+  }
+  const partial = await browser.newPage();
+  await partial.goto(`${address}/?state=partial`);
+  const running = partial.getByText('Computers running', { exact: true }).locator('..');
+  await expect(running).toContainText('Unknown');
+  await expect(partial.getByText('Some host availability unknown', { exact: true })).toBeVisible();
+  await partial.getByRole('tab', { name: 'Resources', exact: true }).click();
+  await expect(partial.getByText('Running', { exact: true }).locator('..')).toContainText('Unknown');
+  const readFailure = await browser.newPage();
+  await readFailure.goto(`${address}/?state=refresh-error`);
+  await expect(readFailure.getByText("Connected", { exact: true })).toBeVisible();
+  await readFailure.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(readFailure.getByRole('alert').last()).toContainText('Synthetic read failed');
+  await expect(readFailure.getByText('Unknown', { exact: true })).toHaveCount(3);
+  await expect(readFailure.getByText('Backend unknown', { exact: true })).toBeVisible();
+  await expect(readFailure.getByText('Host and owner inventory refreshed.')).toHaveCount(0);
+  await unavailablePage.setViewportSize({ width: 390, height: 844 });
+  await unavailablePage.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await unavailablePage.locator('html').evaluate(el => el.classList.replace('light', 'dark'));
+  await unavailablePage.screenshot({ path: path.join(screenshotDir, 'admin-unavailable-dark-mobile.png'), fullPage: true });
+  await unavailablePage.getByRole('button', { name: 'SBX setup help', exact: true }).click();
+  await expect(setup).toBeVisible();
+  await setup.getByRole('link', { name: 'Full SBX deployment runbook' }).scrollIntoViewIfNeeded();
+  await expect(setup.getByRole('link', { name: 'Full SBX deployment runbook' })).toBeInViewport();
+  await setup.evaluate(element => { element.scrollTop = 0; });
+  expect(await unavailablePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await unavailablePage.screenshot({ path: path.join(screenshotDir, 'admin-sbx-setup-dark-mobile.png'), fullPage: true });
+  await unavailablePage.keyboard.press('Escape');
 
   expect(actionRequests.map(action => action.action)).toEqual(expect.arrayContaining([
     'settings', 'enrollment', 'lifecycle', 'template-add', 'template-remove', 'template-import',
