@@ -244,18 +244,26 @@ const tokenServer = createNetServer({ allowHalfOpen: true }, socket => {
     })().catch(() => socket.destroy());
   });
 });
-const cleanupRuntimeSocket = await listenPrivateSocket(server, socketPath);
-const cleanupTokenSocket = await listenPrivateSocket(tokenServer, tokenSocketPath);
+const startupController = new AbortController();
+let publication, cleanupRuntimeSocket, cleanupTokenSocket;
 
 async function stop() {
   if (stopping) return;
   stopping = true;
   rotating = true;
+  startupController.abort();
   for (const ws of sockets.clients) ws.terminate();
   await stopAllSessions().catch(() => {});
   await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => tokenServer.close(resolve))]);
-  await Promise.all([cleanupRuntimeSocket(), cleanupTokenSocket()]);
+  await publication?.catch(() => {});
+  await Promise.all([cleanupRuntimeSocket?.(), cleanupTokenSocket?.()]);
   process.exit(0);
 }
 process.on('SIGTERM', () => { void stop(); });
 process.on('SIGINT', () => { void stop(); });
+
+publication = (async () => {
+  cleanupRuntimeSocket = await listenPrivateSocket(server, socketPath, startupController.signal);
+  cleanupTokenSocket = await listenPrivateSocket(tokenServer, tokenSocketPath, startupController.signal);
+})();
+try { await publication; } catch (error) { if (!stopping) throw error; }

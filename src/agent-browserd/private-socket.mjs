@@ -5,8 +5,10 @@ import { dirname, isAbsolute, join } from 'node:path';
  * The returned cleanup is idempotent; await it before explicitly exiting the process.
  * @param {import('node:net').Server} server
  * @param {string} socketPath
+ * @param {AbortSignal} [signal]
  */
-export async function listenPrivateSocket(server, socketPath) {
+export async function listenPrivateSocket(server, socketPath, signal) {
+  signal?.throwIfAborted();
   if (!isAbsolute(socketPath)) throw new Error('An absolute private socket is required');
   const directory = await mkdtemp(join(dirname(socketPath), '.uds-'));
   const staged = join(directory, 's');
@@ -18,18 +20,28 @@ export async function listenPrivateSocket(server, socketPath) {
     }
     await rm(directory, { recursive: true, force: true });
   })();
+  const aborted = () => { server.close(() => {}); };
+  signal?.addEventListener('abort', aborted, { once: true });
   try {
+    signal?.throwIfAborted();
     await new Promise((resolve, reject) => {
-      const failed = error => { server.removeListener('listening', ready); reject(error); };
-      const ready = () => { server.removeListener('error', failed); resolve(); };
+      const failed = error => { server.removeListener('error', failed); server.removeListener('listening', ready); signal?.removeEventListener('abort', cancelled); reject(error); };
+      const ready = () => { server.removeListener('error', failed); signal?.removeEventListener('abort', cancelled); resolve(); };
+      const cancelled = () => failed(signal.reason);
       server.once('error', failed); server.once('listening', ready);
-      server.listen(staged);
+      signal?.addEventListener('abort', cancelled, { once: true });
+      try { server.listen(staged); } catch (error) { server.removeListener('error', failed); failed(error); }
     });
+    signal?.throwIfAborted();
     await chmod(staged, 0o600);
+    signal?.throwIfAborted();
     identity = await lstat(staged);
+    signal?.throwIfAborted();
     if (!identity.isSocket() || (identity.mode & 0o777) !== 0o600) throw new Error('Private socket permissions could not be confirmed');
     await link(staged, socketPath);
+    signal?.throwIfAborted();
     await rm(directory, { recursive: true, force: true });
+    signal?.throwIfAborted();
     if (!server.listening) throw new Error('Private socket closed before publication');
     server.once('close', () => { void cleanup().catch(() => {}); });
     return cleanup;
@@ -37,5 +49,5 @@ export async function listenPrivateSocket(server, socketPath) {
     if (server.listening) await new Promise(resolve => server.close(resolve));
     await cleanup();
     throw error;
-  }
+  } finally { signal?.removeEventListener('abort', aborted); }
 }

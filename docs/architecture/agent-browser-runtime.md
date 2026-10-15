@@ -102,6 +102,9 @@ confirmed as mode `0600`, then atomically hard-linked to their configured paths.
 Startup fails if permissions or no-replacement publication cannot be established;
 the socket filesystem must support hard links. Closing removes only the published
 socket with the same filesystem identity, preserving a replacement at that path.
+Termination handlers are installed before publication starts. Startup cancellation
+closes the binding, prevents subsequent publication phases and waits for pending
+filesystem work and guarded cleanup before shutdown completes.
 
 Portal opt-in requires `AGENT_BROWSER_ENABLED=1`, the control socket and browser secret in web/worker.
 No production configuration is enabled here. Socket mount/permissions and namespace support need an

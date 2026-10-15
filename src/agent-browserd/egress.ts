@@ -40,6 +40,12 @@ if (process.argv[1]?.endsWith("/egress.ts")) {
   const socket = process.env.AGENT_BROWSER_EGRESS_SOCKET;
   if (!socket?.startsWith("/")) throw new Error("An absolute private egress socket is required");
   const server = createEgressServer(process.env.AGENT_BROWSER_EGRESS_SECRET ?? "");
-  await listenPrivateSocket(server, socket);
-  for (const name of ["SIGTERM", "SIGINT"]) process.on(name, () => server.close());
+  const startup = new AbortController();
+  let stopping = false;
+  for (const name of ["SIGTERM", "SIGINT"]) process.on(name, () => {
+    if (stopping) return; stopping = true; startup.abort(); server.close(() => {});
+    void publication?.then(cleanup => cleanup(), () => undefined);
+  });
+  const publication = listenPrivateSocket(server, socket, startup.signal);
+  try { await publication; } catch (error) { if (!stopping) throw error; }
 }
