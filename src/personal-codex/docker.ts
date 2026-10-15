@@ -130,10 +130,20 @@ export class PersonalCodexDriver implements PersonalCodexRuntimeDriver {
       JSON.stringify(h.Tmpfs) !== JSON.stringify({ '/tmp': 'rw,nosuid,nodev,size=256m,mode=1777' }) ||
       c.Mounts.length !== 2 || !['home', 'workspace'].every(suffix => c.Mounts.some((m: { Type: string; Name: string; Destination: string; RW: boolean }) =>
         m.Type === 'volume' && m.Name === `${name}-${suffix}` && m.Destination === (suffix === 'home' ? '/codex-home' : PERSONAL_CODEX_WORKSPACE) && m.RW))) throw unavailable();
-    // Exact environment: never inherit server API credentials or Docker configuration.
+    // Exact assigned environment: never inherit server credentials or Docker
+    // configuration. Docker may retain these two --env KEY unset markers.
     const expected = ['PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=/codex-home', 'CODEX_HOME=/codex-home',
       'HTTP_PROXY=http://codex-egress:3128', 'HTTPS_PROXY=http://codex-egress:3128', 'NO_PROXY=127.0.0.1,localhost'];
-    if (JSON.stringify([...c.Config.Env].sort()) !== JSON.stringify(expected.sort())) throw unavailable();
+    if (!Array.isArray(c.Config.Env)) throw unavailable();
+    const unsetMarkers = new Set(['NODE_VERSION', 'YARN_VERSION']);
+    const assigned = [];
+    for (const entry of c.Config.Env) {
+      if (typeof entry !== 'string') throw unavailable();
+      // Delete allows each exact bare marker once; duplicates and assignments
+      // remain in the comparison and fail just like any other unexpected entry.
+      if (!unsetMarkers.delete(entry)) assigned.push(entry);
+    }
+    if (JSON.stringify(assigned.sort()) !== JSON.stringify(expected.sort())) throw unavailable();
     await this.network(owner);
     await this.volume(owner, 'home', false); await this.volume(owner, 'workspace', false);
     return c;

@@ -1,0 +1,11 @@
+# Docker unset environment inspection
+
+Docker 29.1.3 on the rollout host retained bare `NODE_VERSION` and `YARN_VERSION` entries in `Config.Env` after `ensure()` passed `--env NODE_VERSION --env YARN_VERSION` with a clean CLI environment. The six assigned values matched the driver's contract. Strict comparison of all eight entries rejected the container created by the driver before it was started.
+
+Inspection now permits each of those exact bare markers at most once. The six assigned values remain mandatory and exact. Assigned versions, including empty assignments, unknown bare names, credentials, duplicate entries, missing values, and all other container/network/volume drift remain rejected. Container creation flags, protection profiles, wrapper code and qualification probes are unchanged.
+
+`tests/fixtures/personal-codex/docker-29.1.3-inspect-env.json` is the minimized environment fixture reconstructed from the reported inspection: the two reported bare markers and the six fixed assignments. It is not a raw full-host inspection; ordering is immaterial. Unit tests reproduce create → inspect → start and retained-container recovery, and prove rejected configurations cannot start or be recreated.
+
+The local Docker 29.1.2 client has no running daemon, so no local create/inspect test was possible. Docker CI runs `tests/docker/personal-codex-env.sh`: it builds a disposable fixture from the stock image's pinned Node base, creates a container without starting it, captures the actual daemon `Config.Env`, and replays that environment through the real driver validator. Other resource inspection fields remain synthetic. The fixture has no owner volumes or egress network; no Docker socket enters the test container. This check verifies environment compatibility, not stock Codex containment or authentication.
+
+Before another approved rollout, independent review must finish and the parent must confirm the updated driver can inspect the existing stopped runtime on Docker 29.1.3 with the exact protected resources retained. Verify that assigned or unexpected environment variables are still rejected. Any subsequent start, unchanged positive-control/containment qualification, or owner authorization remains a separately approved parent-coordinated operation. This task performs no VM mutation, credential operation or production deployment.

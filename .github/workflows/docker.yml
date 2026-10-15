@@ -22,6 +22,8 @@ jobs:
       - run: git rev-parse HEAD
       - run: docker build --target test -t collectiveui-test:ci .
       - run: docker run --rm --init --network none collectiveui-test:ci
+      - name: Verify Codex environment with real Docker create and inspect
+        run: bash tests/docker/personal-codex-env.sh
 
   worker:
     name: Production worker image
