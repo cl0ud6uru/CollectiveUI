@@ -29,7 +29,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
       name: "forget",
       key: "memory",
       tool: tool({
-        description: "Delete a saved memory by id when the user asks you to forget something.",
+        description: "Delete a CollectiveUI saved memory by id when the user asks you to forget it. If deleted is false, the id did not identify an accessible saved memory; do not retry the same id. Tell the user it was not changed and continue with a supported correction or supersession path.",
         inputSchema: z.object({ id: z.string() }),
         execute: async ({ id }) => {
           const res = await db
