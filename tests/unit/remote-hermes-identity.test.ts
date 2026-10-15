@@ -29,7 +29,7 @@ afterEach(async () => { await client?.close(); });
 it('replaces authorization identity atomically without transferring account A bindings or receipts to overlapping account B profiles', async () => {
   client = new PGlite(); await client.waitReady;
   await client.exec('CREATE TABLE users (id text PRIMARY KEY); CREATE TABLE settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()); INSERT INTO users VALUES (\'owner\'), (\'other-owner\');');
-  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations']) {
+  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations', '0062_remote_hermes_hub_ownership']) {
     await client.exec(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
   }
   f.db = drizzle(client); f.account = 'account-a';
