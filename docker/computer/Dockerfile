@@ -18,11 +18,12 @@ RUN case "$BASE_IMAGE" in *@sha256:*) digest="${BASE_IMAGE##*@sha256:}"; \
 COPY docker/computer/control.py /opt/collective-computer/control.py
 COPY docker/computer/start.py /opt/collective-computer/start.py
 COPY docker/computer/app-server.mjs /opt/collective-computer/app-server.mjs
+COPY src/agent-browserd/private-socket.mjs /opt/collective-computer/private-socket.mjs
 COPY docker/computer/bridge.mjs /opt/collective-codex/bridge.mjs
 COPY docker/personal-codex/server.mjs /opt/collective-codex/server.mjs
 COPY docker/computer/patch-requirements.py /opt/collective-computer/patch-requirements.py
 RUN chmod 0555 /opt/collective-computer/control.py /opt/collective-computer/start.py \
- && chmod 0644 /opt/collective-computer/app-server.mjs /opt/collective-codex/bridge.mjs /opt/collective-codex/server.mjs \
+ && chmod 0644 /opt/collective-computer/app-server.mjs /opt/collective-computer/private-socket.mjs /opt/collective-codex/bridge.mjs /opt/collective-codex/server.mjs \
  && python3 /opt/collective-computer/patch-requirements.py /etc/codex/requirements.toml
 
 ENV DISPLAY=:99
