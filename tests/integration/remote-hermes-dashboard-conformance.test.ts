@@ -57,15 +57,27 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
   });
   it('dispatches only one contending queued receipt through actual native transport', async () => {
     const id = await session(), hub = nativeHub(owner, connection);
+    const before = (await metrics()).agent_turns;
     await submitNativePrompt(owner, connection, id, randomUUID(), 'fixture-hold');
-    const queue = (text: string) => nativeControl(owner, connection, id, 'queue', { requestId: randomUUID(), text }).then(value => ({ value, error: null }), error => ({ value: null, error }));
-    const outcomes = await Promise.all([queue('fixture-next-one'), queue('fixture-next-two')]);
-    expect(outcomes.filter(outcome => outcome.error === null)).toHaveLength(1);
-    expect(outcomes.filter(outcome => outcome.error?.status === 409)).toHaveLength(1);
-    expect((await row(id)).queueStatus).toBe('queued');
-    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(2);
-    await nativeControl(owner, connection, id, 'stop');
-    await vi.waitFor(async () => expect((await hub.refresh(await row(id))).running).toBe(false), { timeout: 10_000 });
+    try {
+      // Native admission acknowledgement can precede worker entry. Contend only
+      // after this synthetic hold is executing, rather than racing its startup.
+      await vi.waitFor(async () => {
+        expect((await metrics()).agent_turns).toBe(before + 1);
+        expect((await hub.refresh(await row(id))).running).toBe(true);
+      }, { timeout: 5000 });
+      const queue = (text: string) => nativeControl(owner, connection, id, 'queue', { requestId: randomUUID(), text }).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      const outcomes = await Promise.all([queue('fixture-next-one'), queue('fixture-next-two')]);
+      expect(outcomes.filter(outcome => outcome.error === null)).toHaveLength(1);
+      expect(outcomes.filter(outcome => outcome.error?.status === 409)).toHaveLength(1);
+      expect((await row(id)).queueStatus).toBe('queued');
+      expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(2);
+    } finally {
+      // A failed contention assertion must not leave this hold contaminating the
+      // next case's native turn count or acknowledgement-loss control.
+      await nativeControl(owner, connection, id, 'stop');
+      await vi.waitFor(async () => expect((await hub.refresh(await row(id))).running).toBe(false), { timeout: 10_000 });
+    }
     expect((await row(id)).queueRequestId).toBeNull();
   }, 20000);
   it('retains a durable no-replay receipt after real native acceptance loses its acknowledgement', async () => {
