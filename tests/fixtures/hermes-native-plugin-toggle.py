@@ -124,7 +124,12 @@ def main() -> None:
             ("langfuse", "1.0", "Synthetic bundled backend", "bundled", bundled_dir, "observability/langfuse"),
             ("langfuse", "1.0", "Synthetic user plugin", "user", plugin, "obs/local-copy"),
         ]
-        with patch.object(plugins_cmd, "_discover_all_plugins", return_value=alias_collision):
+        with patch.object(plugins_cmd, "_discover_all_plugins", return_value=alias_collision), \
+             patch.object(activation, "activate_plugin_now", lambda key: {
+                 "gateway_reloaded": False,
+                 "restart_required": True,
+                 "activation": {"name": key, "key": key},
+             }):
             for action, starting, expected_before, expected_other, bundled_kind in (
                 ("disable", "enabled: [langfuse]\ndisabled: []", "enabled", "not enabled", "standalone"),
                 ("enable", "enabled: []\ndisabled: [langfuse]", "disabled", "enabled", "backend"),
