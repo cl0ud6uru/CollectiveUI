@@ -3,16 +3,17 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 const f = vi.hoisted(() => ({ base: '' }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [f.base] }) }));
-import { db, pool } from '@/db';
 import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
 import { DashboardClient, type DashboardSecrets } from '@/lib/remote-hermes/client';
 import { DashboardSocket } from '@/lib/remote-hermes/socket';
-import { nativeHub } from '@/lib/remote-hermes/hub';
-import { nativeControl, submitNativePrompt } from '@/lib/remote-hermes/sessions';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
+import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
+let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
+let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
+let nativeControl: typeof import('@/lib/remote-hermes/sessions').nativeControl, submitNativePrompt: typeof import('@/lib/remote-hermes/sessions').submitNativePrompt;
 const enabled = process.env.REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE === '1';
 const owner = newId(), connection = newId();
 let processFixture: Awaited<ReturnType<typeof startPinnedDashboard>>, bootstrapSocket: DashboardSocket;
@@ -31,8 +32,10 @@ async function session() {
 }
 describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL admission/reservations', () => {
   beforeAll(async () => {
-    const url = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL) : null;
-    if (url?.pathname !== '/hermes_fixture' || !['127.0.0.1', 'localhost'].includes(url.hostname)) throw new Error('Named disposable loopback hermes_fixture database required');
+    assertDisposableHermesDatabase(process.env.DATABASE_URL);
+    ({ db, pool } = await import('@/db'));
+    ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
+    ({ nativeControl, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
     processFixture = await startPinnedDashboard(); f.base = processFixture.base;
     const bootstrap = new DashboardClient(f.base, fetch);
     await vi.waitFor(async () => expect((await bootstrap.status()).version).toBe('0.21.5'));
@@ -46,7 +49,7 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     bootstrapSocket?.close();
     if (f.base) nativeHub(owner, connection).close();
     if (enabled && f.base) await db.delete(users).where(eq(users.id, owner));
-    await processFixture?.stop(); await pool.end();
+    await processFixture?.stop(); await pool?.end();
   });
   it('dispatches only one contending queued receipt through actual native transport', async () => {
     const id = await session(), hub = nativeHub(owner, connection);

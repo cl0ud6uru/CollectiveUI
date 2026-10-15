@@ -54,8 +54,10 @@ HERMES_DASHBOARD_PYTHON=/path/to/isolated/venv/bin/python \
 npx vitest run --project integration tests/integration/remote-hermes-dashboard-conformance.test.ts tests/integration/remote-hermes-reservations.test.ts --maxWorkers=1
 ```
 
-The new integration suite refuses another database name or a non-loopback host
-before database access. CI checks out the pin and creates a disposable
+The new integration suite rejects another database name, a non-loopback host,
+all URL query parameters and fragments before importing database-backed modules
+or constructing their pool. PostgreSQL query overrides cannot change the effective
+host/database after validation. CI checks out the pin and creates a disposable
 `pgvector/pgvector:pg17` service, migrates it, and requires both suites.
 
 ## Evidence and limits
