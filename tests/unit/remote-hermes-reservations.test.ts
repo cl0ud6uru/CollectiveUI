@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const f = vi.hoisted(() => ({ row: {} as Record<string, unknown>, receipts: [] as Record<string, unknown>[], call: vi.fn(), frame: (_frame: unknown) => { void _frame; }, lock: Promise.resolve() }));
+const f = vi.hoisted(() => ({ row: {} as Record<string, unknown>, receipts: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), frame: (_frame: unknown) => { void _frame; }, lock: Promise.resolve() }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => ({ address: '93.184.216.34', family: 4 }) }));
 vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
-  return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown) => void) { f.frame = frame; } close() {} } };
+  return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; answer = f.answer; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown) => void) { f.frame = frame; } close() {} } };
 });
 vi.mock('@/db', () => {
   const dialect = new PgDialect();
@@ -57,7 +57,7 @@ const id1 = '9fd64d53-084f-4898-96e0-59ea8fdc623f', id2 = 'af63e18c-0581-44c5-86
 const idle = { session_id: 'runtime', stored_session_id: 'stored', running: false, info: { title: 'Synthetic' }, messages: [] };
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; }
 beforeEach(() => {
-  vi.clearAllMocks(); f.receipts = []; f.lock = Promise.resolve();
+  vi.clearAllMocks(); f.answer.mockReset().mockResolvedValue(undefined); f.receipts = []; f.lock = Promise.resolve();
   f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: null, status: 'idle', revision: 0, queueRequestId: null, queueStatus: null };
   f.call.mockImplementation(async (method: string) => method === 'session.resume' ? idle : { status: 'streaming' });
 });
@@ -340,4 +340,48 @@ it('clears prompt uncertainty when a native start event arrives before the ackno
   await vi.waitFor(() => expect(f.row.status).toBe('running'));
   ack.resolve({ status: 'streaming' }); await submit;
   expect(nativeHub('owner', 'connection').sessions.get('session')!.view.uncertain).toBe(false);
+});
+
+const promptSnapshot = { ...idle, running: true, open_requests: [{ id: 'protected', method: 'secret', params: { session_id: 'runtime', prompt: 'Synthetic value' } }] };
+it('keeps a locally sent answer pending until native evidence resolves the prompt', async () => {
+  f.call.mockResolvedValue(promptSnapshot);
+  const hub = nativeHub('owner', 'connection');
+  expect(await hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' })).toEqual({ sent: true, status: 'pending' });
+  expect(hub.sessions.get('session')!.view.prompts).toMatchObject([{ id: 'protected', delivery: 'sent' }]);
+  expect(JSON.stringify(hub.sessions.get('session'))).not.toContain('synthetic-secret');
+  await expect(hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' })).rejects.toThrow('already sent');
+  expect(f.answer).toHaveBeenCalledOnce();
+  f.call.mockResolvedValue(idle); await hub.refresh(f.row as never);
+  expect(hub.sessions.get('session')!.view.prompts).toEqual([]);
+});
+it('reports resolution only after a fresh snapshot no longer lists the native prompt', async () => {
+  f.call.mockResolvedValue(promptSnapshot);
+  f.answer.mockImplementation(async () => { f.call.mockResolvedValue(idle); });
+  expect(await nativeHub('owner', 'connection').answer(f.row as never, 'protected', { value: 'synthetic-secret' })).toEqual({ sent: true, status: 'resolved' });
+});
+it('retains uncertain prompt delivery after a send failure and refreshes without replay', async () => {
+  f.call.mockResolvedValue(promptSnapshot); f.answer.mockRejectedValue(new Error('Synthetic write failure'));
+  const hub = nativeHub('owner', 'connection');
+  await expect(hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' })).rejects.toThrow('Synthetic write failure');
+  await hub.refresh(f.row as never);
+  expect(hub.sessions.get('session')!.view.prompts).toMatchObject([{ delivery: 'uncertain' }]);
+  await expect(hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' })).rejects.toThrow('already sent');
+  expect(f.answer).toHaveBeenCalledOnce();
+  expect(JSON.stringify(hub.sessions.get('session'))).not.toContain('synthetic-secret');
+});
+it('does not report confirmation when post-answer snapshot recovery fails', async () => {
+  f.call.mockResolvedValue(promptSnapshot);
+  f.answer.mockImplementation(async () => { f.call.mockRejectedValue(new Error('Snapshot unavailable')); });
+  const hub = nativeHub('owner', 'connection');
+  expect(await hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' })).toEqual({ sent: true, status: 'uncertain' });
+  expect(hub.sessions.get('session')!.view.prompts).toMatchObject([{ delivery: 'uncertain' }]);
+});
+it('reserves an answer before a concurrent request can send it twice', async () => {
+  f.call.mockResolvedValue(promptSnapshot); const write = deferred<unknown>(); f.answer.mockReturnValue(write.promise);
+  const hub = nativeHub('owner', 'connection');
+  const first = hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' });
+  await vi.waitFor(() => expect(f.answer).toHaveBeenCalledOnce());
+  await expect(hub.answer(f.row as never, 'protected', { value: 'synthetic-secret' })).rejects.toThrow('already sent');
+  write.resolve(undefined); await first;
+  expect(f.answer).toHaveBeenCalledOnce();
 });

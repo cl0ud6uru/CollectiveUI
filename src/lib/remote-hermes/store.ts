@@ -1,7 +1,8 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '@/db';
-import { remoteHermesConnections, settings } from '@/db/schema';
+import { db, type Tx } from '@/db';
+import { remoteHermesConnections, remoteHermesSessions, settings } from '@/db/schema';
+import { audit } from '@/lib/audit';
 import { HttpError } from '@/lib/authz';
 import { decrypt, encrypt, rewrap } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
@@ -119,4 +120,38 @@ export async function remoteAccess(userId: string, connectionId: string, mode: '
     return { baseUrl: row.baseUrl, secrets };
   });
   return { ...target, policy, client: new DashboardClient(target.baseUrl, dashboardFetch(target.baseUrl, policy), target.secrets) };
+}
+
+const removalInput = z.object({ confirmActive: z.boolean() }).strict();
+const connectionIdInput = z.string().min(1).max(200);
+async function removalSessions(tx: Tx, userId: string, connectionId: string, lock: 'share' | 'update') {
+  // Match native dispatch's policy -> connection -> session lock order. Removal
+  // remains allowed when admission is disabled; it never reads or decrypts tokens.
+  await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
+  const [row] = await tx.select({ id: remoteHermesConnections.id }).from(remoteHermesConnections)
+    .where(and(eq(remoteHermesConnections.userId, userId), eq(remoteHermesConnections.id, connectionId))).for(lock);
+  if (!row) throw new HttpError(404, 'Hermes connection not found.');
+  const sessions = await tx.select({ id: remoteHermesSessions.id, status: remoteHermesSessions.status, queueRequestId: remoteHermesSessions.queueRequestId })
+    .from(remoteHermesSessions).where(eq(remoteHermesSessions.connectionId, connectionId)).for(lock);
+  return sessions.filter(session => session.status !== 'idle' || session.queueRequestId).length;
+}
+/** Local activity is advisory; recheck under exclusive locks when removing. */
+export async function prepareRemoteRemoval(userId: string, rawConnectionId: string) {
+  const connectionId = connectionIdInput.parse(rawConnectionId);
+  return db.transaction(async tx => ({ activeSessions: await removalSessions(tx, userId, connectionId, 'share') }));
+}
+/** Remove only local authorization/bindings. Native work/conversations are untouched. */
+export async function removeRemoteConnection(userId: string, rawConnectionId: string, raw: { confirmActive: boolean }) {
+  const connectionId = connectionIdInput.parse(rawConnectionId), input = removalInput.parse(raw);
+  const result = await db.transaction(async tx => {
+    const activeSessions = await removalSessions(tx, userId, connectionId, 'update');
+    if (activeSessions && !input.confirmActive) return { removed: false as const, activeSessions };
+    await tx.delete(remoteHermesConnections).where(and(eq(remoteHermesConnections.userId, userId), eq(remoteHermesConnections.id, connectionId)));
+    await audit(userId, 'hermes.remote.removed', connectionId, { activeSessions, upstreamRevoked: false }, tx);
+    return { removed: true as const, activeSessions, upstreamRevoked: false as const, nativeConversationsRetained: true as const };
+  });
+  // Never retire before the credential deletion commits. Other processes are
+  // fenced by existing durable identity checks before their next dispatch/view.
+  if (result.removed) retireNativeConnection(userId, connectionId);
+  return result;
 }
