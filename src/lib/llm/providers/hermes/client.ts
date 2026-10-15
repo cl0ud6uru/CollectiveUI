@@ -207,16 +207,22 @@ export async function* runEvents(t: HermesTarget, runId: string, opts: { signal?
   });
   if (!res.ok) throw await failure(res);
   if (!res.body) throw new HermesError("protocol", res.status);
-  for await (const frame of parseSse(res.body)) {
-    let event: unknown;
-    try {
-      event = JSON.parse(frame.data);
-    } catch {
-      continue;
+  try {
+    for await (const frame of parseSse(res.body)) {
+      let event: unknown;
+      try {
+        event = JSON.parse(frame.data);
+      } catch {
+        continue;
+      }
+      if (event && typeof event === "object" && typeof (event as HermesEvent).event === "string") {
+        yield frame.id ? { ...(event as HermesEvent), _seq: frame.id } : (event as HermesEvent);
+      }
     }
-    if (event && typeof event === "object" && typeof (event as HermesEvent).event === "string") {
-      yield frame.id ? { ...(event as HermesEvent), _seq: frame.id } : (event as HermesEvent);
-    }
+  } catch (error) {
+    if (opts.signal?.aborted) throw error;
+    // Response-body failures occur after fetch() has returned; normalize them too.
+    throw new HermesError("unreachable");
   }
 }
 

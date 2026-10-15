@@ -240,3 +240,53 @@ and doesn't pass cancellation through; the portal does all three. Worth borrowin
   harness with a conformance kit.
 
 Not copied: the company/org-chart product model, "full auto" defaults that skip approvals, long-lived agent tokens.
+
+## Runs admission and interrupted-stream recovery (#98)
+
+This is the legacy/admin Runs HTTP/SSE adapter, separate from native dashboard
+workspace receipts and sockets. Every durable portal run uses `portal-<run id>` as
+its admission key for both local and remote targets. A retry after a lost POST
+reply reuses that key; a distinct portal turn has a distinct run ID/key. Calls
+outside the durable run executor still generate a fresh key and have no durable
+retry guarantee. This change does not automatically retry admission or approvals.
+
+The recovery contract was checked against public upstream
+[`450ad5055eb3c4852d96676ee99287d618bd283a`](https://github.com/NousResearch/hermes-agent/blob/450ad5055eb3c4852d96676ee99287d618bd283a/gateway/platforms/api_server_runs.py):
+`_RunStream` assigns contiguous nonnegative integer IDs beginning at zero,
+`attach(last_seq)` replays events strictly after that cursor, and the events route
+reads `Last-Event-ID` and emits `replay.truncated` when its 1000-event backlog
+cannot bridge the cursor. This is source-contract verification, not a claim that
+an arbitrary deployed runtime has these capabilities.
+
+After transport/body failure or an early stream EOF, the provider may reconnect
+at most twice per consumption segment, using the last consumed numeric cursor.
+Response-body failures are normalized to the same safe transport error as a
+failed fetch. Authentication/profile/protocol failures still surface. Native
+not-found falls directly back to status. Recovery never starts a new run, posts
+an approval response, or changes the owned run ID. Stop continues targeting that
+same remote run during reconnection.
+
+Frames at or before the consumed cursor never reach the mapper. Missing or
+invalid IDs after reattachment, sequence gaps and `replay.truncated` discard the
+unsafe replay and use the existing bounded run-status reconciliation. Streams
+without usable IDs use status directly after interruption; recovery does not
+assume every Hermes release supports replay. A status-only approval pause saves
+that fact in its resume state and retains it in the parked tap. Continuation on
+the same or another worker remains status-only, preventing old tool/approval
+frames from being mapped again after a replay gap. Approval answers remain
+explicit once/deny choices.
+
+Status fallback cannot restore lost tool details or reconstruct a missing text
+suffix after partial streaming. Existing mapper behavior preserves already
+emitted text and reports unknown tool settlement when its outcome is unavailable;
+it does not append a duplicate final transcript. Full event fidelity requires an
+unbroken retained cursor sequence. Cursor recovery and status fallback are
+read-only and do not prove exactly-once upstream admission by themselves.
+
+`tests/unit/hermes-stream-recovery.test.ts` exercises the real client, EventTap,
+mapper and language-model code through synthetic HTTP responses: cursor zero,
+body failure/EOF, duplicate text/tool frames, unsupported replay, gaps/truncation,
+retry bounds, single approvals, Stop, lost admission replies/stable turn keys and
+status-only approval recovery after worker restart. Eight stream regressions
+failed before the source changes. No production credentials, live dashboard,
+paid inference, browser session or deployment was used.
