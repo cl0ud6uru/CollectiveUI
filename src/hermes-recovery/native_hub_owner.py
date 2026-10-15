@@ -533,6 +533,8 @@ class HubOwner:
             with self._locked(home, wait=self._LOCK_WAIT_SECONDS):
                 if not binding.same_claim(self._current_owner(str(home))) or not self._durably_current(binding):
                     return None  # stale queued/deferred work never begins
+                if binding.phase != "full":
+                    return None  # recovery-only ownership never starts ordinary background work
                 with self._guard:
                     self._active_workers[str(home)] = self._active_workers.get(str(home), 0) + 1
             token = _active_binding.set(binding)
