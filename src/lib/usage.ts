@@ -17,10 +17,6 @@ const BACKGROUND = sql`('title', 'memory', 'draft', 'embedding', 'decision')`;
 export const ADMIN_USAGE_DAYS = 30;
 export const ADMIN_USAGE_PERIOD = `Last ${ADMIN_USAGE_DAYS} days`;
 
-/** Shared rolling period for the admin dashboard and its CSV download. */
-export const ADMIN_USAGE_DAYS = 30;
-export const ADMIN_USAGE_PERIOD = `Last ${ADMIN_USAGE_DAYS} days`;
-
 /** One row per token-bearing record (ledger event or legacy reply) plus reply counts, since `since`. */
 function tokenRows(since: SQL) {
   return sql`
