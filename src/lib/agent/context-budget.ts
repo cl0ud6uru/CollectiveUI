@@ -1,4 +1,4 @@
-import type { Instructions, ModelMessage } from "ai";
+import { asSchema, type Instructions, type ModelMessage } from "ai";
 
 /** Conservative fallback for models whose context size has not been configured. */
 export const DEFAULT_CONTEXT_WINDOW_TOKENS = 16_384;
@@ -16,9 +16,9 @@ export type ContextBudget = {
  * per-message framing, which is conservative for ordinary text but cannot promise provider-exact accounting.
  * Images with known inline bytes receive a large fixed allowance; unknown or remote multimodal data is rejected.
  */
-export function estimateModelContextTokens(messages: ModelMessage[], instructions: unknown, tools?: unknown): number {
+export async function estimateModelContextTokens(messages: ModelMessage[], instructions: unknown, tools?: unknown): Promise<number> {
   let total = estimateText(typeof instructions === "string" ? instructions : stableJson(instructions)) + 512;
-  if (tools !== undefined) total += estimateToolDefinitions(tools) + 512;
+  if (tools !== undefined) total += await estimateToolDefinitions(tools) + 512;
   for (const message of messages) {
     total += 128;
     if ("providerOptions" in message && message.providerOptions) total += estimateText(stableJson(message.providerOptions));
@@ -32,10 +32,10 @@ export function estimateModelContextTokens(messages: ModelMessage[], instruction
 }
 
 /** Drops whole oldest user turns; the latest turn and every tool/approval exchange within a turn stay intact. */
-export function compactModelContext(
+export async function compactModelContext(
   messages: ModelMessage[],
   options: { inputBudgetTokens: number; instructions: Instructions | undefined; tools?: unknown; omittedTurnsBefore?: number },
-): { messages: ModelMessage[]; omittedTurns: number; notice?: string; instructions: Instructions | undefined; estimatedInputTokens: number } {
+): Promise<{ messages: ModelMessage[]; omittedTurns: number; notice?: string; instructions: Instructions | undefined; estimatedInputTokens: number }> {
   const turns = splitTurns(messages);
   const omittedTurnsBefore = options.omittedTurnsBefore ?? 0;
   const buildPrompt = (omittedTurns: number) => instructionsWithContextNote(
@@ -44,16 +44,16 @@ export function compactModelContext(
   );
   if (!turns.length) {
     const instructions = buildPrompt(omittedTurnsBefore);
-    const estimatedInputTokens = estimateModelContextTokens([], instructions, options.tools);
+    const estimatedInputTokens = await estimateModelContextTokens([], instructions, options.tools);
     if (estimatedInputTokens > options.inputBudgetTokens) throw new Error("Model instructions and tools exceed this model's configured context budget.");
     return { messages: [], omittedTurns: omittedTurnsBefore, instructions, estimatedInputTokens,
       ...(omittedTurnsBefore ? { notice: formatOmissionNotice(omittedTurnsBefore) } : {}) };
   }
   const retained = turns.slice();
   const omittedTurns = () => omittedTurnsBefore + turns.length - retained.length;
-  const cost = () => estimateModelContextTokens(retained.flat(), buildPrompt(omittedTurns()), options.tools);
-  while (retained.length > 1 && cost() > options.inputBudgetTokens) retained.shift();
-  const estimatedInputTokens = cost();
+  const cost = async () => estimateModelContextTokens(retained.flat(), buildPrompt(omittedTurns()), options.tools);
+  while (retained.length > 1 && await cost() > options.inputBudgetTokens) retained.shift();
+  const estimatedInputTokens = await cost();
   if (estimatedInputTokens > options.inputBudgetTokens) {
     throw new Error("The latest turn is too large for this model's configured context budget. Shorten the request or increase the model context window.");
   }
@@ -147,9 +147,38 @@ function estimateMetadata(part: Record<string, unknown>): number {
   return Object.keys(metadata).length ? estimateText(stableJson(metadata)) : 0;
 }
 
-function estimateToolDefinitions(tools: unknown): number {
+async function estimateToolDefinitions(tools: unknown): Promise<number> {
   if (!tools || typeof tools !== "object") return estimateText(stableJson(tools));
-  return Object.entries(tools as Record<string, unknown>).reduce((sum, [name, tool]) => sum + 256 + estimateText(name) + estimateText(stableJson(tool)), 0);
+  let total = 0;
+  for (const [name, value] of Object.entries(tools as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") {
+      total += 256 + estimateText(name) + estimateText(stableJson(value));
+      continue;
+    }
+    const tool = value as Record<string, unknown>;
+    // Match the AI SDK's provider conversion: input schemas (including Zod descriptions) become JSON Schema
+    // before dispatch. JSON.stringify(tool) alone drops that schema metadata and can severely undercount.
+    const schema = "inputSchema" in tool
+      ? await asSchema(tool.inputSchema as Parameters<typeof asSchema>[0]).jsonSchema
+      : undefined;
+    const extraDefinition = { ...tool };
+    delete extraDefinition.inputSchema;
+    delete extraDefinition.outputSchema;
+    delete extraDefinition.execute;
+    delete extraDefinition.toModelOutput;
+    delete extraDefinition.onInputStart;
+    delete extraDefinition.onInputDelta;
+    const providerDefinition = {
+      name,
+      ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+      ...(schema !== undefined ? { parameters: schema } : {}),
+      // Preserve provider-specific serializable fields while excluding callback/schema objects already
+      // accounted for in their provider-bound form.
+      ...(schema !== undefined ? { definition: stableJson(extraDefinition) } : { definition: stableJson(tool) }),
+    };
+    total += 256 + estimateText(name) + estimateText(stableJson(providerDefinition));
+  }
+  return total;
 }
 
 function estimateText(text: string): number {

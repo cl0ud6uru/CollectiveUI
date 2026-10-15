@@ -234,8 +234,8 @@ export async function runGroupTurn(opts: {
             timeout: toolset.timeout,
             abortSignal: opts.abortSignal,
             ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
-            prepareStep: ({ messages: stepMessages }) => {
-              const bounded = compactModelContext(stepMessages, {
+            prepareStep: async ({ messages: stepMessages }) => {
+              const bounded = await compactModelContext(stepMessages, {
                 inputBudgetTokens: contextBudget.inputBudgetTokens,
                 instructions,
                 tools: toolset!.tools,

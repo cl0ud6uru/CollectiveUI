@@ -210,7 +210,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       // prepareStep runs before every model request, including every tool continuation.
       prepareStep: async ({ stepNumber, messages: stepMessages }) => {
         await authorizeDispatch();
-        const bounded = compactModelContext(stepMessages, {
+        const bounded = await compactModelContext(stepMessages, {
           inputBudgetTokens: contextBudget.inputBudgetTokens,
           instructions,
           tools: toolset.tools,
