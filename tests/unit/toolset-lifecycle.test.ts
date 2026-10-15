@@ -1,10 +1,13 @@
+import { inspect } from "node:util";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { botDelegates, botTools, toolGrants, type AiApp, type Bot, type McpServer } from "@/db/schema";
 
 // A tiny stand-in for drizzle's query builder: select().from(table)[.innerJoin()].where() resolves to rows per table.
 const rows = new Map<unknown, unknown[]>();
-vi.mock("@/lib/agent/learning/store", () => ({ learningIsEnabled: async () => false, learnedSkillsForBot: async () => [] }));
+const loadFailures = vi.hoisted(() => ({ enabled: false, learned: vi.fn(async () => []), manual: vi.fn(async () => []) }));
+vi.mock("@/lib/agent/learning/store", () => ({ learningIsEnabled: async () => loadFailures.enabled, learnedSkillsForBot: loadFailures.learned }));
+vi.mock("@/lib/agent/tools/skills", async original => ({ ...await original<typeof import("@/lib/agent/tools/skills")>(), skillsForBot: loadFailures.manual }));
 vi.mock("@/db", () => {
   const chain = (table: unknown) => {
     const q = { innerJoin: () => q, where: async () => rows.get(table) ?? [], then: undefined as never };
@@ -50,6 +53,7 @@ const ctx = {
 describe("buildToolset MCP loading", () => {
   beforeEach(() => {
     rows.clear();
+    loadFailures.enabled = false; loadFailures.learned.mockReset(); loadFailures.learned.mockResolvedValue([]); loadFailures.manual.mockReset(); loadFailures.manual.mockResolvedValue([]);
     rows.set(botDelegates, []);
     rows.set(toolGrants, []);
     listAccessibleMcpServers.mockReset();
@@ -78,10 +82,23 @@ describe("buildToolset MCP loading", () => {
     expect(Object.keys(ts.tools)).toEqual(["alpha__echo"]);
     expect(ts.warnings).toEqual([
       "One of this bot's MCP servers isn't available to you, so its tools are missing.",
-      '"Beta" is unavailable right now.',
+      expect.stringContaining('"Beta" is unavailable right now.'),
     ]);
     await ts.close();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["mcp", "tool", "learned"])("keeps %s load failures out of diagnostics", async kind => {
+    const raw = "arbitrary-load-secret https://internal.fixture.invalid";
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      if (kind === "mcp") { rows.set(botTools, [{ toolKey: "mcp:a", approval: "auto" }]); listAccessibleMcpServers.mockResolvedValue([server("a", "Alpha")]); connectedMcpTools.mockRejectedValue(new Error(raw)); }
+      if (kind === "tool") { rows.set(botTools, [{ toolKey: "skills", approval: "auto" }]); loadFailures.manual.mockRejectedValue(new Error(raw)); }
+      if (kind === "learned") { rows.set(botTools, []); loadFailures.enabled = true; loadFailures.learned.mockRejectedValue(new Error(raw)); }
+      const ts = await buildToolset(ctx); await ts.close();
+      expect(log).toHaveBeenCalled();
+      expect(inspect([ts.warnings, log.mock.calls])).not.toMatch(/arbitrary-load-secret|internal\.fixture\.invalid/);
+    } finally { log.mockRestore(); }
   });
 
   it("servers with a tool snapshot load lazily, with the bot's per-tool choices, and share one name space", async () => {
@@ -182,6 +199,16 @@ describe("closed handles don't come back to life (a stream still running after i
     expect(r).toMatchObject({ isError: true });
     expect(r).not.toHaveProperty('structuredContent');
     expect(r).not.toHaveProperty('extra');
+    await ts.close();
+  });
+
+  it("hides MCP returned error details before model and UI projection", async () => {
+    const { mcpTools } = await real(); const client = fakeClient();
+    client.callTool.mockResolvedValue({ isError: true, content: [{ type: "text", text: "arbitrary-mcp-secret https://internal.fixture.invalid" }] } as never);
+    connectMcp.mockResolvedValue(client); const ts = mcpTools(mcpServer, opts());
+    const r = await call(ts.entries[0]); expect(r).toMatchObject({ isError: true });
+    const model = await ts.entries[0].tool.toModelOutput!({ toolCallId: "c", input: {}, output: r } as never);
+    expect(inspect([r, model])).not.toMatch(/arbitrary-mcp-secret|internal\.fixture\.invalid/);
     await ts.close();
   });
 

@@ -50,6 +50,13 @@ describe("real group orchestration with synthetic models", () => {
     expect(chunks.flatMap(chunk => chunk.type === "data-speaker" && "data" in chunk ? [chunk.data] : [])).toMatchObject([{ botId: "researcher" }, { botId: "writer" }]);
     expect(f.close).toHaveBeenCalledTimes(2);
   });
+  it("keeps arbitrary outer group failures out of user-visible chunks",async()=>{
+    model([[...text("one","Fixture answer"),finishPart("stop")]]);
+    f.close.mockRejectedValue(new Error("arbitrary-group-fixture-secret https://private.fixture.invalid"));
+    const chunks=await turn();
+    expect(chunks.find(c=>c.type==="error")).toMatchObject({errorText:expect.stringMatching(/^Something went wrong\. Try again\. Reference:/)});
+    expect(JSON.stringify(chunks)).not.toMatch(/arbitrary-group-fixture-secret|private\.fixture\.invalid/);
+  });
   it("clears activity when tool setup fails and does not call a model", async () => {
     model([]); f.build.mockRejectedValue(new Error("Synthetic tool setup failure"));
     const chunks = await turn(); expect(f.observed).toEqual([]); expect([...f.active]).toEqual([]);
