@@ -141,6 +141,13 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect(fixture.generate.mock.calls[0][0].tools).toBeUndefined();
   });
 
+  it("keeps MCP isError results out of verified shared learning", async () => {
+    await db.update(schema.messages).set({ parts: [toolPart({ output: { isError: true, content: [{ type: "text", text: "Fixture connector failure" }] } })] }).where(eq(schema.messages.id, "reply"));
+    expect(await reviewNativeRun("run")).toBe(0);
+    expect(fixture.generate).not.toHaveBeenCalled();
+    expect(await db.select().from(schema.botLearnings)).toHaveLength(0);
+  });
+
   it("splits mixed learning into a shared method and a private Helpdesk preference", async () => {
     fixture.generate.mockResolvedValue({ output: { lessons: [lesson(), lesson({
       topic: "report-format", name: "My report layout", description: "Use my preferred layout for update reports.",
@@ -550,9 +557,13 @@ describe("native learning with real PostgreSQL migrations", () => {
 describe("learning evidence policy", () => {
   it.each([
     { state: "approval-requested" }, { state: "output-denied" }, { state: "output-error" }, { preliminary: true },
+    { output: { isError: true, content: [{ type: "text", text: "Fixture connector failure" }] } },
     { output: { error: "Permission denied" } }, { output: { success: false } }, { output: { status: "queued" } },
   ])("does not treat unfinished, denied or failed tools as verification: %j", over => {
     expect(successfulToolEvidence({ id: "m", role: "assistant", parts: [toolPart(over)] } as PortalUIMessage)).toEqual([]);
+  });
+  it("preserves successful MCP content with isError false", () => {
+    expect(successfulToolEvidence({ id: "m", role: "assistant", parts: [toolPart({ output: { isError: false, content: [{ type: "text", text: "Fixture success" }] } })] } as PortalUIMessage)).toHaveLength(1);
   });
   it("never promotes a personal preference into shared learning", () => {
     expect(lessonDisposition(lesson({ kind: "preference" }), new Set(["update-call"]))).toEqual({ scope: "user", status: "active" });

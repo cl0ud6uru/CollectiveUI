@@ -9,7 +9,7 @@ export function successfulToolEvidence(message: PortalUIMessage) {
     if (!isToolUIPart(p) || p.state !== "output-available" || p.preliminary || p.output == null) return [];
     const output = p.output;
     if (output && typeof output === "object" && (
-      ("error" in output && output.error) || ("success" in output && output.success === false) ||
+      ("isError" in output && output.isError === true) || ("error" in output && output.error) || ("success" in output && output.success === false) ||
       ("ok" in output && output.ok === false) || ("exitCode" in output && typeof output.exitCode === "number" && output.exitCode !== 0) ||
       ("status" in output && ["error", "failed", "denied", "cancelled", "interrupted", "queued", "running", "working", "assigned"].includes(String(output.status)))
     )) return [];
