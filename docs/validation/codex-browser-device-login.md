@@ -46,7 +46,7 @@ The parent reports nested KVM already verified on the target host. That does not
 
 ## Evidence and remaining checks
 
-Final targeted validation passed **289 tests across 14 files**: 121 broker/account/runtime checks, 67 harness/onboarding checks, 61 UI/route checks, and 40 native-account lifecycle checks. TypeScript and changed-code lint passed (zero lint errors; pre-existing unused-argument warnings remain in the existing account tests). The two real-component browser fixture harnesses passed. No Linux runtime or authenticated inference result is included in these counts.
+Final targeted validation passed **298 tests across 17 files**: 121 broker/account/runtime checks, 67 harness/onboarding checks, 61 UI/route checks, 40 native-account lifecycle checks, and 9 computer-tool/worker/account-settings regression checks. TypeScript and changed-code lint passed (zero lint errors; pre-existing unused-argument warnings remain in the existing account tests). The real-component device, native account, and saved Team connections browser fixture harnesses passed. The new device harness is included in CI. No Linux runtime or authenticated inference result is included in these counts.
 
 The targeted suites cover login completion/failure/cancel/expiry and restart state; owner-local account confirmation without email binding; account/workspace/plan policy; refresh delegation; disconnect/no account pooling; independent native lifecycle; normal messages and command/file tool events; changed account/policy during execution; origin/body/consent route validation; and UI rendering.
 

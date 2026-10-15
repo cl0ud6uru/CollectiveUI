@@ -23,7 +23,7 @@ function messageFor(view: ChatGPTAccountView) {
   if (!view.allowed) return view.reason || "ChatGPT account connections are disabled for your account.";
   if (view.credential?.migrationRequired) return "Your saved ChatGPT sign-in needs to be moved to the unified account service before it can be used.";
   if (view.credential) return view.backends.native.state === "connected" ? "Your ChatGPT account is connected." : view.backends.native.reason || "Your ChatGPT sign-in needs attention. Check its status before continuing.";
-  return view.setup?.reason || "Connect once to use your ChatGPT account across supported backends.";
+  return view.setup?.reason || "Connect your ChatGPT account for Native CollectiveUI.";
 }
 
 export function runtimeSetupLabel(setup?: AccountSetupView) {
