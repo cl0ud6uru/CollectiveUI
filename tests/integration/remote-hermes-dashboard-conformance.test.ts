@@ -82,12 +82,12 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
   }, 20000);
   it('completes concurrent custom-server writes with one pooled DB client across profiles', async () => {
     expect(pool.options.max).toBe(1);
-    const profileName = `pool-one-${owner.slice(0, 8)}`;
+    const profileName = `pool-one-${owner.slice(0, 8).toLowerCase()}`;
     const createProfile = await fetch(f.base + '/api/profiles', { method: 'POST', headers: {
       Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json',
     }, body: JSON.stringify({ name: profileName, no_skills: true }) });
-    expect(createProfile.ok).toBe(true);
-    await createProfile.body?.cancel();
+    const profileResponse = await createProfile.text();
+    expect(createProfile.ok, `Synthetic profile creation returned ${createProfile.status}: ${profileResponse}`).toBe(true);
     expect((await auth.profiles()).some(profile => profile.name === profileName)).toBe(true);
     const defaultSession = await session('default');
     const secondSession = await session(profileName);
@@ -110,5 +110,6 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     expect(pool.waitingCount).toBe(0);
     expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, defaultSession))).toHaveLength(1);
     expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, secondSession))).toHaveLength(1);
+    expect((await metrics()).external_attempts).toBe(0);
   }, 25000);
 });
