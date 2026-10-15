@@ -650,10 +650,12 @@ class HubOwner:
             def auxiliary(target, *, name, session):
                 try:
                     home = Path(self.server._session_home(session)).resolve()
-                    sid = self.server._session_lookup_key(session)
                     with self._locked(home, wait=self._LOCK_WAIT_SECONDS):
                         with self.server._sessions_lock:
-                            if self.server._sessions.get(sid) is not session or session.get("_closing"):
+                            # `_sessions` is keyed by runtime id while
+                            # `_session_lookup_key` prefers the stored id. Verify
+                            # object membership directly instead of conflating them.
+                            if sum(candidate is session for candidate in self.server._sessions.values()) != 1 or session.get("_closing"):
                                 return None
                         active = _active_binding.get()
                         with self._guard:
