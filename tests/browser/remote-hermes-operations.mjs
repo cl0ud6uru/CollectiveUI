@@ -79,11 +79,11 @@ try {
   expect(requests.filter(r => r.method === 'POST').slice(-1)[0].input.operation).toBe('prepare');
   await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
   await expect.poll(() => requests.filter(r => r.method === 'POST').map(r => r.input.operation)).toContain('confirm');
-  await expect(page.getByText('Enabled: no')).toBeVisible();
+  await expect(page.locator('article').filter({ hasText: 'Fixture schedule' }).getByText('Enabled: no')).toBeVisible();
   await page.getByRole('button', { name: 'Review resume', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('may run soon and use model usage');
   await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
-  await expect(page.getByText('Enabled: yes')).toBeVisible();
+  await expect(page.locator('article').filter({ hasText: 'Fixture schedule' }).getByText('Enabled: yes')).toBeVisible();
   await page.getByRole('button', { name: 'Plugins', exact: true }).click();
   await expect(page.getByText('Fixture plugin', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Review enable', exact: true }).click();
