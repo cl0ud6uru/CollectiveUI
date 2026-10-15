@@ -6,7 +6,7 @@ import { WebSocketServer } from 'ws';
 import { eq } from 'drizzle-orm';
 import type { DB } from '@/db';
 import * as schema from '@/db/schema';
-import { remoteHermesSessions, settings } from '@/db/schema';
+import { remoteHermesHubOwners, remoteHermesRecoveries, remoteHermesSessions, settings } from '@/db/schema';
 
 // Opt-in ONLY to the named disposable database; never fall back to DATABASE_URL.
 const url = process.env.REMOTE_HERMES_LOCK_TEST_URL;
@@ -43,9 +43,9 @@ beforeAll(async () => {
   const target = new URL(url);
   if (target.pathname !== '/collective_remote_lifecycle_test' || !['127.0.0.1', 'localhost'].includes(target.hostname)) throw new Error('Named disposable loopback PostgreSQL fixture required');
   pool = new Pool({ connectionString: url, max: 4 }); f.db = drizzle(pool, { schema });
-  await pool.query('DROP TABLE IF EXISTS remote_hermes_turns, remote_hermes_sessions, remote_hermes_connections, settings, users CASCADE');
+  await pool.query('DROP TABLE IF EXISTS remote_hermes_recoveries, remote_hermes_hub_owners, remote_hermes_turns, remote_hermes_sessions, remote_hermes_connections, settings, users CASCADE');
   await pool.query("CREATE TABLE users (id text PRIMARY KEY); CREATE TABLE settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()); INSERT INTO users VALUES ('owner');");
-  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations']) await pool.query(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
+  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations', '0062_remote_hermes_hub_ownership', '0063_remote_hermes_recovery']) await pool.query(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
 });
 beforeEach(async () => { if (url) { f.pausePolicy = undefined; await pool.query('TRUNCATE remote_hermes_connections CASCADE; TRUNCATE settings'); } });
 afterEach(() => cleanup.splice(0).reverse().forEach(close => close()));
@@ -70,7 +70,7 @@ async function fixture() {
     });
   });
   const hub = new NativeHub('owner', connection.id); cleanup.push(() => hub.close());
-  hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: 'runtime', running: true }, 'connected'), pending: new Map(), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1 });
+  hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: 'runtime', running: true }, 'connected'), pending: new Map(), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1, ownerInstanceId: hub.instanceId, leaseGeneration: 1, ownerSocketEpoch: 1 });
   await hub.socket.connect();
   return { hub, row, input, baseUrl, received };
 }
@@ -141,4 +141,17 @@ run('reuses a caller transaction in lock order and releases its session/identity
   expect(await f.db.select().from(remoteHermesSessions)).toEqual([]);
   await expect(hub.socket.call('projects.list')).rejects.toThrow('replaced');
   hub.close(); await outcome;
+}, 15_000);
+run('confirmed recovery blocks resume and profile-wide full promotion before any native session send', async () => {
+  const { hub, row, received } = await fixture();
+  await f.db.insert(remoteHermesRecoveries).values({ id: '5ac27952-e0b5-4bde-9d16-37165d90fce9', ownerId: 'owner',
+    connectionId: row.connectionId, sessionId: row.id, binding: { ownership: { protocol: 'collective.portal-hub-ownership.v1', ownerId: 'owner',
+      connectionId: row.connectionId, instanceId: hub.instanceId, leaseGeneration: 1, sessionId: row.id, profile: row.profile, storedId: row.storedId,
+      runtimeId: row.runtimeId!, sessionRevision: row.revision, ownershipGeneration: Number(row.ownershipGeneration), socketEpoch: 1, portalSocketEpoch: 1, nativeFence: null },
+      connectionDigest: 'a'.repeat(64), admissionRequestId: null, queueRequestId: null, status: 'running', queueStatus: null },
+    state: 'pending', expiresAt: new Date(Date.now() + 60_000) });
+  await expect(hub.socket.call('session.resume', { session_id: row.storedId, profile: row.profile })).rejects.toThrow('recovery');
+  await expect(hub.socket.call('session.create', { profile: row.profile })).rejects.toThrow('recovery');
+  expect(received.filter(method => method === 'session.resume' || method === 'session.create')).toEqual([]);
+  expect(await f.db.select().from(remoteHermesHubOwners)).toEqual([]);
 }, 15_000);
