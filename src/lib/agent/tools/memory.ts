@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { tool } from "ai";
 import { z } from "zod";
 import { db } from "@/db";
@@ -75,7 +75,10 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
         inputSchema: z.object({ id: z.string(), fact: z.string().trim().min(1).max(1000) }),
         execute: async ({ id, fact }, { abortSignal }) => {
           abortSignal?.throwIfAborted();
-          const [memory] = await db.select({ id: memories.id, botId: memories.botId, content: memories.content, updatedAt: memories.updatedAt })
+          const [memory] = await db.select({
+            id: memories.id, botId: memories.botId, content: memories.content,
+            updatedAtEpoch: sql<string>`extract(epoch from ${memories.updatedAt})::text`,
+          })
             .from(memories).where(and(eq(memories.id, id), eq(memories.userId, userId)));
           if (memory) {
             const embedded = await embedTexts([fact], { userId, botId: memory.botId, conversationId: ctx.conversationId }, {
@@ -84,7 +87,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
             abortSignal?.throwIfAborted();
             const [embedding] = embedded ?? [];
             const [updated] = await db.update(memories).set({ content: fact, embedding: embedding ?? null, updatedAt: new Date() })
-              .where(and(eq(memories.id, id), eq(memories.userId, userId), eq(memories.content, memory.content), eq(memories.updatedAt, memory.updatedAt)))
+              .where(and(eq(memories.id, id), eq(memories.userId, userId), eq(memories.content, memory.content), sql`extract(epoch from ${memories.updatedAt})::text = ${memory.updatedAtEpoch}`))
               .returning({ id: memories.id });
             if (!updated) return { corrected: false, status: "conflict", recordType: "ordinary_memory", message: "This memory changed during correction. No update was made; refresh its current value before retrying." };
             unchangedForgetIds.delete(id);

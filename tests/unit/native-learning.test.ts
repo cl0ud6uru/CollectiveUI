@@ -179,6 +179,8 @@ describe("native learning with real PostgreSQL migrations", () => {
       learningId: preference.id, version: 1, status: "active", kind: "preference", content: preferenceContent,
       verification: "The user explicitly requested this format.",
     });
+    // Preserve microseconds that a JavaScript Date read would truncate.
+    await fixture.client!.query("UPDATE memories SET updated_at = $1::timestamptz WHERE id = $2", ["2026-10-15T04:00:00.123456Z", ordinary.id]);
     const ctx = { principal: member, bot, app: {} as never, conversationId: "chat", depth: 0, background: false, toolSettings: await getSetting("tools"), usage: { pending: [] } } as AgentCtx;
     const entries = memoryTools(ctx);
     const correct = entries.find(entry => entry.name === "correct_memory")!.tool.execute!;
