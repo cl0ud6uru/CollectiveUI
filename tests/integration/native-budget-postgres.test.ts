@@ -23,7 +23,7 @@ let eq: typeof import('drizzle-orm')['eq'];
 const children: Awaited<ReturnType<typeof budgetChild>>[] = [];
 const ctx = (root: string, owner = 'owner'): UsageContext => ({ purpose: 'chat', billingSource: 'org', providerKind: 'openai-compatible', model: 'fixture-budget', appId: null, userId: owner, billingRoute: 'api:openai-compatible', scope: { pending: [], messageId: root, runId: `run-${root}`, rootBudgetId: root } });
 async function root(id: string) { return (await q.db.select().from(q.schema.nativeRunBudgets).where(eq(q.schema.nativeRunBudgets.rootMessageId, id)))[0]; }
-async function attempts(id: string) { return q.db.select().from(q.schema.nativeRunBudgetAttempts).where(eq(q.schema.nativeRunBudgetAttempts.rootMessageId, id)); }
+async function attempts(id: string) { return q.db.select().from(q.schema.nativeRunBudgetAttempts).where(eq(q.schema.nativeRunBudgetAttempts.rootMessageId, id)).orderBy(q.schema.nativeRunBudgetAttempts.createdAt); }
 async function child(config = JSON.stringify(policy)) { const worker = await budgetChild(fixtureURL!, config); children.push(worker); return worker; }
 async function contention(rootId: string, workers: Awaited<ReturnType<typeof child>>[], operation: (worker: Awaited<ReturnType<typeof child>>) => Promise<unknown>) {
   const lock = await q.pool.connect(); await lock.query('BEGIN');
@@ -153,6 +153,9 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
       const latest = (await q.pool.query("SELECT input_reserved,output_reserved FROM native_run_budget_attempts WHERE state='dispatched' ORDER BY created_at DESC LIMIT 1")).rows[0];
       const inputTokens = step.chargeQuote ? Number(latest.input_reserved) + (step.overage ? 1 : 0) : 3;
       const outputTokens = step.chargeQuote ? Number(latest.output_reserved) : 2;
+      if (!body.stream) return Response.json({ id: 'synthetic-completion', object: 'chat.completion', created: 1, model: 'fixture-budget',
+        choices: [{ index: 0, message: { role: 'assistant', content: step.text ?? 'Synthetic result' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens } });
       const chunk = (delta: unknown, finish: string | null = null, choices?: unknown[]) => `data: ${JSON.stringify({ id: 'synthetic-completion', object: 'chat.completion.chunk', created: 1, model: 'fixture-budget', choices: choices ?? [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
       let wire = chunk({ role: 'assistant', content: '' });
       if (step.tool) {
@@ -165,6 +168,7 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
   }
   async function setupHarness(workspace = false, maxSteps = 20) {
     const { loadPrincipal } = await import('@/lib/auth/groups');
+    await q.db.update(q.schema.users).set({ prefs: { memoryEnabled: true } }).where(eq(q.schema.users.id, 'owner'));
     const [app] = await q.db.insert(q.schema.aiApps).values({ id: 'model', name: 'Synthetic model', provider: 'openai-compatible', model: 'fixture-budget', baseUrl: 'http://127.0.0.1:9/v1', supportsTools: true, maxTokens: 1000, contextWindowTokens: 1_000_000, isPublic: true }).returning();
     const bots = await q.db.insert(q.schema.bots).values(['Queen', 'Worker', 'Writer'].map(name => ({ id: name.toLowerCase(), ownerId: 'owner', appId: app.id, name, maxSteps, visibility: 'org' as const }))).returning();
     await q.db.insert(q.schema.botDelegates).values({ botId: 'queen', delegateBotId: 'worker' });
@@ -254,7 +258,7 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
 
   async function pausedChild() {
     const harness = await setupHarness(true); const { executeRun } = await import('@/lib/runs/execute'); const { getRun } = await import('@/lib/runs/state');
-    provider({ tool: { name: 'ask_worker', args: { task: 'Synthetic workspace task', mode: 'async' } } }, { tool: { name: 'workspace_bash', args: { command: 'printf synthetic' } } });
+    provider({ tool: { name: 'ask_worker_worker', args: { task: 'Synthetic workspace task', mode: 'async' } } }, { tool: { name: 'workspace_bash', args: { command: 'printf synthetic' } } });
     const setup = await start(harness, 'Delegate this synthetic workspace task'); await executeRun(setup.run.id);
     expect(await getRun(setup.run.id)).toMatchObject({ status: 'waiting_tasks' });
     const [task] = await q.db.select().from(q.schema.delegatedTasks).where(eq(q.schema.delegatedTasks.parentRunId, setup.run.id));
