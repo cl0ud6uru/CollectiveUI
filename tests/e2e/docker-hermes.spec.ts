@@ -153,7 +153,7 @@ test('starter setup explains blocked routes, clears incompatible models and open
   await page.setViewportSize({ width: 1360, height: 900 });
   expect(unsupportedCodexRequests).toBe(0);
   scenario = 'offline'; await page.reload();
-  await expect(page.getByText('Offline · access blocked', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Internet access is off.' })).toBeVisible();
   await expect(page.getByText('Not tested', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Sign in with OpenAI', exact: true })).toBeDisabled();
   await expect(page.locator('#codex-start-blocker')).toContainText('runtime is offline');
