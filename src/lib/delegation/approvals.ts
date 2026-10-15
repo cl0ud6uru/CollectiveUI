@@ -7,6 +7,7 @@ import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { getOwnedConversation, HttpError } from "@/lib/authz";
 import { updatePartsLockedTx } from "@/lib/chat/store";
 import { enqueueRun } from "@/lib/jobs";
+import { assertNativeContinuationBudget } from "@/lib/runs/native-budget";
 import { lockUserRuns } from "@/lib/runs/lock";
 import { appendEventsTx } from "@/lib/runs/log";
 import { getRun, requeueRunTx } from "@/lib/runs/state";
@@ -67,6 +68,7 @@ export async function answerTaskApproval(p: Principal, conversationId: string, a
       throw new HttpError(409, "This request was already answered");
     }
     if (run.status !== "waiting") throw new HttpError(409, "This assignment is no longer waiting for approval");
+    assertNativeContinuationBudget(run.resumeState as ResumeState | null);
     const claimed = await updatePartsLockedTx(tx, run.conversationId, run.messageId, row =>
       applyApprovalDecisions(row.parts as Part[], new Map([[answer.approvalId, { approved: answer.approved, reason: answer.reason }]])).parts);
     if (!claimed?.parts) throw new HttpError(409, "Approval request changed");
