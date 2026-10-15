@@ -244,8 +244,8 @@ const tokenServer = createNetServer({ allowHalfOpen: true }, socket => {
     })().catch(() => socket.destroy());
   });
 });
-await listenPrivateSocket(server, socketPath);
-await listenPrivateSocket(tokenServer, tokenSocketPath);
+const cleanupRuntimeSocket = await listenPrivateSocket(server, socketPath);
+const cleanupTokenSocket = await listenPrivateSocket(tokenServer, tokenSocketPath);
 
 async function stop() {
   if (stopping) return;
@@ -254,7 +254,7 @@ async function stop() {
   for (const ws of sockets.clients) ws.terminate();
   await stopAllSessions().catch(() => {});
   await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => tokenServer.close(resolve))]);
-  await Promise.all([unlink(socketPath).catch(() => {}), unlink(tokenSocketPath).catch(() => {})]);
+  await Promise.all([cleanupRuntimeSocket(), cleanupTokenSocket()]);
   process.exit(0);
 }
 process.on('SIGTERM', () => { void stop(); });

@@ -62,13 +62,15 @@ describe('private Unix socket publication', () => {
     expect(await readdir(f.directory)).toEqual(['runtime.sock']);
   });
   it('removes its published socket on close and preserves a replacement at that pathname', async () => {
-    const f = await fixture(); await listenPrivateSocket(f.server, f.path);
+    const f = await fixture(); const cleanup = await listenPrivateSocket(f.server, f.path);
     await new Promise<void>(resolve => f.server.close(() => resolve()));
-    await vi.waitFor(async () => expect(await readdir(f.directory)).toEqual([]));
-    await listenPrivateSocket(f.server, f.path);
+    await Promise.all([cleanup(), cleanup()]);
+    expect(await readdir(f.directory)).toEqual([]);
+    const cleanupReplacement = await listenPrivateSocket(f.server, f.path);
     await rm(f.path); await writeFile(f.path, 'replacement'); await chmod(f.path, 0o600);
     await new Promise<void>(resolve => f.server.close(() => resolve()));
-    await vi.waitFor(async () => expect((await lstat(f.path)).isFile()).toBe(true));
+    await cleanupReplacement();
+    expect((await lstat(f.path)).isFile()).toBe(true);
     expect(await readdir(f.directory)).toEqual(['runtime.sock']);
   });
 });
