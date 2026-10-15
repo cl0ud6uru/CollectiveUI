@@ -1,4 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { eq, sql } from 'drizzle-orm';
 const f = vi.hoisted(() => ({ call: vi.fn(), epoch: 1 }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
@@ -108,6 +113,64 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
     await expect(nativeControl(owner, connection, session, 'queue', { requestId: id2, text: 'Queue B' })).rejects.toThrow('unfinished');
     expect(f.call.mock.calls.filter(c => c[0] === 'prompt.submit')).toHaveLength(1);
   });
+  it('keeps an in-flight queue receipt across a portal process loss and never replays it in another process', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'portal-queue-worker-'));
+    const dispatched = path.join(dir, 'prompt-dispatched');
+    const worker = path.resolve('tests/integration/remote-hermes-reservations-worker.test.ts');
+    const vitest = path.resolve('node_modules/vitest/vitest.mjs');
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    // Do not inherit the parent Vitest worker's identity into a fresh runner process.
+    delete env.VITEST;
+    delete env.VITEST_POOL_ID;
+    delete env.VITEST_WORKER_ID;
+    Object.assign(env, {
+      REMOTE_HERMES_PORTAL_WORKER: 'dispatch',
+      REMOTE_HERMES_PORTAL_WORKER_OWNER: owner,
+      REMOTE_HERMES_PORTAL_WORKER_CONNECTION: connection,
+      REMOTE_HERMES_PORTAL_WORKER_SESSION: session,
+      REMOTE_HERMES_PORTAL_WORKER_REQUEST: id1,
+      REMOTE_HERMES_PORTAL_WORKER_OTHER_REQUEST: id2,
+      REMOTE_HERMES_PORTAL_WORKER_SIGNAL: dispatched,
+    });
+    let first: ReturnType<typeof spawn> | undefined;
+    let output = '';
+    const capture = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-6000); };
+    const waitForExit = (child: ReturnType<typeof spawn>, timeoutMs: number) => new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      if (child.exitCode !== null || child.signalCode !== null) { resolve({ code: child.exitCode, signal: child.signalCode }); return; }
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Portal fixture worker did not exit before its deadline.')); }, timeoutMs);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
+    });
+    try {
+      first = spawn(process.execPath, [vitest, 'run', '--project', 'integration', worker, '--pool=threads', '--maxWorkers=1'], {
+        cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      first.stdout?.on('data', capture); first.stderr?.on('data', capture);
+      await vi.waitFor(() => {
+        if (first?.exitCode !== null && first?.exitCode !== undefined) throw new Error(`Dispatch worker exited before its synthetic RPC was held. ${output}`);
+        return expect(existsSync(dispatched)).toBe(true);
+      }, { timeout: 20000 });
+      expect(await row()).toMatchObject({ queueRequestId: id1, queueStatus: 'admitting' });
+      const firstExitPromise = waitForExit(first, 5000);
+      first.kill('SIGKILL');
+      const firstExit = await firstExitPromise;
+      expect(firstExit.signal).toBe('SIGKILL');
+
+      const second = spawn(process.execPath, [vitest, 'run', '--project', 'integration', worker, '--pool=threads', '--maxWorkers=1'], {
+        cwd: process.cwd(), env: { ...env, REMOTE_HERMES_PORTAL_WORKER: 'verify' }, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      second.stdout?.on('data', capture); second.stderr?.on('data', capture);
+      const secondExit = await waitForExit(second, 30000);
+      expect(secondExit.code, output).toBe(0);
+      expect(await row()).toMatchObject({ queueRequestId: id1, queueStatus: 'admitting' });
+      const receipts = await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, session));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ requestId: id1 });
+    } finally {
+      if (first && first.exitCode === null) first.kill('SIGKILL');
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 60000);
   it('ignores a late queue acknowledgement after native recovery admits a different queue', async () => {
     const ackA = deferred<unknown>(), ackB = deferred<unknown>(); let count = 0;
     f.call.mockImplementation((method: string) => method === 'session.resume' ? Promise.resolve({ ...idle, running: true }) : ++count === 1 ? ackA.promise : ackB.promise);
