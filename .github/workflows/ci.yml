@@ -79,6 +79,7 @@ jobs:
           node tests/browser/starter-attachments.mjs
           node tests/browser/first-run-ldap.mjs
           node tests/browser/provider-connections.mjs
+          SPENDING_SCREENSHOT_DIR="$RUNNER_TEMP/provider-spending-screenshots" node tests/browser/provider-spending.mjs
           node tests/browser/hermes-team-builder.mjs
           node tests/browser/codex-harness.mjs
           node tests/browser/personal-codex.mjs

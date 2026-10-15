@@ -57,8 +57,13 @@ describe('billing storage and authorization on real SQL', () => {
     await expect(refreshBillingAccount(admin,one.id,now,mockProvider as typeof fetch)).rejects.toMatchObject({status:429});
     const failed=await refreshBillingAccount(admin,one.id,new Date(now.getTime()+61000),(async()=>Response.json({error:'sk-admin-fixture-secret'}, {status:403})) as typeof fetch);
     expect(failed.find(a=>a.id===one.id)?.snapshot).toEqual(snapshot);expect(failed.find(a=>a.id===one.id)?.lastError).toContain('permission denied');expect(JSON.stringify(failed)).not.toContain('sk-admin-fixture-secret');
+    const recoveredAt = new Date(now.getTime()+122000);
+    const recovered = (await refreshBillingAccount(admin,one.id,recoveredAt,(async input => String(input).includes('/costs?') ? mockProvider(input) : Response.json({}, {status:404})) as typeof fetch)).find(a=>a.id===one.id)!;
+    expect(recovered.lastError).toBeNull();
+    expect(recovered.snapshot?.refreshedAt).toBe(recoveredAt.toISOString());
+    expect(recovered.snapshot?.organizationLimit).toMatchObject({status:'unavailable',httpStatus:404});
     let changed=false;
-    await refreshBillingAccount(admin,one.id,new Date(now.getTime()+122000),(async input=>{
+    await refreshBillingAccount(admin,one.id,new Date(now.getTime()+183000),(async input=>{
       if(!changed){changed=true;await saveBillingAccount(admin,{id:one.id,name:one.name,organization:one.organization,enabled:false,showHealthBar:false,adminKey:'sk-admin-fixture-new'});}
       return mockProvider(input);
     }) as typeof fetch);
