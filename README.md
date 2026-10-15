@@ -203,3 +203,5 @@ CollectiveUI is available under the [MIT License](LICENSE). Third-party dependen
 ### OpenAI native web search
 
 Optional hosted search is available for verified official OpenAI API models, with admin limits, bot defaults, per-chat Off/Auto controls, citations and separate call accounting. It defaults off and does not use ChatGPT subscription credentials. See [setup, policy and fixture validation](docs/operations/openai-native-search.md).
+
+See [The Architect](docs/features/the-architect.md) for the admin assistant and its supported phases.

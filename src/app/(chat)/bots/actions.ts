@@ -61,6 +61,7 @@ import { assertApprovedBot, guardManagedBotMutation } from "@/lib/hermes-provisi
 import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { isLocalHermes } from "@/lib/local-hermes/config";
 import { saveBotNavigation } from "@/lib/bots/navigation-store";
+import { isInstalledArchitect } from "@/lib/bots/architect-store";
 
 async function localEngine(appId: string | null, q: DbOrTx = db) {
   if (!appId) return false;
@@ -751,9 +752,15 @@ export async function getBotTemplate(botId: string) {
   return t ? { token: t.id, updatedAt: t.updatedAt.toISOString() } : null;
 }
 
+/** The Architect is admin-only: a template link would show its profile to anyone signed in. */
+async function assertTemplateSource(botId: string) {
+  if (await isInstalledArchitect(botId)) throw new HttpError(400, "The Architect can't be shared as a template.");
+}
+
 export async function createBotTemplate(botId: string) {
   const p = await requirePrincipal();
   const bot = await getEditableBot(p, botId);
+  await assertTemplateSource(bot.id);
   await requirePortableEngine(bot.appId, bot.hermesTeam);
   const existing = await getBotTemplate(botId);
   if (existing) return existing;
@@ -765,6 +772,7 @@ export async function createBotTemplate(botId: string) {
 export async function updateBotTemplate(botId: string) {
   const p = await requirePrincipal();
   const bot = await getEditableBot(p, botId);
+  await assertTemplateSource(bot.id);
   await requirePortableEngine(bot.appId, bot.hermesTeam);
   const res = await db
     .update(botTemplates)
@@ -791,7 +799,7 @@ export async function addBotFromTemplate(token: string) {
     .select()
     .from(botTemplates)
     .where(and(eq(botTemplates.id, token), isNull(botTemplates.revokedAt)));
-  if (!t) throw new HttpError(404, "This template link is no longer available");
+  if (!t || await isInstalledArchitect(t.botId)) throw new HttpError(404, "This template link is no longer available");
   const [src] = await db.select({ appId: bots.appId, executionMode: bots.executionMode }).from(bots).where(eq(bots.id, t.botId));
   const snapshot = src?.executionMode === "service" ? { ...t.snapshot, tools: [], skills: [], routines: [] } : t.snapshot;
   return createBotFromSnapshot(snapshot, { name: snapshot.name, preferredAppId: src?.appId });

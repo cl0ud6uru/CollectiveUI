@@ -3,7 +3,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { db, type DbOrTx, type Tx } from "@/db";
 import { auditLog, bots, botPets, botPetDefaults, petCatalog } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
-import { getEditableBot, getUsableBot, HttpError, listAccessibleBots } from "@/lib/authz";
+import { getAccessibleBot, getEditableBot, getUsableBot, HttpError, listAccessibleBots } from "@/lib/authz";
 import { lockEditableBot } from "@/lib/bots/service";
 import { newId } from "@/lib/ids";
 import { DEFAULT_PET, DEFAULT_PREFERENCES, HD_QUERY, type BotPetDefault, type PetManifest, type PetPreferences, type PetView } from "./shared";
@@ -155,7 +155,9 @@ export async function initializeBotPet(tx: Tx, p: Principal, bot: PetBot, choice
 
 export async function saveBotDefault(p: Principal, botId: string, choice: BotPetDefault) {
   await db.transaction(async (tx) => {
-    await lockEditableBot(p, botId, tx, (fresh, bot) => {
+    await lockEditableBot(p, botId, tx, async (fresh, bot) => {
+      // Ownership alone is not access: a former admin still owns The Architect but may no longer see it.
+      await getAccessibleBot(fresh, bot.id, tx);
       if (!canManagePetDefault(fresh, bot)) throw new HttpError(403, "Only an authorized bot owner or admin can change this pet.");
     });
     // Cosmetic identity is separate from capability configuration and grant revisions.
