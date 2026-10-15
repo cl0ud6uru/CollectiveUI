@@ -18,6 +18,10 @@ export type ApprovalDecisionInput = {
   grantable?: boolean;
 };
 
+const ADMIN_WRITE_TOOLS = new Set([
+  "admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools",
+]);
+
 /**
  * Pure approval policy (unit-tested), in order of precedence:
  *  1. admin-enforced tools (org-wide list, or "require approval" on an MCP tool) always ask; grants can't bypass
@@ -30,7 +34,7 @@ export type ApprovalDecisionInput = {
  * (An admin turning an MCP tool off removes it from the toolset before this runs.)
  */
 export function resolveApproval(i: ApprovalDecisionInput): "user-approval" | undefined {
-  if (i.toolName === "admin_set_bot_enabled") return "user-approval";
+  if (ADMIN_WRITE_TOOLS.has(i.toolName)) return "user-approval";
   if (i.enforced.includes(i.toolName) || i.enforced.includes(i.toolKey) || i.mcp?.requireApproval) return "user-approval";
   const mode = i.mcp?.override ?? i.mode;
   const ask = mode === "ask" || (mode === "smart" && !!i.mcp && !(i.mcp.trusted && i.mcp.readOnly && !i.mcp.destructive));

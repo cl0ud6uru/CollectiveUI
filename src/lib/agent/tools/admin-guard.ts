@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
-import { aiApps, bots, conversations, providerConnections, users } from "@/db/schema";
+import { aiApps, bots, conversations, providerConnections, settings, users } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { auditVia } from "@/lib/audit";
 import { HttpError } from "@/lib/authz";
@@ -56,4 +56,6 @@ export async function runArchitectCall<T>(ctx: AgentCtx, tool: string, toolCallI
 export async function lockArchitectActor(ctx: AgentCtx, q: DbOrTx) {
   await q.select({ id: users.id }).from(users).where(eq(users.id, ctx.principal.user.id)).for("share");
   if (ctx.bot) await q.select({ id: bots.id }).from(bots).where(eq(bots.id, ctx.bot.id)).for("share");
+  await q.select({ id: conversations.id }).from(conversations).where(eq(conversations.id, ctx.conversationId)).for("share");
+  await q.select({ key: settings.key }).from(settings).where(eq(settings.key, "architectBot")).for("share");
 }

@@ -127,7 +127,7 @@ describe("The Architect using real migrated PostgreSQL state", () => {
   it("offers all eleven reads and the approval-gated write only to a fresh admin", async () => {
     const set = await buildToolset(ctx);
     try {
-      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(12);
+      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(15);
       expect(set.approval({ toolCall: { toolName: "admin_set_bot_enabled", input: { botId: "target", enabled: false, expectedRevision: 1 } } })).toBe("user-approval");
       expect(set.approval({ toolCall: { toolName: "admin_get_bot", input: { botId: "target" } } })).toBeUndefined();
     } finally { await set.close(); }
@@ -167,11 +167,14 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
   it("always asks for exact write approval, ignoring grants and auto modes", () => {
-    const write = adminTools(ctx).find(e => e.name === "admin_set_bot_enabled")!;
-    expect(write).toMatchObject({ sensitive: true, grantable: false });
-    expect(isGrantable(write.name)).toBe(false);
-    for (const mode of ["auto", "ask", "smart"] as const)
-      expect(resolveApproval({ toolName: write.name, toolKey: write.key, sensitive: false, grantable: true, mode, enforced: [], grants: new Set([write.name]) })).toBe("user-approval");
+    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools"].includes(e.name));
+    expect(writes).toHaveLength(4);
+    for (const write of writes) {
+      expect(write).toMatchObject({ sensitive: true, grantable: false });
+      expect(isGrantable(write.name)).toBe(false);
+      for (const mode of ["auto", "ask", "smart"] as const)
+        expect(resolveApproval({ toolName: write.name, toolKey: write.key, sensitive: false, grantable: true, mode, enforced: [], grants: new Set([write.name]) })).toBe("user-approval");
+    }
   });
   it("merges approval decisions without trusting swapped inputs/signatures", () => {
     const stored = [{ type: "tool-admin_set_bot_enabled", toolCallId: "call", state: "approval-requested", input: { botId: "target", enabled: false, expectedRevision: 1 }, approval: { id: "approval", signature: "server" } }];
@@ -185,6 +188,41 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(audit).toMatchObject({ actorId: "admin", target: "target", details: { enabled: false, revision: 2, via: { agent: "architect", botId: ctx.bot!.id } } });
     expect(JSON.stringify(audit)).not.toContain("expectedRevision");
     expect(await changeBotStatus(admin, { botId: "target", enabled: true })).toMatchObject({ status: "verified", bot: { enabled: true, revision: 3 } });
+  });
+  it("creates, updates and assigns built-in tools to ordinary bots with per-call approvals and CAS", async () => {
+    const created = await execute("admin_create_bot", { name: "Review helper", appId: "model", description: "A fixture bot" }) as { status: string; bot: { id: string; revision: number; visibility: string }; tools: unknown[] };
+    expect(created).toMatchObject({ status: "verified", bot: { name: "Review helper", revision: 1, visibility: "private", executionMode: "caller" }, tools: [] });
+    await db.insert(s.botTools).values({ botId: created.bot.id, toolKey: "mcp:server", approval: "ask", config: { tools: ["lookup"] } });
+    const assignments = await execute("admin_assign_bot_tools", { botId: created.bot.id, expectedRevision: 1, tools: [{ key: "skills", approval: "ask" }, { key: "web_search", approval: "smart" }] }) as { status: string; bot: { revision: number }; tools: { group: string; approval: string }[] };
+    expect(assignments).toMatchObject({ status: "verified", bot: { revision: 2 } });
+    expect(assignments.tools).toEqual(expect.arrayContaining([{ group: "mcp:server", approval: "ask" }, { group: "skills", approval: "ask" }, { group: "web_search", approval: "smart" }]));
+    const updated = await execute("admin_update_bot", { botId: created.bot.id, expectedRevision: 2, name: "Reviewed helper", instructions: "Use verified evidence." }) as { status: string; bot: { name: string; revision: number }; tools: unknown[] };
+    expect(updated).toMatchObject({ status: "verified", bot: { name: "Reviewed helper", revision: 3 } });
+    expect((await db.select().from(s.botTools).where(eq(s.botTools.botId, created.bot.id))).map(t => [t.toolKey, t.approval]).sort()).toEqual([["mcp:server", "ask"], ["skills", "ask"], ["web_search", "smart"]]);
+    const readBackTools = (await execute("admin_get_bot", { botId: created.bot.id }) as { tools: { group: string; approval: string }[] }).tools;
+    expect(readBackTools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ group: "mcp:unknown server", approval: "ask" }),
+      expect.objectContaining({ group: "skills", approval: "ask" }),
+      expect.objectContaining({ group: "web_search", approval: "smart" }),
+    ]));
+    for (const action of ["architect.bot.create", "architect.bot.tools.update", "architect.bot.update"])
+      expect((await db.select().from(s.auditLog)).some(row => row.action === action && row.actorId === "admin" && row.details && JSON.stringify(row.details).includes(ctx.bot!.id))).toBe(true);
+    expect(await adminGetBot(admin, created.bot.id)).toMatchObject({ name: "Reviewed helper", revision: 3 });
+  });
+  it("rejects stale revisions, MCP/admin groups, protected bots and unsupported bot classes", async () => {
+    await expect(execute("admin_update_bot", { botId: "target", expectedRevision: 9, name: "stale" })).rejects.toThrow("could not be verified");
+    await expect(execute("admin_assign_bot_tools", { botId: "target", expectedRevision: 1, tools: [{ key: "mcp:server", approval: "ask" }] })).rejects.toThrow("could not be verified");
+    await expect(execute("admin_assign_bot_tools", { botId: ctx.bot!.id, expectedRevision: 1, tools: [] })).rejects.toThrow("could not be verified");
+    await db.update(s.bots).set({ executionMode: "service" }).where(eq(s.bots.id, "target"));
+    await expect(execute("admin_update_bot", { botId: "target", expectedRevision: 1, name: "no" })).rejects.toThrow("could not be verified");
+    expect(await adminGetBot(admin, "target")).toMatchObject({ revision: 1, name: "Target" });
+  });
+  it("rolls back a create cancelled at the transaction barrier before its audit", async () => {
+    let checks = 0;
+    const signal = { throwIfAborted: () => { if (++checks === 3) throw new Error(secret); } } as unknown as AbortSignal;
+    await expect(execute("admin_create_bot", { name: "Cancelled helper", appId: "model" }, signal)).rejects.toThrow("could not be verified");
+    expect((await db.select().from(s.bots)).some(bot => bot.name === "Cancelled helper")).toBe(false);
+    expect((await db.select().from(s.auditLog)).some(row => row.action === "architect.bot.create")).toBe(false);
   });
   it("refuses stale approval, missing targets and missing revisions without mutation", async () => {
     await expect(execute("admin_set_bot_enabled", { botId: "target", enabled: false, expectedRevision: 9 })).rejects.toMatchObject({ status: 409 });
