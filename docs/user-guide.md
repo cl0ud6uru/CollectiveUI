@@ -8,7 +8,7 @@ The bot features below describe ordinary **native caller bots** unless stated ot
 
 **Everyday chat**
 
-- Collapsible sidebar. History is grouped as Today, Yesterday, Previous 7/30 days and by month. Chats can be pinned, renamed, archived or deleted.
+- Collapsible sidebar. On narrow screens, the navigation drawer keeps keyboard focus inside while open; Search, New group and sidebar menus take keyboard focus until dismissed. Escape and **Close sidebar** dismiss the drawer and return focus to its opener. Resizing to desktop closes the drawer. History is grouped as Today, Yesterday, Previous 7/30 days and by month. Chats can be pinned, renamed, archived or deleted.
 - Projects (folders) and full-text chat search (⌘/Ctrl-K).
 - Model picker, a centered composer on the first screen, and streaming answers.
 - Markdown with tables, highlighted code (with copy buttons) and KaTeX math.
