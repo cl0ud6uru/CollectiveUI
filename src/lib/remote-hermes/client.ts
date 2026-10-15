@@ -80,6 +80,8 @@ function historyDisplayText(value: unknown): string {
 export class DashboardClient {
   readonly base: string;
   constructor(base: string, private transport: typeof fetch, private secrets?: DashboardSecrets) { this.base = dashboardBase(base); }
+  /** Retain this verified sign-in while replacing only its per-request transport. */
+  withTransport(transport: typeof fetch) { return new DashboardClient(this.base, transport, this.secrets); }
   private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number, methodOverride?: 'PUT') {
     const auth: Record<string, string> = this.secrets?.mode === 'sessionToken'
       ? { 'X-Hermes-Session-Token': this.secrets.sessionToken! }

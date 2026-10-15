@@ -37,6 +37,11 @@ export function nativeMcpBearerEnvSlot(name: string): string | null {
   const suffix = name.toUpperCase().replace(/[^A-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
   return suffix ? `MCP_${suffix}_API_KEY` : null;
 }
+/** A short idempotency-bound label lets readback attribute the new native row. */
+export function nativeProviderPoolRequestLabel(label: string, requestId: string) {
+  const nonce = requestId.replace(/-/g, '').slice(0, 10);
+  return `${label.slice(0, 69)}-${nonce}`;
+}
 export function settingValue(key: keyof typeof settingValues, result: RpcRecord) {
   const value = str(result.value);
   return (settingValues[key] as readonly string[]).includes(value) ? value : '';

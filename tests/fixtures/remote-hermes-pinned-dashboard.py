@@ -222,6 +222,17 @@ async def control(request: Request):
         for connection in list(CONNECTIONS):
             with contextlib.suppress(Exception):
                 await connection._ws.close(code=1012)
+    elif body == {"suppress_openrouter_environment": True}:
+        from hermes_cli.web_routers._common import config_scoped_to_thread
+
+        def prepare_suppressed_source():
+            from hermes_cli.config import save_env_value
+            from hermes_cli.auth import suppress_credential_source
+
+            save_env_value("OPENROUTER_API_KEY", "synthetic-restored-openrouter-source")
+            suppress_credential_source("openrouter", "env:OPENROUTER_API_KEY")
+
+        await config_scoped_to_thread("default", prepare_suppressed_source)
     else:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Unknown synthetic control")

@@ -10,8 +10,10 @@ import { nativeHub } from './hub';
 import { record, type RpcRecord } from './socket';
 import { assertRemoteHermesAdmission } from './policy';
 import { remoteAccess } from './store';
+import { dashboardAddress, dashboardFetchPinned } from './transport';
+import type { DashboardClient } from './client';
 import { ownedNativeSession } from './sessions';
-import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, probeSummary, settingValue, settingValues, type AdministrationInput } from './administration-contract';
+import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, nativeProviderPoolRequestLabel, probeSummary, settingValue, settingValues, type AdministrationInput } from './administration-contract';
 
 function assertIdle(current: { status: string; queueRequestId?: string | null } | undefined,
   view: { running: boolean; uncertain?: boolean; queuePending?: boolean } | undefined) {
@@ -131,7 +133,7 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   // a shared Hermes profile. Keep a PostgreSQL session lock through receipt,
   // dispatch and authoritative readback so concurrent portal instances cannot
   // both validate an empty inventory and overwrite a native credential slot.
-  const profileLock = input.operation === 'customServer' ? await pool.connect() : undefined;
+  const profileLock = input.operation === 'customServer' || input.operation === 'providerKey' ? await pool.connect() : undefined;
   let profileLockAcquired = false;
   let profileLockLost = false;
   const markProfileLockLost = () => { profileLockLost = true; };
@@ -169,13 +171,44 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   };
   const lock = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     assertProfileLock();
-    await hub.lockBoundary(tx);
+    const connection = await hub.lockBoundary(tx);
     assertProfileLock();
     assertRemoteHermesAdmission(await getSetting('remoteHermes', tx));
     const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
     assertProfileLock();
     assertIdle(current, hub.sessions.get(row.id)?.view);
+    return connection;
   };
+  // REST writes use the same fresh destination/policy check as native WebSocket
+  // dispatch. The checked address and authenticated client are captured while
+  // the current settings/identity/session rows are locked. The typed client
+  // starts the HTTP request synchronously and returns its promise as an
+  // envelope, so the DB transaction commits before waiting for the response.
+  const dispatchDashboardIn = async <T>(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], request: (client: DashboardClient) => Promise<T>) => {
+    const connection = await lock(tx);
+    const policy = await getSetting('remoteHermes', tx);
+    assertRemoteHermesAdmission(policy);
+    if (connection.baseUrl !== access.client.base) throw new HttpError(409, 'The verified Hermes destination changed. Refresh before retrying this change.');
+    const address = await dashboardAddress(connection.baseUrl, policy);
+    assertProfileLock();
+    const client = access.client.withTransport(dashboardFetchPinned(connection.baseUrl, address));
+    return { reply: request(client) };
+  };
+  const dispatchDashboard = async <T>(request: (client: DashboardClient) => Promise<T>): Promise<T> => {
+    const { reply } = await transactionDb.transaction(tx => dispatchDashboardIn(tx, request));
+    assertProfileLock();
+    const result = await reply;
+    assertProfileLock();
+    return result;
+  };
+  let providerBaselineIds = new Set<string>();
+  if (input.operation === 'providerKey') {
+    const before = await dispatchDashboard(client => client.credentialPool(row.profile));
+    const entries = before.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
+    providerBaselineIds = new Set(entries.map(entry => entry.id));
+    if (entries.some(entry => entry.label === nativeProviderPoolRequestLabel(input.label, input.requestId)))
+      throw new HttpError(409, 'This request-specific provider label already exists. Use a new confirmation request to avoid attributing another account.');
+  }
   if (input.operation === 'test') {
     const { reply } = await db.transaction(async tx => {
       await lock(tx);
@@ -200,15 +233,12 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     await lock(tx);
     if (input.operation === 'enabled') {
       if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed. Refresh and confirm this change again.');
-      await access.client.setMcpServerEnabled(row.profile, input.name, input.enabled);
-      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed during the update. Refresh to check its outcome.');
-      return { reply: Promise.resolve({ ok: true }) };
+      return dispatchDashboardIn(tx, client => client.setMcpServerEnabled(row.profile, input.name, input.enabled));
     }
     if (input.operation === 'providerKey') {
       if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed. Refresh and confirm this change again.');
-      const result = await access.client.addCredentialPoolEntry(row.profile, input.provider, input.apiKey, input.label);
-      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed during the update. Refresh to check its outcome.');
-      return { reply: Promise.resolve(result) };
+      const label = nativeProviderPoolRequestLabel(input.label, input.requestId);
+      return dispatchDashboardIn(tx, client => client.addCredentialPoolEntry(row.profile, input.provider, input.apiKey, label));
     }
     if (input.operation === 'setting') return hub.socket.dispatchConnected('config.set', { profile: row.profile, ...(input.scope === 'session' ? { session_id: params.session_id, scope: 'session' } : { scope: 'global' }), key: input.key, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'install') return hub.socket.dispatchConnected('mcp.servers.add', { profile: row.profile, name: input.preset, preset: input.preset }, epoch, 30_000, tx);
@@ -226,15 +256,20 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   assertProfileLock();
   if (input.operation === 'setting') return { accepted: true, value: settingValue(input.key, result) };
   if (input.operation === 'providerKey') {
-    if (result.provider !== input.provider || !Number.isSafeInteger(result.count) || result.count < 1)
+    if (result.provider !== input.provider || !Number.isSafeInteger(result.count) || result.count < 0)
       throw new HttpError(502, 'Hermes did not confirm the provider account write. Refresh to check its outcome.');
     // Hermes' pinned readback returns a masked token preview. The typed client
-    // discards it and exposes only metadata needed to confirm this profile write.
-    const pool = await access.client.credentialPool(row.profile);
+    // discards it. Hermes may re-enable suppressed provider credential sources
+    // during this write, so verify the unique new manual identity rather than
+    // assuming the endpoint's pre-seeding count equals the final pool count.
+    const pool = await dispatchDashboard(client => client.credentialPool(row.profile));
     const entries = pool.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
-    if (entries.length !== result.count || !entries.some(entry => entry.label === input.label && entry.authType === 'api_key' && entry.source === 'manual'))
+    const ids = new Set(entries.map(entry => entry.id));
+    const label = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    const added = entries.filter(entry => !providerBaselineIds.has(entry.id) && entry.label === label && entry.authType === 'api_key' && entry.source === 'manual');
+    if (ids.size !== entries.length || added.length !== 1)
       throw new HttpError(502, 'Hermes did not confirm the account in its provider pool. Refresh to check its outcome.');
-    return { accepted: true, provider: input.provider, label: input.label, count: entries.length };
+    return { accepted: true, provider: input.provider, label, count: entries.length };
   }
   if (input.operation === 'remove') {
     if (result.ok !== true || result.removed !== true) throw new HttpError(502, 'Hermes did not confirm removal. Refresh to check its outcome.');

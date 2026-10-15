@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, probeSummary } from '@/lib/remote-hermes/administration-contract';
+import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, nativeProviderPoolRequestLabel, probeSummary } from '@/lib/remote-hermes/administration-contract';
 import { HttpError } from '@/lib/authz';
 
-const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, profileAdvisoryHeld: false, profileLockLoss: null as null | (() => void), receipt: null as null | { digest: string }, transaction: null as null | ((run: (tx: unknown) => unknown) => unknown), call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn(), addPool: vi.fn(), readPool: vi.fn() }));
+const f = vi.hoisted(() => ({ enabled: true, privateAllowed: true, revokeAfterReceipt: false, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, profileAdvisoryHeld: false, profileLockLoss: null as null | (() => void), receipt: null as null | { digest: string }, transaction: null as null | ((run: (tx: unknown) => unknown) => unknown), call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn(), addPool: vi.fn(), readPool: vi.fn(), withTransport: vi.fn() }));
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string) => { if (owner !== 'owner') throw new Error('not found'); return { id: 'session', profile: f.profile, status: f.status, queueRequestId: f.queueRequestId }; } }));
-vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
-vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { base: 'https://hermes.example.test', profiles: f.profiles, setMcpServerEnabled: f.setEnabled, addCredentialPoolEntry: f.addPool, credentialPool: f.readPool } }; } }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
+vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: f.privateAllowed ? ['http://127.0.0.1:8123'] : [] }) }));
+vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async (_base: string, policy: { privateGateways: string[] }) => { if (!policy.privateGateways.includes('http://127.0.0.1:8123')) throw new HttpError(403, 'private destination revoked'); return { address: '127.0.0.1', family: 4 }; }, dashboardFetchPinned: vi.fn(() => fetch) }));
+vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { base: 'http://127.0.0.1:8123', profiles: f.profiles, setMcpServerEnabled: f.setEnabled, addCredentialPoolEntry: f.addPool, credentialPool: f.readPool, withTransport: f.withTransport } }; } }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); return { baseUrl: 'http://127.0.0.1:8123' }; }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
 vi.mock('@/db', () => {
   const transaction = async (run: (tx: unknown) => unknown) => run({
   select: () => ({ from: (table: { [key: symbol]: unknown }) => {
@@ -14,7 +15,7 @@ vi.mock('@/db', () => {
     const rows = name === 'settings' ? [] : name === 'remote_hermes_turns' ? f.receipt ? [f.receipt] : [] : [{ status: f.status, queueRequestId: f.queueRequestId }];
     return { where: () => Object.assign(Promise.resolve(rows), { for: async () => { if (name === 'settings') { ++f.locks; if (f.locks === f.disableAtLock) f.enabled = false; if (f.locks === f.reserveQueueAtLock) f.queueRequestId = 'pending-queue'; } return rows; } }) };
   } }),
-  insert: () => ({ values: async (value: { digest: string }) => { f.receipt = { digest: value.digest }; } }),
+  insert: () => ({ values: async (value: { digest: string }) => { f.receipt = { digest: value.digest }; if (f.revokeAfterReceipt) f.privateAllowed = false; } }),
   });
   f.transaction = transaction;
   return { pool: { connect: async () => ({ on: (event: string, callback: () => void) => { if (event === 'error' || event === 'end') f.profileLockLoss = callback; }, removeListener: (event: string) => { if (event === 'error' || event === 'end') f.profileLockLoss = null; }, query: async (sql: string) => {
@@ -30,7 +31,7 @@ vi.mock('drizzle-orm/node-postgres', () => ({ drizzle: () => ({ transaction: (ru
 import { nativeAdministration } from '@/lib/remote-hermes/administration';
 const requestId = 'f1eeac5a-c19f-4b5b-97ef-a1cd7b02e658';
 describe('native administration protocol and isolation', () => {
-  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.profileAdvisoryHeld = false; f.profileLockLoss = null; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.addPool.mockResolvedValue({ provider: 'openrouter', count: 1 }); f.readPool.mockResolvedValue({ providers: [{ provider: 'openrouter', entries: [{ index: 1, id: 'synthetic-id', label: 'Remote account f1eeac5a', authType: 'api_key', source: 'manual', priority: 0, requestCount: 0, hasRefresh: false }] }] }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
+  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.privateAllowed = true; f.revokeAfterReceipt = false; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.profileAdvisoryHeld = false; f.profileLockLoss = null; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.addPool.mockResolvedValue({ provider: 'openrouter', count: 1 }); f.readPool.mockResolvedValue({ providers: [] }); f.withTransport.mockImplementation(() => ({ setMcpServerEnabled: f.setEnabled, addCredentialPoolEntry: f.addPool, credentialPool: f.readPool })); f.call.mockResolvedValue({ value: 'high', ok: true }); });
   it('rejects unowned sessions before native RPC', async () => {
     await expect(nativeAdministration('other', 'connection', 'session', { operation: 'inspect' })).rejects.toThrow('not found'); expect(f.call).not.toHaveBeenCalled();
   });
@@ -94,10 +95,12 @@ describe('native administration protocol and isolation', () => {
   });
   it('adds a manual provider key only after confirmation and returns redacted profile readback', async () => {
     const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const operationLabel = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    f.readPool.mockResolvedValueOnce({ providers: [] }).mockResolvedValueOnce({ providers: [{ provider: 'openrouter', entries: [{ index: 1, id: 'synthetic-new-id', label: operationLabel, authType: 'api_key', source: 'manual', priority: 0, requestCount: 0, hasRefresh: false }] }] });
     const result = await nativeAdministration('owner', 'connection', 'session', input);
-    expect(result).toEqual({ accepted: true, provider: 'openrouter', label: 'Remote account f1eeac5a', count: 1 });
-    expect(f.addPool).toHaveBeenCalledExactlyOnceWith('default', 'openrouter', 'synthetic-provider-secret', 'Remote account f1eeac5a');
-    expect(f.readPool).toHaveBeenCalledExactlyOnceWith('default');
+    expect(result).toEqual({ accepted: true, provider: 'openrouter', label: operationLabel, count: 1 });
+    expect(f.addPool).toHaveBeenCalledExactlyOnceWith('default', 'openrouter', 'synthetic-provider-secret', operationLabel);
+    expect(f.readPool).toHaveBeenCalledTimes(2); expect(f.readPool).toHaveBeenNthCalledWith(1, 'default'); expect(f.readPool).toHaveBeenNthCalledWith(2, 'default');
     expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-provider-secret');
     expect(f.receipt?.digest).not.toContain('synthetic-provider-secret');
   });
@@ -106,7 +109,26 @@ describe('native administration protocol and isolation', () => {
     f.addPool.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
     await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
     await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, duplicate: true });
-    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).not.toHaveBeenCalled();
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledTimes(2);
+  });
+  it('rechecks private destination authorization after the receipt and before provider POST', async () => {
+    f.revokeAfterReceipt = true;
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('private destination revoked');
+    expect(f.receipt).not.toBeNull(); expect(f.readPool).toHaveBeenCalledOnce(); expect(f.addPool).not.toHaveBeenCalled();
+    expect(f.withTransport).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.receipt)).not.toContain(input.apiKey);
+  });
+  it('accepts one uniquely read-back manual identity when native re-seeds a suppressed source', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const operationLabel = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    f.addPool.mockResolvedValue({ provider: 'openrouter', count: 1 });
+    f.readPool.mockResolvedValueOnce({ providers: [] }).mockResolvedValueOnce({ providers: [{ provider: 'openrouter', entries: [
+      { index: 1, id: 'synthetic-manual-id', label: operationLabel, authType: 'api_key', source: 'manual', priority: 0, requestCount: 0, hasRefresh: false },
+      { index: 2, id: 'synthetic-restored-source-id', label: 'Environment account', authType: 'api_key', source: 'openai_env', priority: 0, requestCount: 0, hasRefresh: false },
+    ] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toMatchObject({ accepted: true, provider: 'openrouter', label: operationLabel, count: 2 });
+    expect(f.addPool).toHaveBeenCalledOnce();
   });
   it('requires an idle owner-bound session and authoritative provider readback', async () => {
     const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };

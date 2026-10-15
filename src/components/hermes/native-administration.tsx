@@ -95,7 +95,7 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
           <form className="space-y-2 rounded-lg border border-border p-3" onSubmit={e => {
             e.preventDefault();
             const requestId = crypto.randomUUID(); const label = `Remote account ${requestId.slice(0, 8)}`;
-            if (!confirm(`Add an API-key account for “${poolProvider}” to Hermes profile “${data.profileName}”? The key is stored by Hermes and may be selected for future model requests by other clients using this profile. Hermes may refresh other saved account status while verifying the provider pool.`)) return;
+            if (!confirm(`Add an API-key account for “${poolProvider}” to Hermes profile “${data.profileName}”? Hermes stores the key and other clients using this profile may select it for future model requests. Hermes may also re-enable previously suppressed provider credential sources, causing those saved accounts to return to the pool. A short request-specific suffix will be added to the account label so this operation can be verified safely. Hermes may refresh other saved account status while verifying the pool.`)) return;
             void act({ operation: 'providerKey', requestId, provider: poolProvider, label, apiKey: poolApiKey, confirmed: true });
           }}>
             <h5 className="text-sm font-medium">Add a provider API-key account</h5>

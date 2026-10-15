@@ -66,6 +66,31 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
     expect(JSON.stringify(pool)).not.toContain(apiKey);
     expect(JSON.stringify(pool)).not.toContain('tokenPreview');
   });
+  it('confirms exact native behavior when adding an account restores a suppressed environment source', async () => {
+    const existing = (await auth.credentialPool('default')).providers.find(provider => provider.provider === 'openrouter')?.entries ?? [];
+    for (const entry of [...existing].reverse()) {
+      const response = await fetch(`${base}/api/credentials/pool/openrouter/${entry.index}?profile=default`, { method: 'DELETE', headers: { Authorization: `Bearer ${secrets.accessToken}` } });
+      expect(response.ok).toBe(true);
+      await response.body?.cancel();
+    }
+    await fixture('control', { suppress_openrouter_environment: true });
+    const before = await auth.credentialPool('default');
+    expect(before.providers.find(provider => provider.provider === 'openrouter')?.entries ?? []).toHaveLength(0);
+    const apiKey = 'synthetic-manual-openrouter-key';
+    const added = await auth.addCredentialPoolEntry('default', 'openrouter', apiKey, 'Fixture reengagement account');
+    // The pinned POST reports the count before it clears source suppression.
+    expect(added).toEqual({ ok: true, provider: 'openrouter', count: 1 });
+    const after = await auth.credentialPool('default');
+    const entries = after.providers.find(provider => provider.provider === 'openrouter')?.entries ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Fixture reengagement account', authType: 'api_key', source: 'manual' }),
+      expect.objectContaining({ source: 'env:OPENROUTER_API_KEY', authType: 'api_key' }),
+    ]));
+    expect(JSON.stringify([added, after])).not.toContain(apiKey);
+    expect(JSON.stringify([added, after])).not.toContain('synthetic-restored-openrouter-source');
+    expect(JSON.stringify(after)).not.toContain('tokenPreview');
+  });
   it('stages original image and file bytes through actual native handlers; bounds PDF capability explicitly', async () => {
     const image = await rpc('image.attach_bytes', { ...params(), filename: 'fixture.png', content_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zf7cAAAAASUVORK5CYII=' });
     expect(image).toMatchObject({ attached: true });
