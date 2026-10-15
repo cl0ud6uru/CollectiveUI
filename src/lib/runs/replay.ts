@@ -114,7 +114,7 @@ const INTERRUPTED = "Interrupted.";
  * what the SDK reducer makes of the run's chunks followed by these, so a replay shows exactly what was saved):
  * - approval-responded, approved, without output → output-error `stoppedText` ("Stopped before it ran.")
  * - approval-responded, denied → output-denied
- * - input-available / output-available with preliminary: true → output-error "Interrupted."
+ * - input-available / output-available with preliminary: true → output-error `stoppedText` or "Interrupted."
  * - input-streaming → output-error "Interrupted." with the input streamed so far (an output-error's input goes back
  *   to the model as the call's arguments): tool-output-error keeps it; with no input yet, tool-input-error sets {}
  *   (it only finds parts of the last step; the SDK keeps a static tool's as rawInput)
@@ -181,10 +181,10 @@ export function closeOpenParts(
         break;
       }
       case "input-available":
-        toError(INTERRUPTED);
+        toError(opts.stoppedText ?? INTERRUPTED);
         break;
       case "output-available":
-        if (p.preliminary) toError(INTERRUPTED);
+        if (p.preliminary) toError(opts.stoppedText ?? INTERRUPTED);
         else if (p.output && typeof p.output === "object" && "taskId" in p.output && "status" in p.output && p.output.status === "queued" && status !== "waiting_tasks" && status !== "waiting")
           toError("The assignment did not finish in this reply. Review its task before requesting another attempt; actions may have run.");
         break;
