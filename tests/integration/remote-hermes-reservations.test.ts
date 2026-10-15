@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 const f = vi.hoisted(() => ({ call: vi.fn(), epoch: 1 }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
@@ -17,19 +17,25 @@ vi.mock('@/lib/remote-hermes/socket', async original => {
     close() {}
   } };
 });
-import { db, pool } from '@/db';
 import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { newId } from '@/lib/ids';
-import { nativeHub } from '@/lib/remote-hermes/hub';
-import { nativeControl, nativeSnapshot } from '@/lib/remote-hermes/sessions';
-const url = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL) : null;
-const enabled = process.env.REMOTE_HERMES_INTEGRATION === '1' && url?.pathname === '/hermes_fixture';
+import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
+let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
+let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
+let nativeControl: typeof import('@/lib/remote-hermes/sessions').nativeControl, nativeSnapshot: typeof import('@/lib/remote-hermes/sessions').nativeSnapshot;
+const enabled = process.env.REMOTE_HERMES_INTEGRATION === '1';
 const id1 = '9fd64d53-084f-4898-96e0-59ea8fdc623f', id2 = 'af63e18c-0581-44c5-8654-8f226b2660a8';
 const idle = { session_id: 'runtime', stored_session_id: 'stored', running: false, info: { title: 'Synthetic' }, messages: [] };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 let owner: string, connection: string, session: string;
 const row = async () => (await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, session)))[0];
 describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks', () => {
+  beforeAll(async () => {
+    assertDisposableHermesDatabase(process.env.DATABASE_URL);
+    ({ db, pool } = await import('@/db'));
+    ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
+    ({ nativeControl, nativeSnapshot } = await import('@/lib/remote-hermes/sessions'));
+  });
   beforeEach(async () => {
     vi.clearAllMocks(); f.epoch = 1; owner = newId(); connection = newId(); session = newId();
     await db.insert(users).values({ id: owner, upn: `fixture-${owner}`, name: 'Synthetic fixture', identityRealm: 'local', authSource: 'local' });
@@ -38,7 +44,7 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
     f.call.mockImplementation(async (method: string) => method === 'session.resume' ? { ...idle, running: true } : { status: 'queued' });
   });
   afterEach(async () => { nativeHub(owner, connection).close(); await db.delete(users).where(eq(users.id, owner)); });
-  afterAll(async () => { await pool.end(); });
+  afterAll(async () => { await pool?.end(); });
   it('retains the dispatch epoch for a delayed resume and uses the next epoch after reconnect', async () => {
     const snapshot = deferred<unknown>(); f.call.mockReturnValueOnce(snapshot.promise);
     const hub = nativeHub(owner, connection);
