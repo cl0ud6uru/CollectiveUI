@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { graphFetch } from "@/lib/auth/entra";
+import { createServer } from "node:http";
+
+const nativeFetch = globalThis.fetch;
 
 const h = vi.hoisted(() => ({
   lookup: vi.fn(), select: vi.fn(), fetch: vi.fn(),
@@ -81,5 +84,37 @@ describe("Graph request cancellation", () => {
   it("preserves JSON returned with an accepted response", async () => {
     h.fetch.mockResolvedValue(Response.json({ operation: "fixture-operation" }, { status: 202 }));
     await expect(graphFetch("fixture-owner", "/fixture-operation", { method: "POST" })).resolves.toEqual({ operation: "fixture-operation" });
+  });
+
+  it("preserves a real HTTP mail acknowledgement when Stop aborts its unfinished body", async () => {
+    // Flush only headers: native fetch acknowledges the response while the body remains pending.
+    const server = createServer((_request, response) => {
+      response.writeHead(202, { "Content-Type": "application/json" });
+      response.flushHeaders();
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture listener");
+    const controller = new AbortController(), reason = new Error("fixture stopped after acknowledgement");
+    let acknowledged!: () => void, release!: () => void;
+    const headersReceived = new Promise<void>(resolve => { acknowledged = resolve; });
+    const releaseResponse = new Promise<void>(resolve => { release = resolve; });
+    h.fetch.mockImplementation(async (_url, init) => {
+      const response = await nativeFetch(`http://127.0.0.1:${address.port}/sendMail`, init);
+      acknowledged();
+      await releaseResponse;
+      return response;
+    });
+    try {
+      const result = graphFetch("fixture-owner", "/me/sendMail", { method: "POST", signal: controller.signal });
+      await headersReceived;
+      controller.abort(reason);
+      release();
+      await expect(result).resolves.toBeUndefined();
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      release(); controller.abort(); server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 });

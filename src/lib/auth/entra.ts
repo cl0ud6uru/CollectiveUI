@@ -85,7 +85,8 @@ export async function graphFetch<T = void>(userId: string, path: string, init?: 
     headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
   });
   if (!res.ok) throw new Error(`Microsoft Graph error ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  // Graph sendMail acknowledges acceptance with 202 and no JSON. Do not infer success from parse errors.
+  // The mail effect is acknowledged by these headers. Reading its empty body afterward can still abort on Stop.
+  if (res.status === 204 || (res.status === 202 && path === "/me/sendMail")) return undefined as T;
   const body = await res.text();
   if (!body && (res.status === 202 || res.status === 204)) return undefined as T;
   return JSON.parse(body) as T;
