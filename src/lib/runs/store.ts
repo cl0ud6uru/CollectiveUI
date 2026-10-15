@@ -15,6 +15,7 @@ import { insertMessage, rowToUIMessage, setCurrentLeaf, updateMessageParts, upda
 import { newId } from "@/lib/ids";
 import { enqueueRun } from "@/lib/jobs";
 import { afterRunTransition } from "./hooks";
+import { assertNativeContinuationBudget } from "./native-budget";
 import { lockUserRuns } from "./lock";
 import { recordBotSendTx } from "@/lib/bots/recent-use";
 import { snapshotHermesSettings } from "./hermes-context";
@@ -231,6 +232,7 @@ export async function continueRun(i: { principal: Principal; conversation: Conve
     if (isActive(run.status)) throw new RunBusyError("This reply is still running.");
     if (run.status !== "waiting") throw new HttpError(409, "This reply has finished; there's nothing to answer.");
     if (run.cancelRequestedAt) throw new HttpError(409, "This reply is being cancelled; its approval cannot be answered.");
+    assertNativeContinuationBudget(run.resumeState as ResumeState | null);
     await assertUnderCap(tx, userId, run.id);
 
     // Decided under the message's row lock: each approval is used once (a second tab finds it answered).

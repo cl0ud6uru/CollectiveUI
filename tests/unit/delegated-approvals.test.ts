@@ -26,7 +26,7 @@ import { startAsyncDelegation, suspendForTasks, reconcileAsyncTasks } from "@/li
 import { answerTaskApproval, pendingTaskApprovals } from "@/lib/delegation/approvals";
 import { getRun } from "@/lib/runs/state";
 import { executeRun } from "@/lib/runs/execute";
-import { stopRuns } from "@/lib/runs/store";
+import { continueRun, stopRuns } from "@/lib/runs/store";
 import { buildToolset } from "@/lib/agent/toolset";
 let owner: Principal; let other: Principal;
 const usage = {inputTokens:{total:1,noCache:1,cacheRead:0,cacheWrite:0},outputTokens:{total:1,text:1,reasoning:0}};
@@ -74,11 +74,40 @@ describe("durable native workspace approvals with embedded PostgreSQL and real e
   it("shows the same durable request to the owner in coordinator and task chats, then dispatches once",async()=>{
     const {task,requests}=await paused();expect(requests).toHaveLength(1);
     expect(await pendingTaskApprovals(owner,task.childConversationId!)).toEqual(requests);
-    const request=requests[0];const answer={runId:request.runId,approvalId:request.part.approval!.id,approved:true};
+    const request=requests[0];const retained=(await getRun(request.runId))!.resumeState as import("@/lib/runs/types").ResumeState;const answer={runId:request.runId,approvalId:request.part.approval!.id,approved:true};
     await answerTaskApproval(owner,"origin",answer);await answerTaskApproval(owner,task.childConversationId!,answer);
     expect((await getRun(request.runId))?.segment).toBe(1);
+    expect(((await getRun(request.runId))!.resumeState as import("@/lib/runs/types").ResumeState).native).toMatchObject({deadlineAt:retained.native!.deadlineAt,stepsUsed:retained.native!.stepsUsed,maxSteps:retained.native!.maxSteps});
     scripted(response());await executeRun(request.runId);await executeRun(request.runId);
     expect(fixture.exec).toHaveBeenCalledTimes(1);expect((await getRun(request.runId))?.status).toBe("succeeded");
+  });
+  it("rejects the approval produced by the final allowed model step",async()=>{
+    await db.update(schema.bots).set({maxSteps:1}).where(eq(schema.bots.id,"bot"));
+    const {requests}=await paused();const r=requests[0];const native=((await getRun(r.runId))!.resumeState as import("@/lib/runs/types").ResumeState).native!;
+    expect(native.stepsUsed).toBe(native.maxSteps);expect(native.maxSteps).toBe(1);fixture.enqueue.mockClear();
+    await expect(answerTaskApproval(owner,"origin",{runId:r.runId,approvalId:r.part.approval!.id,approved:true})).rejects.toMatchObject({status:409,message:expect.stringMatching(/new request/)});
+    expect((await pendingTaskApprovals(owner,"origin"))[0].part.state).toBe("approval-requested");expect(fixture.enqueue).not.toHaveBeenCalled();
+  });
+  it.each(["deadline", "steps"] as const)("rejects exhausted delegated %s before committing even a partial approval",async kind=>{
+    const {requests}=await paused([call("a"),call("b"),finish("tool-calls")]);const r=requests[0];
+    const run=(await getRun(r.runId))!;const state=run.resumeState as import("@/lib/runs/types").ResumeState;
+    const native={...state.native!,...(kind==="deadline"?{deadlineAt:Date.now()-1}:{stepsUsed:state.native!.maxSteps})};
+    await db.update(schema.agentRuns).set({resumeState:{...state,native}}).where(eq(schema.agentRuns.id,r.runId));
+    fixture.enqueue.mockClear();
+    const before=(await db.select().from(schema.messages).where(eq(schema.messages.id,run.messageId)))[0].parts;
+    await expect(answerTaskApproval(owner,"origin",{runId:r.runId,approvalId:r.part.approval!.id,approved:true})).rejects.toMatchObject({status:409,message:expect.stringMatching(/exhausted/)});
+    expect((await db.select().from(schema.messages).where(eq(schema.messages.id,run.messageId)))[0].parts).toEqual(before);
+    expect((await getRun(r.runId))?.status).toBe("waiting");expect(fixture.enqueue).not.toHaveBeenCalled();expect(fixture.exec).not.toHaveBeenCalled();
+  });
+  it.each(["deadline", "steps"] as const)("rejects exhausted direct %s before answering or requeueing",async kind=>{
+    const [conversation]=await db.select().from(schema.conversations).where(eq(schema.conversations.id,"origin"));
+    const native={deadlineAt:kind==="deadline"?Date.now()-1:Date.now()+60_000,sessionVersion:0,stepsUsed:kind==="steps"?2:1,maxSteps:2,taskIds:[]};
+    await upsertMessage("origin",{id:"direct-reply",role:"assistant",parts:[{type:"tool-remember",toolCallId:"direct-call",state:"approval-requested",input:{},approval:{id:"direct-approval"}} as never]},null,{});
+    await db.insert(schema.agentRuns).values({id:"direct-run",userId:"owner",conversationId:"origin",messageId:"direct-reply",botId:"queen",appId:"model",status:"waiting",resumeState:{native}});
+    const before=(await db.select().from(schema.messages).where(eq(schema.messages.id,"direct-reply")))[0].parts;
+    await expect(continueRun({principal:owner,conversation,messageId:"direct-reply",decisions:new Map([["direct-approval",{approved:true}]])})).rejects.toMatchObject({status:409,message:expect.stringMatching(/exhausted/)});
+    expect((await db.select().from(schema.messages).where(eq(schema.messages.id,"direct-reply")))[0].parts).toEqual(before);
+    expect((await getRun("direct-run"))?.status).toBe("waiting");expect(fixture.enqueue).not.toHaveBeenCalled();
   });
   it("denial resumes the child without executing the command",async()=>{
     const {requests}=await paused();const r=requests[0];await answerTaskApproval(owner,"origin",{runId:r.runId,approvalId:r.part.approval!.id,approved:false});scripted(response());await executeRun(r.runId);
