@@ -1,5 +1,5 @@
 import { generateText, wrapLanguageModel } from "ai";
-import { CATALOG, type AnyProviderConfig, type EnabledKind, type ProviderConfigMap } from "./catalog";
+import { isOpenRouterBaseUrl, OPENROUTER_BASE_URL, CATALOG, type AnyProviderConfig, type EnabledKind, type ProviderConfigMap } from "./catalog";
 import { describeHttpStatus, describeProviderError } from "./errors";
 import { defaultsMiddleware } from "./middleware";
 import { PROVIDERS } from "./providers";
@@ -101,6 +101,11 @@ export async function testConnection(i: ConnectionTestInput): Promise<Connection
   const f = i.fetch ?? globalThis.fetch;
   if (i.kind === "hermes") return testHermes(i);
   try {
+    if (i.kind === "openrouter" || (i.kind === "openai-compatible" && isOpenRouterBaseUrl(i.baseUrl))) {
+      // /models is public: it cannot prove that a credential works. Never generate text for this check.
+      await getJson(`${OPENROUTER_BASE_URL}/key`, { Authorization: `Bearer ${apiKey(i.secret) ?? ""}` }, f);
+      return { ok: true, models: [], note: "OpenRouter credential verified. Model access and generation have not been tested." };
+    }
     const models = CATALOG[i.kind].test === "list" ? await listModels(i, f) : null;
     const needsProbe = models === null || (i.kind === "azure" && !!i.model);
     if (needsProbe) {

@@ -4,7 +4,7 @@
 
 ## Reusable provider API credentials
 
-In **Admin → Connections → Saved provider credentials**, add a named connection and select its **Provider API type**: **OpenAI · Responses API** or **OpenAI-compatible · Chat Completions API**. Save an API key and its API base URL (required for compatible providers); OpenAI also supports organization and project selectors. Then add or edit a model and choose its **Saved provider connection**, which sets and locks the API type and destination. The API type menu describes the protocol; named credentials appear in the separate saved connection menu. Different projects or billing accounts can have separate named connections. Model names, capabilities, sampling and audience groups remain on each model. Only administrators can create, rotate, disable or delete the provider credential; using an accessible model grants no credential-management permission.
+In **Admin → Connections → Saved provider credentials**, add a named connection and select its **Provider API type**: **OpenAI · Responses API**, **OpenRouter · Chat Completions API** or **OpenAI-compatible · Chat Completions API**. Save an API key and its API base URL (required for compatible providers); OpenAI also supports organization and project selectors. Then add or edit a model and choose its **Saved provider connection**, which sets and locks the API type and destination. The API type menu describes the protocol; named credentials appear in the separate saved connection menu. Different projects or billing accounts can have separate named connections. Model names, capabilities, sampling and audience groups remain on each model. Only administrators can create, rotate, disable or delete the provider credential; using an accessible model grants no credential-management permission.
 
 The API type, endpoint, organization and project are fixed after creation so a model edit cannot redirect a saved secret or change its billing destination. Create a separate connection to change these. **Replace API key** rotates one encrypted, row-bound secret for all listed dependent models. A blank key field preserves the credential; no key is returned to forms, bot configuration, exports or audit details. Worker encryption-key rewrapping covers these credentials too.
 
@@ -16,6 +16,14 @@ Apply migration **0051_saved_compatible_provider_connections** before running th
 
 Enter the API base URL, such as `https://provider.example/api/v1`, rather than an operation URL ending in `/chat/completions`, `/responses`, `/models` or `/embeddings`; these routes are added by the application. Existing malformed saved endpoints are retained by the migration and must be replaced with a separate connection by an administrator; the application never guesses a new credential destination. Personal ChatGPT subscription/OAuth connections and Hermes runtime credentials retain their separate ownership and authentication flows.
 
+### OpenRouter
+
+Apply **0058_openrouter_models** before running this web and worker code. The migration adds provider constraints and preserves existing rows and ciphertext. Choose **OpenRouter** when saving credentials or entering a model's own key. Its base URL defaults to `https://openrouter.ai/api/v1`; the Chat Completions adapter adds `/chat/completions`. Custom gateways remain available under **OpenAI-compatible**. See the [official quickstart](https://openrouter.ai/docs/quickstart).
+
+The model dialog loads OpenRouter's [public catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties) on the server, cached for five minutes, without using a saved key. Search names or IDs, choose a model, or use **Enter model ID manually**. Catalog selection copies the exact ID and advertised tools/images capabilities. Loading, empty, search-empty and failure states keep manual entry available. The catalog is public and does not establish that the key can access a model. **Test saved connection** checks the key through the read-only [`GET /key`](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key) endpoint; it never generates text and explicitly reports that generation/model access remains untested. Saving does not run inference.
+
+A connection named “OpenRouter” can still have been saved with the **OpenAI Responses** API type. A saved destination ending in `/chat/completions` is also invalid as a base URL. The model form identifies these problems and explains the disabled controls. Create a separate **OpenRouter** provider connection with the correct base URL, then select it on the model. The original credential's API type and destination remain locked; no key is silently redirected or converted.
+
 ## Connecting models and agent backends
 
 Add a model connection in **Admin → Connections → Models**: pick a provider, enter its endpoint and company credentials, select its model/deployment, and use **Test** to check it. Existing `/admin/apps` links and saved connection IDs remain compatible. No database migration is required for this terminology change.
@@ -23,6 +31,7 @@ Add a model connection in **Admin → Connections → Models**: pick a provider,
 | Provider | What you enter | Notes |
 |---|---|---|
 | OpenAI-compatible | API base URL, optional API key, model | vLLM (with tool parsing), LiteLLM, Ollama, your own service; use the provider's actual base path (often `/v1`) |
+| OpenRouter | OpenRouter API key, catalog model or exact model ID | Chat Completions; default base `https://openrouter.ai/api/v1`; read-only key test |
 | OpenAI | API key, optional organization/project | Responses API; responses aren't stored at OpenAI unless you switch it on |
 | Azure OpenAI | Resource endpoint, API key, deployment name | v1 Responses API; turn on "Reasoning model" for reasoning deployments |
 | Anthropic (Claude) | API key (Claude Console), optional base URL | For Claude on Microsoft Foundry use `https://<resource>.services.ai.azure.com/anthropic` |

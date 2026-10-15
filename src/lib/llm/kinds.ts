@@ -4,7 +4,7 @@
  * Model provider wire protocols an app can use. "chatgpt" runs on each user's own ChatGPT plan ("Sign in with ChatGPT");
  * "hermes" is a profile on a Hermes Agent server, which runs its own tools and model (docs/architecture/hermes.md).
  */
-export const PROVIDER_KINDS = ["openai-compatible", "openai", "azure", "anthropic", "bedrock", "vertex-anthropic", "chatgpt", "hermes"] as const;
+export const PROVIDER_KINDS = ["openai-compatible", "openrouter", "openai", "azure", "anthropic", "bedrock", "vertex-anthropic", "chatgpt", "hermes"] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /** Runtime targets execute an agent harness rather than a LanguageModel provider. */

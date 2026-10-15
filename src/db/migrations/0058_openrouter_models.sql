@@ -1,0 +1,9 @@
+ALTER TABLE "ai_apps" DROP CONSTRAINT "ai_apps_provider_connection_check";--> statement-breakpoint
+ALTER TABLE "ai_apps" DROP CONSTRAINT "ai_apps_provider_check";--> statement-breakpoint
+ALTER TABLE "provider_connections" DROP CONSTRAINT "provider_connections_provider_check";--> statement-breakpoint
+ALTER TABLE "provider_connections" DROP CONSTRAINT "provider_connections_compatible_target_check";--> statement-breakpoint
+ALTER TABLE "ai_apps" ADD CONSTRAINT "ai_apps_provider_connection_check" CHECK ("ai_apps"."provider_connection_id" is null or ("ai_apps"."provider" in ('openai', 'openai-compatible', 'openrouter') and "ai_apps"."credential_mode" = 'org' and "ai_apps"."api_key_enc" is null));--> statement-breakpoint
+ALTER TABLE "ai_apps" ADD CONSTRAINT "ai_apps_provider_check" CHECK ("ai_apps"."provider" in ('openai-compatible', 'openrouter', 'openai', 'azure', 'anthropic', 'bedrock', 'vertex-anthropic', 'chatgpt', 'hermes'));--> statement-breakpoint
+ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_openrouter_target_check" CHECK ("provider_connections"."provider" <> 'openrouter' or "provider_connections"."base_url" = 'https://openrouter.ai/api/v1');--> statement-breakpoint
+ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_provider_check" CHECK ("provider_connections"."provider" in ('openai', 'openai-compatible', 'openrouter'));--> statement-breakpoint
+ALTER TABLE "provider_connections" ADD CONSTRAINT "provider_connections_compatible_target_check" CHECK ("provider_connections"."provider" not in ('openai-compatible', 'openrouter') or ("provider_connections"."base_url" is not null and "provider_connections"."organization" is null and "provider_connections"."project" is null));

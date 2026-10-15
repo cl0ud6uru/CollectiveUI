@@ -12,9 +12,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { APP_PROVIDERS, CATALOG, endpointLabel, isEnabledKind, isSavedProviderKind, normalizeBaseUrl, savedProviderConfig, SAVED_PROVIDER_LABELS, supportsEmbeddings, type AppProvider, type CredentialsInput } from "@/lib/llm/catalog";
+import { OPENROUTER_BASE_URL, isOpenRouterBaseUrl, APP_PROVIDERS, CATALOG, endpointLabel, isEnabledKind, isSavedProviderKind, normalizeBaseUrl, savedProviderConfig, SAVED_PROVIDER_LABELS, supportsEmbeddings, type AppProvider, type CredentialsInput } from "@/lib/llm/catalog";
 import { AppIcon } from "@/components/app-icon";
 import { AvatarPicker } from "@/components/bots/avatar-picker";
+import { ModelCatalogPicker } from "./model-catalog-picker";
 import { GroupPicker } from "./group-picker";
 import { Badge, Table, Td } from "./ui";
 
@@ -94,10 +95,13 @@ function AppDialog({
   const [credentials, setCredentials] = useState<CredentialsInput>({});
   const [models, setModels] = useState<string[]>([]);
   const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const testInFlight = useRef(false);
+  const testRevision = useRef(0);
+  const clearTestResult = () => { testRevision.current++; setTestResult(null); };
   const [pending, start] = useTransition();
-  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((x) => ({ ...x, [k]: v }));
-  const setConfig = (k: string, v: unknown) => setF((x) => ({ ...x, config: { ...x.config, [k]: v } }));
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) => { clearTestResult(); setF((x) => ({ ...x, [k]: v })); };
+  const setConfig = (k: string, v: unknown) => { clearTestResult(); setF((x) => ({ ...x, config: { ...x.config, [k]: v } })); };
   const entry = CATALOG[f.provider];
   // ChatGPT plan apps: no credentials, endpoint or sampling settings; each person's own plan is used.
   const personal = entry.credentials === "user";
@@ -112,12 +116,13 @@ function AppDialog({
       provider: kind,
       providerConnectionId: null,
       config: { ...next.defaultConfig },
-      baseUrl: next.baseUrl.mode === "required" && kind === "openai-compatible" ? "https://" : null,
+      baseUrl: kind === "openrouter" ? OPENROUTER_BASE_URL : next.baseUrl.mode === "required" && kind === "openai-compatible" ? "https://" : null,
       maxTokens: x.maxTokens ?? next.defaultMaxTokens ?? null,
       embeddingModel: supportsEmbeddings(kind) ? x.embeddingModel : null,
     }));
     setCredentials({});
     setModels([]);
+    clearTestResult();
   }
 
   const linked = !!f.providerConnectionId;
@@ -125,7 +130,12 @@ function AppDialog({
   const normalizedUrl = isEnabledKind(f.provider) ? normalizeBaseUrl(f.provider, f.baseUrl) : { ok: true as const };
   const urlError = !normalizedUrl.ok && f.baseUrl !== "https://" ? normalizedUrl.error : null;
   const baseUrlOk = entry.baseUrl.mode !== "required" || (!!f.baseUrl && f.baseUrl !== "https://");
-  const canTest = !urlError && baseUrlOk && (entry.test !== "probe" || !!f.model);
+  const openrouter = f.provider === "openrouter" || (f.provider === "openai-compatible" && isOpenRouterBaseUrl(f.baseUrl));
+  const missingKey = f.provider === "openrouter" && !linked && !(f.hasKey && app?.provider === "openrouter") && !credentials.apiKey?.trim();
+  const disabledConnection = linked && !connections.find(c => c.id === f.providerConnectionId)?.enabled;
+  const testBlocked = urlError || (!baseUrlOk ? "Enter an API base URL first." : disabledConnection ? "Enable the saved provider connection or choose another one." : missingKey ? "Enter your OpenRouter API key to test the connection." : entry.test === "probe" && !f.model.trim() ? `Enter the ${entry.modelLabel.toLowerCase()} first.` : null);
+  const canTest = !testBlocked;
+  const saveBlocked = testBlocked || (!f.name.trim() ? "Enter a connection name to save." : !f.model.trim() ? "Choose a model or enter its ID to save. Placeholder text is only an example." : null);
 
   const payload = (): AppInput =>
     ({
@@ -154,7 +164,9 @@ function AppDialog({
   async function test() {
     if (testInFlight.current) return;
     testInFlight.current = true;
+    const revision = testRevision.current;
     setTesting(true);
+    setTestResult(null);
     try {
       const r = await testAppConnection({
         id: f.id,
@@ -166,14 +178,19 @@ function AppDialog({
         providerConnectionId: f.providerConnectionId ?? null,
         credentials,
       });
+      if (revision !== testRevision.current) return;
       if (r.ok) {
         setModels(r.models);
         // Hermes serves one model id per profile: fill it in.
         if (agent && r.models.length === 1 && !f.model) set("model", r.models[0]);
+        setTestResult({ ok: true, message: r.note ?? `Connected. ${r.models.length} models returned; select a model ID to save.` });
         toast.success(r.models.length ? `Connected — ${r.models.length} model(s)` : `Connected — ${r.note ?? "the model answered"}`);
-      } else toast.error(`Connection failed: ${r.error}`);
+      } else { setTestResult({ ok: false, message: r.error }); toast.error(`Connection failed: ${r.error}`); }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not test the connection. Try again.");
+      if (revision !== testRevision.current) return;
+      const message = err instanceof Error ? err.message : "Could not test the connection. Try again.";
+      setTestResult({ ok: false, message });
+      toast.error(message);
     } finally {
       testInFlight.current = false;
       setTesting(false);
@@ -200,15 +217,17 @@ function AppDialog({
           {!agent && <Field label="Saved provider connection" hint="Choose a saved company credential to set the API type and endpoint, or enter credentials on this model.">
             <Select aria-label="Saved provider connection" value={f.providerConnectionId ?? ""} onChange={e => {
               const c = connections.find(c => c.id === e.target.value);
-              if (c) setF(x => ({ ...x, provider: c.provider, providerConnectionId: c.id, baseUrl: c.baseUrl,
+              if (c) setF(x => ({ ...x, provider: c.provider, providerConnectionId: c.id, baseUrl: c.baseUrl, embeddingModel: supportsEmbeddings(c.provider) ? x.embeddingModel : null,
                 config: savedProviderConfig(c, c.provider === x.provider ? x.config : CATALOG[c.provider].defaultConfig) as Record<string, unknown> }));
               else setF(x => ({ ...x, providerConnectionId: null, baseUrl: x.provider === "openai-compatible" ? "https://" : null, config: { ...CATALOG[x.provider].defaultConfig } }));
-              setCredentials({}); setModels([]);
+              setCredentials({}); setModels([]); clearTestResult();
             }}>
               <option value="">Enter credentials on this model</option>
               {connections.map(c => <option key={c.id} value={c.id} disabled={!c.enabled && c.id !== f.providerConnectionId}>{c.name} · {SAVED_PROVIDER_LABELS[c.provider]}{!c.enabled ? " (disabled)" : ""}</option>)}
             </Select>
             {linked && <Button variant="outline" onClick={test} disabled={testing || !canTest}>Test saved connection</Button>}
+            {linked && urlError && <p role="alert" className="text-sm text-danger">{urlError} This saved destination is locked. Create a separate provider connection with the correct API type and base URL, then select it here. For OpenRouter, choose OpenRouter and use {OPENROUTER_BASE_URL}.</p>}
+            {linked && disabledConnection && <p role="alert" className="text-sm text-danger">Enable the saved provider connection or choose another one.</p>}
             {!linked && isSavedProviderKind(f.provider) && f.id && f.hasKey && <Button variant="outline" disabled={pending || !!urlError} onClick={() => {
               const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its API type, endpoint, project and audience are preserved. Service bots whose publication is current stay published; bots that already need review still do.", `${f.name} provider`);
               if (!name?.trim()) return;
@@ -289,7 +308,7 @@ function AppDialog({
                     aria-label={s.label}
                     rows={5}
                     value={credentials[s.key] ?? ""}
-                    onChange={(e) => setCredentials((c) => ({ ...c, [s.key]: e.target.value }))}
+                    onChange={(e) => { clearTestResult(); setCredentials((c) => ({ ...c, [s.key]: e.target.value })); }}
                     placeholder={f.hasKey ? "••••••••" : s.placeholder}
                     className="font-mono text-xs"
                     {...secretProps}
@@ -299,13 +318,13 @@ function AppDialog({
                     aria-label={s.label}
                     type="password"
                     value={credentials[s.key] ?? ""}
-                    onChange={(e) => setCredentials((c) => ({ ...c, [s.key]: e.target.value }))}
+                    onChange={(e) => { clearTestResult(); setCredentials((c) => ({ ...c, [s.key]: e.target.value })); }}
                     placeholder={f.hasKey ? "••••••••" : s.placeholder}
                     {...secretProps}
                   />
                 )}
                 {i === 0 && (
-                  <Button variant="outline" onClick={test} disabled={testing || !canTest} title={canTest ? undefined : `Enter the ${entry.modelLabel.toLowerCase()} first`}>
+                  <Button variant="outline" onClick={test} disabled={testing || !canTest} title={testBlocked ?? undefined}>
                     {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plug className="h-4 w-4" />} Test
                   </Button>
                 )}
@@ -313,15 +332,18 @@ function AppDialog({
             </Field>
           ))}
 
+          {testResult && <p role={testResult.ok ? "status" : "alert"} className={`text-sm ${testResult.ok ? "text-muted" : "text-danger"}`}>{testResult.message}</p>}
+          {f.provider === "openrouter" && <p className="text-xs text-muted">Test checks the API key without generating text. Selecting a model and saving do not make a generation request.</p>}
+          {testBlocked && !urlError && <p className="text-sm text-danger">{testBlocked}</p>}
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label={agent ? "Profile model route" : entry.modelLabel} hint={agent ? "The route served by this Hermes profile, not an ordinary New Chat model." : "A provider may offer many models. This connection uses the model or deployment selected here."}>
+            {openrouter ? <ModelCatalogPicker value={f.model} onChange={(id, model) => setF(x => ({ ...x, model: id, ...(model ? { supportsTools: model.supportsTools, supportsVision: model.supportsVision } : {}) }))} /> : <Field label={agent ? "Profile model route" : entry.modelLabel} hint={agent ? "The route served by this Hermes profile, not an ordinary New Chat model." : "A provider may offer many models. This connection uses the model or deployment selected here."}>
               <Input aria-label={agent ? "Profile model route" : entry.modelLabel} list="model-list" value={f.model} onChange={(e) => set("model", e.target.value)} placeholder={entry.modelPlaceholder} />
               <datalist id="model-list">
                 {models.map((m) => (
                   <option key={m} value={m} />
                 ))}
               </datalist>
-            </Field>
+            </Field>}
             {supportsEmbeddings(f.provider) && !personal && (
               <Field label="Embedding model" hint="Optional, for memory & knowledge search">
                 <Input aria-label="Embedding model" list="model-list" value={f.embeddingModel ?? ""} onChange={(e) => set("embeddingModel", e.target.value || null)} />
@@ -381,12 +403,13 @@ function AppDialog({
           <Field label="Sort order">
             <Input aria-label="Sort order" type="number" value={f.sortOrder} onChange={(e) => set("sortOrder", Number(e.target.value))} className="w-28" />
           </Field>
+          {saveBlocked && <p role="status" className="text-sm text-danger">{saveBlocked}</p>}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
             <Button
-              disabled={pending || !f.name || !!urlError || !baseUrlOk || !f.model}
+              disabled={pending || !!saveBlocked}
               onClick={() =>
                 start(async () => {
                   try {
