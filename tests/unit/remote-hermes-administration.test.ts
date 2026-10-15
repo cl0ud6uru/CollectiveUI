@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { administrationInput, mcpInventory, probeSummary } from '@/lib/remote-hermes/administration-contract';
+import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, probeSummary } from '@/lib/remote-hermes/administration-contract';
 import { HttpError } from '@/lib/authz';
 
 const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, receipt: null as null | { digest: string }, call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn() }));
@@ -101,6 +101,51 @@ describe('native administration protocol and isolation', () => {
     expect(f.call).toHaveBeenCalledWith('mcp.servers.list', { profile: 'default' });
     expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-bearer-secret');
     expect(f.receipt?.digest).not.toContain('synthetic-bearer-secret');
+  });
+  it.each([
+    { existing: 'team-api', candidate: 'team.api' },
+    { existing: 'team.api', candidate: 'team-api' },
+  ])('prevents bearer writes when native names normalize to the same credential slot (%o)', async ({ existing, candidate }) => {
+    const preserved = 'synthetic-existing-token';
+    let persistedToken = preserved;
+    f.call.mockImplementation(async (method: string, params: { bearer_token?: string }) => {
+      if (method === 'mcp.servers.list') return { servers: [{ name: existing, source: 'config', transport: 'stdio', enabled: true, env: [] }] };
+      if (method === 'mcp.servers.add') persistedToken = params.bearer_token ?? '';
+      return { ok: true };
+    });
+    expect(nativeMcpBearerEnvSlot(existing)).toBe('MCP_TEAM_API_API_KEY');
+    expect(nativeMcpBearerEnvSlot(candidate)).toBe('MCP_TEAM_API_API_KEY');
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: candidate, url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('shares a protected credential slot');
+    expect(f.call).toHaveBeenCalledExactlyOnceWith('mcp.servers.list', { profile: 'default' });
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+    expect(persistedToken).toBe(preserved);
+  });
+  it('fails closed when an existing native name cannot be normalized safely', async () => {
+    f.call.mockResolvedValue({ servers: [{ name: 'mcp-東京', source: 'config', transport: 'stdio', enabled: true, env: [] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('credential slots could not be verified safely');
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+  });
+  it('rejects a normalized bearer slot already declared by another server environment', async () => {
+    f.call.mockResolvedValue({ servers: [{ name: 'other-server', source: 'config', transport: 'stdio', enabled: true, env: ['MCP_NEW_SERVER_API_KEY'] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('shares a protected credential slot');
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+  });
+  it('fails closed when an HTTP server hides its header environment references', async () => {
+    f.call.mockResolvedValue({ servers: [{ name: 'existing', source: 'config', transport: 'http', enabled: true, auth: 'header', env: [] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('not expose enough MCP credential metadata');
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
   });
   it('does not replay an uncertain custom-server write when the same receipt is retried', async () => {
     const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-secret', confirmed: true } as const;

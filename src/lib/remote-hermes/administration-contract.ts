@@ -26,6 +26,14 @@ export const settingValues = { reasoning: ['none', 'minimal', 'low', 'medium', '
 const str = (value: unknown, max = 200) => typeof value === 'string' ? value.slice(0, max) : '';
 const rows = (value: unknown) => Array.isArray(value) ? value.slice(0, 100).map(record) : [];
 const envKey = (value: unknown) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(value);
+/** Mirrors pinned Hermes `_env_key_for_server` for ASCII names. Fail closed on
+ * non-ASCII legacy names because its Unicode uppercasing cannot be matched safely.
+ */
+export function nativeMcpBearerEnvSlot(name: string): string | null {
+  if (!name || !/^[\x00-\x7f]+$/.test(name)) return null;
+  const suffix = name.toUpperCase().replace(/[^A-Z0-9_]/g, '_').replace(/^_+|_+$/g, '');
+  return suffix ? `MCP_${suffix}_API_KEY` : null;
+}
 export function settingValue(key: keyof typeof settingValues, result: RpcRecord) {
   const value = str(result.value);
   return (settingValues[key] as readonly string[]).includes(value) ? value : '';
