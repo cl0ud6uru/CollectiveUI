@@ -37,7 +37,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      ACCEPTANCE_APP_SHA: 78518aa6b5c35fe37485d8741893fbf361202f9d
+      ACCEPTANCE_APP_SHA: 9f6105dff666eff3bcb15c6ea36856c7ef9d6012
       ACCEPTANCE_HARNESS_SHA: ${{ github.event.pull_request.head.sha }}
       DOCKER_HERMES_BROWSER: '1'
     steps:
@@ -47,7 +47,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: 78518aa6b5c35fe37485d8741893fbf361202f9d
+          ref: 9f6105dff666eff3bcb15c6ea36856c7ef9d6012
           path: acceptance-target
           persist-credentials: false
       - uses: actions/setup-node@v4
