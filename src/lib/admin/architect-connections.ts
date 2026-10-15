@@ -89,6 +89,10 @@ export async function prepareArchitectProviderConnection(ctx: AgentCtx, _actor: 
   if (!parsed.success) throw new HttpError(400, "Provider billing selectors are invalid.");
   return db.transaction(async tx => {
     const fresh = await prepareWrite(ctx, tx);
+    // Actor/context locks above follow the shared account → bot → conversation → receipt order. This advisory lock
+    // serializes only draft-count/insert work for this actor, so simultaneous approved calls cannot exceed the cap.
+    const lockScope = `architect-provider-draft:${fresh.user.id}`;
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockScope}, 0))`);
     await tx.delete(architectProviderConnectionDrafts).where(and(eq(architectProviderConnectionDrafts.userId, fresh.user.id), or(
       isNotNull(architectProviderConnectionDrafts.consumedAt), ne(architectProviderConnectionDrafts.sessionVersion, fresh.user.sessionVersion),
       sql`${architectProviderConnectionDrafts.expiresAt} <= clock_timestamp()`,

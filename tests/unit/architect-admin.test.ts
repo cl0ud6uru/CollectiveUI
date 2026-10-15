@@ -320,6 +320,13 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(JSON.stringify(audits)).not.toContain(opaqueKey);
     expect(JSON.stringify(prepared)).not.toContain(opaqueKey);
   });
+  it("keeps concurrent provider draft preparation within the per-admin pending limit", async () => {
+    const attempts = await Promise.allSettled(Array.from({ length: 4 }, (_, index) =>
+      execute("admin_prepare_provider_connection", { name: `Concurrent fixture ${index}` })));
+    expect(attempts.filter(attempt => attempt.status === "fulfilled")).toHaveLength(3);
+    expect(attempts.filter(attempt => attempt.status === "rejected")).toHaveLength(1);
+    expect(await db.select().from(s.architectProviderConnectionDrafts)).toHaveLength(3);
+  });
   it.each([
     ["session revoked", async () => { await db.update(s.users).set({ sessionVersion: 1 }).where(eq(s.users.id, "admin")); }],
     ["administrator demoted", async () => { await db.update(s.users).set({ isAdmin: false }).where(eq(s.users.id, "admin")); }],
