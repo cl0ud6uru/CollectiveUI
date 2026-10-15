@@ -19,6 +19,7 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
   const [key, setKey] = useState<'reasoning' | 'fast'>('reasoning'); const [value, setValue] = useState('');
   const [preset, setPreset] = useState(''); const [server, setServer] = useState(''); const [envVar, setEnvVar] = useState(''); const [secret, setSecret] = useState('');
   const [customName, setCustomName] = useState(''); const [customUrl, setCustomUrl] = useState(''); const [customToken, setCustomToken] = useState('');
+  const [poolProvider, setPoolProvider] = useState(''); const [poolApiKey, setPoolApiKey] = useState('');
   const [probe, setProbe] = useState<{ name: string; result: Probe } | null>(null);
   const endpoint = `/api/hermes/${encodeURIComponent(connectionId)}/administration`;
   async function load() {
@@ -36,14 +37,14 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
       const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, input: { requestId: crypto.randomUUID(), ...input } }) });
       const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Hermes did not confirm this change.');
       if (input.operation === 'test') setProbe({ name: String(input.name), result });
-      else { setNotice(result.duplicate ? 'This operation was already submitted. Refresh to check its outcome.' : result.added ? `Hermes added “${result.name}” to this profile.` : result.removed ? 'Hermes removed the server from this profile.' : result.reloaded ? 'Hermes reloaded MCP for its live sessions.' : typeof result.enabled === 'boolean' ? `Hermes ${result.enabled ? 'enabled' : 'disabled'} this server for new sessions.` : result.accepted ? 'Hermes confirmed the change.' : 'Hermes did not confirm the change. Refresh before trying again.'); if (input.operation === 'customServer') { setCustomName(''); setCustomUrl(''); setCustomToken(''); } await load(); }
+      else { setNotice(result.duplicate ? 'This operation was already submitted. Refresh to check its outcome.' : result.provider && result.label ? `Hermes added the labeled account to ${result.provider} in this profile.` : result.added ? `Hermes added “${result.name}” to this profile.` : result.removed ? 'Hermes removed the server from this profile.' : result.reloaded ? 'Hermes reloaded MCP for its live sessions.' : typeof result.enabled === 'boolean' ? `Hermes ${result.enabled ? 'enabled' : 'disabled'} this server for new sessions.` : result.accepted ? 'Hermes confirmed the change.' : 'Hermes did not confirm the change. Refresh before trying again.'); if (input.operation === 'customServer') { setCustomName(''); setCustomUrl(''); setCustomToken(''); } await load(); }
     } catch (e) { setNotice(e instanceof Error ? e.message : 'Hermes could not complete this operation.'); }
-    finally { setBusy(false); if (input.operation === 'customServer') setCustomToken(''); }
+    finally { setBusy(false); if (input.operation === 'customServer') setCustomToken(''); if (input.operation === 'providerKey') setPoolApiKey(''); }
   }
   const disabled = !allowed || running || busy;
   const serverInfo = data?.mcp?.servers.find(s => s.name === server);
   return <div className="space-y-3">
-      <Button size="sm" variant="outline" disabled={!allowed || busy} onClick={() => { if (open) { setSecret(''); setCustomToken(''); setOpen(false); } else void inspect(); }}>{open ? 'Hide native settings' : 'Native settings & MCP'}</Button>
+    <Button size="sm" variant="outline" disabled={!allowed || busy} onClick={() => { if (open) { setSecret(''); setCustomToken(''); setPoolApiKey(''); setOpen(false); } else void inspect(); }}>{open ? 'Hide native settings' : 'Native settings & MCP'}</Button>
     {notice && <p role="status" className="text-sm">{notice}</p>}
     {open && data && <section aria-label="Native Hermes settings and MCP" className="space-y-5 rounded-xl border border-border p-4">
       <header className="flex items-center justify-between"><h3 className="font-medium">Hermes profile: {data.profileName}</h3><Button size="sm" variant="outline" disabled={!allowed || busy} onClick={() => void inspect()}>Refresh settings</Button></header>
@@ -90,6 +91,18 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
             <Input aria-label="Protected MCP credential" type="password" value={secret} disabled={disabled || !envVar} onChange={e => setSecret(e.target.value)} autoComplete="off" maxLength={16000} />
             <p className="text-xs text-muted">Sent directly to Hermes for storage in that profile. The portal clears this field and saves no credential value or chat message.</p>
             <Button type="submit" size="sm" disabled={disabled || !envVar || !secret}>Save protected credential</Button>
+          </form>
+          <form className="space-y-2 rounded-lg border border-border p-3" onSubmit={e => {
+            e.preventDefault();
+            const requestId = crypto.randomUUID(); const label = `Remote account ${requestId.slice(0, 8)}`;
+            if (!confirm(`Add an API-key account for “${poolProvider}” to Hermes profile “${data.profileName}”? The key is stored by Hermes and may be selected for future model requests by other clients using this profile. Hermes may refresh other saved account status while verifying the provider pool.`)) return;
+            void act({ operation: 'providerKey', requestId, provider: poolProvider, label, apiKey: poolApiKey, confirmed: true });
+          }}>
+            <h5 className="text-sm font-medium">Add a provider API-key account</h5>
+            <label className="block text-sm">Provider ID<Input aria-label="Provider pool ID" value={poolProvider} disabled={disabled} onChange={e => setPoolProvider(e.target.value.toLowerCase())} autoComplete="off" maxLength={86} placeholder="openrouter" required pattern="(?:custom:)?[a-z0-9][a-z0-9._-]{0,79}" /></label>
+            <label className="block text-sm">API key<Input aria-label="Provider pool API key" type="password" value={poolApiKey} disabled={disabled} onChange={e => setPoolApiKey(e.target.value)} autoComplete="new-password" maxLength={16000} required /></label>
+            <p className="text-xs text-muted">Sent to Hermes’ typed provider-pool endpoint. Hermes stores the account in this profile. The portal does not read or show token previews, and clears this field after submission. OAuth account linking remains an interactive provider-side flow.</p>
+            <Button type="submit" size="sm" disabled={disabled || !poolProvider || !poolApiKey}>Add API-key account</Button>
           </form>
         </>}
       </div>

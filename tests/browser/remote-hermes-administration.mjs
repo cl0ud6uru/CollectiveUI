@@ -24,6 +24,7 @@ const server = createServer(async (req, res) => {
   const bytes = []; for await (const chunk of req) bytes.push(chunk);
   const input = JSON.parse(Buffer.concat(bytes).toString()).input; received.push(input);
   if (input.operation === 'setting') inventory[input.scope][input.key].value = input.value;
+  if (input.operation === 'providerKey') { res.end(JSON.stringify({ accepted: true, provider: input.provider, label: input.label, count: 1 })); return; }
   if (input.operation === 'enabled') { inventory.mcp.servers.find(server => server.name === input.name).enabled = input.enabled; res.end(JSON.stringify({ accepted: true, enabled: input.enabled })); return; }
   if (input.operation === 'install') inventory.mcp.catalog[0].installed = true;
   if (input.operation === 'customServer') {
@@ -76,6 +77,19 @@ try {
   await expect(page.getByLabel('Protected MCP credential')).toHaveValue('');
   expect(await page.locator('body').textContent()).not.toContain('synthetic-protected-value');
   expect(received.map(input => input.operation)).toEqual(['enabled', 'enabled', 'setting', 'test', 'install', 'customServer', 'credential']);
+  await page.getByLabel('Provider pool ID').fill('openrouter');
+  await page.getByLabel('Provider pool API key').fill('synthetic-provider-pool-secret');
+  await page.getByRole('button', { name: 'Hide native settings' }).click();
+  await expect(page.getByLabel('Provider pool API key')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Native settings & MCP' }).click();
+  await expect(page.getByLabel('Provider pool API key')).toHaveValue('');
+  await page.getByLabel('Provider pool API key').fill('synthetic-provider-pool-secret');
+  await page.getByRole('button', { name: 'Add API-key account' }).click();
+  await expect(page.getByText(/Hermes added the labeled account to openrouter/)).toBeVisible();
+  await expect(page.getByLabel('Provider pool API key')).toHaveValue('');
+  expect(await page.locator('body').textContent()).not.toContain('synthetic-provider-pool-secret');
+  expect(confirmations.some(message => message.includes('Hermes profile “default”') && message.includes('future model requests') && message.includes('other clients'))).toBe(true);
+  expect(received.map(input => input.operation)).toEqual(['enabled', 'enabled', 'setting', 'test', 'install', 'customServer', 'credential', 'providerKey']);
   expect(received[0]).toMatchObject({ operation: 'enabled', name: 'fixture-server', enabled: false, confirmed: true });
   expect(received[2]).toMatchObject({ scope: 'session', key: 'reasoning', value: 'high' });
   expect(received[6]).toMatchObject({ name: 'fixture-server', envVar: 'FIXTURE_KEY', value: 'synthetic-protected-value' });
@@ -102,14 +116,14 @@ try {
   await expect(page.getByText('fixture-server', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Reload MCP for live sessions' }).click();
   await expect(page.getByText('Hermes reloaded MCP for its live sessions.')).toBeVisible();
-  expect(received.map(input => input.operation)).toEqual(['enabled', 'enabled', 'setting', 'test', 'install', 'customServer', 'credential', 'setting', 'setting', 'setting', 'setting', 'test', 'test', 'test', 'remove', 'reload']);
+  expect(received.map(input => input.operation)).toEqual(['enabled', 'enabled', 'setting', 'test', 'install', 'customServer', 'credential', 'providerKey', 'setting', 'setting', 'setting', 'setting', 'test', 'test', 'test', 'remove', 'reload']);
   const countBeforePending = received.length;
   await page.evaluate(() => window.fixtureSetRunning(true));
-  for (const name of ['Apply setting', 'Install preset', 'Add custom server', 'Save protected credential', 'Reload MCP for live sessions']) {
+  for (const name of ['Apply setting', 'Install preset', 'Add custom server', 'Save protected credential', 'Add API-key account', 'Reload MCP for live sessions']) {
     await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
   }
   await expect(page.getByRole('button', { name: 'Refresh settings' })).toBeEnabled();
   expect(received.length).toBe(countBeforePending);
   expect(errors).toEqual([]);
-  console.log('PASS: native settings including auto/cold in both scopes, safe MCP inventory, token-aware probes, preset and typed HTTPS server install, protected credential clearing, confirmed removal/reload, and active-work disablement; no browser errors.');
+  console.log('PASS: native settings including auto/cold in both scopes, safe MCP inventory, token-aware probes, preset and typed HTTPS server install, protected MCP/provider credential clearing, confirmed removal/reload, and active-work disablement; no browser errors.');
 } finally { await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

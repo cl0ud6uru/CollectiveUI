@@ -55,6 +55,17 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
     try { await first.connect(); await expect(reused.connect()).rejects.toThrow(); }
     finally { first.close(); reused.close(); }
   });
+  it('adds a synthetic manual provider key through the exact dashboard pool routes and reads back metadata only', async () => {
+    const apiKey = 'synthetic-provider-pool-secret';
+    const added = await auth.addCredentialPoolEntry('default', 'openrouter', apiKey, 'Fixture account 94');
+    expect(added).toEqual({ ok: true, provider: 'openrouter', count: expect.any(Number) });
+    const pool = await auth.credentialPool('default');
+    expect(pool.providers).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'openrouter', entries: expect.arrayContaining([expect.objectContaining({
+      label: 'Fixture account 94', authType: 'api_key', source: 'manual', hasRefresh: false,
+    })]) })]));
+    expect(JSON.stringify(pool)).not.toContain(apiKey);
+    expect(JSON.stringify(pool)).not.toContain('tokenPreview');
+  });
   it('stages original image and file bytes through actual native handlers; bounds PDF capability explicitly', async () => {
     const image = await rpc('image.attach_bytes', { ...params(), filename: 'fixture.png', content_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zf7cAAAAASUVORK5CYII=' });
     expect(image).toMatchObject({ attached: true });
