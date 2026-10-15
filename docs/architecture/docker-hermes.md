@@ -211,3 +211,36 @@ The `hermes-team-image` GitHub-hosted CI job pulls only the exact official amd64
 The fixture invokes unchanged production `DockerDriver` methods and the production resource bundle, including their strict inspection and owned-volume checks. Temporary containers have networking disabled and no credentials. It verifies Node 26, UID 10000, blank parked native Team profile creation, the image's declared-volume tmpfs mask, protected journal ownership, complete skill assets/scripts as data, capture exclusions, member inventory, install/removal/role/document writes, rollback conflict preservation, abort tombstones, exact replay, and pending filesystem recovery after a driver restart. A supported engine checkpoint leaves one real package parked; a fresh driver must refuse reopening until the original immutable plan recovers it. Exact namespace/owner/image checks guard cleanup; the fixture never prunes Docker, alters daemon settings, or accesses a deployment host.
 
 In this offline resource-helper fixture, test owner containers use a fixed Node sleep entrypoint to prove running-container admission refusal and owner-scoped stop. That fixture does not start native gateways, chat sessions, background learning, subagents or model routes. The same CI job separately runs the [active native image fixture](hermes-team-active-image-fixture.md), which uses the production entrypoint/gateway, native learning and synthetic HTTPS. The delayed acknowledgement test uses a genuinely created production helper and cancellation must remove it before it can start. These checks establish offline image/helper behavior when that CI job passes; they do not establish daemon restart, two concurrently active native chats, provider/auth capability or the live teach/publish/use pilot. Those remain separate bounded verification before enabling routes or the pilot. No Mac, VM or VPS is part of this CI path.
+
+## Accepted-SHA disposable browser acceptance
+
+The narrowly scoped `Disposable Docker Hermes browser acceptance` workflow runs all ten cases in `tests/e2e/docker-hermes.spec.ts`, including starter setup, readiness, provider reset and runtime navigation. It checks out application **and browser-spec source** at candidate commit `78518aa6b5c35fe37485d8741893fbf361202f9d`, separately from the workflow/harness candidate SHA. It uses a real development-mode Next app and worker, fresh named PostgreSQL and synthetic broker/native RPC; it does not establish production-build, Docker image or live provider evidence.
+
+The workflow invokes Node with an explicit minimal environment, dropping ambient runner provider/configuration values before the guard starts; the standalone guard still rejects those values if supplied directly. Before importing PostgreSQL or application code, the harness refuses non-Linux/non-CI execution, ambient `PG*` overrides, non-loopback or non-named databases, URL query/fragment overrides, reused credentials, ambient provider/broker/auth configuration and a changed source checkout. Only the CI run's disposable database is permitted. The database must have no user tables before migrations. Chromium has an isolated install/home; existing owner browsers and profiles are never used.
+
+Refusals report fixed reason codes and allowlisted public environment key names only; values, unknown key names, URLs and exception bodies are never reported. Only `acceptance-evidence/summary.json` is uploaded: app/spec SHA, harness SHA, public test titles, canonical statuses/counts and fixed diagnostic codes. Screenshots, traces, raw errors/logs, environment files and credentials remain on the disposable runner. A skipped, failed, interrupted or missing case fails acceptance; a workflow definition alone is not passing browser evidence. Scheduled runs and deployment are not part of this workflow.
+
+The acceptance workflow also loads a reporter from the harness checkout without
+changing the accepted app or spec. Failure diagnostics contain only a source
+allowlisted case title, canonical status/error category, and line/column within
+`tests/e2e/docker-hermes.spec.ts`. Raw assertion messages, locator values, errors,
+stacks, URLs, local paths and captured images never enter the uploaded summary.
+The orchestration validates this diagnostic projection again before upload.
+A diagnostic rerun still requires all ten cases to pass; serially skipped cases
+remain unproven.
+
+The original `a3d689253aa7a68ed30dbf21acfbe8f244120531` run reached four
+passes and failed case five at its obsolete offline-badge text assertion. The
+corrected candidate `a6af9a5eb456f588929fdb7fef00d4a57fb4b70b` changes that
+single assertion to the existing accessible offline status and passed the first
+six cases. Case seven then stopped at a disabled Save button because the prior
+case deliberately cleared the profile key, and the keyless provider correctly
+defaults to requiring a replacement key.
+
+Candidate `78518aa6b5c35fe37485d8741893fbf361202f9d` includes accepted UI main
+`9bb0160c3587660ec9f2b66202a26d85cadef6d6` and explicitly chooses Keep current
+state for that model-only save. It verifies the empty replacement is initially
+blocked, the new-key input disappears, and Save becomes enabled. The committed
+response barrier, exactly one save, zero tests and reload readback remain intact.
+Application and spec are both pinned to this new candidate. Neither earlier spec
+is reported as fully passed; all ten cases remain required in the fresh run.
