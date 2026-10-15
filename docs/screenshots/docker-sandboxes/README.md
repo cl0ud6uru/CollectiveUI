@@ -7,6 +7,8 @@ These screenshots are rendered from the real `DockerSandboxesAdmin` component by
 - `admin-access-dark-desktop.png` — enrollment and operator-validation states, dark theme, desktop.
 - `admin-overview-light-mobile.png` — overview and inventory, light theme, 390 px mobile.
 - `admin-network-dark-mobile.png` — owner network policy and synthetic events, dark theme, 390 px mobile.
+- `admin-unavailable-light-desktop.png` — unreachable broker, unknown counts/backend, and an unsuccessful inventory refresh.
+- `admin-sbx-setup-dark-mobile.png` — SBX-specific operator setup help, dark theme, 390 px mobile; the dialog scrolls to the full deployment runbook.
 
 ![Synthetic Docker Sandboxes admin overview, light desktop](admin-overview-light-desktop.png)
 
@@ -17,3 +19,5 @@ Recreate captures and run the interaction checks with:
 ```sh
 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium node tests/browser/docker-sandboxes-admin.mjs
 ```
+
+The fixture also verifies unavailable diagnostics feedback, connected-to-unavailable refresh failure, unknown runtime/template observations, unavailable tabs, and setup-dialog keyboard dismissal and mobile scrolling. Set `SBX_SCREENSHOT_DIR` to an absolute temporary directory to inspect a run without replacing the checked-in captures.
