@@ -25,7 +25,7 @@ export class EventTap {
    */
   lastSeq: string | undefined;
 
-  constructor(open: (signal: AbortSignal) => AsyncGenerator<HermesEvent>, lastEventId?: string) {
+  constructor(open: (signal: AbortSignal) => AsyncGenerator<HermesEvent>, lastEventId?: string, readonly statusOnly = false) {
     this.lastSeq = lastEventId;
     void (async () => {
       try {
