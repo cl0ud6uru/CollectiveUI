@@ -16,7 +16,7 @@ beforeEach(async () => {
   vi.clearAllMocks(); f.transport.mockImplementation(() => { throw new Error('Removal must not contact Hermes'); });
   client = new PGlite(); await client.waitReady;
   await client.exec("CREATE TABLE users (id text PRIMARY KEY); CREATE TABLE settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()); INSERT INTO users VALUES ('owner'), ('other');");
-  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations']) await client.exec(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
+  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations', '0062_remote_hermes_hub_ownership']) await client.exec(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
   await client.exec("CREATE TABLE audit_log (id text PRIMARY KEY, actor_id text REFERENCES users(id), action text NOT NULL, target text, details jsonb, created_at timestamptz NOT NULL DEFAULT now());");
   f.db = drizzle(client);
   await f.db.insert(remoteHermesConnections).values([
