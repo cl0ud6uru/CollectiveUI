@@ -20,8 +20,8 @@ import { HttpError, getAccessibleBot } from "@/lib/authz";
 import { insertMessage, partsToText, setCurrentLeaf, type PortalUIMessage } from "@/lib/chat/store";
 import { toolApprovalSecret } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
-import { redactSecrets } from "@/lib/redact";
-import { newUsageScope, resolveModel, userFacingMessage } from "@/lib/llm";
+import { nativeErrorText } from "@/lib/llm/native-errors";
+import { newUsageScope, resolveModel } from "@/lib/llm";
 import { userMayUseChatGPT } from "@/lib/llm/chatgpt/policy";
 import { getSetting } from "@/lib/settings";
 import { buildInstructionSections, toModelInstructions } from "./instructions";
@@ -146,8 +146,7 @@ export async function runGroupTurn(opts: {
   return createUIMessageStream<PortalUIMessage>({
     originalMessages: history,
     generateId: newId,
-    onError: (err) =>
-      userFacingMessage(err) ?? (err instanceof Error ? `A bot hit an error: ${redactSecrets(err.message)}` : "Something went wrong."),
+    onError: (err) => nativeErrorText(err),
     execute: async ({ writer }) => {
       writer.write({ type: "start", messageId, messageMetadata: { createdAt: Date.now(), startedAt: Date.now(), model: "group" } });
       const queue = initialQueue(userText, roster);
@@ -218,6 +217,8 @@ export async function runGroupTurn(opts: {
           });
           const result = streamText({
             model,
+            // The UI boundary below emits a safe diagnostic instead of the SDK raw-error logger.
+            onError: () => {},
             instructions: toModelInstructions(sections, capabilities.instructionStyle),
             messages: endWithUser(mergeTurns(messages)),
             tools: toolset.tools,
@@ -237,7 +238,7 @@ export async function runGroupTurn(opts: {
             sendSources: true,
             sendStart: false,
             sendFinish: false,
-            onError: (err) => userFacingMessage(err) ?? "An error occurred.",
+            onError: (err) => nativeErrorText(err),
           }).getReader();
           let failed: string | undefined;
           for (;;) {
@@ -270,8 +271,7 @@ export async function runGroupTurn(opts: {
           if (opts.abortSignal?.aborted) break;
           // e.g. a ChatGPT plan that isn't connected or hit its limit: say so under this bot and let the others go on.
           // It's a separate part (not the bot's text), so it's never replayed to models as something the bot said.
-          const message = err instanceof BotReplyError ? err.message : (userFacingMessage(err) ?? "An error occurred.");
-          if (!(err instanceof BotReplyError) && !userFacingMessage(err)) console.warn(`[group] ${bot.name} couldn't answer`, err);
+          const message = err instanceof BotReplyError ? err.message : nativeErrorText(err);
           writer.write({ type: "data-bot-error", data: { botId: bot.id, message } satisfies BotErrorData });
           failedBots.add(bot.id);
         } finally {
@@ -323,7 +323,7 @@ export async function runGroupTurn(opts: {
         }
         });
       } catch (err) {
-        console.error("[group] failed to persist", err);
+        nativeErrorText(err);
       }
     },
   });

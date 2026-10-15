@@ -3,6 +3,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { db, type DbOrTx } from "@/db";
 import { botTools, skills, type Skill } from "@/db/schema";
+import { loadPrincipal } from "@/lib/auth/groups";
+import { getUsableBot, HttpError } from "@/lib/authz";
 import { getSetting } from "@/lib/settings";
 import type { AgentCtx, ToolEntry } from "../types";
 import { learnedSkillsForBot, learningIsEnabled, recordLearnedSkillUse } from "../learning/store";
@@ -44,6 +46,20 @@ export function renderSkill(s: Skill) {
     .join("\n\n");
 }
 
+const skillRevision = (s: Skill) => JSON.stringify([s.id, s.botId, s.ownerId, s.slug, s.aliases, s.name, s.description,
+  s.instructions, s.expectedOutput, s.boundaries, s.version, s.pinned, s.mandatory]);
+
+async function currentOfferedSkill(ctx: AgentCtx, offered: Skill, slug: string): Promise<Skill | undefined> {
+  if (!ctx.bot) return;
+  const principal = await loadPrincipal(ctx.principal.user.id);
+  if (!principal || principal.user.sessionVersion !== ctx.principal.user.sessionVersion) return;
+  let bot;
+  try { bot = await getUsableBot(principal, ctx.bot.id); }
+  catch (err) { if (err instanceof HttpError) return; throw err; }
+  const current = findSkill(await currentSkillsForTurn({ ...ctx, principal, bot }), slug);
+  return current?.id === offered.id && skillRevision(current) === skillRevision(offered) ? current : undefined;
+}
+
 export function skillTool(ctx: AgentCtx, available: Skill[]): ToolEntry | null {
   if (!available.length) return null;
   return {
@@ -55,9 +71,10 @@ export function skillTool(ctx: AgentCtx, available: Skill[]): ToolEntry | null {
         available.map((s) => `${s.slug} (${s.description})`).join("; "),
       inputSchema: z.object({ slug: z.enum([...new Set(available.flatMap(s => [s.slug, ...(s.aliases ?? [])]))] as [string, ...string[]]) }),
       execute: async ({ slug }) => {
-        const s = findSkill(available, slug);
+        const offered = findSkill(available, slug);
+        const s = offered ? await currentOfferedSkill(ctx, offered, slug) : undefined;
         if (s?.slug.startsWith("learned-") && ctx.bot) await recordLearnedSkillUse(ctx.bot.id, ctx.principal.user.id, s.id);
-        return s ? { skill: renderSkill(s), skillId: s.id, version: s.version } : { error: "Unknown skill" };
+        return s ? { skill: renderSkill(s), skillId: s.id, version: s.version } : { error: "This skill changed or is no longer available. Start a new request to refresh available skills." };
       },
     }),
   };
