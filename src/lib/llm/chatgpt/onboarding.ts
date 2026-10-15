@@ -13,6 +13,46 @@ import { companionConfiguration } from './companion-config';
 
 export const runtimeConsent = z.object({ accepted: z.literal(true), consentVersion: z.literal(1) }).strict();
 export type RuntimeConsent = z.infer<typeof runtimeConsent>;
+
+/** Stock Codex verifies account/plan/workspace after OpenAI sign-in. Local email is not an identity claim. */
+export function deviceAccountSetupEligibility(p: Principal, settings: ChatGPTSettings) {
+  if (!userMayUseChatGPT(p, settings)) return { allowed: false, reason: settings.enabled
+    ? 'Your account is not allowed to connect ChatGPT. Ask an administrator to review your access.'
+    : 'ChatGPT connections are disabled. An administrator can enable them in Admin → Settings → ChatGPT.' };
+  return { allowed: true, reason: null };
+}
+
+export async function deviceAccountSetupView(p: Principal, settings: ChatGPTSettings) {
+  const eligibility = deviceAccountSetupEligibility(p, settings);
+  let runtime: AccountSetupView['runtime'] = { state: 'not_installed', selfEnrollment: false, enrolled: false,
+    reason: 'An operator must install the private stock Codex runtime before browser sign-in is available.' };
+  if (process.env.PERSONAL_CODEX_SOCKET) {
+    try { runtime = await personalControl(p.user.id, 'readiness'); }
+    catch { runtime = { state: 'unavailable', selfEnrollment: false, enrolled: false,
+      reason: 'Private Codex setup could not be checked. Retry, or ask the operator to update and check the runtime service.' }; }
+  }
+  return { eligible: eligibility.allowed, reason: eligibility.reason, runtime,
+    canPrepareRuntime: eligibility.allowed && runtime.state === 'ready' && (runtime.enrolled || runtime.selfEnrollment),
+    authentication: { state: 'device_code' as const, reason: 'Authorize stock Codex on OpenAI’s website, then confirm the verified account here.' } };
+}
+
+/** Preparation is infrastructure consent only; account confirmation remains a separate same-owner action. */
+export async function prepareDeviceAccountRuntime(p: Principal, rawConsent: RuntimeConsent) {
+  if (!runtimeConsent.safeParse(rawConsent).success) throw new HttpError(400, 'Confirm your consent before preparing a private Codex runtime.');
+  return db.transaction(async tx => {
+    const person = await lockPersonalOwner(p.user.id, tx);
+    if (person.disabled || person.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, 'Sign in to CollectiveUI again.');
+    const settings = await getSetting('chatgpt', tx);
+    const eligibility = deviceAccountSetupEligibility(await resolvePrincipal(person, tx), settings);
+    if (!eligibility.allowed) throw new HttpError(403, eligibility.reason!);
+    await assertNoCodexWork(person.id, tx);
+    const result = await personalControl(person.id, 'prepare', { consentVersion: 1, sessionVersion: person.sessionVersion });
+    if (result.state !== 'ready' || !result.enrolled || result.runtimeState !== 'running') throw new HttpError(409, result.reason || 'Private Codex runtime preparation is not complete. Check its status before retrying.');
+    await tx.insert(auditLog).values({ actorId: person.id, action: 'chatgpt.codex.device.prepare', target: person.id,
+      details: { consentVersion: 1, sessionVersion: person.sessionVersion } });
+    return { prepared: true, runtime: result };
+  });
+}
 export const localSignInReason = 'The local sign-in app is not available in this installation yet. It is needed to open OpenAI sign-in on your computer and securely connect this account.';
 
 /** These are eligibility checks, never an authorization or account-identity claim. */

@@ -25,6 +25,7 @@ const OWNER_ACCOUNT = {
   account: { type: 'chatgpt' as const, email: 'alice@test.invalid', planType: 'business' },
   workspaceRouting: { chatgptAccountId: 'workspace-alice', backendOrigin: 'https://chatgpt.test.invalid', accountRoutingOverride: 'us' as const },
 };
+const EXPECTED = { email: OWNER_ACCOUNT.account.email, workspaceId: OWNER_ACCOUNT.workspaceRouting.chatgptAccountId };
 const running = (account = OWNER_ACCOUNT): BrokerStatus => ({ state: 'running', account });
 let alice: Awaited<ReturnType<typeof loadPrincipal>>;
 let bob: Awaited<ReturnType<typeof loadPrincipal>>;
@@ -65,7 +66,7 @@ beforeEach(async () => {
       const { HttpError } = await import('@/lib/authz');
       throw new HttpError(503, 'Personal Codex is not installed.');
     }
-    return action === 'status' || action === 'connect' || action === 'confirm' ? fixture.status! : { state: 'stopped' };
+    return action === 'status' || action === 'refresh' || action === 'connect' || action === 'confirm' ? fixture.status! : { state: 'stopped' };
   });
   await fixture.client!.exec('TRUNCATE users, settings, codex_runs CASCADE');
   await db.insert(schema.users).values([
@@ -79,9 +80,9 @@ beforeEach(async () => {
 afterAll(async () => { await fixture.client!.close(); vi.unstubAllEnvs(); });
 
 describe('Personal Codex account binding', () => {
-  it('confirms only real signed-in ChatGPT routing and caller email facts', async () => {
+  it('confirms the reviewed signed-in ChatGPT account and routing facts', async () => {
     fixture.status = running({ ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, email: 'ALICE@Test.Invalid' } });
-    const view = await changeConnection(alice!, 'confirm');
+    const view = await changeConnection(alice!, 'confirm', EXPECTED);
     expect(view).toEqual({ state: 'connected', email: 'ALICE@Test.Invalid', workspaceId: 'workspace-alice', planType: 'business' });
     expect(await account()).toMatchObject({
       userId: 'alice', email: 'alice@test.invalid', workspaceId: 'workspace-alice', planType: 'business', connected: true,
@@ -91,51 +92,58 @@ describe('Personal Codex account binding', () => {
   });
 
   it.each([
-    ['another caller email', { ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, email: 'bob@test.invalid' } }],
     ['missing ChatGPT account facts', { account: null, workspaceRouting: OWNER_ACCOUNT.workspaceRouting }],
     ['missing workspace routing', { ...OWNER_ACCOUNT, workspaceRouting: null }],
   ])('rejects confirmation with %s', async (_why, statusAccount) => {
-    fixture.status = running(statusAccount as typeof OWNER_ACCOUNT);
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+    fixture.status = running(statusAccount as unknown as typeof OWNER_ACCOUNT);
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 403 });
     expect(await db.select().from(schema.personalCodexAccounts)).toHaveLength(0);
   });
 
   it('rejects duplicate normalized ChatGPT email across callers', async () => {
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     await db.update(schema.users).set({ email: 'alice@test.invalid' }).where(eq(schema.users.id, 'bob'));
     bob = await loadPrincipal('bob');
     fixture.status = running({ ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, email: 'ALICE@TEST.INVALID' } });
-    await expect(changeConnection(bob!, 'confirm')).rejects.toMatchObject({ status: 409 });
+    await expect(changeConnection(bob!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 409 });
     expect(await account('alice')).toMatchObject({ email: 'alice@test.invalid', connected: true });
     expect(await account('bob')).toBeUndefined();
   });
 
-  it('matches confirmation against the locked current email after identity sync without a session rotation', async () => {
-    await db.update(schema.users).set({ upn: 'alice@directory.test.invalid' }).where(eq(schema.users.id, 'alice'));
-    alice = await loadPrincipal('alice');
-    await db.update(schema.users).set({ email: 'renamed@test.invalid' }).where(eq(schema.users.id, 'alice'));
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+  it('allows a reviewed ChatGPT identity with a different email from the CollectiveUI directory', async () => {
+    fixture.status = running({...OWNER_ACCOUNT, account:{...OWNER_ACCOUNT.account,email:'personal@test.invalid'}});
+    await changeConnection(alice!, 'confirm', {...EXPECTED,email:'personal@test.invalid'});
+    expect(await account()).toMatchObject({email:'personal@test.invalid',connected:true});
+  });
+
+  it('rejects confirmation when the current native identity differs from the reviewed snapshot', async () => {
+    for (const expected of [{...EXPECTED,email:'other@test.invalid'}, {...EXPECTED,workspaceId:'other-workspace'}])
+      await expect(changeConnection(alice!, 'confirm', expected)).rejects.toMatchObject({status:409});
+    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({status:409});
     expect(await account()).toBeUndefined();
   });
 
   it('accepts only the action discriminant from browser input and strips no claimed actor metadata', () => {
-    expect(connectionAction.parse({ action: 'confirm' })).toEqual({ action: 'confirm' });
+    const confirmation = { action: 'confirm', accepted: true, consentVersion: 1, expected: EXPECTED };
+    expect(connectionAction.parse(confirmation)).toEqual(confirmation);
+    expect(() => connectionAction.parse({action:'connect'})).toThrow();
+    expect(() => connectionAction.parse({...confirmation, accepted:false})).toThrow();
     for (const claimed of [
-      { action: 'confirm', userId: 'bob' }, { action: 'confirm', owner: 'bob' },
-      { action: 'confirm', email: 'bob@test.invalid' }, { action: 'confirm', workspaceId: 'workspace-bob' },
+      { ...confirmation, userId: 'bob' }, { ...confirmation, owner: 'bob' },
+      { ...confirmation, email: 'bob@test.invalid' }, { ...confirmation, workspaceId: 'workspace-bob' },
     ]) expect(() => connectionAction.parse(claimed)).toThrow();
-    expect(() => connectionAction.parse({ action: 'confirm', metadata: { account: OWNER_ACCOUNT } })).toThrow();
+    expect(() => connectionAction.parse({ ...confirmation, metadata: { account: OWNER_ACCOUNT } })).toThrow();
   });
 
   it('preserves credential generation on same-account reconfirmation', async () => {
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     const generation = (await account()).credentialBinding;
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     expect((await account()).credentialBinding).toBe(generation);
   });
 
   it('rotates credential generation on disconnect and a subsequent new connection', async () => {
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     const initial = (await account()).credentialBinding;
     await changeConnection(alice!, 'disconnect');
     const disconnected = await account();
@@ -144,7 +152,7 @@ describe('Personal Codex account binding', () => {
 
     fixture.status = running();
     expect((await changeConnection(alice!, 'connect')).state).toBe('confirm');
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     const reconnected = await account();
     expect(reconnected.connected).toBe(true);
     expect(reconnected.credentialBinding).not.toBe(disconnected.credentialBinding);
@@ -165,29 +173,29 @@ describe('Personal Codex account binding', () => {
 
   it('allows account mutation after Codex work is terminal', async () => {
     await insertRun('terminal');
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     expect(await account()).toMatchObject({ connected: true, email: 'alice@test.invalid' });
   });
 
   it('denies disabled policy, stale sessions, and disabled users', async () => {
     await db.update(schema.settings).set({ value: { enabled: false, access: 'everyone' } }).where(eq(schema.settings.key, 'chatgpt'));
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 403 });
     await permitChatGPT();
 
     await db.update(schema.users).set({ sessionVersion: 2 }).where(eq(schema.users.id, 'alice'));
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 403 });
     alice = await loadPrincipal('alice');
     await db.update(schema.users).set({ disabled: true }).where(eq(schema.users.id, 'alice'));
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 403 });
     expect(await account()).toBeUndefined();
   });
 
   it('lets a valid caller cancel or disconnect retained credentials after policy is disabled', async () => {
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     const originalBinding = (await account()).credentialBinding;
     await db.update(schema.settings).set({ value: { enabled: false, access: 'everyone' } }).where(eq(schema.settings.key, 'chatgpt'));
     await expect(changeConnection(alice!, 'connect')).rejects.toMatchObject({ status: 403 });
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 403 });
 
     await expect(changeConnection(alice!, 'cancel')).resolves.toMatchObject({ state: 'stopped' });
     expect(fixture.control).toHaveBeenCalledWith('alice', 'cancel');
@@ -198,22 +206,27 @@ describe('Personal Codex account binding', () => {
   });
 
   it('shows a valid caller retained metadata when policy is disabled and marks connection unavailable', async () => {
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     await db.update(schema.settings).set({ value: { enabled: false, access: 'everyone' } }).where(eq(schema.settings.key, 'chatgpt'));
     await expect(connectionView(alice!)).resolves.toEqual({
       state: 'connected', email: 'alice@test.invalid', workspaceId: 'workspace-alice', planType: 'business', canConnect: false,
     });
   });
 
+  it.each(['stopped','not_started'] as const)('retains bound public identity when runtime is %s so the owner can recover it', async state => {
+    await changeConnection(alice!,'confirm',EXPECTED); fixture.status = {state};
+    expect(await connectionView(alice!)).toEqual({state,...EXPECTED,planType:'business'});
+  });
+
   it('returns unavailable without a socket and never calls the broker', async () => {
     vi.stubEnv('PERSONAL_CODEX_SOCKET', '');
     await expect(connectionView(alice!)).resolves.toEqual({ state: 'unavailable' });
     expect(fixture.control).not.toHaveBeenCalled();
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 503 });
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 503 });
   });
 
   it('retains saved connection metadata after native sign-out so the owner can disconnect it', async () => {
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     fixture.status = { state: 'running', account: { account: null, workspaceRouting: null } };
     await expect(connectionView(alice!)).resolves.toEqual({
       state: 'signed_out', email: 'alice@test.invalid', workspaceId: 'workspace-alice', planType: 'business',
@@ -231,7 +244,7 @@ describe('Personal Codex account binding', () => {
     const view = await connectionView(alice!);
     expect(view).toEqual({ state: 'confirm', email: 'alice@test.invalid', workspaceId: 'workspace-alice', planType: 'business' });
     expect(JSON.stringify(view)).not.toMatch(/fixture-only|backendOrigin|private-routing|credentialBinding|accessToken|idToken/);
-    await changeConnection(alice!, 'confirm');
+    await changeConnection(alice!, 'confirm', EXPECTED);
     const stored = await account();
     expect(JSON.stringify(stored)).not.toMatch(/fixture-only|private-routing|accessToken|idToken/);
     expect(stored).not.toHaveProperty('backendOrigin');
@@ -242,8 +255,20 @@ describe('Personal Codex account binding', () => {
       enabled: true, access: 'everyone', allowedGroupIds: [], allowedUpns: [], allowedWorkspaceIds: ['workspace-approved'],
       allowPersonalPlans: false, allowBackground: false,
     } }).where(eq(schema.settings.key, 'chatgpt'));
-    await expect(changeConnection(alice!, 'confirm')).rejects.toMatchObject({ status: 403 });
+    await expect(changeConnection(alice!, 'confirm', EXPECTED)).rejects.toMatchObject({ status: 403 });
     expect(await account()).toBeUndefined();
+  });
+
+  it('refreshes only the caller runtime, returns current account facts, and does not silently confirm it', async () => {
+    expect(await changeConnection(alice!,'refresh')).toMatchObject({state:'confirm',email:'alice@test.invalid'});
+    expect(fixture.control).toHaveBeenCalledWith('alice','refresh'); expect(await account()).toBeUndefined();
+  });
+
+  it('projects safe failure and expiry without raw native errors or device codes', async () => {
+    for (const loginOutcome of ['failed','expired'] as const) {
+      fixture.status = {state:'running',loginOutcome};
+      expect(await connectionView(alice!)).toEqual({state:loginOutcome,reason:expect.any(String)});
+    }
   });
 
   it('validates broker facts as ChatGPT account plus workspace routing', () => {

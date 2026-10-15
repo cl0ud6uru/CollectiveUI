@@ -27,9 +27,10 @@ export async function assertNoCodexWork(owner: string, q: DbOrTx = db) {
   if (run) throw new HttpError(409, 'Stop and confirm recovery of your active Codex work before changing the connection.');
 }
 function view(s: BrokerStatus, row: Awaited<ReturnType<typeof personalAccount>> | undefined): ConnectionView {
-  if (s.state !== 'running') return { state: s.state };
+  if (s.state !== 'running') return { state: s.state, ...(row ? { email: row.email, workspaceId: row.workspaceId, planType: row.planType } : {}) };
   if (s.loginUncertain) return { state: 'uncertain' };
-  if (s.login) return { state: 'pending', login: { verificationUrl: s.login.verificationUrl, userCode: s.login.userCode } };
+  if (s.login) return { state: 'pending', login: { verificationUrl: s.login.verificationUrl, userCode: s.login.userCode, expiresAt: s.login.expiresAt } };
+  if (s.loginOutcome) return { state: s.loginOutcome, reason: s.loginOutcome === 'expired' ? 'Your device code expired. Start sign-in again.' : 'ChatGPT sign-in did not complete. Start sign-in again.' };
   const facts = s.account && nativeAccount.parse(s.account);
   if (!facts?.account || !facts.workspaceRouting) return { state: 'signed_out', ...(row ? { email: row.email, workspaceId: row.workspaceId, planType: row.planType } : {}) };
   const { email, planType } = facts.account, workspaceId = facts.workspaceRouting.chatgptAccountId;
@@ -41,7 +42,7 @@ export async function connectionView(p: Principal): Promise<ConnectionView> {
   return { ...view(await personalControl(p.user.id, 'status'), await personalAccount(p.user.id)), ...(!canConnect ? { canConnect: false } : {}) };
 }
 /** Locks compete with run reservation so account changes cannot race native dispatch/recovery. */
-export async function changeConnection(p: Principal, action: 'connect' | 'confirm' | 'cancel' | 'disconnect' | 'start'): Promise<ConnectionView> {
+export async function changeConnection(p: Principal, action: 'connect' | 'confirm' | 'cancel' | 'disconnect' | 'start' | 'refresh', expected?: { email: string; workspaceId: string }): Promise<ConnectionView> {
   return db.transaction(async tx => {
     const fresh = await lockPersonalOwner(p.user.id, tx);
     if (fresh.sessionVersion !== p.user.sessionVersion || fresh.disabled) throw new HttpError(403, 'Sign in to CollectiveUI again.');
@@ -53,8 +54,11 @@ export async function changeConnection(p: Principal, action: 'connect' | 'confir
       const s = await personalControl(p.user.id, 'status');
       if (s.state !== 'running' || s.login || s.loginUncertain) throw new HttpError(409, 'Complete your native ChatGPT sign-in first.');
       const facts = nativeAccount.parse(s.account);
-      if (!facts.account || !facts.workspaceRouting || ![fresh.upn, fresh.email].some(email => email?.toLowerCase() === facts.account!.email.toLowerCase()))
-        throw new HttpError(403, 'Sign in with your own ChatGPT account matching your CollectiveUI email.');
+      if (!facts.account || !facts.workspaceRouting)
+        throw new HttpError(403, 'Complete ChatGPT sign-in with a verified account and workspace before confirming.');
+      // The browser confirms only the identity it was shown; all binding facts come from Codex.
+      if (!expected || expected.email.toLowerCase() !== facts.account.email.toLowerCase() || expected.workspaceId !== facts.workspaceRouting.chatgptAccountId)
+        throw new HttpError(409, 'The signed-in ChatGPT account changed. Review its current identity before confirming.');
       const reason = accountRejection({ accountId: facts.workspaceRouting.chatgptAccountId, planType: facts.account.planType }, await getSetting('chatgpt', tx));
       if (reason) throw new HttpError(403, reason);
       if (row && (row.email.toLowerCase() !== facts.account.email.toLowerCase() || row.workspaceId !== facts.workspaceRouting.chatgptAccountId))
@@ -67,7 +71,7 @@ export async function changeConnection(p: Principal, action: 'connect' | 'confir
       return view(s, { userId: p.user.id, ...values });
     }
     const s = await personalControl(p.user.id, action);
-    if (action === 'disconnect') await tx.update(personalCodexAccounts).set({ connected: false, credentialBinding: randomUUID(), updatedAt: new Date() }).where(eq(personalCodexAccounts.userId, p.user.id));
-    return view(s, action === 'disconnect' ? undefined : row);
+    if (action === 'disconnect' || action === 'cancel' && row) await tx.update(personalCodexAccounts).set({ connected: false, credentialBinding: randomUUID(), updatedAt: new Date() }).where(eq(personalCodexAccounts.userId, p.user.id));
+    return view(s, action === 'disconnect' || action === 'cancel' ? undefined : row);
   });
 }

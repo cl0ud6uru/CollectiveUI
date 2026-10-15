@@ -21,6 +21,8 @@ const DockerBrokerConfig = BrokerBase.extend({
   // immutable forms. Neither admits a tag, abbreviated ID or automatic pull.
   image: z.string().regex(/^(?:collectiveui\/personal-codex@sha256:|sha256:)[a-f0-9]{64}$/),
   allowSelfEnrollment: z.boolean().default(false),
+  // Native credentials persist only in this owner's protected Codex home.
+  authenticationMode: z.enum(['native', 'siwc']).default('native'),
   sandboxProfile: z.literal('collectiveui-sandbox-v1').optional(),
   // True only after the installed image passes the reviewed SIWC shell/proc isolation proof.
   siwcSandboxVerified: z.boolean().default(false),
@@ -40,6 +42,8 @@ export const SbxBrokerConfigSchema = BrokerBase.extend({
   cpus: z.number().int().min(1).max(64),
   // Enables the separately authenticated owner-scoped admin adapter. Default stays disabled.
   adminEnabled: z.boolean().default(false),
+  // The current SBX adapter supports the companion token transport only.
+  authenticationMode: z.literal('siwc').default('siwc'),
   // Same operator verification gate as the Docker backend. Defaults to disabled.
   siwcSandboxVerified: z.boolean().default(false),
 }).strict();

@@ -35,6 +35,31 @@ export async function invalidateChatGPTConnectionLocked(owner: string, tx: DbOrT
   return removeChatGPTConnection(owner, tx, f);
 }
 
+/** Native SIWC lifecycle must not log out an independently confirmed stock Codex device account. */
+export async function clearSIWCCodexAuthenticationLocked(owner: string, tx: DbOrTx) {
+  const [personal] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, owner));
+  if (personal && !personal.workspaceId.startsWith('siwc:')) return;
+  if (!personal) {
+    if (!process.env.PERSONAL_CODEX_SOCKET) return;
+    try {
+      // An orphaned SIWC token still needs clearing, but a native login in progress is independent.
+      if (!(await personalControl(owner, 'status')).siwc) return;
+    } catch (error) {
+      if (error instanceof PersonalControlError && error.code === 'not_enrolled') return;
+      throw error;
+    }
+  }
+  await clearPersonalCodexAuthenticationLocked(owner, tx);
+  await tx.update(personalCodexAccounts).set({ connected: false, credentialBinding: randomUUID(), updatedAt: new Date() })
+    .where(eq(personalCodexAccounts.userId, owner));
+}
+
+export async function invalidateNativeChatGPTConnectionLocked(owner: string, tx: DbOrTx) {
+  await clearSIWCCodexAuthenticationLocked(owner, tx);
+  await cancelCompanionAttemptsLocked(owner, tx);
+  return removeChatGPTConnection(owner, tx);
+}
+
 export async function invalidateChatGPTConnection(owner: string, database: DbOrTx = db, f?: typeof fetch) {
   return database.transaction(async tx => {
     await lockPersonalOwner(owner, tx);
