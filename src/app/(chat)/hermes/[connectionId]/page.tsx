@@ -25,5 +25,5 @@ export default async function HermesPage({ params, searchParams }: PageProps<'/h
     .from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, connectionId))).orderBy(desc(remoteHermesSessions.updatedAt)).limit(100);
   const query = await searchParams;
   const selected = typeof query.session === 'string' && saved.some(s => s.id === query.session) ? query.session : null;
-  return <PageFrame title={connection.name}><div className="space-y-4"><Link className="text-sm underline" href={`/hermes/${connectionId}/operations`}>Workspace panels</Link><NativeWorkspace connectionId={connectionId} profiles={profiles} saved={saved} allowed={policy.enabled} initialSession={selected} initialError={error} /></div></PageFrame>;
+  return <PageFrame title={connection.name}><div className="space-y-4"><Link className="text-sm underline" href={`/hermes/${connectionId}/operations${selected ? `?session=${encodeURIComponent(selected)}` : ''}`}>Workspace panels</Link><NativeWorkspace connectionId={connectionId} profiles={profiles} saved={saved} allowed={policy.enabled} initialSession={selected} initialError={error} /></div></PageFrame>;
 }
