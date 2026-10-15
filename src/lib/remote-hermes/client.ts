@@ -20,6 +20,8 @@ export type DashboardSecrets = z.infer<typeof dashboardSecretsSchema>;
 const tokenSchema = z.preprocess(nativeFields, z.object({ accessToken: text, refreshToken: text.optional().nullable(), expiresAt: z.number().finite().optional().nullable(), provider: z.string().optional().nullable(), userId: z.string().optional().nullable() }));
 const profileSchema = z.preprocess(nativeFields, z.object({ name: z.string().min(1).max(200), displayName: z.string().max(300).nullable().optional(), botTitle: z.string().max(300).nullable().optional(), description: z.string().max(2000).nullable().optional(), model: z.string().max(200).nullable().optional(), provider: z.string().max(200).nullable().optional() }));
 export type RemoteHermesProfile = z.infer<typeof profileSchema>;
+const mcpOAuthFlowSchema = z.object({ flow_id: z.string().regex(/^[A-Za-z0-9_-]{16,200}$/), server_name: z.string().min(1).max(64), status: z.enum(['starting', 'authorization_required', 'approved', 'error']), authorization_url: z.string().max(16000).nullable() });
+export type RemoteMcpOAuthFlow = z.infer<typeof mcpOAuthFlowSchema>;
 const credentialPoolSchema = z.object({
   providers: z.array(z.object({
     provider: z.string().min(1).max(200),
@@ -82,7 +84,7 @@ export class DashboardClient {
   constructor(base: string, private transport: typeof fetch, private secrets?: DashboardSecrets) { this.base = dashboardBase(base); }
   /** Retain this verified sign-in while replacing only its per-request transport. */
   withTransport(transport: typeof fetch) { return new DashboardClient(this.base, transport, this.secrets); }
-  private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number, methodOverride?: 'PUT') {
+  private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number, methodOverride?: 'PUT' | 'DELETE') {
     const auth: Record<string, string> = this.secrets?.mode === 'sessionToken'
       ? { 'X-Hermes-Session-Token': this.secrets.sessionToken! }
       : this.secrets ? { Authorization: `Bearer ${this.secrets.accessToken}` } : {};
@@ -121,6 +123,20 @@ export class DashboardClient {
       .parse(await this.call(`/api/credentials/pool?${query}`, { provider, api_key: apiKey, label }));
     if (result.provider !== provider) throw new HttpError(502, 'Hermes did not confirm the requested provider pool.');
     return result;
+  }
+  /** Exact pinned native-dashboard OAuth routes; callbacks stay on Hermes. */
+  async startMcpOAuth(profile: string, name: string): Promise<RemoteMcpOAuthFlow> {
+    if (!profile || profile.length > 200 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new HttpError(400, 'Invalid MCP OAuth target.');
+    return mcpOAuthFlowSchema.parse(await this.call(`/api/mcp/servers/${encodeURIComponent(name)}/auth?${new URLSearchParams({ profile })}`, {}));
+  }
+  async mcpOAuthFlow(flowId: string): Promise<RemoteMcpOAuthFlow> {
+    if (!/^[A-Za-z0-9_-]{16,200}$/.test(flowId)) throw new HttpError(400, 'Invalid MCP OAuth flow.');
+    return mcpOAuthFlowSchema.parse(await this.call(`/api/mcp/oauth/flows/${flowId}`));
+  }
+  async cancelMcpOAuth(flowId: string) {
+    if (!/^[A-Za-z0-9_-]{16,200}$/.test(flowId)) throw new HttpError(400, 'Invalid MCP OAuth flow.');
+    return z.object({ ok: z.literal(true), status: z.enum(['starting', 'authorization_required', 'approved', 'error', 'expired']) })
+      .parse(await this.call(`/api/mcp/oauth/flows/${flowId}`, undefined, {}, undefined, 'DELETE'));
   }
   async status() { return z.preprocess(nativeFields, z.object({ version: z.string().optional(), authRequired: z.boolean().optional() })).parse(await this.call('/api/status')); }
   async profiles(): Promise<RemoteHermesProfile[]> { return z.object({ profiles: z.array(profileSchema).max(2000) }).parse(await this.call('/api/profiles')).profiles; }

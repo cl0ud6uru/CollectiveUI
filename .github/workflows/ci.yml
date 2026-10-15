@@ -91,7 +91,7 @@ jobs:
           HERMES_DASHBOARD_PYTHON: python
           HERMES_REQUIRE_PDF: '1'
           REMOTE_HERMES_DASHBOARD_CONFORMANCE: '1'
-        run: npx vitest run --project unit tests/unit/remote-hermes-dashboard-conformance.test.ts --maxWorkers=1
+        run: npx vitest run --project unit tests/unit/remote-hermes-dashboard-conformance.test.ts tests/unit/remote-hermes-mcp-oauth-conformance.test.ts --maxWorkers=1
       - name: Require actual native one-use WebSocket ticket and subprotocol authentication
         env:
           HERMES_SOURCE: ${{ github.workspace }}/.remote-hermes-dashboard-source
@@ -194,6 +194,7 @@ jobs:
           node tests/browser/remote-hermes-commands.mjs
           node tests/browser/remote-hermes-workspace.mjs
           node tests/browser/remote-hermes-administration.mjs
+          node tests/browser/remote-hermes-mcp-oauth.mjs
           node tests/browser/remote-hermes-operations.mjs
           node tests/browser/remote-hermes-panel-navigation.mjs
       - uses: actions/upload-artifact@v4

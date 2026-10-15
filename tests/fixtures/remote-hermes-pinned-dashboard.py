@@ -241,6 +241,56 @@ async def control(request: Request):
             suppress_credential_source("openrouter", "env:OPENROUTER_API_KEY")
 
         await config_scoped_to_thread("default", prepare_suppressed_source)
+    elif body == {"prepare_mcp_oauth": True}:
+        # Real native REST handlers, callback routing and flow state; replace
+        # only the provider/SDK worker. No registration, token exchange or grant.
+        from urllib.parse import urlencode
+        import yaml
+        from hermes_cli.web_routers import mcp as mcp_routes
+        from tools.connectors.mcp_oauth import _validate_client_redirect_uri
+        # Execute the exact pin's pure filename mapper without importing an SDK.
+        import ast
+        filename_node = next(node for node in ast.parse((SOURCE / "tools/mcp_oauth.py").read_text()).body
+                             if isinstance(node, ast.FunctionDef) and node.name == "_safe_filename")
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[filename_node], type_ignores=[]), "pinned_oauth_filename", "exec"), namespace)
+        METRICS["mcp_oauth_filename_cases"] = {name: namespace["_safe_filename"](name) for name in
+            ["team.api", "team_api", "_team_api", "team-api", "plugin:name", "___", "a" * 150]}
+
+        assert _validate_client_redirect_uri("http://127.0.0.1:54321/callback") == "http://127.0.0.1:54321/callback"
+        try:
+            _validate_client_redirect_uri("https://portal.example.invalid/callback")
+        except ValueError:
+            METRICS["mcp_rpc_https_callback_rejected"] = True
+        else:
+            raise AssertionError("The pinned RPC unexpectedly accepted a public HTTPS redirect")
+        os.environ["HERMES_DASHBOARD_PUBLIC_URL"] = "https://native.example.invalid/hermes"
+        config_path = Path(os.environ["HERMES_HOME"], "config.yaml")
+        cfg = yaml.safe_load(config_path.read_text())
+        cfg.setdefault("mcp_servers", {})["fixture-oauth"] = {"url": "https://mcp.example.invalid/mcp", "auth": "oauth"}
+        config_path.write_text(yaml.safe_dump(cfg))
+        METRICS["mcp_oauth_starts"] = 0
+        METRICS["mcp_oauth_approvals"] = 0
+
+        def synthetic_oauth_worker(flow, config):
+            METRICS["mcp_oauth_starts"] += 1
+
+            async def work():
+                await flow.publish_authorization_url("https://auth.example.invalid/authorize?" + urlencode({
+                    "state": secrets.token_urlsafe(24), "redirect_uri": flow.redirect_uri,
+                }))
+                try:
+                    await flow.wait_for_callback(timeout=15)
+                    flow.mark_approved()
+                    METRICS["mcp_oauth_approvals"] += 1
+                except Exception:
+                    flow.mark_error("Synthetic OAuth cancelled or denied")
+                finally:
+                    flow.mark_worker_done()
+
+            asyncio.run(work())
+
+        mcp_routes._run_dashboard_mcp_oauth = synthetic_oauth_worker
     else:
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Unknown synthetic control")
