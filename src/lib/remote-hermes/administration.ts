@@ -10,7 +10,7 @@ import { record } from './socket';
 import { assertRemoteHermesAdmission } from './policy';
 import { remoteAccess } from './store';
 import { ownedNativeSession } from './sessions';
-import { administrationInput, mcpInventory, probeSummary, settingValue, settingValues } from './administration-contract';
+import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, probeSummary, settingValue, settingValues } from './administration-contract';
 
 function assertIdle(current: { status: string; queueRequestId?: string | null } | undefined,
   view: { running: boolean; uncertain?: boolean; queuePending?: boolean } | undefined) {
@@ -62,9 +62,47 @@ export async function nativeAdministration(ownerId: string, connectionId: string
       throw new HttpError(400, 'Choose an existing credential key for a configured MCP server.');
   }
   if (input.operation === 'customServer') {
-    const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});
+    const nativeList = await hub.socket.call('mcp.servers.list', { profile: row.profile });
+    const inventory = mcpInventory(nativeList, {}, {});
     if (inventory.servers.some(s => s.name.toLowerCase() === input.name.toLowerCase()))
       throw new HttpError(409, 'A server with this name already exists in the selected profile.');
+    if (input.bearerToken) {
+      // Hermes derives bearer storage as MCP_<UPPERCASED_NAME_WITH_PUNCTUATION_AS_UNDERSCORES>_API_KEY.
+      // Check the entire bounded native inventory before dispatch: adding a different name that
+      // normalizes to the same environment slot would silently overwrite an existing credential.
+      const targetSlot = nativeMcpBearerEnvSlot(input.name);
+      const nativeServers: unknown[] = Array.isArray(nativeList.servers) ? nativeList.servers : [];
+      if (!targetSlot || !Array.isArray(nativeList.servers) || nativeServers.length > 100)
+        throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+      for (const value of nativeServers) {
+        const server = record(value);
+        if (typeof server.name !== 'string')
+          throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+        const slot = nativeMcpBearerEnvSlot(server.name);
+        if (!slot)
+          throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+        if (slot === targetSlot)
+          throw new HttpError(409, 'This server name shares a protected credential slot with an existing MCP server. Choose a different name.');
+        // Native inventory deliberately redacts HTTP header templates. Such a server could
+        // refer to any profile environment key, so its credential dependencies cannot be
+        // proven disjoint from the slot Hermes is about to write.
+        if (server.transport === 'http' || !['stdio', 'sse', 'streamable-http'].includes(String(server.transport)))
+          throw new HttpError(409, 'Hermes does not expose enough MCP credential metadata to add this bearer token safely. Refresh the profile or remove the opaque server in Hermes first.');
+        const env = server.env;
+        if (env !== undefined && (!Array.isArray(env) || env.some(key => typeof key !== 'string')))
+          throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+        if ((Array.isArray(env) && env.includes(targetSlot)))
+          throw new HttpError(409, 'This server name shares a protected credential slot with an existing MCP server. Choose a different name.');
+        const headers = server.headers;
+        if (headers !== undefined && (!headers || typeof headers !== 'object' || Array.isArray(headers)))
+          throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+        for (const header of Object.values(record(headers))) {
+          if (typeof header !== 'string') continue;
+          if ([...header.matchAll(/\$\{([A-Z][A-Z0-9_]{0,127})\}/g)].some(match => match[1] === targetSlot))
+            throw new HttpError(409, 'This server name shares a protected credential slot with an existing MCP server. Choose a different name.');
+        }
+      }
+    }
   }
   if (input.operation === 'remove') {
     const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});

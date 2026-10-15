@@ -101,6 +101,27 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
       name: 'fixture-custom-http', url: 'https://mcp.example.invalid/v1',
     })]));
   });
+  it('confirms the pinned native credential-slot punctuation normalization', async () => {
+    const names = ['fixture-slot-team-api', 'fixture-slot-team.api'];
+    const token = 'synthetic-slot-parity-token';
+    try {
+      for (const name of names) {
+        await expect(rpc('mcp.servers.add', {
+          profile: 'default', name, config: { url: 'https://mcp.example.invalid/v1' },
+        })).resolves.toMatchObject({ ok: true, name });
+      }
+      const slots = [];
+      for (const name of names) {
+        const configured = await rpc('mcp.servers.set_api_key', { profile: 'default', name, value: token });
+        expect(JSON.stringify(configured)).not.toContain(token);
+        slots.push(configured.env_var);
+      }
+      // Exact pinned _env_key_for_server replaces punctuation with underscores.
+      expect(slots).toEqual(['MCP_FIXTURE_SLOT_TEAM_API_API_KEY', 'MCP_FIXTURE_SLOT_TEAM_API_API_KEY']);
+    } finally {
+      for (const name of names) await rpc('mcp.servers.remove', { profile: 'default', name }).catch(() => undefined);
+    }
+  });
   it('runs a deterministic native turn, restores history and reconnects without resubmitting', async () => {
     const before = (await fixture('metrics')).agent_turns;
     expect(await rpc('prompt.submit', { ...params(), text: 'fixture-reply' })).toMatchObject({ status: 'streaming' });
