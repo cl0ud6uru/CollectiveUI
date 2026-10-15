@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, probeSummary } from '@/lib/remote-hermes/administration-contract';
 import { HttpError } from '@/lib/authz';
 
-const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, profileAdvisoryHeld: false, profileLockLoss: null as null | (() => void), receipt: null as null | { digest: string }, transaction: null as null | ((run: (tx: unknown) => unknown) => unknown), call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn() }));
+const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, profileAdvisoryHeld: false, profileLockLoss: null as null | (() => void), profileClients: new Set<unknown>(), dispatchConnected: vi.fn(), receipt: null as null | { digest: string }, transaction: null as null | ((run: (tx: unknown) => unknown) => unknown), call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn() }));
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string) => { if (owner !== 'owner') throw new Error('not found'); return { id: 'session', profile: f.profile, status: f.status, queueRequestId: f.queueRequestId }; } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { base: 'https://hermes.example.test', profiles: f.profiles, setMcpServerEnabled: f.setEnabled } }; } }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: f.dispatchConnected }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
 vi.mock('@/db', () => {
   const transaction = async (run: (tx: unknown) => unknown) => run({
   select: () => ({ from: (table: { [key: symbol]: unknown }) => {
@@ -17,20 +17,30 @@ vi.mock('@/db', () => {
   insert: () => ({ values: async (value: { digest: string }) => { f.receipt = { digest: value.digest }; } }),
   });
   f.transaction = transaction;
-  return { pool: { connect: async () => ({ on: (event: string, callback: () => void) => { if (event === 'error' || event === 'end') f.profileLockLoss = callback; }, removeListener: (event: string) => { if (event === 'error' || event === 'end') f.profileLockLoss = null; }, query: async (sql: string) => {
+  return { pool: { connect: async () => {
+    const client = { on: (event: string, callback: () => void) => { if (event === 'error' || event === 'end') f.profileLockLoss = callback; }, removeListener: (event: string) => { if (event === 'error' || event === 'end') f.profileLockLoss = null; }, query: async (sql: string) => {
     if (sql.includes('pg_try_advisory_lock')) {
       if (f.profileAdvisoryHeld) return { rows: [{ locked: false }] };
       f.profileAdvisoryHeld = true; return { rows: [{ locked: true }] };
     }
     if (sql.includes('pg_advisory_unlock')) f.profileAdvisoryHeld = false;
     return { rows: [] };
-  }, release: vi.fn() }) }, schema: {}, db: { transaction } };
+  }, release: vi.fn() };
+    f.profileClients.add(client);
+    return client;
+  } }, schema: {}, db: { transaction } };
 });
-vi.mock('drizzle-orm/node-postgres', () => ({ drizzle: () => ({ transaction: (run: (tx: unknown) => unknown) => f.transaction!(run) }) }));
+vi.mock('drizzle-orm/node-postgres', () => ({ drizzle: (client: unknown) => ({ transaction: (run: (tx: unknown) => unknown) => {
+  if (!f.profileClients.has(client)) throw new Error('bounded pool exhausted by a nested database checkout');
+  return f.transaction!(run);
+} }) }));
 import { nativeAdministration } from '@/lib/remote-hermes/administration';
 const requestId = 'f1eeac5a-c19f-4b5b-97ef-a1cd7b02e658';
 describe('native administration protocol and isolation', () => {
-  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.profileAdvisoryHeld = false; f.profileLockLoss = null; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
+  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.profileAdvisoryHeld = false; f.profileLockLoss = null; f.profileClients.clear(); f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.dispatchConnected.mockImplementation(async (method: string, params: unknown, _epoch: number, _timeout: number, tx: unknown) => {
+    if (f.profileAdvisoryHeld && !tx) throw new Error('bounded pool exhausted by a nested database checkout');
+    return { reply: f.call(method, params) };
+  }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
   it('rejects unowned sessions before native RPC', async () => {
     await expect(nativeAdministration('other', 'connection', 'session', { operation: 'inspect' })).rejects.toThrow('not found'); expect(f.call).not.toHaveBeenCalled();
   });
@@ -174,6 +184,25 @@ describe('native administration protocol and isolation', () => {
     expect(heldDuringReadback).toBe(true);
     expect(f.receipt).not.toBeNull();
     expect(JSON.stringify(f.receipt)).not.toContain('synthetic-');
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
+  it('uses the held pool-one client for lock-bound inventory RPC dispatch and readback', async () => {
+    const configured = { name: 'team-api', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: f.call.mock.calls.some(([call]) => call === 'mcp.servers.add') ? [configured] : [] };
+      if (method === 'mcp.servers.add') return { ok: true, name: 'team-api', server: configured };
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-token', confirmed: true,
+    })).resolves.toMatchObject({ accepted: true, added: true });
+    // The initial optimistic read is outside the profile lock. The locked
+    // revalidation and post-write readback carry the transaction on the same
+    // client that owns the advisory lock, so a pool of size one can progress.
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.list')).toHaveLength(3);
+    const lockedReads = f.dispatchConnected.mock.calls.filter(([method]) => method === 'mcp.servers.list');
+    expect(lockedReads).toHaveLength(2);
+    expect(lockedReads.every(([, , , , tx]) => tx !== undefined)).toBe(true);
     expect(f.profileAdvisoryHeld).toBe(false);
   });
   it('does not reserve or mutate after the cross-process lock client is lost', async () => {
