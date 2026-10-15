@@ -1,14 +1,16 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentCtx } from "@/lib/agent/types";
 import type { Toolset } from "@/lib/agent/toolset";
 import type { Skill } from "@/db/schema";
 const h = vi.hoisted(() => ({ settings: vi.fn(), principal: vi.fn(), app: vi.fn(), bot: vi.fn(), provider: vi.fn(), catalog: vi.fn(), decide: vi.fn(), record: vi.fn() }));
 vi.mock("server-only", () => ({}));
+vi.mock("@/db", () => ({ db: { select: () => ({ from: () => ({ where: () => Object.assign(Promise.resolve([{}]), { orderBy: () => h.catalog() }) }) }) } }));
 vi.mock("@/lib/settings", () => ({ getSetting: h.settings }));
 vi.mock("@/lib/auth/groups", () => ({ loadPrincipal: h.principal }));
 vi.mock("@/lib/authz", () => ({ getAccessibleModel: h.app, getUsableBot: h.bot }));
 vi.mock("@/lib/llm/resolve", () => ({ providerContextFor: h.provider }));
-vi.mock("@/lib/agent/learning/store", () => ({ learnedSkillsForBot: vi.fn(), learningIsEnabled: vi.fn(), recordLearnedSkillUse: h.record }));
+vi.mock("@/lib/agent/learning/store", () => ({ learnedSkillsForBot: vi.fn(), learningIsEnabled: vi.fn(async () => false), recordLearnedSkillUse: h.record }));
 vi.mock("@/lib/agent/tools/skills", async original => ({ ...await original<typeof import("@/lib/agent/tools/skills")>(), currentSkillsForTurn: h.catalog }));
 vi.mock("@/lib/llm/providers/decisions", () => ({ requestDecision: h.decide }));
 import { skillPicking } from "@/lib/agent/skill-picking";
@@ -28,7 +30,7 @@ const result = (questions: { name: string }[], probabilities = [0.95, 0.05]) => 
   answers: questions.map((q, i) => ({ type: "predicate", name: q.name, probability: probabilities[i] })) });
 beforeEach(() => {
   vi.resetAllMocks();
-  h.settings.mockResolvedValue({ queenRouting: false, skillPicking: true, providerAppId: "api" });
+  h.settings.mockResolvedValue({ queenRouting: false, skillPicking: true, providerAppId: "api", disabledTools: [] });
   h.principal.mockResolvedValue(context().principal); h.bot.mockResolvedValue(context().bot);
   h.app.mockImplementation(async (_p, id) => id === "main" ? context().app : { id: "api", enabled: true, provider: "openai", credentialMode: "org", baseUrl: null });
   h.provider.mockResolvedValue({ kind: "openai", secret: { type: "api-key", apiKey: "private-key" }, baseUrl: null });
@@ -181,5 +183,22 @@ describe("native optional skill picking", () => {
     await skillPicking(context(), toolset([]), "Read");
     await skillPicking({ ...context(), execution: { holder: "w", deadlineAt: Date.now() } }, toolset(), "Read");
     expect(h.decide).not.toHaveBeenCalled();
+  });
+});
+
+describe("direct decision root-budget propagation", () => {
+  it("carries the caller root scope on the selected decision connection", async () => {
+    const ctx = { ...context(), usage: { pending: [], messageId: "root-reply", rootBudgetId: "root-reply", runId: "root-run" } };
+    h.provider.mockResolvedValue({ appId: "decision-api", kind: "openai", secret: { type: "api-key", apiKey: "fixture-key" }, baseUrl: null,
+      usageAttribution: { billingRoute: "api:openai", providerConnectionId: "decision-connection", providerOrganization: "fixture-org", providerProject: "fixture-project" } });
+    await skillPicking(ctx, toolset(), "Read one report");
+    expect(h.decide).toHaveBeenCalledTimes(1);
+    expect(h.decide.mock.calls[0][3].usage).toMatchObject({ purpose: "decision", billingSource: "org", appId: "decision-api", model: "gpt-6-luna", providerConnectionId: "decision-connection", billingRoute: "api:openai" });
+    expect(h.decide.mock.calls[0][3].usage.scope).toBe(ctx.usage);
+  });
+  it("does not hide an admission denial behind the optional classifier fallback", async () => {
+    h.decide.mockRejectedValue(new NativeRunBudgetError("Fixture shared budget exhausted"));
+    const ctx = context();
+    await expect(skillPicking(ctx, toolset(), "Read one report")).rejects.toThrow("Fixture shared budget exhausted");
   });
 });

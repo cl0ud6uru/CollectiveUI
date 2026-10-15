@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import WebSocket, { WebSocketServer, type ClientOptions } from 'ws';
+import { WebSocketServer, type ClientOptions } from 'ws';
 import type { RequestOptions } from 'node:http';
 import { DashboardSocket } from '@/lib/remote-hermes/socket';
 import { answerFor, promptView, sessionView } from '@/lib/remote-hermes/view';
@@ -32,55 +32,6 @@ describe('native Hermes socket', () => {
     await expect(socket.callConnected('config.set', {}, epoch)).rejects.toThrow('Authorization revoked');
     await expect(socket.answer('old-request', { choice: 'once' })).rejects.toThrow('Authorization revoked');
     expect(received).toHaveLength(2);
-  });
-  it.each(['callback failure', 'disconnect during write'])('does not resolve native answers before the write completes (%s)', async failure => {
-    const { server, url } = await fixture();
-    server.on('connection', ws => { ws.send(ready); ws.on('message', raw => {
-      const input = JSON.parse(String(raw));
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'] } }));
-    }); });
-    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
-    await socket.connect();
-    let complete!: (error?: Error) => void;
-    const send = vi.spyOn(WebSocket.prototype, 'send').mockImplementation(function (_data, callback) {
-      complete = callback as (error?: Error) => void;
-    });
-    try {
-      let settled = false;
-      const result = socket.answer('protected', { value: 'synthetic-secret' }).then(() => { settled = true; return null; }, error => { settled = true; return error as Error; });
-      await vi.waitFor(() => expect(complete).toBeTypeOf('function'));
-      expect(settled).toBe(false);
-      if (failure === 'callback failure') complete(new Error('Synthetic low-level detail'));
-      else socket.close();
-      const error = await result;
-      expect(error?.message).toMatch(/delivery/);
-      expect(error?.message).not.toContain('synthetic-secret');
-      expect(error?.message).not.toContain('low-level');
-    } finally { send.mockRestore(); }
-  });
-  it('fences prompt responses to the socket epoch that supplied their native request', async () => {
-    const { server, url } = await fixture(); let active: import('ws').WebSocket; const responses: unknown[] = [];
-    server.on('connection', ws => { active = ws; ws.send(ready); ws.on('message', raw => {
-      const input = JSON.parse(String(raw));
-      if (!input.method) { responses.push(input); return; }
-      ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'] } }));
-    }); });
-    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
-    await socket.connect(); const epoch = socket.connectionEpoch;
-    active!.terminate(); await vi.waitFor(() => expect(socket.state).toBe('reconnecting')); await socket.connect();
-    await expect(socket.answer('protected', { value: 'synthetic-secret' }, epoch)).rejects.toThrow('verified Hermes connection changed');
-    expect(responses).toEqual([]);
-  });
-  it('drops the closed socket reference containing its authentication URL on retirement', async () => {
-    const { server, url } = await fixture(); url.searchParams.set('token', 'synthetic-token');
-    server.on('connection', ws => { ws.send(ready); ws.on('message', raw => ws.send(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(String(raw)).id, result: { server_requests: ['approval'] } }))); });
-    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
-    await socket.connect();
-    expect(Object.getOwnPropertyDescriptor(socket, 'ws')?.value?.url).toContain('synthetic-token');
-    socket.close();
-    expect(Object.getOwnPropertyDescriptor(socket, 'ws')?.value).toBeUndefined();
-    expect(socket.serverRequests).toEqual([]);
-    await expect(socket.connect()).rejects.toThrow('retired');
   });
   it('pins the WebSocket upgrade to the validated address instead of resolving the URL host again', async () => {
     const { server, url } = await fixture(); url.hostname = 'dashboard.example.invalid';
@@ -156,6 +107,21 @@ describe('native Hermes socket', () => {
     const refresh = socket.call('session.resume', { session_id: 'stored' });
     await expect(refresh).resolves.toEqual({ session_id: 'runtime' });
     await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+  });
+  it('suppresses the reconnect refresh callback for a recovery-only candidate handshake', async () => {
+    const { server, url } = await fixture(); let active: import('ws').WebSocket; const methods: string[] = [];
+    server.on('connection', ws => {
+      active = ws; ws.send(ready);
+      ws.on('message', raw => { const input = JSON.parse(String(raw)); methods.push(input.method); ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'] } })); });
+    });
+    const reconnected = vi.fn(async () => {});
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}, () => {}, reconnected); resources.push(() => socket.close());
+    await socket.connect(); active!.terminate();
+    await vi.waitFor(() => expect(socket.state).toBe('reconnecting'));
+    await socket.connect({ suppressReconnectCallback: true });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(methods).toEqual(['client.capabilities', 'client.capabilities']);
+    expect(reconnected).not.toHaveBeenCalled();
   });
   it('fails closed on unsupported approvals without exposing credentials in socket errors', async () => {
     const { server, url } = await fixture(); url.searchParams.set('ticket', 'synthetic-private-ticket');

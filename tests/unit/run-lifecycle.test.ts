@@ -1,3 +1,4 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { tool, type UIMessageChunk } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -28,6 +29,7 @@ vi.mock("@/db", () => {
 });
 vi.mock("@/lib/settings", () => ({ getSetting: async (key: string) => key === "decisions"
   ? { queenRouting: h.decisionsEnabled, skillPicking: h.skillsEnabled, toolShortlisting: h.toolsEnabled } : { maxStepsCap: 10, enabled: h.decisionsEnabled, defaultBotId: "b1" } }));
+vi.mock("@/lib/delegation/authority", async (original) => ({ ...(await original<typeof import("@/lib/delegation/authority")>()), delegatedAuthorityBinding: async () => "fixture-authority" }));
 vi.mock("@/lib/agent/queen-routing", () => ({ queenRouting: h.route }));
 vi.mock("@/lib/agent/skill-picking", () => ({ skillPicking: h.pickSkills }));
 vi.mock("@/lib/agent/tool-shortlisting", () => ({ toolShortlisting: h.shortlist }));
@@ -215,11 +217,18 @@ describe("runTurn", () => {
     );
     const persist = vi.fn(async () => {});
     const r = await turn({ persist });
-    expect(r.chunks.filter((c) => c.type === "error")).toEqual([{ type: "error", errorText: "An error occurred." }]);
-    expect(r.done.error).toBe("An error occurred.");
-    expect(persist).toHaveBeenCalledWith(expect.anything(), { error: "An error occurred." });
+    expect(r.done.error).toMatch(/^Something went wrong\. Try again\. Reference: [\w-]+\.$/);
+    expect(r.chunks.filter((c) => c.type === "error")).toEqual([{ type: "error", errorText: r.done.error }]);
+    expect(persist).toHaveBeenCalledWith(expect.anything(), { error: r.done.error });
   });
 
+  it("keeps arbitrary outer stream failures out of user-visible chunks", async () => {
+    h.buildToolset.mockResolvedValue({ tools: {}, skills: [], delegates: [], approval: () => undefined, close: h.close,
+      get warnings() { throw new Error("arbitrary-stream-fixture-secret https://private.fixture.invalid"); } });
+    const r = await turn();
+    expect(r.chunks.find(c => c.type === "error")).toMatchObject({ errorText: expect.stringMatching(/^Something went wrong\. Try again\. Reference:/) });
+    expect(JSON.stringify(r.chunks)).not.toMatch(/arbitrary-stream-fixture-secret|private\.fixture\.invalid/);
+  });
   it("an actionable model error is kept as is", async () => {
     useModel(async () => {
       throw new ProviderUnavailableError("Sign in with ChatGPT is turned off. Pick another model.");
@@ -235,7 +244,7 @@ describe("runTurn", () => {
         boom: tool({
           inputSchema: z.object({}),
           execute: async (): Promise<string> => {
-            throw new Error("nope");
+            throw new Error("arbitrary-tool-fixture-secret https://private.fixture.invalid");
           },
         }),
       },
@@ -251,6 +260,7 @@ describe("runTurn", () => {
     ]);
     const r = await turn({ bot: { id: "b1", maxSteps: 3 } as never });
     expect(r.chunks.some((c) => c.type === "tool-output-error")).toBe(true);
+    expect(JSON.stringify(r.chunks)).not.toMatch(/arbitrary-tool-fixture-secret|private\.fixture\.invalid/);
     expect(r.chunks.some((c) => c.type === "error")).toBe(false);
     expect(r.done.error).toBeUndefined();
   });
@@ -259,19 +269,37 @@ describe("runTurn", () => {
     const run = runHandle();
     const r = await turn({ run, responseMessageId: "msg-pre", conversation: { id: "c1", userId: "u1", title: "New chat" } as never });
     const scope = h.resolveModel.mock.calls[0][1].usage;
-    expect(scope).toMatchObject({ messageId: "msg-pre", runId: "run-1" });
+    expect(scope).toMatchObject({ messageId: "msg-pre", runId: "run-1", rootBudgetId: "msg-pre" });
     expect(h.buildToolset.mock.calls[0][0].usage).toBe(scope);
     expect((h.generateTitle.mock.calls[0] as unknown[])[2]).toMatchObject({ usage: scope });
     expect(r.chunks).toContainEqual({ type: "data-title", data: { title: "A title" }, transient: true });
+  });
+
+  it("makes a blocked title's budget reason visible while retaining the text-derived title", async () => {
+    h.generateTitle.mockRejectedValueOnce(new NativeRunBudgetError("Fixture title model price is unknown"));
+    const result = await turn({ conversation: { id: "c1", userId: "u1", title: "New chat" } as never });
+    expect(result.chunks).toContainEqual({ type: "data-notice", data: { message: "Fixture title model price is unknown" }, transient: true });
+    expect(result.chunks).toContainEqual({ type: "data-title", data: { title: "hi" }, transient: true });
+    expect(result.done.error).toBeUndefined();
   });
 
   it("a continuation extends the stored assistant message whatever id is passed", async () => {
     const stored = { id: "a-msg", role: "assistant", parts: [{ type: "text", text: "Earlier" }] };
     const r = await turn({ history: [userMsg, stored] as never, continuation: true, responseMessageId: "ignored", run: runHandle() });
     expect(r.done.responseMessage.id).toBe("a-msg");
-    expect(h.resolveModel.mock.calls[0][1].usage).toMatchObject({ messageId: "a-msg", runId: "run-1" });
+    expect(h.resolveModel.mock.calls[0][1].usage).toMatchObject({ messageId: "a-msg", runId: "run-1", rootBudgetId: "a-msg" });
     expect(h.updateMessageParts).toHaveBeenCalledWith("c1", expect.objectContaining({ id: "a-msg" }), expect.anything(), expect.anything());
     expect(h.upsertMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a delegated child and its continuation on the persisted root budget", async () => {
+    const authorize = vi.fn(async () => {});
+    const delegation = { task: { id: "child", rootMessageId: "root-reply", mode: "sync", depth: 1, ancestry: [] }, authorize } as unknown as NonNullable<TurnOptions["delegation"]>;
+    await turn({ delegation, responseMessageId: "child-reply", run: runHandle() });
+    expect(h.resolveModel.mock.calls[0][1].usage).toMatchObject({ messageId: "child-reply", rootBudgetId: "root-reply" });
+    vi.clearAllMocks();
+    await turn({ delegation, continuation: true, history: [userMsg, { id: "child-reply", role: "assistant", parts: [{ type: "text", text: "Earlier" }] }] as never, run: runHandle() });
+    expect(h.resolveModel.mock.calls[0][1].usage).toMatchObject({ messageId: "child-reply", rootBudgetId: "root-reply" });
   });
 
   it("a persist override replaces persistAssistantTurn (no save, no tool log, no memory extraction here)", async () => {

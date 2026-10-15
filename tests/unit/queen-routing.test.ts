@@ -1,3 +1,4 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentCtx } from "@/lib/agent/types";
 import type { Toolset } from "@/lib/agent/toolset";
@@ -103,5 +104,22 @@ describe("Queen routing admission, fallback and revocation", () => {
     await queenRouting(context(), toolset(), [], "Read");
     h.discover.mockResolvedValue([]); await queenRouting(context(), toolset(), [], "Read");
     expect(h.decide).not.toHaveBeenCalled();
+  });
+});
+
+describe("direct decision root-budget propagation", () => {
+  it("carries the caller root scope on the selected decision connection", async () => {
+    const ctx = { ...context(), usage: { pending: [], messageId: "root-reply", rootBudgetId: "root-reply", runId: "root-run" } };
+    h.provider.mockResolvedValue({ appId: "decision-api", kind: "openai", secret: { type: "api-key", apiKey: "fixture-key" }, baseUrl: null,
+      usageAttribution: { billingRoute: "api:openai", providerConnectionId: "decision-connection", providerOrganization: "fixture-org", providerProject: "fixture-project" } });
+    await queenRouting(ctx, toolset(), [], "Read one report");
+    expect(h.decide).toHaveBeenCalledTimes(1);
+    expect(h.decide.mock.calls[0][3].usage).toMatchObject({ purpose: "decision", billingSource: "org", appId: "decision-api", model: "gpt-6-luna", providerConnectionId: "decision-connection", billingRoute: "api:openai" });
+    expect(h.decide.mock.calls[0][3].usage.scope).toBe(ctx.usage);
+  });
+  it("does not hide an admission denial behind the optional classifier fallback", async () => {
+    h.decide.mockRejectedValue(new NativeRunBudgetError("Fixture shared budget exhausted"));
+    const ctx = context();
+    await expect(queenRouting(ctx, toolset(), [], "Read one report")).rejects.toThrow("Fixture shared budget exhausted");
   });
 });

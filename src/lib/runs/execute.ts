@@ -17,19 +17,17 @@ import { resolveTurnTarget } from "@/lib/agent/target";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { HttpError } from "@/lib/authz";
 import { loadMessageRows, pathTo, rowToUIMessage, updateMessageParts, type PortalUIMessage } from "@/lib/chat/store";
-import { userFacingMessage } from "@/lib/llm";
 import { enqueueRun } from "@/lib/jobs";
-import { redactSecrets } from "@/lib/redact";
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import { decideFinal, finalErrorText } from "./decide";
 import { RunEventWriter } from "./events";
 import { afterRunTransition } from "./hooks";
 import { loadHermesRunContext } from "./hermes-context";
 import { hermesAdmissionRecorder } from "./hermes-admission";
-import { stopHermesConversation } from "./hermes-stop";
 import { runHost } from "./host";
 import { notifyRun } from "./log";
 import { closeOpenParts } from "./replay";
-import { claimRun, finalizeRunTx, getRun, noteRunResumeState, pauseRun, setRunBilling, withRunFence } from "./state";
+import { claimRun, finalizeRunTx, getRun, noteRunResumeState, pauseRunTx, setRunBilling, withRunFence } from "./state";
 import { stopProviderRun } from "./provider-stop";
 import { prepareTeamWorkerTarget,executeTeamLearningSegment } from "./team-candidate";
 import { settleTeamCandidateRun,type ActiveTeamCandidateRun } from "@/lib/hermes-team/candidate-startup";
@@ -57,7 +55,7 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
 }
 
 const hooks = (run: AgentRun, status: AgentRunStatus, message: PortalUIMessage | null, error: string | null) =>
-  afterRunTransition(run, status, message, error).catch((err) => console.error(`[runs] hooks after run ${run.id} (${status}) failed`, err));
+  afterRunTransition(run, status, message, error).catch((err) => nativeErrorText(err));
 
 /**
  * What an approved tool shows when the segment ended before its result came back: it was already running (or about
@@ -89,7 +87,7 @@ export async function executeRun(runId: string, opts: { signal?: AbortSignal } =
     run = await claimRun(runId, host.instanceId);
     if (!run) return await reconcileUnclaimed(runId);
   } catch (err) {
-    console.error(`[runs] couldn't claim run ${runId}`, err);
+    nativeErrorText(err);
     return;
   }
 
@@ -107,7 +105,7 @@ export async function executeRun(runId: string, opts: { signal?: AbortSignal } =
     timer = setTimeout(() => ac.abort(new RunAbort("timeout")), timeoutMs);
     await executeSegment(run, host.instanceId, ac, { background, timeoutMs });
   } catch (err) {
-    console.error(`[runs] run ${run.id} segment ${run.segment} failed`, err);
+    nativeErrorText(err);
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onJobAbort);
@@ -219,7 +217,7 @@ async function executeSegmentBody(run: AgentRun, holder: string, ac: AbortContro
     return;
   }
 
-  if (turn.billing?.source) await setRunBilling(run.id, holder, turn.billing.source).catch((err) => console.warn(`[runs] run ${run.id}: billing not recorded`, err));
+  if (turn.billing?.source) await setRunBilling(run.id, holder, turn.billing.source).catch((err) => nativeErrorText(err));
   await pump(turn.stream, writer, ac);
   await within(turn.done, DONE_TIMEOUT_MS);
   await writer.close();
@@ -227,7 +225,7 @@ async function executeSegmentBody(run: AgentRun, holder: string, ac: AbortContro
 
   if (pendingPersist) {
     try { await saveTurn(pendingPersist.input, pendingPersist.end); }
-    catch (err) { console.error(`[runs] failed to persist run ${run.id}`, err); }
+    catch (err) { nativeErrorText(err); }
   }
   if (abortKindOf(ac.signal.reason) === "lease-lost") return;
   const o = outcome as Outcome | undefined;
@@ -265,19 +263,28 @@ async function executeSegmentBody(run: AgentRun, holder: string, ac: AbortContro
     else if (paused) await hooks(paused, paused.status, o.message, paused.error);
     return;
   }
-  if (o.status === "waiting") {
-    const paused = await pauseRun(run, holder, turn.native ? { ...(saved ?? {}), native: turn.native } : saved, closing);
-    if (paused?.cancelRequestedAt && handle.hermes) await stopHermesConversation(run.userId, run.conversationId);
-    else if (paused) await hooks(paused, "waiting", o.message, null);
-    return;
-  }
-  const status = o.status as FinalStatus;
-  const finished = await db.transaction((tx) => finalizeRunTx(tx, run.id, { status: ["running"], holder }, { status, error: o.error, closing }));
-  if (!finished) return;
-  // Ended early: a provider run that reached an approval in this segment (its stream held for a pause that won't
-  // come now) or is otherwise still going must not carry on unobserved.
-  if (finished.status !== "succeeded") await stopProviderRun({ id: run.id, appId: run.appId, resumeState: saved ?? run.resumeState });
-  await hooks(finished, finished.status, o.message, o.error);
+  // Stop can be committed after saveTurn chose an outcome. Re-read it under the same run lock that settles
+  // the message, closing events and status; a delayed cancellation signal cannot strand an answerable approval.
+  const settled = await withRunFence(run.id, holder, async tx => {
+    const current = await getRun(run.id, tx);
+    if (!current) return null;
+    if (current.cancelRequestedAt) {
+      const cancelled = closeOpenParts(o.produced, "cancelled", { openIds: writer.openStreamIds(), stoppedText: STOPPED_MID_RUN });
+      await updateMessageParts(run.conversationId, cancelled.message, {}, tx);
+      const finished = await finalizeRunTx(tx, run.id, { status: ["running"], holder }, { status: "cancelled", closing: cancelled.chunks });
+      if (!finished) throw new Error(`run ${run.id} changed while locked`);
+      return { run: finished, message: cancelled.message, error: null };
+    }
+    const finished = o.status === "waiting"
+      ? await pauseRunTx(tx, run, holder, turn.native ? { ...(saved ?? {}), native: turn.native } : saved, closing)
+      : await finalizeRunTx(tx, run.id, { status: ["running"], holder }, { status: o.status as FinalStatus, error: o.error, closing });
+    return finished && { run: finished, message: o.message, error: o.error };
+  });
+  const done = settled?.value;
+  if (!done) return;
+  if (done.run.status !== "succeeded" && done.run.status !== "waiting")
+    await stopProviderRun({ id: run.id, appId: run.appId, resumeState: saved ?? run.resumeState });
+  await hooks(done.run, done.run.status, done.message, done.error);
 }
 
 /** Reads the turn's stream into the log. After an abort the stream gets runConfig().cancelDeadlineMs to end by itself. */
@@ -300,7 +307,7 @@ async function pump(stream: ReadableStream<UIMessageChunk>, writer: RunEventWrit
       await writer.push(value);
     }
   } catch (err) {
-    console.error("[runs] reading the turn's stream failed", err);
+    nativeErrorText(err);
   } finally {
     clearTimeout(cut);
     ac.signal.removeEventListener("abort", armCut);
@@ -370,7 +377,7 @@ async function supersedeWaiting(run: AgentRun, app: AiApp) {
       .from(agentRuns)
       .where(and(eq(agentRuns.conversationId, run.conversationId), eq(agentRuns.status, "waiting"), ne(agentRuns.id, run.id)));
   } catch (err) {
-    console.error(`[runs] run ${run.id}: couldn't list waiting runs to supersede`, err);
+    nativeErrorText(err);
     return;
   }
   for (const w of waiting) {
@@ -402,7 +409,7 @@ async function supersedeWaiting(run: AgentRun, app: AiApp) {
       await stopProviderRun(done.run);
       await hooks(done.run, "cancelled", done.message, null);
     } catch (err) {
-      console.error(`[runs] run ${run.id}: couldn't supersede waiting run ${w.id}`, err);
+      nativeErrorText(err);
     }
   }
 }
@@ -412,8 +419,8 @@ async function supersedeWaiting(run: AgentRun, app: AiApp) {
  * its answered approvals become errors ("Couldn't continue: …") and are never re-armed, so a tool can't run twice.
  */
 async function failSetup(run: AgentRun, holder: string, err: unknown) {
-  const text = err instanceof HttpError ? err.message : (userFacingMessage(err) ?? "Couldn't start this reply.");
-  console.error(`[runs] run ${run.id} segment ${run.segment}: setup failed:`, redactSecrets(err instanceof Error ? (err.stack ?? err.message) : String(err)));
+  // HttpErrors here come from local setup authorization and lifecycle checks.
+  const text = nativeErrorText(err, err instanceof HttpError && err.constructor === HttpError ? err.message : undefined);
   const fenced = await withRunFence(run.id, holder, async (tx) => {
     let message: PortalUIMessage | null = null;
     const closing: UIMessageChunk[] = [];

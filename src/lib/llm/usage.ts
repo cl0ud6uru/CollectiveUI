@@ -7,7 +7,7 @@ import type { BillingSource, ModelPurpose, ProviderKind } from "./kinds";
  * Collects the ledger writes of one turn so the turn can await them before reporting that it's done,
  * and links every call made during the turn (including delegates) to the assistant message.
  */
-export type UsageScope = { pending: Promise<unknown>[]; messageId?: string; runId?: string; writer?: UsageWriter; replayAfterRollback?: () => Promise<void> };
+export type UsageScope = { pending: Promise<unknown>[]; messageId?: string; runId?: string; rootBudgetId?: string; writer?: UsageWriter; replayAfterRollback?: () => Promise<void> };
 export function newUsageScope(init: Omit<UsageScope, "pending" | "replayAfterRollback"> = {}, q?: DbOrTx): UsageScope {
   const scope: UsageScope = { pending: [], ...init };
   if (!q) return scope;
