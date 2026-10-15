@@ -6,6 +6,7 @@ import { secretSafe } from "@/lib/admin/secret-safe";
 import type { AgentCtx, ToolEntry } from "../types";
 import { changeBotStatus } from "@/lib/admin/bot-status";
 import { authorizeArchitectCall, lockArchitectActor, runArchitectCall } from "./admin-guard";
+import { architectBotCreateInput, architectBotToolsInput, architectBotUpdateInput, assignArchitectBotTools, createArchitectBot, updateArchitectBot } from "@/lib/admin/bot-config";
 
 /** The Architect's tool group key (never stored in bot_tools: the tools follow the installation receipt). */
 export const ADMIN_TOOL_KEY = "admin";
@@ -41,6 +42,21 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
         via: { agent: "architect", botId: ctx.bot!.id }, signal,
         beforeWrite: async tx => { await lockArchitectActor(ctx, tx); await authorizeArchitectCall(ctx, tx); },
       })),
+    }) },
+    { name: "admin_create_bot", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Create an ordinary private caller bot with an enabled shared tool-capable model. Always requires exact approval. It starts with no tools; assign built-in groups separately. Returns verified saved state.",
+      inputSchema: architectBotCreateInput,
+      execute: guarded("admin_create_bot", (p, i: z.output<typeof architectBotCreateInput>, signal) => createArchitectBot(ctx, p, i, signal)),
+    }) },
+    { name: "admin_update_bot", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Update basic configuration of an ordinary caller bot. Read admin_get_bot first and pass its exact revision. Always requires approval for this exact change; returns verified saved state.",
+      inputSchema: architectBotUpdateInput,
+      execute: guarded("admin_update_bot", (p, i: z.output<typeof architectBotUpdateInput>, signal) => updateArchitectBot(ctx, p, i, signal)),
+    }) },
+    { name: "admin_assign_bot_tools", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Replace an ordinary caller bot's built-in tool-group assignments, including Skills. Read admin_get_bot first and pass its exact revision. Each selected group and approval mode requires approval; MCP assignments are preserved and cannot be edited here. Returns verified saved state.",
+      inputSchema: architectBotToolsInput,
+      execute: guarded("admin_assign_bot_tools", (p, i: z.output<typeof architectBotToolsInput>, signal) => assignArchitectBotTools(ctx, p, i, signal)),
     }) },
     entry("admin_list_bots", tool({
       description: "List bots: owner, model, visibility, tool groups, routines, and whether each is built in (The Architect, Office Bot) or the default coordinator.",

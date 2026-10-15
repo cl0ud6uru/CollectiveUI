@@ -1,6 +1,8 @@
 # The Architect
 
-The Architect is a built-in, admin-only bot that explains, inspects and troubleshoots this installation. It reads bots, connections, users, health, failure counts, runs, jobs, spending and workspaces. This bounded first phase also supports enabling or disabling ordinary bots, with approval for every call. The wider mutation phases of [#147](https://github.com/cl0ud6uru/CollectiveUI/issues/147) remain unimplemented: bot creation/editing, tool/skill assignments, connection changes/tests, users/groups/settings, diagnostic bundles, scheduled checks and the operator CLI.
+The Architect is a built-in, admin-only bot that explains, inspects and troubleshoots this installation. It reads bots, connections, users, health, failure counts, runs, jobs, spending and workspaces. Every write requires approval for that exact call. It can create ordinary private caller bots, edit their basic configuration, change their enabled state, and assign built-in tool groups (including Skills).
+
+This bounded slice of [#147](https://github.com/cl0ud6uru/CollectiveUI/issues/147) excludes Team/service publication, grants, delegators, routines and personal runtimes. Connection metadata and tests, user/group/settings administration and diagnostic bundles are separate follow-up work. Scheduled read-only sweeps and the operator CLI are Phase 4 follow-ups and are not required to complete #147.
 
 ## Install
 
@@ -24,6 +26,12 @@ The installing admin owns the bot, but every current admin sees it in their bot 
 | `admin_spending` | Spending account snapshots and token usage by model or bot |
 | `admin_workspaces_status` | Workspace policy, sandboxd setup checks and each person's workspace state |
 
+## Approved bot configuration changes
+
+`admin_create_bot` creates an enabled, private caller bot using an enabled shared tool-capable model. It starts with no tools. `admin_update_bot` changes only its name, label, description, instructions, boundaries or model. `admin_assign_bot_tools` replaces its built-in tool groups and per-group approval modes while preserving existing MCP assignments; MCP grants and custom MCP assignment are managed in Admin. All three require a fresh per-call approval, carry an expected revision for edits, and refuse protected or unsupported bot types. They verify the saved bot and write an actor-attributed audit entry in the same transaction. A stale revision or failed readback/audit rolls back the write.
+
+Use `admin_get_bot` to inspect the current bot and revision before proposing an edit. The tool assignment result uses the displayed group names and approval modes. Every call is checked against the live admin/session, Architect installation, and direct conversation before the transaction writes.
+
 Health checks never change state. MCP servers and spending accounts are reported from their last test or refresh, not probed live. Worker health is inferred from run heartbeats and queued runs.
 
 ## Access and audit
@@ -38,7 +46,7 @@ The Architect is an ordinary native caller bot identified by its `architectBot` 
 
 The admin tools are not a bot tool group: they are not stored in `bot_tools`, can't be added to another bot, and are unaffected by edits in the bot editor. `buildToolset` (`src/lib/agent/toolset.ts`) offers them only when the bot is the installed Architect and the caller is a current admin in a direct chat. Each tool (`src/lib/agent/tools/admin.ts`) runs through `runArchitectCall` (`tools/admin-guard.ts`), which re-authorizes against the database with the pure `architectCallDenial` policy and writes the audit entry. Results pass through `secretSafe` (`src/lib/admin/secret-safe.ts`).
 
-The tools are thin wrappers over admin read functions in `src/lib/admin/inventory.ts` and `src/lib/admin/operations.ts`. Each function checks `assertAdmin` and selects explicit columns, so a future `collective` CLI or admin API can reuse them.
+The read tools are thin wrappers over admin read functions in `src/lib/admin/inventory.ts` and `src/lib/admin/operations.ts`. Bot writes share the bot editor's persistence helpers in `src/lib/bots/persist.ts`; the Architect's narrower `src/lib/admin/bot-config.ts` API owns its validation, CAS, authorization and audit. A future `collective` CLI or admin API can reuse the lower-level helpers without bypassing the Architect-specific gates.
 
 ## Approved bot status changes
 
