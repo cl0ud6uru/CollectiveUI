@@ -27,4 +27,3 @@ export function nativeMcpAuthorizationURL(base: string, name: string, value: str
     return url.href;
   } catch { throw unsupportedMcpOAuth(); }
 }
-
