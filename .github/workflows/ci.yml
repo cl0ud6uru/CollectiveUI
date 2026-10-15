@@ -102,6 +102,15 @@ jobs:
           REMOTE_HERMES_INTEGRATION: '1'
         run: npx vitest run --project integration tests/integration/remote-hermes-dashboard-conformance.test.ts tests/integration/remote-hermes-reservations.test.ts --maxWorkers=1
 
+      - name: Require composed native ownership and owner-confirmed recovery against PostgreSQL
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.remote-hermes-dashboard-source
+          HERMES_DASHBOARD_PYTHON: python
+          DATABASE_URL: postgres://postgres:synthetic-fixture-only@127.0.0.1:5432/hermes_fixture
+          ENCRYPTION_KEY: synthetic-conformance-only
+          REMOTE_HERMES_PORTAL_RECOVERY_CONFORMANCE: '1'
+        run: npx vitest run --project integration tests/integration/remote-hermes-portal-recovery.test.ts --maxWorkers=1
+
   checks:
     name: Typecheck, lint and unit tests
     runs-on: ubuntu-latest

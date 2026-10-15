@@ -56,7 +56,11 @@ os.environ.update(PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", HOME=st
 Path(os.environ["HERMES_HOME"]).mkdir()
 os.chdir(HOME)
 Path(os.environ["HERMES_HOME"], "config.yaml").write_text("model:\n  default: synthetic-conformance\n  provider: synthetic\ndashboard:\n  process_isolation: false\n")
-METRICS = {"agent_turns": 0, "external_attempts": 0, "refreshes": 0, "protected_answers": 0, "dropped_acks": 0, "attachment_hashes": []}
+if RECOVERY_ADAPTERS:
+    other = Path(os.environ["HERMES_HOME"], "profiles", "fixture-other")
+    other.mkdir(parents=True)
+    (other / "config.yaml").write_text(Path(os.environ["HERMES_HOME"], "config.yaml").read_text())
+METRICS = {"agent_turns": 0, "external_attempts": 0, "refreshes": 0, "protected_answers": 0, "auxiliary_calls": 0, "auxiliary_tracked": 0, "dropped_acks": 0, "attachment_hashes": []}
 # Deny external networking before importing any source with import-time hooks.
 _connect = socket.socket.connect
 _connect_ex = socket.socket.connect_ex
@@ -116,8 +120,36 @@ from hermes_cli.dashboard_auth.base import DashboardAuthProvider, InvalidCredent
 from hermes_cli.dashboard_auth.registry import register_global_provider
 from tui_gateway import server, server_requests, ws as native_ws
 from tui_gateway.synthetic_turn import SyntheticHeavyAgent
+if RECOVERY_ADAPTERS:
+    # A real named profile needs its native schema before read-only discovery/owner CAS.
+    with server._profile_db({"profile": "fixture-other"}, writer=True) as fixture_other_db:
+        assert fixture_other_db is not None
 from fastapi import Request
 import uvicorn
+
+if RECOVERY_ADAPTERS:
+    # Fixture-only worker observation; uses the actual guarded RPC dispatch context
+    # and the published composed auxiliary starter, never a fabricated owner context.
+    from tui_gateway.contracts.base import Params, Result
+    from tui_gateway.contracts.registry import method as declare_method
+    class AuxiliaryProbeParams(Params):
+        profile: str
+        session_id: str
+    class AuxiliaryProbeResult(Result):
+        scheduled: bool
+    def auxiliary_probe(rid, params):
+        with server._sessions_lock:
+            session = server._sessions.get(params["session_id"])
+        assert session is not None
+        def target():
+            METRICS["auxiliary_calls"] += 1
+            owner = server._collective_hub_owner
+            with owner._guard:
+                METRICS["auxiliary_tracked"] += int(owner._active_workers.get(str(Path(server._session_home(session)).resolve()), 0) > 0)
+        thread = server._collective_start_auxiliary_work(target, name="fixture-bound-auxiliary", session=session)
+        return server._ok(rid, {"scheduled": thread is not None})
+    declare_method("fixture.owner_auxiliary", params=AuxiliaryProbeParams, result=AuxiliaryProbeResult)
+    server.register_method("fixture.owner_auxiliary", server._collective_hub_owner.guard_method("fixture.owner_auxiliary", auxiliary_probe))
 
 app = web_server.app
 app.state.auth_required = True
@@ -280,11 +312,48 @@ async def control(request: Request):
         DROP_ACK = True
     elif RECOVERY_ADAPTERS and body == {"release_recovery_worker": True}:
         RECOVERY_RELEASE.set()
+    elif RECOVERY_ADAPTERS and body == {"probe_recovery_worker": True}:
+        with server._sessions_lock:
+            session = next(record for record in server._sessions.values() if Path(server._session_home(record)).resolve() == Path(os.environ["HERMES_HOME"]) and not record.get("_finalized") and not record.get("_closing"))
+        entered, auxiliary, tracked = [], [], []
+        owner = server._collective_hub_owner
+        owner.protect_worker(lambda: entered.append(True), session)()
+        def auxiliary_target():
+            auxiliary.append(True)
+            with owner._guard:
+                tracked.append(owner._active_workers.get(str(Path(server._session_home(session)).resolve()), 0) > 0)
+        worker = server._collective_start_auxiliary_work(auxiliary_target, name="fixture-owner-auxiliary", session=session)
+        if worker is not None:
+            worker.join(timeout=1)
+        return {"target_called": bool(entered), "auxiliary_called": bool(auxiliary), "auxiliary_tracked": bool(tracked and tracked[0])}
+    elif RECOVERY_ADAPTERS and body == {"profile_pollers": True}:
+        result = {name: {"count": 0, "stopped": 0, "alive": 0} for name in ("default", "fixture-other")}
+        with server._sessions_lock:
+            sessions = list(server._sessions.values())
+        for session in sessions:
+            home = Path(server._session_home(session)).resolve()
+            name = "default" if home == Path(os.environ["HERMES_HOME"]) else "fixture-other" if home == Path(os.environ["HERMES_HOME"], "profiles", "fixture-other") else None
+            stop = session.get("_notif_stop")
+            if name is not None and stop is not None:
+                result[name]["count"] += 1
+                result[name]["stopped"] += int(stop.is_set())
+                result[name]["alive"] += int(any(event is stop and thread.is_alive() for event, thread in server._notification_pollers))
+        return result
     elif RECOVERY_ADAPTERS and set(body) == {"probe_unowned_stdio", "request_id"} and body["probe_unowned_stdio"] is True and isinstance(body["request_id"], str) and 0 < len(body["request_id"]) <= 200:
         create = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-create", "method": "session.create", "params": {"profile": "default"}})
         answer = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-answer", "method": "request.answer", "params": {"id": body["request_id"], "result": {"value": "synthetic-stdio-rejected"}}})
         response = server_requests.resolve_response({"jsonrpc": "2.0", "id": body["request_id"], "result": {"value": "synthetic-stdio-rejected"}})
-        return {"create_rejected": "error" in create, "answer_rejected": "error" in answer, "response_resolved": bool(response)}
+        with server_requests._lock:
+            req = server_requests._open.get(body["request_id"])
+        assert req is not None
+        with server._sessions_lock:
+            orphan = server._sessions.pop(req.sid)
+        try:
+            orphan_response = server_requests.resolve_response({"jsonrpc": "2.0", "id": body["request_id"], "result": {"value": "synthetic-orphan-rejected"}})
+        finally:
+            with server._sessions_lock:
+                server._sessions[req.sid] = orphan
+        return {"create_rejected": "error" in create, "answer_rejected": "error" in answer, "response_resolved": bool(response), "orphan_response_resolved": bool(orphan_response)}
     elif body == {"disconnect": True}:
         for connection in list(CONNECTIONS):
             with contextlib.suppress(Exception):
