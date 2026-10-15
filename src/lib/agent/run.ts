@@ -1,4 +1,6 @@
 import { isCodexApp } from '@/lib/codex/target';
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
+import { nativeBudgetApplies } from "@/lib/llm/run-budget-store";
 import { InvalidToolApprovalSignatureError } from "ai";
 import { convertToModelMessages, createUIMessageStream, isStepCount, streamText, toUIMessageStream, type UIMessageChunk } from "ai";
 import { eq } from "drizzle-orm";
@@ -18,6 +20,7 @@ import { buildInstructionSections, toModelInstructions } from "./instructions";
 import { memoryEnabled, selectMemories } from "./memory";
 import { hasPendingApproval, persistAssistantTurn, type PersistTurnInput } from "./persist";
 import { resolveAttachmentsForModel } from "./prepare";
+import { compactModelContext, resolveContextBudget } from "./context-budget";
 import { scrubForeignOpenAIMetadata } from "./replay";
 import { buildToolset } from "./toolset";
 import { slashInvokedSkill } from "./skill-lookup";
@@ -68,6 +71,7 @@ export type TurnResult = {
  * (src/lib/runs/execute.ts) for every direct chat and routine segment; group chats have their own loop (group.ts).
  */
 export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
+  if (isCodexApp(opts.app) && await nativeBudgetApplies(opts.delegation?.task.rootMessageId ?? (opts.continuation ? opts.history.at(-1)?.id : opts.responseMessageId))) throw new NativeRunBudgetError("Codex has no supported native company budget contract. No billing fallback was selected.");
   if (isCodexApp(opts.app)) return (await import('@/lib/codex/run')).runCodexTurn(opts);
   const { principal, conversation, app, bot, history } = opts;
   const toolSettings = await getSetting("tools");
@@ -76,7 +80,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   // (including delegates and the title) can be linked to it and to the run in the usage ledger. A continuation
   // extends the last assistant message.
   const responseMessageId = opts.continuation ? history.at(-1)!.id : (opts.responseMessageId ?? newId());
-  const usage = newUsageScope({ messageId: responseMessageId, runId: opts.run?.id });
+  const usage = newUsageScope({ messageId: responseMessageId, runId: opts.run?.id, rootBudgetId: opts.delegation?.task.rootMessageId ?? responseMessageId });
   const delegated = opts.delegation;
   const nativeEligible = app.provider !== "hermes" && !!opts.run?.holder && !!opts.run.deadlineAt && (!delegated || delegated.task.mode === "async");
   const previousNative = opts.run?.resumeState?.native;
@@ -96,6 +100,10 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   const { delegatedAuthorityBinding, DelegationAuthorityChangedError } = await import("@/lib/delegation/authority");
   const authority = delegated ? await delegatedAuthorityBinding(ctx, true) : null;
   const toolset = await buildToolset(ctx);
+  let contextNotice: string | undefined;
+  let omittedContextTurns = 0;
+  let notifyContextNotice: ((message: string) => void) | undefined;
+  let sentContextNotice: string | undefined;
   const authorizeDispatch = async () => {
     if (!delegated) return;
     await delegated.authorize();
@@ -121,8 +129,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     const userText = lastUser ? partsToText(lastUser.parts) : "";
     const memories = !bot?.hermesTeam && !delegated && bot?.executionMode !== "service" && (await memoryEnabled(principal.user.id))
-      ? await selectMemories({ userId: principal.user.id, botId: bot?.id ?? null, query: userText, limit: 15, conversationId: conversation.id }).catch(
-          () => [],
+      ? await selectMemories({ userId: principal.user.id, botId: bot?.id ?? null, query: userText, limit: 15, conversationId: conversation.id, usage }).catch(
+          error => { if (error instanceof NativeRunBudgetError) throw error; return []; },
         )
       : [];
 
@@ -182,12 +190,14 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     // Sealed reasoning is only replayed to the app, model and account that produced it (see replay.ts).
     const modelHistory = scrubForeignOpenAIMetadata(withFiles, { appId: app.id, providerKind: app.provider, model: app.model, replayKey });
     const messages = await convertToModelMessages(modelHistory, { tools: toolset.tools, ignoreIncompleteToolCalls: true });
+    const contextBudget = resolveContextBudget(app.contextWindowTokens, app.maxTokens);
+    const instructions = toModelInstructions(sections, capabilities.instructionStyle);
     const maxSteps = native ? native.maxSteps - native.stepsUsed : bot ? Math.min(bot.maxSteps, toolSettings.maxStepsCap) : 1;
     const result = streamText({
       model,
       // UI conversion below records only the safe correlated diagnostic.
       onError: () => {},
-      instructions: toModelInstructions(sections, capabilities.instructionStyle),
+      instructions,
       messages,
       tools: toolset.tools,
       toolApproval: toolset.approval,
@@ -196,15 +206,30 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       stopWhen: [isStepCount(maxSteps), () => !!native?.taskIds.length],
       ...(native ? { onStepEnd: () => { native.stepsUsed++; } } : {}),
       temperature: app.temperature ?? undefined,
-      maxOutputTokens: app.maxTokens ?? undefined,
+      maxOutputTokens: contextBudget.outputReserveTokens,
       timeout: toolset.timeout,
       abortSignal: opts.abortSignal,
       ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
-      ...(delegated ? { maxRetries: 0, prepareStep: async () => { await authorizeDispatch(); return {}; } } : {}),
-      // Both independent visibility filters apply only to the first planning step; later steps restore all tools.
-      ...(!delegated && firstTools ? { prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
-        activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools),
-      }) } : {}),
+      ...(delegated ? { maxRetries: 0 } : {}),
+      // Compose context management with delegated re-authorization and the existing first-step tool visibility.
+      // prepareStep runs before every model request, including every tool continuation.
+      prepareStep: async ({ stepNumber, messages: stepMessages }) => {
+        await authorizeDispatch();
+        const bounded = await compactModelContext(stepMessages, {
+          inputBudgetTokens: contextBudget.inputBudgetTokens,
+          instructions,
+          tools: toolset.tools,
+          omittedTurnsBefore: omittedContextTurns,
+        });
+        omittedContextTurns = bounded.omittedTurns;
+        contextNotice = bounded.notice;
+        if (contextNotice) notifyContextNotice?.(contextNotice);
+        return {
+          messages: bounded.messages,
+          instructions: bounded.instructions,
+          ...(!delegated && firstTools ? { activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools) } : {}),
+        };
+      },
     });
     return { result, userText, billing, replayKey };
   };
@@ -246,6 +271,12 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     },
     execute: async ({ writer }) => {
       for (const w of toolset.warnings) writer.write({ type: "data-notice", data: { message: w }, transient: true });
+      notifyContextNotice = (message) => {
+        if (message === sentContextNotice) return;
+        sentContextNotice = message;
+        writer.write({ type: "data-notice", data: { message }, transient: true });
+      };
+      if (contextNotice) notifyContextNotice(contextNotice);
 
       const titlePromise = isFirstTurn
         ? (async () => {
@@ -258,7 +289,10 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
                   conversationId: conversation.id,
                   botId: bot?.id ?? null,
                   usage,
-                }).catch(() => fallback)
+                }).catch(error => {
+                  if (error instanceof NativeRunBudgetError) writer.write({ type: "data-notice", data: { message: error.message }, transient: true });
+                  return fallback;
+                })
               : fallback;
             await db.update(conversations).set({ title }).where(eq(conversations.id, conversation.id));
             writer.write({ type: "data-title", data: { title }, transient: true });

@@ -1,3 +1,4 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { runConfig } from "@/lib/runs/types";
 import { runHost } from "@/lib/runs/host";
 import { receiveGroupResults } from "@/lib/delegation/receipts";
@@ -28,6 +29,7 @@ import { buildInstructionSections, toModelInstructions } from "./instructions";
 import { memoryEnabled, selectMemories } from "./memory";
 import { resolveMentions } from "./mentions";
 import { resolveAttachmentsForModel } from "./prepare";
+import { compactModelContext, resolveContextBudget } from "./context-budget";
 import { toolStatus } from "./persist";
 import { buildToolset } from "./toolset";
 import { beginGroupBotWork } from "@/lib/chat/group-bot-work";
@@ -140,7 +142,7 @@ export async function runGroupTurn(opts: {
   const parentId = history.at(-1)?.id ?? null;
   const useMemory = await memoryEnabled(principal.user.id);
   const messageId = newId();
-  const usageScope = newUsageScope({ messageId });
+  const usageScope = newUsageScope({ messageId, rootBudgetId: messageId });
   const execution = { holder: runHost().instanceId, deadlineAt: Date.now() + runConfig().runTimeoutMs };
 
   return createUIMessageStream<PortalUIMessage>({
@@ -174,8 +176,8 @@ export async function runGroupTurn(opts: {
           toolset = await buildToolset(ctx);
           for (const warning of toolset.warnings) writer.write({ type: "data-notice", data: { message: warning }, transient: true });
           const memories = useMemory
-            ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id }).catch(
-                () => [],
+            ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id, usage: usageScope }).catch(
+                error => { if (error instanceof NativeRunBudgetError) throw error; return []; },
               )
             : [];
           const others = members.filter((m) => m.bot.id !== bot.id);
@@ -215,21 +217,39 @@ export async function runGroupTurn(opts: {
             usage: usageScope,
             nativeSearch: toolset.nativeSearch,
           });
+          const instructions = toModelInstructions(sections, capabilities.instructionStyle);
+          const contextBudget = resolveContextBudget(app.contextWindowTokens, app.maxTokens);
+          let lastContextNotice: string | undefined;
+          let omittedContextTurns = 0;
           const result = streamText({
             model,
             // The UI boundary below emits a safe diagnostic instead of the SDK raw-error logger.
             onError: () => {},
-            instructions: toModelInstructions(sections, capabilities.instructionStyle),
+            instructions,
             messages: endWithUser(mergeTurns(messages)),
             tools: toolset.tools,
             toolApproval: toolset.approval,
             experimental_toolApprovalSecret: toolApprovalSecret(),
             stopWhen: isStepCount(Math.min(bot.maxSteps, toolSettings.maxStepsCap)),
             temperature: app.temperature ?? undefined,
-            maxOutputTokens: app.maxTokens ?? undefined,
+            maxOutputTokens: contextBudget.outputReserveTokens,
             timeout: toolset.timeout,
             abortSignal: opts.abortSignal,
             ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
+            prepareStep: async ({ messages: stepMessages }) => {
+              const bounded = await compactModelContext(stepMessages, {
+                inputBudgetTokens: contextBudget.inputBudgetTokens,
+                instructions,
+                tools: toolset!.tools,
+                omittedTurnsBefore: omittedContextTurns,
+              });
+              omittedContextTurns = bounded.omittedTurns;
+              if (bounded.notice && bounded.notice !== lastContextNotice) {
+                lastContextNotice = bounded.notice;
+                writer.write({ type: "data-notice", data: { message: bounded.notice }, transient: true });
+              }
+              return { messages: bounded.messages, instructions: bounded.instructions };
+            },
           });
           // Pipe chunks in order so each bot's reply stays grouped under its speaker marker.
           const reader = toUIMessageStream({
