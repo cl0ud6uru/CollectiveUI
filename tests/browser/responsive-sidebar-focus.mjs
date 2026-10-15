@@ -20,7 +20,8 @@ import { Tooltip } from 'radix-ui';
 import { ShellProvider, useShell } from '${root}/src/components/chat/shell-context';
 import { ChatShell } from '${root}/src/components/chat/chat-shell';
 function Controls() { const shell=useShell(); return <><button id="open" onClick={()=>shell.setMobileOpen(true)}>Open sidebar</button><button id="start-side-chat">Start side chat</button></>; }
-const initial={bots:[],conversations:[],apps:[],folders:[],inboxUnread:0,user:{id:'fixture',name:'Demo User',email:'demo@example.invalid',isAdmin:false,canCreateBots:true},branding:{appName:'CollectiveUI',welcomeText:'',logoEmoji:''}};
+const bots=[{kind:'bot',id:'bot-a',name:'Alpha',icon:null,description:'Fixture bot',label:null,pinned:true},{kind:'bot',id:'bot-b',name:'Beta',icon:null,description:'Fixture bot',label:null,pinned:true}];
+const initial={bots,conversations:[],apps:[],folders:[],inboxUnread:0,user:{id:'fixture',name:'Demo User',email:'demo@example.invalid',isAdmin:false,canCreateBots:true},branding:{appName:'CollectiveUI',welcomeText:'',logoEmoji:''}};
 createRoot(document.getElementById('root')).render(<Tooltip.Provider><ShellProvider {...initial}><ChatShell><Controls/></ChatShell></ShellProvider></Tooltip.Provider>);
 `));
 const noAction = 'async()=>{}';
@@ -30,10 +31,8 @@ const stubs = {
   'next/link': `import React from 'react';export default function Link({href,onClick,children,...props}){return <a href={href} {...props} onClick={e=>{e.preventDefault();onClick?.(e);}}>{children}</a>;}`,
   '@/app/(chat)/actions': Object.entries(actions).map(([name,value])=>`export const ${name}=${value};`).join(''),
   '@/app/(chat)/bots/navigation-actions': 'export const updateBotNavigation=async()=>({});',
-  '@/app/(chat)/bots/actions': 'export const duplicateBot=async()=>({id:"copy"});',
+  '@/app/(chat)/bots/actions': 'export const duplicateBot=async()=>({id:"copy"});export const createGroupChat=async()=>({id:"group-fixture"});',
   '@/components/chat/start-side-chat': 'export const StartSideChat=()=>null;',
-  '@/components/bots/new-group-dialog': 'import React from "react";export const NewGroupDialog=({trigger})=>trigger;',
-  './search-dialog': 'export const SearchDialog=()=>null;',
   './sign-out': 'export const signOutAction=async()=>{};',
 };
 const bundle = await build({ entryPoints:[entry], outfile:path.join(dir,'bundle.js'), write:false, bundle:true, platform:'browser', format:'iife', jsx:'automatic', nodePaths:[path.join(root,'node_modules')], alias:{'@':path.join(root,'src')}, plugins:[{name:'synthetic-boundaries',setup(build){build.onResolve({filter:/.*/},args=>stubs[args.path]?{path:args.path,namespace:'fixture'}:undefined);build.onLoad({filter:/.*/,namespace:'fixture'},args=>({contents:stubs[args.path],loader:'tsx',resolveDir:root}));}}] });
@@ -56,6 +55,25 @@ try {
   await expect(page.locator('main')).toHaveJSProperty('inert',true);
   const close = dialog.getByRole('button',{name:'Close sidebar'});
   await expect(close).toBeFocused();
+  await page.keyboard.press('Control+k');
+  const searchDialog = page.getByRole('dialog',{name:'Search chats'});
+  await expect(searchDialog).toBeVisible();
+  await expect(searchDialog.getByPlaceholder('Search chats and bots...')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(searchDialog.locator(':focus')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(searchDialog).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('main')).toHaveJSProperty('inert',true);
+  await dialog.getByRole('button',{name:'New group chat'}).click();
+  const groupDialog = page.getByRole('dialog',{name:'New group chat'});
+  await expect(groupDialog).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(groupDialog.locator(':focus')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(groupDialog).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('main')).toHaveJSProperty('inert',true);
   for (let i=0; i<24; i++) {
     await page.keyboard.press('Tab');
     await expect(dialog.locator(':focus')).toHaveCount(1);
@@ -90,7 +108,7 @@ try {
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
-  console.log('Responsive sidebar focus containment, close/focus restoration, and desktop resize recovery passed.');
+  console.log('Responsive sidebar containment, nested Search/New Group dialogs, close/focus restoration, and desktop resize recovery passed.');
 } finally {
   await browser.close();
   await new Promise(resolve=>server.close(resolve));

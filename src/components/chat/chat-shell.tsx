@@ -24,8 +24,11 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     const focusable = () => Array.from(mobileDrawer.current?.querySelectorAll<HTMLElement>(
       'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
     ) ?? []).filter((element) => element.getClientRects().length > 0 && !element.closest("[inert], [aria-hidden='true']"));
+    const hasOpenPortalDialog = () => document.querySelector('[role="dialog"][data-state="open"]') !== null;
 
     function onKeyDown(event: KeyboardEvent) {
+      // Radix dialogs render into body portals; let the active portal dialog own Tab and Escape.
+      if (hasOpenPortalDialog()) return;
       if (event.key === "Escape") {
         event.preventDefault();
         setMobileOpen(false);
