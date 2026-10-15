@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 const f = vi.hoisted(() => ({ access: vi.fn(), fetch: vi.fn(), call: vi.fn(), refresh: vi.fn(), owned: vi.fn() }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: f.access }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardFetch: () => f.fetch }));
@@ -49,7 +50,9 @@ describe('native workspace inspection', () => {
   });
   it('projects only safe root-relative names and bounds text reads', () => {
     expect(workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'list', path: 'src', entries: [{ name: 'main.ts', path: 'src/main.ts', kind: 'file' }, { name: '.env', path: 'src/.env', kind: 'file' }, { name: 'traversal', path: 'src/../secret', kind: 'file' }, { name: 'wrong', path: 'elsewhere/wrong', kind: 'directory' }] })).toEqual({ available: true, workspaceId: 'b'.repeat(32), projectName: 'Example', action: 'list', path: 'src', entries: [{ name: 'main.ts', path: 'src/main.ts', directory: false }], truncated: false });
-    expect(workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content: 'synthetic' }).content).toBe('synthetic');
+    const content = 'synthetic', sha256 = createHash('sha256').update(content).digest('hex');
+    expect(workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content, sha256 })).toMatchObject({ content, sha256 });
+    expect(() => workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content, sha256: 'a'.repeat(64) })).toThrow('invalid workspace file revision');
     expect(() => workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content: 'x'.repeat(256 * 1024 + 1) })).toThrow('oversized');
     expect(() => workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: '/etc/passwd', content: 'secret' })).toThrow('invalid workspace path');
   });

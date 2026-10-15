@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { NativeConnectionChanged, NativeRpcError } from '@/lib/remote-hermes/socket';
 
-const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], readbackFolders: null as Record<string, unknown>[] | null, schedules: [] as Record<string, unknown>[], activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
+const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], readbackFolders: null as Record<string, unknown>[] | null, schedules: [] as Record<string, unknown>[], activeId: '', fileContent: 'Synthetic file before edit\n', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
   row: {} as Record<string, unknown>, receipt: null as null | { requestId: string; digest: string }, cached: {} as { row: Record<string, unknown>; view: Record<string, unknown>; pending: Map<string, unknown>; socketEpoch: number } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled }) }));
 vi.mock('@/lib/remote-hermes/policy', () => ({ assertRemoteHermesAdmission: (value: { enabled: boolean }) => { if (!value.enabled) throw new Error('Personal remote Hermes is disabled'); } }));
@@ -19,6 +20,10 @@ vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
         const project = f.list.find(value => value.id === params.id || value.slug === params.id);
         if (!project) throw new NativeRpcError(5062);
         return { project };
+      }
+      if (method === 'collective.workspace.files') {
+        const { createHash } = await import('node:crypto');
+        return { protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'c'.repeat(32), project_name: 'Synthetic', action: 'read', path: params.path, content: f.fileContent, sha256: createHash('sha256').update(f.fileContent).digest('hex') };
       }
       expect(method).toBe('cron.manage'); return { scoped: f.unscoped ? 'other' : 'default', jobs: f.schedules };
     },
@@ -58,6 +63,7 @@ vi.mock('@/db', async () => {
   return { db: { ...tx, transaction: async (run: (value: typeof tx) => unknown) => run(tx) } };
 });
 import { nativeProjectOperation, projectOperationInput } from '@/lib/remote-hermes/projects';
+import { nativeWorkspaceFileEdit, workspaceFileEditInput } from '@/lib/remote-hermes/workspace-edit';
 import { decrypt, hmacSha256Hex } from '@/lib/crypto';
 
 const prepareCreate = async () => nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'Example' });
@@ -65,11 +71,17 @@ const confirm = (confirmation: string) => nativeProjectOperation('owner', 'conne
 
 describe('confirmed native Hermes project operations', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.readbackFolders = null; f.schedules = []; f.activeId = ''; f.receipt = null;
+    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.readbackFolders = null; f.schedules = []; f.activeId = ''; f.fileContent = 'Synthetic file before edit\n'; f.receipt = null;
     f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: 'idle', revision: 1, queueRequestId: null };
     f.cached = { row: f.row, view: { title: 'Synthetic chat', profile: 'default', nativeProfile: 'default', running: false, uncertain: false, queuePending: false, queued: '', prompts: [] }, pending: new Map(), socketEpoch: 1 };
     f.profiles.mockResolvedValue([{ name: 'default' }]);
     f.calls.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'collective.workspace.files.write.v1') {
+        const { createHash } = await import('node:crypto');
+        f.fileContent = String(params.content);
+        return { protocol: 'collective.workspace-file-write.v1', written: true, workspace_id: params.workspace_id, path: params.path,
+          sha256: createHash('sha256').update(f.fileContent).digest('hex'), bytes: Buffer.byteLength(f.fileContent) };
+      }
       if (method === 'projects.create') {
         const project = { id: 'native-project-id', slug: params.slug, name: params.name, folders: [], archived: false };
         f.list.push({ ...project, folders: f.readbackFolders ?? [] }); return { project };
@@ -232,5 +244,69 @@ describe('confirmed native Hermes project operations', () => {
     const prepared = await prepareCreate(); f.beforeSend = true;
     await expect(confirm(prepared.confirmation!)).rejects.toThrow('verified Hermes connection changed');
     expect(f.calls).not.toHaveBeenCalled(); expect(f.row.status).toBe('idle');
+  });
+
+  it('accepts only bounded relative text edit requests', () => {
+    const request = { operation: 'prepare', action: 'file-edit', workspaceId: 'c'.repeat(32), path: 'src/README.md',
+      expectedSha256: 'd'.repeat(64), content: 'synthetic text' };
+    expect(workspaceFileEditInput.safeParse(request).success).toBe(true);
+    for (const path of ['../outside', '/etc/passwd', '.env', 'src/private-key.pem', 'file\\alias'])
+      expect(workspaceFileEditInput.safeParse({ ...request, path }).success).toBe(false);
+    expect(workspaceFileEditInput.safeParse({ ...request, content: 'x'.repeat(256 * 1024 + 1) }).success).toBe(false);
+    expect(workspaceFileEditInput.safeParse({ ...request, content: `contains\u0000nul` }).success).toBe(false);
+  });
+
+  it('requires a fresh digest, confirms content, writes once and verifies authoritative readback', async () => {
+    const expectedSha256 = createHash('sha256').update(f.fileContent).digest('hex');
+    const content = 'Explicitly reviewed synthetic edit\n';
+    const prepared = await nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'prepare', action: 'file-edit', workspaceId: 'c'.repeat(32), path: 'README.md', expectedSha256, content,
+    });
+    expect(prepared).toMatchObject({ path: 'README.md', profile: 'default', bytes: Buffer.byteLength(content) });
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
+    const result = await nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'confirm-file-edit', confirmation: prepared.confirmation, content,
+    });
+    expect(result).toMatchObject({ accepted: true, duplicate: false, path: 'README.md', sha256: createHash('sha256').update(content).digest('hex') });
+    expect(f.calls).toHaveBeenCalledExactlyOnceWith('collective.workspace.files.write.v1', expect.objectContaining({
+      profile: 'default', session_id: 'runtime', workspace_id: 'c'.repeat(32), path: 'README.md', expected_sha256: expectedSha256, content,
+    }));
+    expect(f.fileContent).toBe(content); expect(f.row.status).toBe('idle'); expect(f.receipt).not.toBeNull();
+    await expect(nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'confirm-file-edit', confirmation: prepared.confirmation, content,
+    })).resolves.toMatchObject({ accepted: true, duplicate: true });
+    expect(f.calls).toHaveBeenCalledOnce();
+  });
+
+  it('refuses stale or altered edits before reserving a receipt or sending a write', async () => {
+    const expectedSha256 = createHash('sha256').update(f.fileContent).digest('hex');
+    const prepared = await nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'prepare', action: 'file-edit', workspaceId: 'c'.repeat(32), path: 'README.md', expectedSha256, content: 'reviewed content',
+    });
+    await expect(nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'confirm-file-edit', confirmation: prepared.confirmation, content: 'altered after review',
+    })).rejects.toThrow('content changed after review');
+    f.fileContent = 'Changed by another writer\n';
+    await expect(nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'confirm-file-edit', confirmation: prepared.confirmation, content: 'reviewed content',
+    })).rejects.toThrow('changed after review');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull(); expect(f.row.status).toBe('idle');
+  });
+
+  it('keeps a lost write acknowledgement uncertain and never replays it', async () => {
+    const expectedSha256 = createHash('sha256').update(f.fileContent).digest('hex');
+    const content = 'Potentially saved synthetic edit\n';
+    const prepared = await nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'prepare', action: 'file-edit', workspaceId: 'c'.repeat(32), path: 'README.md', expectedSha256, content,
+    });
+    f.calls.mockRejectedValueOnce(new Error('lost acknowledgement'));
+    await expect(nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'confirm-file-edit', confirmation: prepared.confirmation, content,
+    })).rejects.toThrow('lost acknowledgement');
+    expect(f.row.status).toBe('uncertain');
+    await expect(nativeWorkspaceFileEdit('owner', 'connection', 'session', {
+      operation: 'confirm-file-edit', confirmation: prepared.confirmation, content,
+    })).resolves.toMatchObject({ accepted: false, duplicate: true });
+    expect(f.calls).toHaveBeenCalledOnce();
   });
 });

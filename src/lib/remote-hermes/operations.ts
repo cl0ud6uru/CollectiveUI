@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { HttpError } from '@/lib/authz';
 import { remoteAccess } from './store';
@@ -50,7 +51,10 @@ export function workspaceFilesProjection(value: unknown) {
   });
   if (p.action === 'read') {
     if (typeof p.content !== 'string' || Buffer.byteLength(p.content, 'utf8') > 256 * 1024) throw new HttpError(502, 'Hermes returned an invalid or oversized text file.');
-    return { available: true, workspaceId, projectName, action: 'read', path, content: p.content, entries: [] };
+    const sha256 = string(p.sha256, 64);
+    if (!/^[a-f0-9]{64}$/.test(sha256) || createHash('sha256').update(p.content, 'utf8').digest('hex') !== sha256)
+      throw new HttpError(502, 'Hermes returned an invalid workspace file revision.');
+    return { available: true, workspaceId, projectName, action: 'read', path, content: p.content, sha256, entries: [] };
   }
   return { available: true, workspaceId, projectName, action: 'list', path, entries, truncated: p.truncated === true };
 }
