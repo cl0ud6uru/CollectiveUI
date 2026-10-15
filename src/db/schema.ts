@@ -745,6 +745,7 @@ export const petGenerationJobs = pgTable("pet_generation_jobs", {
   appearanceErrorCode: text("appearance_error_code"),
   buildConsentAt: timestamp("build_consent_at", { withTimezone: true }),
   preview: petBytes("preview"),
+  previewErrorCode: text("preview_error_code"),
   catalogPetId: text("catalog_pet_id").references(() => petCatalog.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),

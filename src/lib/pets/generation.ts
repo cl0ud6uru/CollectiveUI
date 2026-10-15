@@ -59,7 +59,7 @@ export async function createPetGenerationJob(p: Principal, input: { displayName:
   const displayName = input.displayName.trim();
   const description = input.description.trim();
   const credit = (input.credit ?? "AI generated with OpenAI").trim();
-  if (!displayName || displayName.length > 80 || !description || description.length > 1000 || credit.length > 240 ||
+  if (!displayName || displayName.length > 80 || (!description && !input.reference) || description.length > 1000 || credit.length > 240 ||
     /[\u0000-\u001f\u007f]/.test(displayName + description + credit)) throw new HttpError(400, "Provide plain text for the name, description and credit, within their listed limits.");
   return db.transaction(async tx => {
     await assertFreshPetAdmin(p, tx);
@@ -87,7 +87,7 @@ async function ownedJob(p: Principal, id: string) {
 export async function generateAppearance(p: Principal, id: string, consent: boolean, abortSignal?: AbortSignal, generator: ImageGenerator = generatePetImage, retry = false, beforeDispatch?: () => Promise<void>) {
   if (consent !== true) throw new HttpError(400, "Appearance generation requires explicit cost consent.");
   requireAdmin(p);
-  const { job, attemptId, attempt } = await db.transaction(async tx => {
+  const { job, attemptId, attempt, prompt } = await db.transaction(async tx => {
     const [job] = await tx.select().from(petGenerationJobs).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id))).for("update");
     if (!job) throw new HttpError(404, "Pet generation draft not found.");
     await assertFreshPetAdmin(p, tx);
@@ -98,14 +98,14 @@ export async function generateAppearance(p: Principal, id: string, consent: bool
     if (retry && (!previous || previous.attempt >= 3 || !["failed", "uncertain"].includes(previous.status))) throw new HttpError(409, "Only failed or uncertain appearance requests can be retried, up to three attempts total.");
     const now = new Date();
     const attempt = (previous?.attempt ?? 0) + 1;
-    const prompt = `Create one original, friendly animated assistant pet character concept as a full-body front view. Transparent background, centered with clear margins, no text, no props. Appearance brief: ${job.description}`;
+    const prompt = appearancePrompt(job);
     const consentSummary = retry
       ? "appearance-retry-v1: one additional paid image request; prior request may also have incurred cost; variable token usage; no fixed quote or hard cap"
       : "appearance-v1: one image request at published image input/output and separate text input rates; variable token usage; no fixed quote or hard cap";
     const [receipt] = await tx.insert(petGenerationSlots).values({ jobId: id, slotKey: "appearance", attempt, prompt, consentVersion: 1,
       consentSummary, status: "running", consentAt: now, startedAt: now }).returning({ id: petGenerationSlots.id });
     await tx.update(petGenerationJobs).set({ appearanceState: "running", appearanceAttempt: attempt, appearanceConsentAt: now, appearanceErrorCode: null, updatedAt: now }).where(eq(petGenerationJobs.id, id));
-    return { job, attemptId: receipt.id, attempt };
+    return { job, attemptId: receipt.id, attempt, prompt };
   });
   let observedUsage: { inputTokens: number | null; outputTokens: number | null } | null = null;
   try {
@@ -113,7 +113,7 @@ export async function generateAppearance(p: Principal, id: string, consent: bool
     await beforeDispatch?.();
     await assertFreshPetAdmin(p, db);
     const result = await generator({ connection, modelId: PET_IMAGE_MODEL,
-      prompt: `Create one original, friendly animated assistant pet character concept as a full-body front view. Transparent background, centered with clear margins, no text, no props. Appearance brief: ${job.description}`,
+      prompt,
       ...(job.reference ? { reference: job.reference } : {}), ...(abortSignal ? { abortSignal } : {}),
     });
     observedUsage = { inputTokens: result.inputTokens ?? null, outputTokens: result.outputTokens ?? null };
@@ -187,9 +187,15 @@ export async function consentPetBuild(p: Principal, id: string, consent: boolean
 
 function slotPrompt(job: typeof petGenerationJobs.$inferSelect, key: SlotKey) {
   const state = PET_ANIMATIONS.find(row => row.name === key);
+  const brief = job.description ? `Description: ${job.description}` : "Follow the approved appearance exactly.";
   return key === "directions"
-    ? `Use the attached approved character as an exact character reference. Create a transparent 4 by 4 contact sheet of the same full-body character at 16 evenly spaced viewing angles around it, starting from above/front and rotating clockwise. One centered figure per equal square cell, consistent scale, no gutters, labels, shadows, or background. Description: ${job.description}`
-    : `Use the attached approved character as an exact character reference. Create a transparent 4 by 2 contact sheet of eight consecutive ${state!.label.toLowerCase()} animation frames for the same character. One centered full-body figure per equal cell, consistent scale, no gutters, labels, shadows, or background. Description: ${job.description}`;
+    ? `Use the attached approved character as an exact character reference. Create a transparent 4 by 4 contact sheet of the same full-body character at 16 evenly spaced viewing angles around it, starting from above/front and rotating clockwise. One centered figure per equal square cell, consistent scale, no gutters, labels, shadows, or background. ${brief}`
+    : `Use the attached approved character as an exact character reference. Create a transparent 4 by 2 contact sheet of eight consecutive ${state!.label.toLowerCase()} animation frames for the same character. One centered full-body figure per equal cell, consistent scale, no gutters, labels, shadows, or background. ${brief}`;
+}
+
+function appearancePrompt(job: typeof petGenerationJobs.$inferSelect) {
+  const brief = job.description ? `Appearance brief: ${job.description}` : "Use the supplied reference image as the appearance brief and create an original character based on it.";
+  return `Create one original, friendly animated assistant pet character concept as a full-body front view. Transparent background, centered with clear margins, no text, no props. ${brief}`;
 }
 
 export async function runPetGenerationSlot(p: Principal, id: string, key: string, abortSignal?: AbortSignal, generator: ImageGenerator = generatePetImage, beforeDispatch?: () => Promise<void>) {
@@ -250,10 +256,14 @@ export async function retryPetGenerationSlot(p: Principal, id: string, key: stri
   return db.transaction(async tx => {
     await assertFreshPetAdmin(p, tx);
     const [current] = await tx.select().from(petGenerationSlots).where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.slotKey, key))).orderBy(desc(petGenerationSlots.attempt)).limit(1).for("update");
-    if (!current || current.attempt >= 3 || !["failed", "uncertain"].includes(current.status)) throw new HttpError(409, "Only failed or uncertain slots can receive a new, separately consented attempt, up to three attempts total.");
+    if (!current || current.attempt >= 3 || !["failed", "uncertain", "succeeded"].includes(current.status)) throw new HttpError(409, "Only failed, uncertain, or successful slots can receive a new, separately consented attempt, up to three attempts total.");
+    const replacement = current.status === "succeeded";
     const [next] = await tx.insert(petGenerationSlots).values({ jobId: id, slotKey: key, attempt: current.attempt + 1, prompt: current.prompt,
-      consentVersion: 1, consentSummary: "slot-retry-v1: one additional paid image request; prior request may also have incurred cost; variable token usage; no fixed quote or hard cap",
+      consentVersion: 1, consentSummary: replacement
+        ? "slot-replacement-v1: one additional paid image request to replace a successful but unsatisfactory state; prior request already incurred cost; variable token usage; no fixed quote or hard cap"
+        : "slot-retry-v1: one additional paid image request; prior request may also have incurred cost; variable token usage; no fixed quote or hard cap",
       status: "queued", consentAt: new Date() }).returning({ id: petGenerationSlots.id, attempt: petGenerationSlots.attempt });
+    if (replacement) await tx.update(petGenerationJobs).set({ preview: null, previewErrorCode: null, updatedAt: new Date() }).where(eq(petGenerationJobs.id, id));
     return { status: "queued" as const, attempt: next.attempt };
   });
 }
@@ -280,7 +290,7 @@ export async function getPetGenerationJob(p: Principal, id: string) {
   for (const slot of slots) latest.set(slot.slotKey, Math.max(latest.get(slot.slotKey) ?? 0, slot.attempt));
   return { id: currentJob.id, displayName: currentJob.displayName, description: currentJob.description, credit: currentJob.credit, appearanceState: currentJob.appearanceState,
     appearanceConsentAt: currentJob.appearanceConsentAt, appearanceApprovedAt: currentJob.appearanceApprovedAt, buildConsentAt: currentJob.buildConsentAt,
-    hasAppearance: !!currentJob.appearance, hasPreview: !!currentJob.preview, catalogPetId: currentJob.catalogPetId,
+    hasAppearance: !!currentJob.appearance, hasPreview: !!currentJob.preview, previewErrorCode: currentJob.previewErrorCode, catalogPetId: currentJob.catalogPetId,
     slots: slots.map(slot => ({ ...slot, isLatest: latest.get(slot.slotKey) === slot.attempt })) };
 }
 
@@ -294,7 +304,12 @@ export async function petGenerationImage(p: Principal, id: string, kind: "appear
 export async function rebuildPetGenerationPreview(p: Principal, id: string) {
   const job = await ownedJob(p, id);
   if (!job.buildConsentAt || job.appearanceState !== "approved") throw new HttpError(409, "Approve the appearance and authorize sprite generation first.");
-  await refreshPreview(p, id);
+  try { await refreshPreview(p, id); }
+  catch (error) {
+    const failed = await markAtlasValidationFailures(p, id, error);
+    if (failed.length) throw new HttpError(400, `Generated cells failed v2 validation in ${failed.join(", ")}. Authorize a separately consented paid retry for those slots.`);
+    throw error;
+  }
   return getPetGenerationJob(p, id);
 }
 
@@ -303,23 +318,42 @@ async function refreshPreview(p: Principal, id: string) {
   const latest = new Map<string, (typeof slots)[number]>();
   for (const slot of slots) if (!latest.has(slot.slotKey)) latest.set(slot.slotKey, slot);
   if (slotKeys.some(key => latest.get(key)?.status !== "succeeded")) return;
-  const canvas = sharp({ create: { width: 1536, height: 2288, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } });
-  const layers: OverlayOptions[] = [];
-  for (const [stateIndex, state] of PET_ANIMATIONS.entries()) {
-    const source = latest.get(state.name)!.image!;
-    for (let index = 0; index < state.durations.length; index++) layers.push(await atlasCell(source, index, 4, 2, index * 192, stateIndex * 208));
+  let normalized: Buffer;
+  try {
+    const canvas = sharp({ create: { width: 1536, height: 2288, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } });
+    const layers: OverlayOptions[] = [];
+    for (const [stateIndex, state] of PET_ANIMATIONS.entries()) {
+      const source = latest.get(state.name)!.image!;
+      for (let index = 0; index < state.durations.length; index++) layers.push(await atlasCell(source, index, 4, 2, index * 192, stateIndex * 208));
+    }
+    const directions = latest.get("directions")!.image!;
+    for (let index = 0; index < PET_DIRECTIONS.length; index++) {
+      const direction = PET_DIRECTIONS[index];
+      layers.push(await atlasCell(directions, index, 4, 4, direction.column * 192, direction.row * 208));
+    }
+    const png = await canvas.composite(layers).png().toBuffer();
+    normalized = await normalizePetSprite(png, 2, "spritesheet.png");
+  } catch {
+    await db.transaction(async tx => {
+      await assertFreshPetAdmin(p, tx);
+      await tx.update(petGenerationJobs).set({ preview: null, previewErrorCode: "assembly_failed", updatedAt: new Date() })
+        .where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id)));
+    });
+    throw new HttpError(500, "The saved sprite requests could not be assembled into a preview. Retry nonbillable preview assembly; no new image request is needed.");
   }
-  const directions = latest.get("directions")!.image!;
-  for (let index = 0; index < PET_DIRECTIONS.length; index++) {
-    const direction = PET_DIRECTIONS[index];
-    layers.push(await atlasCell(directions, index, 4, 4, direction.column * 192, direction.row * 208));
+  try { await validateV2Cells(normalized); }
+  catch (error) {
+    if (error instanceof HttpError && error.message.includes("Fix these v2 cells:")) throw error;
+    await db.transaction(async tx => {
+      await assertFreshPetAdmin(p, tx);
+      await tx.update(petGenerationJobs).set({ preview: null, previewErrorCode: "assembly_failed", updatedAt: new Date() })
+        .where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id)));
+    });
+    throw new HttpError(500, "The saved sprite requests could not be validated as a preview. Retry nonbillable preview assembly; no new image request is needed.");
   }
-  const png = await canvas.composite(layers).png().toBuffer();
-  const normalized = await normalizePetSprite(png, 2, "spritesheet.png");
-  await validateV2Cells(normalized);
   await db.transaction(async tx => {
     await assertFreshPetAdmin(p, tx);
-    await tx.update(petGenerationJobs).set({ preview: normalized, updatedAt: new Date() }).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id)));
+    await tx.update(petGenerationJobs).set({ preview: normalized, previewErrorCode: null, updatedAt: new Date() }).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id)));
   });
 }
 
