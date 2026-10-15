@@ -102,7 +102,7 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
       execute: guarded("admin_get_settings", p => adminGetArchitectSettings(p)),
     })),
     entry("admin_diagnostic_bundle", tool({
-      description: "Build a bounded diagnostic summary from existing read-only Admin checks. Returns aggregate counts and health/failure classifications only; no names, raw logs, environment values, URLs or credentials.",
+      description: "Build a worker-safe bounded diagnostic summary from database counts and usage rollups. Returns numeric totals plus database/worker health and recent failure classifications; it does not probe network services or return names, raw logs, environment values, URLs or credentials.",
       inputSchema: diagnosticWindow,
       execute: guarded("admin_diagnostic_bundle", async (p, i: z.output<typeof diagnosticWindow>) => adminDiagnosticBundle(p, i)),
     })),
