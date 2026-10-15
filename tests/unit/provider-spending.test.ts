@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readOpenAISpending, utcMonth } from '@/lib/billing/openai';
-import { applicableRemaining, remaining, snapshotStale, type SpendingSnapshot } from '@/lib/billing/contracts';
+import { applicableRemaining, limitDescription, remaining, snapshotStale, type SpendingSnapshot } from '@/lib/billing/contracts';
 const now = new Date('2026-10-08T12:00:00Z');
 const bucket = { start_time: Date.parse('2026-10-01') / 1000, end_time: Date.parse('2026-10-02') / 1000, results: [{ object: 'organization.costs.result', amount: { value: 95, currency: 'usd' }, project_id: 'proj-one' }] };
 const page = { data: [bucket], has_more: false, next_page: null };
@@ -30,7 +30,24 @@ describe('provider-reported spending', () => {
       return response(url.pathname.endsWith('costs') ? page : limit);
     }) as typeof fetch);
     expect(snapshot.costsStatus).toBe('known'); expect(snapshot.breakdownStatus).toBe('permission_denied');
-    expect(snapshot.projectLimits.proj.status).toBe('unavailable'); expect(JSON.stringify(snapshot)).not.toContain('fixture-secret');
+    expect(snapshot.projectLimits.proj).toMatchObject({status:'unavailable',httpStatus:404}); expect(JSON.stringify(snapshot)).not.toContain('fixture-secret');
+    expect(limitDescription(snapshot.projectLimits.proj)).toContain('does not mean no limit is set');
+  });
+  it.each([405,501])('distinguishes an unsupported limit endpoint (%s) from costs failure', async status => {
+    const snapshot = await readOpenAISpending('org','fixture',[],now,(async input => String(input).includes('/costs?') ? response(page) : response({error:'private-provider-error'},status)) as typeof fetch);
+    expect(snapshot.costsStatus).toBe('known');
+    expect(snapshot.organizationLimit).toMatchObject({status:'unsupported',httpStatus:status,amount:null});
+    expect(limitDescription(snapshot.organizationLimit)).toContain('does not support');
+    expect(JSON.stringify(snapshot)).not.toContain('private-provider-error');
+  });
+  it('keeps permission, temporary failure, malformed response, and unrequested limits distinct', async () => {
+    for (const [status, expected] of [[403,'permission_denied'],[429,'unavailable'],[500,'unavailable']] as const) {
+      const snapshot = await readOpenAISpending('org','fixture',[],now,(async input => String(input).includes('/costs?') ? response(page) : response({},status)) as typeof fetch);
+      expect(snapshot.organizationLimit.status).toBe(expected);
+      expect(snapshot.organizationLimit.httpStatus).toBe(status);
+    }
+    expect(limitDescription(undefined)).toContain('No limit was read');
+    expect(limitDescription({status:'unknown',amount:null,currency:null,enforcement:null})).toContain('No recognized monthly limit');
   });
   it('rejects unknown amounts/currency and looping or overlapping pagination instead of understating totals', async () => {
     for (const invalid of [ { ...page, has_more: true, next_page: 'loop' }, { ...page, data: [{ ...bucket, results: [{object:'organization.costs.result'}] }] }, { ...page, data: [{...bucket, results:[{...bucket.results[0],amount:{value:2,currency:'?'}}]}] } ]) {
@@ -69,6 +86,7 @@ describe('applicable allowance', () => {
   it('does not invent allowance for missing parent, stale data, unknown project or mixed currency', () => {
     const value=snapshot(); value.organizationLimit.status='unset'; expect(applicableRemaining(value,'project')).toBeNull();
     value.organizationLimit.status='known'; value.refreshedAt='2020-01-01'; expect(snapshotStale(value)).toBe(true); expect(applicableRemaining(value,'project')).toBeNull();
+    value.refreshedAt='invalid'; expect(snapshotStale(value)).toBe(true); expect(applicableRemaining(value,null)).toBeNull();
     expect(remaining(value.organizationLimit,[{currency:'EUR',value:1}],true)).toBeNull();
   });
 });

@@ -7,7 +7,7 @@ import { assertAdmin, HttpError } from '@/lib/authz';
 import type { Principal } from '@/lib/auth/groups';
 import { decrypt, encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
-import type { BillingAccountView } from './contracts';
+import { BILLING_REFRESH_COOLDOWN_MS, type BillingAccountView } from './contracts';
 import { readOpenAISpending } from './openai';
 
 import { billingAad } from './secrets';
@@ -49,7 +49,7 @@ export async function refreshBillingAccount(p: Principal, id: string, now = new 
   if (!row) throw new HttpError(404, 'Billing account not found.');
   if (!row.enabled) throw new HttpError(409, 'Provider spending is disabled for this account.');
   // Claim a bounded refresh before provider I/O; concurrent tabs/workers cannot flood the provider.
-  if (row.lastAttemptAt && now.getTime() - row.lastAttemptAt.getTime() < 60_000) throw new HttpError(429, 'Wait a minute before refreshing again.');
+  if (row.lastAttemptAt && now.getTime() - row.lastAttemptAt.getTime() < BILLING_REFRESH_COOLDOWN_MS) throw new HttpError(429, 'Wait a minute before refreshing again.');
   const where = and(eq(providerBillingAccounts.id, id), eq(providerBillingAccounts.revision, row.revision), eq(providerBillingAccounts.enabled, true));
   const claimed = await db.update(providerBillingAccounts).set({ revision: row.revision + 1, lastAttemptAt: now }).where(where).returning({ id: providerBillingAccounts.id });
   if (!claimed.length) throw new HttpError(409, 'Billing configuration changed. Reload before refreshing.');
