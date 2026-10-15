@@ -215,3 +215,31 @@ No proxy configuration, live transport policy, credential grant, paid inference
 or production deployment was changed or exercised here. Unit checks prove the
 app's policy gate and URL/header projection, not encrypted transport or external
 log hygiene.
+
+### Disposable native ticket contract proof (#99)
+
+`tests/unit/remote-hermes-ticket-conformance.test.ts` runs the actual clean
+Hermes checkout at `f97608f178d1ffeca59860195ab7da295f7c8e5f` on a random
+loopback port. It uses a disposable home and synthetic password provider;
+non-loopback sockets/DNS and inference agent construction are blocked. The
+native HTTP login, authenticated ticket route, ticket store, WebSocket upgrade
+gate, protocol selection, readiness and capability handling remain real.
+
+Run with an isolated Python environment containing the pinned dashboard's
+required dependencies and an exact clean source checkout (no `.env`):
+
+```sh
+REMOTE_HERMES_TICKET_CONFORMANCE=1 \
+HERMES_SOURCE=/path/to/clean/pinned/hermes \
+HERMES_DASHBOARD_PYTHON=/path/to/isolated/bin/python \
+npx vitest run --configLoader runner --project unit \
+  tests/unit/remote-hermes-ticket-conformance.test.ts --maxWorkers=1
+```
+
+The seven cases establish authenticated minting, credential-free app-generated
+upgrade URLs, selection of only `hermes-gateway-v1`, successful production socket
+capability negotiation, one-use consumption/replay rejection, invalid/ambiguous
+protocol rejection, and refusal of the correct legacy token in gated mode. A
+final metrics check requires zero external network and inference attempts.
+The fixture retains no raw server diagnostics or captures. It does not validate
+external tunnel encryption or proxy log configuration.
