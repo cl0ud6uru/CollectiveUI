@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { execIdForToolCall, workspaceTools } from "@/lib/agent/tools/workspace";
 import { SandboxError } from "@/lib/sandbox/client";
@@ -265,11 +266,15 @@ describe("workspace_bash", () => {
     expect(t.toModelOutput!({ toolCallId: "c", input: {}, output: all.at(-1) } as never)).toEqual({ type: "error-text", value: expect.stringContaining("busy") });
   });
 
-  it("masks secrets in unexpected errors", async () => {
-    const { ws, script } = fakeWorkspace();
-    script.error = new Error("connect failed: Bearer abcdefghijklmnop");
-    const last = ((await execute(ws, "workspace_bash", { command: "x" })) as Record<string, unknown>[]).at(-1);
-    expect(last).toMatchObject({ status: "error", reason: "error", message: "connect failed: Bearer [redacted]" });
+  it.each([new Error("arbitrary-workspace-secret https://internal.fixture.invalid"), new SandboxError("internal", "arbitrary-workspace-secret https://internal.fixture.invalid")])("keeps returned workspace failures safe for UI, model and diagnostics", async error => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { ws, script } = fakeWorkspace(); script.error = error;
+      const last = ((await execute(ws, "workspace_bash", { command: "x" })) as Record<string, unknown>[]).at(-1);
+      expect(last).toMatchObject({ status: "error", message: expect.stringMatching(/^Something went wrong\. Try again\. Reference:/) });
+      const model = tools(ws).workspace_bash.tool.toModelOutput!({ toolCallId: "c", input: {}, output: last } as never);
+      expect(inspect([last, model, log.mock.calls])).not.toMatch(/arbitrary-workspace-secret|internal\.fixture\.invalid/);
+    } finally { log.mockRestore(); }
   });
 
   it("refuses hard-denied commands without running them", async () => {

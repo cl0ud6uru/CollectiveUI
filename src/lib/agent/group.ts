@@ -1,3 +1,4 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { runConfig } from "@/lib/runs/types";
 import { runHost } from "@/lib/runs/host";
 import { receiveGroupResults } from "@/lib/delegation/receipts";
@@ -20,14 +21,15 @@ import { HttpError, getAccessibleBot } from "@/lib/authz";
 import { insertMessage, partsToText, setCurrentLeaf, type PortalUIMessage } from "@/lib/chat/store";
 import { toolApprovalSecret } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
-import { redactSecrets } from "@/lib/redact";
-import { newUsageScope, resolveModel, userFacingMessage } from "@/lib/llm";
+import { nativeErrorText } from "@/lib/llm/native-errors";
+import { newUsageScope, resolveModel } from "@/lib/llm";
 import { userMayUseChatGPT } from "@/lib/llm/chatgpt/policy";
 import { getSetting } from "@/lib/settings";
 import { buildInstructionSections, toModelInstructions } from "./instructions";
 import { memoryEnabled, selectMemories } from "./memory";
 import { resolveMentions } from "./mentions";
 import { resolveAttachmentsForModel } from "./prepare";
+import { compactModelContext, resolveContextBudget } from "./context-budget";
 import { toolStatus } from "./persist";
 import { buildToolset } from "./toolset";
 import { beginGroupBotWork } from "@/lib/chat/group-bot-work";
@@ -140,14 +142,13 @@ export async function runGroupTurn(opts: {
   const parentId = history.at(-1)?.id ?? null;
   const useMemory = await memoryEnabled(principal.user.id);
   const messageId = newId();
-  const usageScope = newUsageScope({ messageId });
+  const usageScope = newUsageScope({ messageId, rootBudgetId: messageId });
   const execution = { holder: runHost().instanceId, deadlineAt: Date.now() + runConfig().runTimeoutMs };
 
   return createUIMessageStream<PortalUIMessage>({
     originalMessages: history,
     generateId: newId,
-    onError: (err) =>
-      userFacingMessage(err) ?? (err instanceof Error ? `A bot hit an error: ${redactSecrets(err.message)}` : "Something went wrong."),
+    onError: (err) => nativeErrorText(err),
     execute: async ({ writer }) => {
       writer.write({ type: "start", messageId, messageMetadata: { createdAt: Date.now(), startedAt: Date.now(), model: "group" } });
       const queue = initialQueue(userText, roster);
@@ -175,8 +176,8 @@ export async function runGroupTurn(opts: {
           toolset = await buildToolset(ctx);
           for (const warning of toolset.warnings) writer.write({ type: "data-notice", data: { message: warning }, transient: true });
           const memories = useMemory
-            ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id }).catch(
-                () => [],
+            ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id, usage: usageScope }).catch(
+                error => { if (error instanceof NativeRunBudgetError) throw error; return []; },
               )
             : [];
           const others = members.filter((m) => m.bot.id !== bot.id);
@@ -216,19 +217,39 @@ export async function runGroupTurn(opts: {
             usage: usageScope,
             nativeSearch: toolset.nativeSearch,
           });
+          const instructions = toModelInstructions(sections, capabilities.instructionStyle);
+          const contextBudget = resolveContextBudget(app.contextWindowTokens, app.maxTokens);
+          let lastContextNotice: string | undefined;
+          let omittedContextTurns = 0;
           const result = streamText({
             model,
-            instructions: toModelInstructions(sections, capabilities.instructionStyle),
+            // The UI boundary below emits a safe diagnostic instead of the SDK raw-error logger.
+            onError: () => {},
+            instructions,
             messages: endWithUser(mergeTurns(messages)),
             tools: toolset.tools,
             toolApproval: toolset.approval,
             experimental_toolApprovalSecret: toolApprovalSecret(),
             stopWhen: isStepCount(Math.min(bot.maxSteps, toolSettings.maxStepsCap)),
             temperature: app.temperature ?? undefined,
-            maxOutputTokens: app.maxTokens ?? undefined,
+            maxOutputTokens: contextBudget.outputReserveTokens,
             timeout: toolset.timeout,
             abortSignal: opts.abortSignal,
             ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
+            prepareStep: async ({ messages: stepMessages }) => {
+              const bounded = await compactModelContext(stepMessages, {
+                inputBudgetTokens: contextBudget.inputBudgetTokens,
+                instructions,
+                tools: toolset!.tools,
+                omittedTurnsBefore: omittedContextTurns,
+              });
+              omittedContextTurns = bounded.omittedTurns;
+              if (bounded.notice && bounded.notice !== lastContextNotice) {
+                lastContextNotice = bounded.notice;
+                writer.write({ type: "data-notice", data: { message: bounded.notice }, transient: true });
+              }
+              return { messages: bounded.messages, instructions: bounded.instructions };
+            },
           });
           // Pipe chunks in order so each bot's reply stays grouped under its speaker marker.
           const reader = toUIMessageStream({
@@ -237,7 +258,7 @@ export async function runGroupTurn(opts: {
             sendSources: true,
             sendStart: false,
             sendFinish: false,
-            onError: (err) => userFacingMessage(err) ?? "An error occurred.",
+            onError: (err) => nativeErrorText(err),
           }).getReader();
           let failed: string | undefined;
           for (;;) {
@@ -270,8 +291,7 @@ export async function runGroupTurn(opts: {
           if (opts.abortSignal?.aborted) break;
           // e.g. a ChatGPT plan that isn't connected or hit its limit: say so under this bot and let the others go on.
           // It's a separate part (not the bot's text), so it's never replayed to models as something the bot said.
-          const message = err instanceof BotReplyError ? err.message : (userFacingMessage(err) ?? "An error occurred.");
-          if (!(err instanceof BotReplyError) && !userFacingMessage(err)) console.warn(`[group] ${bot.name} couldn't answer`, err);
+          const message = err instanceof BotReplyError ? err.message : nativeErrorText(err);
           writer.write({ type: "data-bot-error", data: { botId: bot.id, message } satisfies BotErrorData });
           failedBots.add(bot.id);
         } finally {
@@ -323,7 +343,7 @@ export async function runGroupTurn(opts: {
         }
         });
       } catch (err) {
-        console.error("[group] failed to persist", err);
+        nativeErrorText(err);
       }
     },
   });
