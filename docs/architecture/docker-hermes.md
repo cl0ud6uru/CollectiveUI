@@ -214,7 +214,7 @@ In this offline resource-helper fixture, test owner containers use a fixed Node 
 
 ## Accepted-SHA disposable browser acceptance
 
-The narrowly scoped `Disposable Docker Hermes browser acceptance` workflow runs all ten cases in `tests/e2e/docker-hermes.spec.ts`, including starter setup, readiness, provider reset and runtime navigation. It checks out application **and browser-spec source** at accepted commit `a3d689253aa7a68ed30dbf21acfbe8f244120531`, separately from the workflow/harness candidate SHA. It uses a real development-mode Next app and worker, fresh named PostgreSQL and synthetic broker/native RPC; it does not establish production-build, Docker image or live provider evidence.
+The narrowly scoped `Disposable Docker Hermes browser acceptance` workflow runs all ten cases in `tests/e2e/docker-hermes.spec.ts`, including starter setup, readiness, provider reset and runtime navigation. It checks out application **and browser-spec source** at accepted commit `a6af9a5eb456f588929fdb7fef00d4a57fb4b70b`, separately from the workflow/harness candidate SHA. It uses a real development-mode Next app and worker, fresh named PostgreSQL and synthetic broker/native RPC; it does not establish production-build, Docker image or live provider evidence.
 
 The workflow invokes Node with an explicit minimal environment, dropping ambient runner provider/configuration values before the guard starts; the standalone guard still rejects those values if supplied directly. Before importing PostgreSQL or application code, the harness refuses non-Linux/non-CI execution, ambient `PG*` overrides, non-loopback or non-named databases, URL query/fragment overrides, reused credentials, ambient provider/broker/auth configuration and a changed source checkout. Only the CI run's disposable database is permitted. The database must have no user tables before migrations. Chromium has an isolated install/home; existing owner browsers and profiles are never used.
 
@@ -228,3 +228,12 @@ stacks, URLs, local paths and captured images never enter the uploaded summary.
 The orchestration validates this diagnostic projection again before upload.
 A diagnostic rerun still requires all ten cases to pass; serially skipped cases
 remain unproven.
+
+The original `a3d689253aa7a68ed30dbf21acfbe8f244120531` run reached four
+passes and failed case five at its obsolete offline-badge text assertion. The
+corrected candidate `a6af9a5eb456f588929fdb7fef00d4a57fb4b70b` changes that
+single assertion to the existing accessible offline status. Both application and
+revised spec are pinned to that candidate, and its SHA is recorded separately
+from the harness SHA. The original a3 spec is not reported as corrected or
+passed. Offline sign-in blocking, zero mutations and runtime navigation remain
+required, and full ten-case proof is pending the corrected run.
