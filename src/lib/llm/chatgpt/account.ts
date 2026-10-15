@@ -1,17 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, like } from 'drizzle-orm';
 import { db, type DbOrTx } from '@/db';
 import { personalCodexAccounts, userCredentials } from '@/db/schema';
 import { loadPrincipal, resolvePrincipal, type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
 import { getSetting } from '@/lib/settings';
-import { assertNoCodexWork, lockPersonalOwner } from '@/personal-codex/accounts';
+import { assertNoCodexWork, connectionView, lockPersonalOwner } from '@/personal-codex/accounts';
 import { personalControl } from '@/personal-codex/control';
 import { accountRejection, userMayUseChatGPT } from './policy';
 import { getChatGPTAuth, getChatGPTCredential, openCredentialSecret, revokeCredentialSecret, saveChatGPTConnection, type ChatGPTSecret } from './store';
-import { invalidateChatGPTConnectionLocked } from './invalidation';
+import { invalidateChatGPTConnectionLocked, invalidateNativeChatGPTConnectionLocked } from './invalidation';
 import { SIWCCredentialSchema, validateSIWCCredential, type SIWCCredential, type SIWCIdentity } from './siwc';
-import { accountSetupView, localSignInReason } from './onboarding';
+import { accountSetupView, deviceAccountSetupView, localSignInReason } from './onboarding';
 import { companionSignInView } from './companion-state';
 
 const hostId = () => process.env.CHATGPT_SIWC_HOST_ID?.trim();
@@ -33,12 +33,12 @@ export async function unifiedAccountView(p: Principal) {
   if (process.env.PERSONAL_CODEX_SOCKET) {
     try {
       const status = await personalControl(p.user.id, 'status');
-      codex = status.siwc?.available ? { state: status.state === 'running' && status.siwc.credentialBinding === fingerprint && nativeState === 'connected' ? 'connected' : status.state === 'stopped' ? 'stopped' : 'not_connected', reason: status.state === 'running' && status.siwc.credentialBinding === fingerprint ? undefined : 'Enable stock Codex using your connected account. This does not require another sign-in.' } : { state: 'unavailable', reason: status.siwc?.reason ?? 'The installed stock runtime has not been verified for SIWC. Retained legacy grants can be removed below.' };
+      codex = status.siwc?.available ? { state: status.state === 'running' && status.siwc.credentialBinding === fingerprint && nativeState === 'connected' ? 'connected' : status.state === 'stopped' ? 'stopped' : 'not_connected', reason: status.state === 'running' && status.siwc.credentialBinding === fingerprint ? undefined : 'This runtime uses the separately configured SIWC connection.' } : { state: (await connectionView(p)).state };
     } catch (error) { codex = error instanceof HttpError && error.message.includes('not enrolled') ? { state: 'not_enrolled', reason: error.message } : { state: 'backend_error', reason: 'Stock Codex is unavailable. Ask the operator to check the broker, then retry.' }; }
   }
   if (!allowed) codex = { state: 'disabled', reason: reason! };
-  const setup = await accountSetupView(p, settings), signIn = await companionSignInView(p);
-  return { allowed, reason, setup, signIn, credential: row ? { email: row.email, planType: row.planType, status: row.status, migrationRequired } : null,
+  const [setup, deviceSetup, signIn] = await Promise.all([accountSetupView(p, settings), deviceAccountSetupView(p, settings), companionSignInView(p)]);
+  return { allowed, reason, setup, deviceSetup, signIn, credential: row ? { email: row.email, planType: row.planType, status: row.status, migrationRequired } : null,
     backends: { native: { state: nativeState, ...(reason || policyReason ? { reason: reason ?? policyReason! } : {}) }, codex },
     onboarding: { state: hostId() ? 'ready' as const : 'blocked' as const, reason: hostId() ? onboardingReason : 'An operator must finish this installation’s ChatGPT sign-in configuration.' } };
 }
@@ -64,7 +64,8 @@ export async function applySIWCProfileLocked(p: Principal, profile: SIWCCredenti
     { accountId: `siwc:${identity.clientId}`, userId: identity.subject, email: identity.email.toLowerCase(), planType: null, residency: null, isFedramp: false, expiresAt: identity.expiresAt },
     undefined, { clientId: identity.clientId, hostId: installation, scope: profile.scope }, tx, false);
   // Reconnect invalidates old native bindings without touching retained workspace data.
-  await tx.update(personalCodexAccounts).set({ connected: false, ...(!sameRegistration ? { credentialBinding: randomUUID() } : {}), updatedAt: new Date() }).where(eq(personalCodexAccounts.userId, person.id));
+  await tx.update(personalCodexAccounts).set({ connected: false, ...(!sameRegistration ? { credentialBinding: randomUUID() } : {}), updatedAt: new Date() })
+    .where(and(eq(personalCodexAccounts.userId, person.id), like(personalCodexAccounts.workspaceId, 'siwc:%')));
   return { saved: { email: row.email, status: row.status }, previous };
 
 }
@@ -78,13 +79,13 @@ export async function importSIWCProfile(p: Principal, raw: unknown) {
   return saved;
 }
 
-export async function changeUnifiedAccount(p: Principal, action: 'start' | 'disconnect' | 'sync-token') {
-  if (action === 'disconnect') {
+export async function changeUnifiedAccount(p: Principal, action: 'start' | 'disconnect' | 'disconnect-native' | 'sync-token') {
+  if (action === 'disconnect' || action === 'disconnect-native') {
     let revoke: (() => Promise<boolean>) | null = null;
     await db.transaction(async tx => {
       const person = await lockPersonalOwner(p.user.id, tx);
       if (person.disabled || person.sessionVersion !== p.user.sessionVersion) throw new HttpError(403, 'Sign in to CollectiveUI again.');
-      revoke = await invalidateChatGPTConnectionLocked(person.id, tx);
+      revoke = action === 'disconnect-native' ? await invalidateNativeChatGPTConnectionLocked(person.id, tx) : await invalidateChatGPTConnectionLocked(person.id, tx);
     });
     const revocationConfirmed = revoke ? await (revoke as () => Promise<boolean>)() : true;
     return { disconnected: true, revocationConfirmed };
@@ -117,9 +118,10 @@ export async function changeUnifiedAccount(p: Principal, action: 'start' | 'disc
     const credentialBinding = createHash('sha256').update(auth.accessToken).digest('hex');
     const rejection = accountRejection(auth, settings);
     if (rejection) throw new HttpError(403, rejection);
+    const [previous] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, person.id));
+    if (previous?.connected && !previous.workspaceId.startsWith('siwc:')) throw new HttpError(409, 'Disconnect the stock Codex account before changing its authentication method.');
     await personalControl(person.id, 'sync-token', { accessToken: auth.accessToken, credentialBinding });
     if (!row.email) throw new HttpError(409, 'Reconnect ChatGPT before enabling stock Codex.');
-    const [previous] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, person.id));
     const binding = previous?.workspaceId === row.accountId && previous.email === row.email ? previous.credentialBinding : randomUUID();
     const values = { credentialBinding: binding, email: row.email, workspaceId: row.accountId, planType: row.planType ?? 'unknown', connected: true, updatedAt: new Date() };
     await tx.insert(personalCodexAccounts).values({ userId: person.id, ...values }).onConflictDoUpdate({ target: personalCodexAccounts.userId, set: values });

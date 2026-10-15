@@ -43,7 +43,7 @@ const server=createServer(async(req,res)=>{
  if(req.url==='/api/me/codex'){
   codexStatusRequests.push({method:req.method,url:req.url});
   res.setHeader('Cache-Control','no-store');
-  if(req.method==='GET')res.end(JSON.stringify({state:'unavailable'}));
+  if(req.method==='GET')res.end(JSON.stringify({state:'unavailable',reason:'Stock Codex requires an approved runtime installation.'}));
   else{res.statusCode=405;res.end(JSON.stringify({error:'Fixture only permits the personal connection status read.'}));}
   return;
  }
@@ -106,5 +106,5 @@ try{
  expect(chatgptStatusRequests).toEqual([{method:'GET',url:'/api/me/chatgpt'}]);
  expect(codexStatusRequests).toEqual([{method:'GET',url:'/api/me/codex'}]);
  expect(errors).toEqual([]);
- console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, exact read-only unified ChatGPT readiness and legacy cleanup status and retained central tab, 320–1280px actual CSS; synthetic HTTP only');
+ console.log('PASS saved Team connections in existing Settings: retained owner cleanup, 100+cursor pages, exact revision DELETE, expired/saved truthful status, double-click and stale 409/403/401, late reads do not restore disconnected accounts, no credential/auth inputs, exact read-only Native ChatGPT and stock Codex readiness and retained central tab, 320–1280px actual CSS; synthetic HTTP only');
 }finally{if(releaseRead)releaseRead();if(releaseDelete)releaseDelete();await browser.close();server.close();await rm(dir,{recursive:true,force:true});}

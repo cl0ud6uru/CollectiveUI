@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -30,12 +31,24 @@ class ComputerControlTests(unittest.TestCase):
         original = (ROOT / "docker/personal-codex/requirements.toml").read_text()
         with tempfile.TemporaryDirectory(prefix="computer-requirements-test-") as directory:
             target = Path(directory) / "requirements.toml"
-            target.write_text(original)
-            patch_requirements.main(str(target))
-            self.assertIn('"/codex-home/computer-runtime-state" = "deny"', target.read_text())
+            # Current shared requirements leave selection to the supervisor;
+            # explicitly selected native and legacy SIWC bases stay compatible.
+            for selection in ("", 'model_provider = "openai"\n', 'model_provider = "openai_chatgpt_plan"\n'):
+                with self.subTest(selection=selection):
+                    source = selection + original
+                    target.write_text(source)
+                    patch_requirements.main(str(target))
+                    expected = tomllib.loads(source)
+                    filesystem = expected["permissions"]["collective-personal"]["filesystem"]
+                    filesystem.update({
+                        "/codex-home/computer-runtime-state": "deny",
+                        "/codex-home/computer-runtime.sock": "deny",
+                        "/tmp/.X11-unix": "deny",
+                        "/tmp/collective-computer.Xauthority": "deny",
+                    })
+                    self.assertEqual(tomllib.loads(target.read_text()), expected)
 
             incompatible = {
-                'model_provider = "openai_chatgpt_plan"': 'model_provider = "other"',
                 'model_providers.openai_chatgpt_plan.base_url = "https://api.openai.com/v1"':
                     'model_providers.openai_chatgpt_plan.base_url = "https://example.invalid/v1"',
                 'model_providers.openai_chatgpt_plan.env_key = "ACCESS_TOKEN"':
@@ -44,8 +57,12 @@ class ComputerControlTests(unittest.TestCase):
                     'model_providers.openai_chatgpt_plan.wire_api = "chat_completions"',
                 'model_providers.openai_chatgpt_plan.requires_openai_auth = false':
                     'model_providers.openai_chatgpt_plan.requires_openai_auth = true',
+                'inherit = "none"': 'inherit = "all"',
                 'ACCESS_TOKEN = "exclude"': 'ACCESS_TOKEN = "include"',
                 ', "/codex-home/.collective-codex-siwc.sock"': '',
+                '"/codex-home/auth.json", ': '',
+                '"/home/agent/workspace/.codex" = "deny"':
+                    '"/home/agent/workspace/.codex" = "write"',
             }
             for expected, replacement in incompatible.items():
                 with self.subTest(requirement=expected):
@@ -53,6 +70,20 @@ class ComputerControlTests(unittest.TestCase):
                     target.write_text(original.replace(expected, replacement, 1))
                     with self.assertRaises(SystemExit):
                         patch_requirements.main(str(target))
+                    self.assertEqual(target.read_text(), original.replace(expected, replacement, 1))
+
+            incompatible_providers = {
+                "unknown": 'model_provider = "other"\n' + original,
+                "boolean": 'model_provider = false\n' + original,
+                "array": 'model_provider = []\n' + original,
+                "missing_siwc": original.replace("model_providers.openai_chatgpt_plan.", "model_providers.other."),
+            }
+            for reason, source in incompatible_providers.items():
+                with self.subTest(unsupported_provider=reason):
+                    target.write_text(source)
+                    with self.assertRaises(SystemExit):
+                        patch_requirements.main(str(target))
+                    self.assertEqual(target.read_text(), source)
 
     def test_valid_inputs_map_to_fixed_argv_and_reject_shell_payloads(self):
         argv, body = control.command_for({"kind": "click", "x": 1279, "y": 799, "button": "right"})

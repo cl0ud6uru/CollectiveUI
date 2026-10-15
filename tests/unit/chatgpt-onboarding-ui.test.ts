@@ -16,12 +16,11 @@ const companionReady: ChatGPTAccountView = { ...initial, setup: { ...initial.set
 const render = (view = initial) => renderToStaticMarkup(createElement<{ initialView?: ChatGPTAccountView }>(ChatGPTConnection, { initialView: view }));
 
 describe('truthful account setup UI', () => {
-  it('requires resource consent and leaves sign-in disabled without a companion', () => {
+  it('keeps native sign-in independent and disabled without a companion', () => {
     const html = render();
-    expect(html).toContain('ChatGPT plan usage is authorized separately when I sign in.');
-    expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*>/);
+    expect(html).toContain('Each connection has its own sign-in and status.');
     expect(html).not.toMatch(/<input[^>]*checked/);
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Prepare private runtime<\/button>/);
+    expect(html).not.toContain('Prepare private runtime');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*aria-describedby="chatgpt-companion-status"[^>]*>Connect ChatGPT<\/button>/);
     expect(html).not.toMatch(/chatgpt-profile|chatgpt:import|chatgpt:sign-in|secure SSH|run:/);
   });
@@ -29,7 +28,7 @@ describe('truthful account setup UI', () => {
   it('does not present prepared infrastructure as an authenticated ChatGPT account', () => {
     const html = render({ ...initial, setup: { ...initial.setup!, canPrepareRuntime: true,
       runtime: { state: 'ready', selfEnrollment: true, enrolled: true, runtimeState: 'running' } } });
-    expect(html).toContain('<dd>Prepared</dd>');
+    expect(html).not.toContain('Private Codex runtime');
     expect(html).toContain('Local sign-in app required');
     expect(html).not.toContain('Prepare private runtime');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Connect ChatGPT<\/button>/);
@@ -39,7 +38,7 @@ describe('truthful account setup UI', () => {
     const html = render(companionReady);
     expect(html).toContain('Local sign-in app ready');
     expect(html).toContain('I authorize this installation to use my ChatGPT account for Native CollectiveUI.');
-    expect(html).toContain('Prepare and use my private stock Codex runtime');
+    expect(html).not.toContain('Prepare and use my private stock Codex runtime');
     expect(html).not.toMatch(/chatgpt-profile|chatgpt:import|secure SSH|run:/);
   });
 
@@ -61,7 +60,7 @@ describe('truthful account setup UI', () => {
       backends: { native: { state: 'connected' }, codex: { state: 'connected' } },
       setup: { ...initial.setup!, runtime: { state: 'ready', selfEnrollment: true, enrolled: true, runtimeState: 'running' } } });
     expect(html).toContain('<dd>Connected</dd>');
-    expect(html).toContain('Disconnect ChatGPT');
+    expect(html).toContain('Disconnect Native ChatGPT');
     expect(html).not.toContain('Connect ChatGPT');
     expect(html).not.toContain('Prepare private runtime');
   });
@@ -77,8 +76,7 @@ describe('truthful account setup UI', () => {
   it('shows an actionable runtime failure while retaining the companion prerequisite', () => {
     const html = render({ ...initial, setup: { ...initial.setup!, canPrepareRuntime: false,
       runtime: { state: 'unavailable', selfEnrollment: false, enrolled: false, reason: 'Retry, or ask the operator to check the runtime service.' } } });
-    expect(html).toContain('Could not verify setup');
-    expect(html).toContain('Retry, or ask the operator');
+    expect(html).not.toContain('Private Codex runtime');
     expect(html).not.toContain('Prepare private runtime');
     expect(html).toContain('local sign-in app is required');
   });
@@ -88,6 +86,6 @@ describe('truthful account setup UI', () => {
     const html = render({ ...initial, allowed: false, reason,
       backends: { native: { state: 'disabled', reason }, codex: { state: 'unavailable', reason: 'Stock Codex requires an approved runtime installation.' } } });
     expect(html.split(reason).length - 1).toBe(1);
-    expect(html).toContain('Stock Codex requires an approved runtime installation.');
+    expect(html).not.toContain('Stock Codex requires an approved runtime installation.');
   });
 });

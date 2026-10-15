@@ -140,14 +140,18 @@ const codexArgs = ['-c', 'projects={"/home/agent/workspace"={trust_level="untrus
   '-c', 'web_search="disabled"', '-c', 'features.shell_tool=true', '-c', 'features.multi_agent=false',
   '-c', 'features.multi_agent_v2=false', '-c', 'features.plugins=false', '-c', 'features.plugin_hooks=false',
   '-c', 'features.enable_mcp_apps=false', '-c', 'features.image_generation=false',
+  '-c', 'shell_environment_policy.inherit="none"', '-c', 'shell_environment_policy.filters.ACCESS_TOKEN="exclude"',
+  'app-server', '--listen', stdio || stdioToken ? 'stdio://' : 'ws://127.0.0.1:4500'];
+// An env-token provider is selected only for an explicitly synchronized SIWC token.
+// Without that token, stock Codex manages ChatGPT device credentials and refreshes.
+const siwcProviderArgs = [
   '-c', 'model_provider="openai_chatgpt_plan"', '-c', 'model_providers.openai_chatgpt_plan.name="ChatGPT plan"',
   '-c', 'model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"',
   '-c', 'model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"',
   '-c', 'model_providers.openai_chatgpt_plan.wire_api="responses"',
   '-c', 'model_providers.openai_chatgpt_plan.requires_openai_auth=false',
   '-c', 'model_providers.openai_chatgpt_plan.supports_websockets=false',
-  '-c', 'shell_environment_policy.inherit="none"', '-c', 'shell_environment_policy.filters.ACCESS_TOKEN="exclude"',
-  'app-server', '--listen', stdio || stdioToken ? 'stdio://' : 'ws://127.0.0.1:4500'];
+];
 let accessToken = initialToken?.accessToken;
 let child;
 let restarting = false;
@@ -164,7 +168,8 @@ function childEnvironment() {
   };
 }
 function startAppServer() {
-  child = spawn('codex', codexArgs, {
+  const args = accessToken ? [...siwcProviderArgs, ...codexArgs] : ['-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"', ...codexArgs];
+  child = spawn('codex', args, {
     stdio: stdio || stdioToken ? 'inherit' : 'ignore',
     env: childEnvironment(),
     // The desktop proxy owns an isolated process group around this wrapper and
