@@ -108,11 +108,11 @@ def _project_root(server, profile: str, session: dict):
     if not session.get("explicit_cwd") or session.get("cwd_from_settle"):
         return None
     cwd = session.get("cwd")
-    persisted = server._session_workdir._persisted_session_cwd(session)
+    persisted = server._persisted_session_cwd(session)
     if not isinstance(cwd, str) or persisted != cwd:
         return None
     # Remote/isolated terminal paths are not host filesystem authorization.
-    if session.get("_compute_host_active") or server._session_workdir._is_local_terminal_backend() is not True:
+    if session.get("_compute_host_active") or server._effective_terminal_backend() != "local":
         return None
     profile_home = server._profile_home(profile) or server._hermes_home
     profile_home = Path(profile_home).resolve()
@@ -163,7 +163,7 @@ def _relative_parts(path: str | None) -> list[str] | None:
     return parts
 
 
-def _open_directory(root: str, parts: list[str]) -> int:
+def _open_directory(root: str, parts: list[str]) -> tuple[int, int]:
     if not _NOFOLLOW or not _DIRECTORY or os.name == "nt":
         raise OSError("descriptor-relative no-follow access is unavailable")
     fd = os.open(os.path.sep, os.O_RDONLY | _DIRECTORY)
@@ -172,18 +172,22 @@ def _open_directory(root: str, parts: list[str]) -> int:
             next_fd = os.open(component, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = next_fd
+        root_device = os.fstat(fd).st_dev
         for component in parts:
             next_fd = os.open(component, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fd)
+            if os.fstat(next_fd).st_dev != root_device:
+                os.close(next_fd)
+                raise OSError("workspace path crosses a filesystem boundary")
             os.close(fd)
             fd = next_fd
-        return fd
+        return fd, root_device
     except BaseException:
         os.close(fd)
         raise
 
 
 def _list(root: str, parts: list[str]) -> tuple[list[dict], bool]:
-    fd = _open_directory(root, parts)
+    fd, root_device = _open_directory(root, parts)
     try:
         visible = []
         truncated = False
@@ -201,8 +205,12 @@ def _list(root: str, parts: list[str]) -> tuple[list[dict], bool]:
                     continue
                 relative = "/".join(parts + [name])
                 if stat.S_ISDIR(info.st_mode):
+                    if info.st_dev != root_device:
+                        continue  # Don't descend into a different mounted filesystem.
                     kind = "directory"
                 elif stat.S_ISREG(info.st_mode):
+                    if info.st_dev != root_device or info.st_nlink > 1:
+                        continue  # Different-volume mounts and hardlinked aliases stay outside the view.
                     kind = "file"
                 else:
                     continue  # Symlinks, devices, sockets, and FIFOs are never exposed.
@@ -221,7 +229,7 @@ def _read(root: str, parts: list[str]) -> str:
         raise ValueError("A file path is required.")
     if not _NONBLOCK:
         raise OSError("nonblocking file access is unavailable")
-    fd = _open_directory(root, parts[:-1])
+    fd, root_device = _open_directory(root, parts[:-1])
     try:
         # The client can guess a path or a listed regular file can be replaced between
         # listing and reading. Opening nonblocking ensures a FIFO/device cannot stall
@@ -231,7 +239,8 @@ def _read(root: str, parts: list[str]) -> str:
         os.close(fd)
     try:
         info = os.fstat(file_fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_READ_BYTES:
+        if (not stat.S_ISREG(info.st_mode) or info.st_dev != root_device or info.st_nlink > 1
+                or info.st_size > MAX_READ_BYTES):
             raise ValueError("This file is not an eligible small text file.")
         chunks = []
         total = 0
@@ -262,7 +271,7 @@ def install(server):
             if (binding is None or binding.phase != "full" or binding.profile != params.profile
                     or binding.transport is not transport or str(binding.home) != str(Path(binding.home).resolve())):
                 return server._err(rid, 4030, "Workspace files require current full profile ownership.")
-            if server._session_workdir._is_local_terminal_backend() is not True:
+            if server._effective_terminal_backend() != "local":
                 return server._err(rid, 4030, "Workspace files are unavailable for non-local terminal sessions.")
             attached_transport, session = server._current_session_steer_authority(params.session_id)
             if attached_transport is not transport or session is None:

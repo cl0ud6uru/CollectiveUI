@@ -87,6 +87,9 @@ spec.loader.exec_module(workspace_module)
 
 
 class _Workdir:
+    def __init__(self):
+        self.config_backend = "local"
+
     @staticmethod
     def _persisted_session_cwd(session):
         return session.get("cwd") if session.get("explicit_cwd") and not session.get("cwd_from_settle") else None
@@ -95,12 +98,20 @@ class _Workdir:
     def _is_local_terminal_backend():
         return True
 
+    def _effective_terminal_backend(self):
+        env_backend = os.environ.get("TERMINAL_ENV", "").strip().lower()
+        if env_backend and env_backend != "local":
+            return env_backend
+        return self.config_backend or "local"
+
 
 class _Server:
     def __init__(self, profile_home, session, transport_obj):
         self._hermes_home = profile_home
         self._sessions = {"runtime-session": session}
         self._session_workdir = _Workdir()
+        self._persisted_session_cwd = self._session_workdir._persisted_session_cwd
+        self._effective_terminal_backend = self._session_workdir._effective_terminal_backend
         self._LONG_HANDLERS = frozenset()
         self._rpc_dispatch = rpc_dispatch
         self._transport_obj = transport_obj
@@ -141,6 +152,9 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
         (self.workspace / "access-token.txt").write_text("never-return", encoding="utf8")
         (self.workspace / "outside-link").symlink_to(self.base / "outside.txt")
         (self.base / "outside.txt").write_text("outside", encoding="utf8")
+        outside_credential = self.base / "credential-source.txt"
+        outside_credential.write_text("synthetic secret", encoding="utf8")
+        os.link(outside_credential, self.workspace / "ordinary-name.txt")
         db = sqlite3.connect(self.home / "projects.db")
         db.executescript("CREATE TABLE projects (id TEXT, name TEXT, archived INTEGER); CREATE TABLE project_folders (project_id TEXT, path TEXT);")
         db.execute("INSERT INTO projects VALUES ('project-1', 'Synthetic project', 0)")
@@ -181,7 +195,7 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
     def test_traversal_secret_symlink_and_wrong_workspace_fail_closed(self):
         listing = self.call(action="list")["result"]
         workspace_id = listing["workspace_id"]
-        for bad_path in ("../outside.txt", "/etc/passwd", "src/../../outside.txt", ".env", "my-secret.txt", "access-token.txt", "outside-link"):
+        for bad_path in ("../outside.txt", "/etc/passwd", "src/../../outside.txt", ".env", "my-secret.txt", "access-token.txt", "outside-link", "ordinary-name.txt"):
             response = self.call(action="read", workspace_id=workspace_id, path=bad_path)
             self.assertIn("error", response, bad_path)
         response = self.call(action="read", workspace_id="0" * 32, path="README.md")
@@ -208,6 +222,19 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
             _current_transport.reset(token)
         self.server._session_live_status = lambda _sid, _session: "working"
         self.assertIn("error", self.call(action="list"))
+
+    def test_configured_nonlocal_backend_is_rejected_without_terminal_env(self):
+        previous = os.environ.pop("TERMINAL_ENV", None)
+        try:
+            for backend in ("docker", "ssh"):
+                self.server._session_workdir.config_backend = backend
+                response = self.call(action="list")
+                self.assertIn("error", response, backend)
+                self.assertIsNone(workspace_module._project_root(self.server, "test-profile", self.session), backend)
+        finally:
+            self.server._session_workdir.config_backend = "local"
+            if previous is not None:
+                os.environ["TERMINAL_ENV"] = previous
 
     def test_launch_fallback_settled_cwd_and_archived_project_are_not_roots(self):
         self.session["explicit_cwd"] = False
