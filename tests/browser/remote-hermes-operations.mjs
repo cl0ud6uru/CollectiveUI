@@ -15,6 +15,7 @@ const bundle = await build({ entryPoints: [entry], write: false, bundle: true, p
 const requests = [];
 let scheduleEnabled = true;
 let scheduleState = 'scheduled';
+let pluginStatus = 'not enabled';
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
@@ -26,10 +27,15 @@ const server = createServer((req, res) => {
     req.on('data', chunk => { request.body += chunk; });
     req.on('end', () => {
       const envelope = JSON.parse(request.body); request.input = envelope.input;
-      if (envelope.input.operation === 'prepare') { res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'schedule' : envelope.input.action, enabled: envelope.input.action === 'resume', name: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'Fixture schedule' : envelope.input.name, profile: 'default', title: 'Fixture chat' })); return; }
+      if (envelope.input.operation === 'prepare') { const scheduled = envelope.input.action === 'pause' || envelope.input.action === 'resume'; const plugin = envelope.input.action === 'enable-plugin' || envelope.input.action === 'disable-plugin'; res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: scheduled ? 'schedule' : plugin ? 'plugin' : envelope.input.action, enabled: envelope.input.action === 'resume' || envelope.input.action === 'enable-plugin', name: scheduled ? 'Fixture schedule' : plugin ? 'Fixture plugin' : envelope.input.name, profile: 'default', title: 'Fixture chat' })); return; }
       if (requests.at(-2)?.input?.action === 'pause') { scheduleEnabled = false; scheduleState = 'paused'; }
       if (requests.at(-2)?.input?.action === 'resume') { scheduleEnabled = true; scheduleState = 'scheduled'; }
-      res.end(JSON.stringify({ accepted: true, duplicate: false, schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled, state: scheduleState }, { id: 'done', name: 'Completed schedule', enabled: false, state: 'completed' }], projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }], activeId: '' }));
+      if (requests.at(-2)?.input?.action === 'enable-plugin') pluginStatus = 'enabled';
+      if (requests.at(-2)?.input?.action === 'disable-plugin') pluginStatus = 'disabled';
+      const lastAction = requests.at(-2)?.input?.action;
+      res.end(JSON.stringify({ accepted: true, duplicate: false,
+        output: lastAction === 'enable-plugin' ? 'Plugin enabled in profile settings. Hermes confirms the running gateway reloaded. Activation may add tools or skills to open chats.' : lastAction === 'disable-plugin' ? 'Plugin disabled in profile settings. A running gateway may keep its handlers until restarted.' : 'Hermes change confirmed.',
+        schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled }], projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }], activeId: '' }));
     });
     return;
   }
@@ -38,7 +44,7 @@ const server = createServer((req, res) => {
   const fixtures = {
     projects: { projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }] },
     schedules: { schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled, state: scheduleState, schedule: '0 7 * * *' }, { id: 'done', name: 'Completed schedule', enabled: false, state: 'completed', schedule: 'once' }] },
-    plugins: { plugins: [{ name: 'Fixture plugin', version: '1.0', status: 'enabled' }] },
+    plugins: { plugins: [{ key: 'tools:fixture', name: 'Fixture plugin', version: '1.0', status: pluginStatus, source: 'user' }] },
     system: { version: 'Fixture version', cpuCount: 4, cpuPercent: 10, memory: { total: 1000, used: 500, percent: 50 } },
     files: { roots: ['/workspace'], directory: url.searchParams.get('path') || '/workspace', entries: url.searchParams.get('path') === '/workspace/src' ? [{ name: 'example.ts', path: '/workspace/src/example.ts', directory: false }] : [{ name: 'src', path: '/workspace/src', directory: true }] },
   };
@@ -66,19 +72,30 @@ try {
   await expect(page.getByRole('button', { name: 'src/', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Schedules', exact: true }).click();
   await expect(page.getByText('Fixture schedule', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Review resume', exact: true })).toHaveCount(0);
   await expect(page.locator('article').filter({ hasText: 'Completed schedule' }).getByRole('button')).toHaveCount(0);
   await page.getByRole('button', { name: 'Review pause', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('Pause schedule');
   expect(requests.filter(r => r.method === 'POST').slice(-1)[0].input.operation).toBe('prepare');
   await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
   await expect.poll(() => requests.filter(r => r.method === 'POST').map(r => r.input.operation)).toContain('confirm');
-  await expect(page.getByText('Enabled: no')).toBeVisible();
+  await expect(page.locator('article').filter({ hasText: 'Fixture schedule' }).getByText('Enabled: no')).toBeVisible();
   await page.getByRole('button', { name: 'Review resume', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('may run soon and use model usage');
   await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
-  await expect(page.getByText('Enabled: yes')).toBeVisible();
+  await expect(page.locator('article').filter({ hasText: 'Fixture schedule' }).getByText('Enabled: yes')).toBeVisible();
   await page.getByRole('button', { name: 'Plugins', exact: true }).click();
   await expect(page.getByText('Fixture plugin', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Review enable', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('may add capabilities to open chats');
+  await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
+  await expect(page.getByText('Status: enabled')).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'gateway reloaded' })).toBeVisible();
+  await page.getByRole('button', { name: 'Review disable', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('may keep its handlers until restart');
+  await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
+  await expect(page.getByText('Status: disabled')).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'handlers until restarted' })).toBeVisible();
   await page.getByRole('button', { name: 'System', exact: true }).click();
   await expect(page.getByText('Fixture version', { exact: true })).toBeVisible();
   await page.getByLabel('Hermes workspace profile').click(); await page.getByRole('option', { name: 'work', exact: true }).click();
@@ -91,5 +108,5 @@ try {
   expect(requests.filter(r => r.method === 'GET').length).toBeGreaterThan(0);
   expect(requests.some(r => r.path === '/workspace/src')).toBe(true);
   expect(errors).toEqual([]);
-  console.log('PASS: explicit two-step empty-project creation, schedule pause/resume confirmation and usage warning, completed schedule has no resume control, shared-profile warning, directories, schedules, plugins, system, profile switch, refresh; no browser errors.');
+  console.log('PASS: explicit two-step project creation, schedule pause/resume with completed-job guard, user-plugin activation confirmation, shared-profile warnings, all panels and directory navigation; no browser errors.');
 } finally { await browser?.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

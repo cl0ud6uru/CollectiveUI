@@ -106,6 +106,7 @@ jobs:
           ENCRYPTION_KEY: synthetic-conformance-only
           REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE: '1'
           REMOTE_HERMES_INTEGRATION: '1'
+          DATABASE_POOL_MAX: '1'
         run: npx vitest run --project integration tests/integration/remote-hermes-dashboard-conformance.test.ts tests/integration/remote-hermes-reservations.test.ts --maxWorkers=1
 
   checks:
@@ -242,6 +243,7 @@ jobs:
           python tests/fixtures/docker-hermes-network.py
           python tests/fixtures/hermes-team-native-contract.py
           python tests/fixtures/hermes-team-pinned-bridge.py
+          python tests/fixtures/hermes-native-plugin-toggle.py
       - name: Verify Remote Hermes commands and session YOLO against the actual pinned protocol
         env:
           HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source

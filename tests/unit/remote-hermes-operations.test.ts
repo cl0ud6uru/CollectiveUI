@@ -30,6 +30,14 @@ describe('native workspace inspection', () => {
     const values = [projectProjection({ projects: [{ id: 'p', name: 'Example', folders: [], config: secret }] }), pluginProjection({ plugins: [{ name: 'example', version: '1', settings_schema: [{ value: secret }], servers: [{ env: secret }], install_dir: secret }] }), scheduleProjection([{ id: 'j', name: 'Example', prompt: secret, command: secret, deliver: secret }]), systemProjection({ hermes_version: '1', hostname: secret, process: { pid: 1 }, env: secret })];
     expect(JSON.stringify(values)).not.toContain(secret); expect(systemProjection({ cpu_count: -1, cpu_percent: Infinity }).cpuCount).toBeUndefined();
   });
+  it('does not truncate native plugin keys into mutation identities', () => {
+    const key = 'x'.repeat(301);
+    const longName = 'n'.repeat(301);
+    expect(pluginProjection({ plugins: [{ key, name: 'Long key', source: 'user', status: 'disabled' },
+      { key: 'safe:long-name', name: longName, source: 'user', status: 'disabled' }] }).plugins)
+      .toEqual([{ key: '', name: 'Long key', version: '', status: 'disabled', source: 'user' },
+        { key: 'safe:long-name', name: '', version: '', status: 'disabled', source: 'user' }]);
+  });
   it('does not list hidden or sensitive entries, fabricated paths or traversal', () => {
     expect(directoryProjection({ entries: [{ name: 'README.md', path: '/workspace/README.md' }, { name: 'src', path: '/workspace/src', isDirectory: true }, { name: '.env', path: '/workspace/.env' }, { name: 'credentials', path: '/workspace/credentials', isDirectory: true }, { name: 'other', path: '/etc/other' }, { name: '..', path: '/workspace/..' }] }, '/workspace')).toEqual([{ name: 'README.md', path: '/workspace/README.md', directory: false }, { name: 'src', path: '/workspace/src', directory: true }]);
     for (const sensitive of ['secret.txt', 'secrets.json', 'credentials.yaml', 'id_rsa.pub', 'vault.db', 'auth.yaml', '.config/visible']) expect(validDirectory(`/workspace/${sensitive}`)).toBe(false);
@@ -58,7 +66,7 @@ describe('native workspace inspection', () => {
   });
   it('falls back to legacy plugin discovery only for unsupported methods, never auth or uncertain failures', async () => {
     f.call.mockRejectedValueOnce(new HttpError(501, 'Unsupported')).mockResolvedValueOnce({ plugins: [{ name: 'Example', version: '1', enabled: true }] });
-    expect(await inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).toEqual({ plugins: [{ name: 'Example', version: '1', status: 'enabled', source: '' }] });
+    expect(await inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).toEqual({ plugins: [{ key: '', name: 'Example', version: '1', status: 'enabled', source: '' }] });
     expect(f.call.mock.calls.map(([method]) => method)).toEqual(['plugins.manage', 'plugins.list']);
     f.call.mockClear(); f.call.mockRejectedValueOnce(new HttpError(401, 'Sign in again'));
     await expect(inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).rejects.toThrow('Sign in again'); expect(f.call).toHaveBeenCalledOnce();

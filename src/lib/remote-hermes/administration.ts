@@ -1,20 +1,68 @@
 import { and, eq } from 'drizzle-orm';
-import { db } from '@/db';
+import { db, pool, schema } from '@/db';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { remoteHermesSessions, remoteHermesTurns } from '@/db/schema';
 import { HttpError } from '@/lib/authz';
 import { newId } from '@/lib/ids';
 import { hmacSha256Hex, toolApprovalSecret } from '@/lib/crypto';
 import { getSetting } from '@/lib/settings';
 import { nativeHub } from './hub';
+import { record, type RpcRecord } from './socket';
 import { assertRemoteHermesAdmission } from './policy';
 import { remoteAccess } from './store';
+import { dashboardAddress, dashboardFetchPinned } from './transport';
+import type { DashboardClient } from './client';
 import { ownedNativeSession } from './sessions';
-import { administrationInput, mcpInventory, probeSummary, settingValue, settingValues } from './administration-contract';
+import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, nativeProviderPoolRequestLabel, probeSummary, settingValue, settingValues, type AdministrationInput } from './administration-contract';
 
 function assertIdle(current: { status: string; queueRequestId?: string | null } | undefined,
   view: { running: boolean; uncertain?: boolean; queuePending?: boolean } | undefined) {
   if (!current || current.status !== 'idle' || current.queueRequestId || !view || view.running || view.uncertain || view.queuePending)
     throw new HttpError(409, 'Finish this native turn before administering Hermes.');
+}
+
+type CustomServerInput = Extract<AdministrationInput, { operation: 'customServer' }>;
+
+function assertCustomServerInventory(nativeList: RpcRecord, input: CustomServerInput) {
+  const inventory = mcpInventory(nativeList, {}, {});
+  if (inventory.servers.some(server => server.name.toLowerCase() === input.name.toLowerCase()))
+    throw new HttpError(409, 'A server with this name already exists in the selected profile.');
+  if (!input.bearerToken) return;
+
+  // Hermes derives bearer storage as MCP_<UPPERCASED_NAME_WITH_PUNCTUATION_AS_UNDERSCORES>_API_KEY.
+  // Check the entire bounded native inventory before dispatch: adding a different name that
+  // normalizes to the same environment slot would silently overwrite an existing credential.
+  const targetSlot = nativeMcpBearerEnvSlot(input.name);
+  const nativeServers: unknown[] = Array.isArray(nativeList.servers) ? nativeList.servers : [];
+  if (!targetSlot || !Array.isArray(nativeList.servers) || nativeServers.length > 100)
+    throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+  for (const value of nativeServers) {
+    const server = record(value);
+    if (typeof server.name !== 'string')
+      throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+    const slot = nativeMcpBearerEnvSlot(server.name);
+    if (!slot)
+      throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+    if (slot === targetSlot)
+      throw new HttpError(409, 'This server name shares a protected credential slot with an existing MCP server. Choose a different name.');
+    // Native inventory deliberately redacts HTTP header templates. Such a server could
+    // refer to any profile environment key, so its credential dependencies cannot be
+    // proven disjoint from the slot Hermes is about to write.
+    if (server.transport === 'http' || !['stdio', 'sse', 'streamable-http'].includes(String(server.transport)))
+      throw new HttpError(409, 'Hermes does not expose enough MCP credential metadata to add this bearer token safely. Refresh the profile or remove the opaque server in Hermes first.');
+    const env = server.env;
+    if (env !== undefined && (!Array.isArray(env) || env.some(key => typeof key !== 'string')))
+      throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+    if (Array.isArray(env) && env.includes(targetSlot))
+      throw new HttpError(409, 'This server name shares a protected credential slot with an existing MCP server. Choose a different name.');
+    const headers = server.headers;
+    if (headers !== undefined && (!headers || typeof headers !== 'object' || Array.isArray(headers)))
+      throw new HttpError(409, 'Hermes server credential slots could not be verified safely. Refresh the profile before adding this server.');
+    for (const header of Object.values(record(headers))) {
+      if (typeof header === 'string' && [...header.matchAll(/\$\{([A-Z][A-Z0-9_]{0,127})\}/g)].some(match => match[1] === targetSlot))
+        throw new HttpError(409, 'This server name shares a protected credential slot with an existing MCP server. Choose a different name.');
+    }
+  }
 }
 
 export async function nativeAdministration(ownerId: string, connectionId: string, sessionId: string, raw: unknown) {
@@ -60,6 +108,10 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     if (input.operation === 'credential' && !inventory.servers.some(s => s.name === input.name && s.source === 'config' && s.envKeys.includes(input.envVar)))
       throw new HttpError(400, 'Choose an existing credential key for a configured MCP server.');
   }
+  if (input.operation === 'customServer') {
+    const nativeList = await hub.socket.call('mcp.servers.list', { profile: row.profile });
+    assertCustomServerInventory(nativeList, input);
+  }
   if (input.operation === 'remove') {
     const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});
     const server = inventory.servers.find(s => s.name === input.name);
@@ -77,11 +129,85 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     if (!inventory.catalog.some(s => s.name === input.preset && !s.installed)) throw new HttpError(409, 'Choose an uninstalled preset from this profile’s catalog.');
   }
   if (input.operation === 'setting' && !(settingValues[input.key] as readonly string[]).includes(input.value)) throw new HttpError(400, 'Choose a supported setting value.');
+  // The native inventory check and add are a read/modify/write sequence against
+  // a shared Hermes profile. Keep a PostgreSQL session lock through receipt,
+  // dispatch and authoritative readback so concurrent portal instances cannot
+  // both validate an empty inventory and overwrite a native credential slot.
+  const profileLock = input.operation === 'customServer' || input.operation === 'providerKey' ? await pool.connect() : undefined;
+  let profileLockAcquired = false;
+  let profileLockLost = false;
+  const markProfileLockLost = () => { profileLockLost = true; };
+  const transactionDb = profileLock ? drizzle(profileLock, { schema }) as unknown as typeof db : db;
+  if (profileLock) {
+    try {
+      profileLock.on('error', markProfileLockLost);
+      profileLock.on('end', markProfileLockLost);
+      const lockKey = `remote-hermes-mcp-profile:${access.client.base}:${row.profile}`;
+      const result = await profileLock.query<{ locked: boolean }>('select pg_try_advisory_lock(hashtext($1)) as locked', [lockKey]);
+      profileLockAcquired = result.rows[0]?.locked === true;
+      if (!profileLockAcquired) throw new HttpError(409, 'Another MCP server change is being verified for this Hermes profile. Try again after it finishes.');
+    } catch (error) {
+      if (!profileLockAcquired) {
+        profileLock.removeListener('error', markProfileLockLost);
+        profileLock.removeListener('end', markProfileLockLost);
+        profileLock.release();
+      }
+      throw error;
+    }
+  }
+  const assertProfileLock = () => {
+    if (profileLockAcquired && profileLockLost)
+      throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
+  };
+  const callWithProfileLock = async (method: string, params: RpcRecord, timeoutMs = 30_000) => {
+    assertProfileLock();
+    const dispatched = await transactionDb.transaction(tx => hub.socket.dispatchConnected(method, params, epoch, timeoutMs, tx));
+    const reply = (dispatched as { reply: Promise<RpcRecord> }).reply;
+    const result = await reply;
+    assertProfileLock();
+    return result;
+  };
+  try {
+  if (input.operation === 'customServer') {
+    // The unlocked preflight above keeps the normal fast rejection path. Repeat
+    // it after acquiring the cross-process lock; this result controls whether a
+    // receipt or native write may be created.
+    if (profileLockLost) throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
+    const currentInventory = await callWithProfileLock('mcp.servers.list', { profile: row.profile });
+    if (profileLockLost) throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
+    assertCustomServerInventory(currentInventory, input);
+  }
   const lock = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
-    await hub.lockBoundary(tx);
+    assertProfileLock();
+    const connection = await hub.lockBoundary(tx);
+    assertProfileLock();
     assertRemoteHermesAdmission(await getSetting('remoteHermes', tx));
     const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
+    assertProfileLock();
     assertIdle(current, hub.sessions.get(row.id)?.view);
+    return connection;
+  };
+  // REST writes use the same fresh destination/policy check as native WebSocket
+  // dispatch. The checked address and authenticated client are captured while
+  // the current settings/identity/session rows are locked. The typed client
+  // starts the HTTP request synchronously and returns its promise as an
+  // envelope, so the DB transaction commits before waiting for the response.
+  const dispatchDashboardIn = async <T>(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], request: (client: DashboardClient) => Promise<T>) => {
+    const connection = await lock(tx);
+    const policy = await getSetting('remoteHermes', tx);
+    assertRemoteHermesAdmission(policy);
+    if (connection.baseUrl !== access.client.base) throw new HttpError(409, 'The verified Hermes destination changed. Refresh before retrying this change.');
+    const address = await dashboardAddress(connection.baseUrl, policy);
+    assertProfileLock();
+    const client = access.client.withTransport(dashboardFetchPinned(connection.baseUrl, address));
+    return { reply: request(client) };
+  };
+  const dispatchDashboard = async <T>(request: (client: DashboardClient) => Promise<T>): Promise<T> => {
+    const { reply } = await transactionDb.transaction(tx => dispatchDashboardIn(tx, request));
+    assertProfileLock();
+    const result = await reply;
+    assertProfileLock();
+    return result;
   };
   if (input.operation === 'test') {
     const { reply } = await db.transaction(async tx => {
@@ -92,35 +218,79 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   }
   // A keyed digest prevents offline guessing of protected credential inputs.
   const digest = hmacSha256Hex(toolApprovalSecret('native-administration-receipt:v1'), JSON.stringify(input));
-  const reserved = await db.transaction(async tx => {
-    await lock(tx);
+  const matchingReceipt = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     const [receipt] = await tx.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, row.id), eq(remoteHermesTurns.requestId, input.requestId)));
-    if (receipt) { if (receipt.digest !== digest) throw new HttpError(409, 'This operation receipt belongs to different content.'); return false; }
+    if (receipt && receipt.digest !== digest) throw new HttpError(409, 'This operation receipt belongs to different content.');
+    return !!receipt;
+  };
+  let providerBaselineIds = new Set<string>();
+  if (input.operation === 'providerKey') {
+    // A lost POST acknowledgement can leave this request's label in the pool.
+    // Resolve its receipt before applying baseline/collision checks to new work.
+    const duplicate = await transactionDb.transaction(async tx => { await lock(tx); return matchingReceipt(tx); });
+    if (duplicate) return { accepted: true, duplicate: true };
+    const before = await dispatchDashboard(client => client.credentialPool(row.profile));
+    const entries = before.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
+    providerBaselineIds = new Set(entries.map(entry => entry.id));
+    if (entries.some(entry => entry.label === nativeProviderPoolRequestLabel(input.label, input.requestId)))
+      throw new HttpError(409, 'This request-specific provider label already exists. Use a new confirmation request to avoid attributing another account.');
+  }
+  const reserved = await transactionDb.transaction(async tx => {
+    await lock(tx);
+    if (await matchingReceipt(tx)) return false;
+    assertProfileLock();
     await tx.insert(remoteHermesTurns).values({ id: newId(), sessionId: row.id, requestId: input.requestId, digest });
     return true;
   });
   if (!reserved) return { accepted: true, duplicate: true };
   // The receipt is committed before dispatch. Locks cover the synchronous send,
   // not its acknowledgement; reuse tx to avoid nested-pool/session deadlocks.
-  const { reply } = await db.transaction(async tx => {
+  const { reply } = await transactionDb.transaction(async tx => {
     await lock(tx);
     if (input.operation === 'enabled') {
       if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed. Refresh and confirm this change again.');
-      await access.client.setMcpServerEnabled(row.profile, input.name, input.enabled);
-      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed during the update. Refresh to check its outcome.');
-      return { reply: Promise.resolve({ ok: true }) };
+      return dispatchDashboardIn(tx, client => client.setMcpServerEnabled(row.profile, input.name, input.enabled));
+    }
+    if (input.operation === 'providerKey') {
+      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed. Refresh and confirm this change again.');
+      const label = nativeProviderPoolRequestLabel(input.label, input.requestId);
+      return dispatchDashboardIn(tx, client => client.addCredentialPoolEntry(row.profile, input.provider, input.apiKey, label));
     }
     if (input.operation === 'setting') return hub.socket.dispatchConnected('config.set', { profile: row.profile, ...(input.scope === 'session' ? { session_id: params.session_id, scope: 'session' } : { scope: 'global' }), key: input.key, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'install') return hub.socket.dispatchConnected('mcp.servers.add', { profile: row.profile, name: input.preset, preset: input.preset }, epoch, 30_000, tx);
+    if (input.operation === 'customServer') {
+      assertProfileLock();
+      return hub.socket.dispatchConnected('mcp.servers.add', {
+      profile: row.profile, name: input.name, config: { url: input.url }, ...(input.bearerToken ? { bearer_token: input.bearerToken } : {}),
+      }, epoch, 30_000, tx);
+    }
     if (input.operation === 'credential') return hub.socket.dispatchConnected('mcp.servers.set_api_key', { profile: row.profile, name: input.name, env_var: input.envVar, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'remove') return hub.socket.dispatchConnected('mcp.servers.remove', { profile: row.profile, name: input.name }, epoch, 30_000, tx);
     return hub.socket.dispatchConnected('reload.mcp', { session_id: runtimeId, confirm: true }, epoch, 60_000, tx);
   });
   const result = await reply;
+  assertProfileLock();
   if (input.operation === 'setting') return { accepted: true, value: settingValue(input.key, result) };
+  if (input.operation === 'providerKey') {
+    if (result.provider !== input.provider || !Number.isSafeInteger(result.count) || result.count < 0)
+      throw new HttpError(502, 'Hermes did not confirm the provider account write. Refresh to check its outcome.');
+    // Hermes' pinned readback returns a masked token preview. The typed client
+    // discards it. Hermes may re-enable suppressed provider credential sources
+    // during this write, so verify the unique new manual identity rather than
+    // assuming the endpoint's pre-seeding count equals the final pool count.
+    const pool = await dispatchDashboard(client => client.credentialPool(row.profile));
+    const entries = pool.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
+    const ids = new Set(entries.map(entry => entry.id));
+    const label = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    const added = entries.filter(entry => !providerBaselineIds.has(entry.id) && entry.label === label && entry.authType === 'api_key' && entry.source === 'manual');
+    if (ids.size !== entries.length || added.length !== 1)
+      throw new HttpError(502, 'Hermes did not confirm the account in its provider pool. Refresh to check its outcome.');
+    return { accepted: true, provider: input.provider, label, count: entries.length };
+  }
   if (input.operation === 'remove') {
     if (result.ok !== true || result.removed !== true) throw new HttpError(502, 'Hermes did not confirm removal. Refresh to check its outcome.');
     const current = await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000);
+    assertProfileLock();
     if (mcpInventory(current, {}, {}).servers.some(s => s.name === input.name)) throw new HttpError(502, 'Hermes still reports this MCP server. Refresh to check its outcome.');
     return { accepted: true, removed: true };
   }
@@ -135,5 +305,33 @@ export async function nativeAdministration(ownerId: string, connectionId: string
       throw new HttpError(502, 'Hermes did not confirm the MCP server state. Refresh to check its outcome.');
     return { accepted: true, enabled: input.enabled };
   }
+  if (input.operation === 'customServer') {
+    const created = record(result.server);
+    if (result.ok !== true || result.name !== input.name || created.name !== input.name || created.url !== input.url ||
+        created.source !== 'config' || created.transport !== 'http' ||
+        (input.bearerToken !== undefined && created.auth !== 'header'))
+      throw new HttpError(502, 'Hermes did not confirm the custom server configuration. Refresh to check its outcome.');
+    const current = await callWithProfileLock('mcp.servers.list', { profile: row.profile });
+    assertProfileLock();
+    const nativeRows: unknown[] = Array.isArray(current.servers) ? current.servers : [];
+    const nativeServer = nativeRows.map(value => record(value)).find(server => server.name === input.name);
+    const server = mcpInventory(current, {}, {}).servers.find(s => s.name === input.name);
+    if (!nativeServer || nativeServer.url !== input.url || !server || server.source !== 'config' || server.transport !== 'http' ||
+        (input.bearerToken !== undefined && server.auth !== 'header'))
+      throw new HttpError(502, 'Hermes did not confirm the custom server in its profile inventory. Refresh to check its outcome.');
+    return { accepted: true, added: true, name: input.name, credentialConfigured: input.bearerToken !== undefined };
+  }
   return { accepted: result.ok === true };
+  } finally {
+    if (profileLock) {
+      let releaseError: Error | undefined;
+      if (profileLockAcquired) {
+        try { await profileLock.query('select pg_advisory_unlock(hashtext($1))', [`remote-hermes-mcp-profile:${access.client.base}:${row.profile}`]); }
+        catch (error) { releaseError = error instanceof Error ? error : new Error(String(error)); }
+      }
+      profileLock.removeListener('error', markProfileLockLost);
+      profileLock.removeListener('end', markProfileLockLost);
+      profileLock.release(releaseError);
+    }
+  }
 }

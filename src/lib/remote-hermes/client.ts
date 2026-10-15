@@ -20,6 +20,21 @@ export type DashboardSecrets = z.infer<typeof dashboardSecretsSchema>;
 const tokenSchema = z.preprocess(nativeFields, z.object({ accessToken: text, refreshToken: text.optional().nullable(), expiresAt: z.number().finite().optional().nullable(), provider: z.string().optional().nullable(), userId: z.string().optional().nullable() }));
 const profileSchema = z.preprocess(nativeFields, z.object({ name: z.string().min(1).max(200), displayName: z.string().max(300).nullable().optional(), botTitle: z.string().max(300).nullable().optional(), description: z.string().max(2000).nullable().optional(), model: z.string().max(200).nullable().optional(), provider: z.string().max(200).nullable().optional() }));
 export type RemoteHermesProfile = z.infer<typeof profileSchema>;
+const credentialPoolSchema = z.object({
+  providers: z.array(z.object({
+    provider: z.string().min(1).max(200),
+    entries: z.array(z.object({
+      index: z.number().int().positive(), id: z.string().min(1).max(200),
+      label: z.string().max(300).nullable().optional(), auth_type: z.string().max(80), source: z.string().max(80),
+      priority: z.number().finite(), last_status: z.string().max(80).nullable().optional(),
+      request_count: z.number().int().nonnegative(), has_refresh: z.boolean(),
+    })).max(1000),
+  })).max(1000),
+});
+export type RemoteHermesCredentialPool = { providers: Array<{ provider: string; entries: Array<{
+  index: number; id: string; label?: string | null; authType: string; source: string; priority: number;
+  lastStatus?: string | null; requestCount: number; hasRefresh: boolean;
+}> }> };
 
 async function json(res: Response, maxBytes = 1024 * 1024): Promise<unknown> {
   if (!res.ok) {
@@ -65,6 +80,8 @@ function historyDisplayText(value: unknown): string {
 export class DashboardClient {
   readonly base: string;
   constructor(base: string, private transport: typeof fetch, private secrets?: DashboardSecrets) { this.base = dashboardBase(base); }
+  /** Retain this verified sign-in while replacing only its per-request transport. */
+  withTransport(transport: typeof fetch) { return new DashboardClient(this.base, transport, this.secrets); }
   private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number, methodOverride?: 'PUT') {
     const auth: Record<string, string> = this.secrets?.mode === 'sessionToken'
       ? { 'X-Hermes-Session-Token': this.secrets.sessionToken! }
@@ -82,6 +99,27 @@ export class DashboardClient {
     const result = z.object({ ok: z.literal(true), name: z.string().max(200), enabled: z.boolean() })
       .parse(await this.call(`/api/mcp/servers/${encodeURIComponent(name)}/enabled`, { enabled, profile }, {}, undefined, 'PUT'));
     if (result.name !== name || result.enabled !== enabled) throw new HttpError(502, 'Hermes did not confirm the requested MCP server state.');
+    return result;
+  }
+  /** Profile-scoped credential pool readback. Redacted token previews are discarded by the schema. */
+  async credentialPool(profile: string): Promise<RemoteHermesCredentialPool> {
+    if (!profile || profile.length > 200) throw new HttpError(400, 'Invalid Hermes profile.');
+    const query = new URLSearchParams({ profile });
+    const result = credentialPoolSchema.parse(await this.call(`/api/credentials/pool?${query}`));
+    return { providers: result.providers.map(provider => ({ provider: provider.provider, entries: provider.entries.map(entry => ({
+      index: entry.index, id: entry.id, label: entry.label, authType: entry.auth_type, source: entry.source,
+      priority: entry.priority, lastStatus: entry.last_status, requestCount: entry.request_count, hasRefresh: entry.has_refresh,
+    })) })) };
+  }
+  /** Add exactly one manually supplied API-key account through Hermes' typed pool endpoint. */
+  async addCredentialPoolEntry(profile: string, provider: string, apiKey: string, label: string) {
+    if (!profile || profile.length > 200 || !/^(?:custom:)?[a-z0-9][a-z0-9._-]{0,79}$/.test(provider) ||
+        !apiKey || apiKey.length > 16000 || !label || label.length > 80 || /[\u0000-\u001f\u007f]/.test(label))
+      throw new HttpError(400, 'Invalid Hermes provider credential request.');
+    const query = new URLSearchParams({ profile });
+    const result = z.preprocess(nativeFields, z.object({ ok: z.literal(true), provider: z.string().max(200), count: z.number().int().nonnegative() }))
+      .parse(await this.call(`/api/credentials/pool?${query}`, { provider, api_key: apiKey, label }));
+    if (result.provider !== provider) throw new HttpError(502, 'Hermes did not confirm the requested provider pool.');
     return result;
   }
   async status() { return z.preprocess(nativeFields, z.object({ version: z.string().optional(), authRequired: z.boolean().optional() })).parse(await this.call('/api/status')); }
