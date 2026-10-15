@@ -19,8 +19,9 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
           fact: z.string().describe("The fact, phrased in third person, e.g. 'Works on the payments team'"),
           shared: z.boolean().optional().describe("true if useful to all assistants, false if only to this bot"),
         }),
-        execute: async ({ fact, shared }) => {
-          const id = await addMemory(userId, shared === false && ctx.bot ? ctx.bot.id : null, fact, ctx.conversationId);
+        execute: async ({ fact, shared }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
+          const id = await addMemory(userId, shared === false && ctx.bot ? ctx.bot.id : null, fact, ctx.conversationId, undefined, abortSignal, ctx.usage);
           return { saved: true, id };
         },
       }),
@@ -31,7 +32,8 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
       tool: tool({
         description: "Delete a saved memory by id when the user asks you to forget something.",
         inputSchema: z.object({ id: z.string() }),
-        execute: async ({ id }) => {
+        execute: async ({ id }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
           const res = await db
             .delete(memories)
             .where(and(eq(memories.id, id), eq(memories.userId, userId)))

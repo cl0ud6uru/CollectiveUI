@@ -166,13 +166,18 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
         path: z.string().min(1).max(1024).describe("Path relative to the workspace"),
         content: z.string().max(1_000_000),
       }),
-      async execute({ path, content }) {
+      async execute({ path, content }, { abortSignal }) {
+        abortSignal?.throwIfAborted();
         if (content.includes(MASK))
           return { ok: false as const, reason: "redacted", message: `The content contains "${MASK}", a masked secret you saw in a tool result. Don't write it back; use workspace_edit to change only the parts you need.` };
         try {
-          const r = await ws.writeRaw(path, new TextEncoder().encode(content));
+          const r = await ws.serialize(async () => {
+            abortSignal?.throwIfAborted();
+            return ws.writeNow(path, new TextEncoder().encode(content), abortSignal);
+          });
           return { ok: true as const, path, bytes: r.bytes, created: r.created, ...artifactLink(path, ws.instanceId) };
         } catch (err) {
+          if (abortSignal?.aborted) throw abortSignal.reason;
           return failure(err);
         }
       },
@@ -192,13 +197,16 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
         new_string: z.string().max(200_000),
         replace_all: z.boolean().optional(),
       }),
-      async execute({ path, old_string, new_string, replace_all }) {
+      async execute({ path, old_string, new_string, replace_all }, { abortSignal }) {
+        abortSignal?.throwIfAborted();
         if (old_string.includes(MASK) || new_string.includes(MASK))
           return { ok: false as const, reason: "redacted", message: `The text contains "${MASK}", a masked secret. Edit around it instead.` };
         try {
           // Read-modify-write under the handle's lock, so parallel edits of one file don't lose changes.
           return await ws.serialize(async () => {
+            abortSignal?.throwIfAborted();
             const file = await ws.readRaw(path, 10 * 1024 * 1024);
+            abortSignal?.throwIfAborted();
             if (!file) return { ok: false as const, reason: "not_found", message: `${path} doesn't exist. Create it with workspace_write.` };
             if (file.truncated) return { ok: false as const, reason: "too_large", message: `${path} is too large to edit this way.` };
             if (looksBinary(file.bytes)) return { ok: false as const, reason: "binary", message: `${path} is a binary file.` };
@@ -208,10 +216,11 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
             if (count > 1 && !replace_all)
               return { ok: false as const, reason: "ambiguous", message: `old_string appears ${count} times. Include more surrounding text, or set replace_all.` };
             const next = replace_all ? text.split(old_string).join(new_string) : text.replace(old_string, () => new_string);
-            await ws.writeNow(path, new TextEncoder().encode(next));
+            await ws.writeNow(path, new TextEncoder().encode(next), abortSignal);
             return { ok: true as const, path, replacements: replace_all ? count : 1, ...artifactLink(path, ws.instanceId) };
           });
         } catch (err) {
+          if (abortSignal?.aborted) throw abortSignal.reason;
           return failure(err);
         }
       },

@@ -83,9 +83,9 @@ export class SandboxdClient {
     return req;
   }
 
-  private request(method: string, path: string, body?: object, timeoutMs = 60_000): Promise<Raw> {
+  private request(method: string, path: string, body?: object, timeoutMs = 60_000, signal?: AbortSignal): Promise<Raw> {
     return new Promise((resolve, reject) => {
-      const req = this.open(method, path, body, timeoutMs);
+      const req = this.open(method, path, body, timeoutMs, signal);
       req.on("response", (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
@@ -96,8 +96,9 @@ export class SandboxdClient {
     });
   }
 
-  private async json<T>(method: string, path: string, body?: object, timeoutMs?: number): Promise<T> {
-    const r = await this.request(method, path, body, timeoutMs);
+  private async json<T>(method: string, path: string, body?: object, timeoutMs?: number, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
+    const r = await this.request(method, path, body, timeoutMs, signal);
     if (r.status >= 400) throw fromResponse(r);
     return JSON.parse(r.body.toString("utf8")) as T;
   }
@@ -132,8 +133,8 @@ export class SandboxdClient {
   grep(ref: string, req: GrepRequest) {
     return this.json<GrepResult>("POST", `/v1/sandboxes/${ref}/grep`, req, 120_000);
   }
-  writeFile(ref: string, req: WriteRequest) {
-    return this.json<WriteResult>("POST", `/v1/sandboxes/${ref}/files/write`, req, 120_000);
+  writeFile(ref: string, req: WriteRequest, signal?: AbortSignal) {
+    return this.json<WriteResult>("POST", `/v1/sandboxes/${ref}/files/write`, req, 120_000, signal);
   }
 
   /** The file's bytes, or null when it doesn't exist. */
