@@ -1,0 +1,7 @@
+# Service publications during key rotation
+
+The worker's encryption-key rewrap and legacy app-secret row-binding upgrade preserve service-bot publications that are valid immediately before the ciphertext changes. The model row is locked and read again after the initial scan, so a credential replaced in the meantime cannot be overwritten by stale scan data. The ciphertext update and current-publication carry happen in one transaction, using the same publication validation used by the explicit saved-provider migration.
+
+The stored publication format remains unchanged. No plaintext credential or credential fingerprint is stored or logged. A different API key, changed instructions/audience/tools/model configuration, or a stale published revision still requires publication; rotation does not repair a publication that was already stale. An older publication already invalidated by a previous completed rotation cannot be safely recovered automatically and requires administrator review.
+
+Rewrapping is idempotent. If carrying a publication fails, the model ciphertext update rolls back with it. Synthetic migrated PostgreSQL-compatible regressions cover current versus stale publications, legacy column-bound values, real credential replacement, a concurrent replacement after the scan, and transactional rollback. No operational key rotation or live bot publication is performed by these tests.
