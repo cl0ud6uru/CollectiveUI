@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NativeConnectionChanged, NativeRpcError } from '@/lib/remote-hermes/socket';
 
-const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], schedules: [] as Record<string, unknown>[], activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
+const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], schedules: [] as Record<string, unknown>[], plugins: [] as Record<string, unknown>[], activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
   row: {} as Record<string, unknown>, receipt: null as null | { requestId: string; digest: string }, cached: {} as { row: Record<string, unknown>; view: Record<string, unknown>; pending: Map<string, unknown>; socketEpoch: number } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled }) }));
 vi.mock('@/lib/remote-hermes/policy', () => ({ assertRemoteHermesAdmission: (value: { enabled: boolean }) => { if (!value.enabled) throw new Error('Personal remote Hermes is disabled'); } }));
@@ -15,7 +15,8 @@ vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
   socket: { state: 'connected', get connectionEpoch() { return f.cached.socketEpoch; },
     callConnected: async (method: string) => {
       if (method === 'projects.list') return { active_id: f.activeId || null, projects: f.list };
-      expect(method).toBe('cron.manage'); return { scoped: f.unscoped ? 'other' : 'default', jobs: f.schedules };
+      if (method === 'cron.manage') return { scoped: f.unscoped ? 'other' : 'default', jobs: f.schedules };
+      expect(method).toBe('plugins.manage'); return { plugins: f.plugins };
     },
     dispatchConnected: async (method: string, params: Record<string, unknown>, epoch: number) => {
       if (f.beforeSend || epoch !== f.cached.socketEpoch) throw new NativeConnectionChanged();
@@ -52,15 +53,15 @@ vi.mock('@/db', async () => {
   void schema;
   return { db: { ...tx, transaction: async (run: (value: typeof tx) => unknown) => run(tx) } };
 });
-import { nativeProjectOperation, projectOperationInput } from '@/lib/remote-hermes/projects';
+import { nativeWorkspaceOperation, workspaceOperationInput } from '@/lib/remote-hermes/operations-mutations';
 import { decrypt, hmacSha256Hex } from '@/lib/crypto';
 
-const prepareCreate = async () => nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'Example' });
-const confirm = (confirmation: string) => nativeProjectOperation('owner', 'connection', 'session', { operation: 'confirm', confirmation });
+const prepareCreate = async () => nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'Example' });
+const confirm = (confirmation: string) => nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'confirm', confirmation });
 
-describe('confirmed native Hermes project operations', () => {
+describe('confirmed native Hermes workspace operations', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.schedules = []; f.activeId = ''; f.receipt = null;
+    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.schedules = []; f.plugins = []; f.activeId = ''; f.receipt = null;
     f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: 'idle', revision: 1, queueRequestId: null };
     f.cached = { row: f.row, view: { title: 'Synthetic chat', profile: 'default', nativeProfile: 'default', running: false, uncertain: false, queuePending: false, queued: '', prompts: [] }, pending: new Map(), socketEpoch: 1 };
     f.profiles.mockResolvedValue([{ name: 'default' }]);
@@ -70,17 +71,24 @@ describe('confirmed native Hermes project operations', () => {
         f.list.push(project); return { project };
       }
       if (method === 'projects.set_active') { f.activeId = String(params.id); return { active_id: f.activeId }; }
-      expect(method).toBe('cron.manage');
-      const schedule = f.schedules.find(value => value.id === params.name);
-      if (!schedule) throw new Error('schedule not found');
-      schedule.enabled = params.action === 'resume';
-      return { success: true, job: { job_id: schedule.id, enabled: schedule.enabled } };
+      if (method === 'cron.manage') {
+        const schedule = f.schedules.find(value => value.id === params.name);
+        if (!schedule) throw new Error('schedule not found');
+        schedule.enabled = params.action === 'resume';
+        schedule.state = params.action === 'resume' ? 'scheduled' : 'paused';
+        return { success: true, job: { job_id: schedule.id, enabled: schedule.enabled, state: schedule.state } };
+      }
+      expect(method).toBe('plugins.manage');
+      const plugin = f.plugins.find(value => value.key === params.key);
+      if (!plugin) throw new Error('plugin not found');
+      plugin.status = params.enable ? 'enabled' : 'disabled';
+      return { ok: true, name: plugin.key, plugin };
     });
   });
 
   it('accepts only bounded create/select requests; browser-supplied paths are rejected', () => {
-    expect(projectOperationInput.safeParse({ operation: 'prepare', action: 'create', name: 'Example', path: '/etc' }).success).toBe(false);
-    expect(projectOperationInput.safeParse({ operation: 'prepare', action: 'select', projectId: 'native-id', profile: 'another' }).success).toBe(false);
+    expect(workspaceOperationInput.safeParse({ operation: 'prepare', action: 'create', name: 'Example', path: '/etc' }).success).toBe(false);
+    expect(workspaceOperationInput.safeParse({ operation: 'prepare', action: 'select', projectId: 'native-id', profile: 'another' }).success).toBe(false);
   });
 
   it('creates a confirmed empty inactive project with generated identity and authoritative readback', async () => {
@@ -95,7 +103,7 @@ describe('confirmed native Hermes project operations', () => {
 
   it('does not report a concurrent create complete when readback has the slug but wrong project content', async () => {
     const prepared = await prepareCreate();
-    const claim = JSON.parse(decrypt(prepared.confirmation!, JSON.stringify(['remote-hermes-project:v1', 'owner', 'connection', 'session'])));
+    const claim = JSON.parse(decrypt(prepared.confirmation!, JSON.stringify(['remote-hermes-workspace:v1', 'owner', 'connection', 'session'])));
     f.concurrentReceipt = { requestId: claim.requestId, digest: hmacSha256Hex('synthetic-receipt-key', JSON.stringify(claim)),
       project: { id: 'wrong-project', slug: claim.slug, name: 'Wrong name', folders: [{ path: '/unexpected' }], archived: false } };
     const result = await confirm(prepared.confirmation!);
@@ -105,7 +113,7 @@ describe('confirmed native Hermes project operations', () => {
 
   it('selects only a refreshed, active, server-listed id after a separate profile-wide confirmation', async () => {
     f.list = [{ id: 'native-id', slug: 'repo', name: 'Repo', folders: [], archived: false }];
-    const prepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'select', projectId: 'native-id' });
+    const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'select', projectId: 'native-id' });
     expect(prepared).toMatchObject({ action: 'select', profile: 'default', name: 'Repo' });
     expect(f.calls).not.toHaveBeenCalled();
     const result = await confirm(prepared.confirmation!);
@@ -118,33 +126,60 @@ describe('confirmed native Hermes project operations', () => {
   });
 
   it('pauses and resumes only a profile-scoped listed schedule after separate confirmation and readback', async () => {
-    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true }];
-    const prepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'schedule-id' });
+    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true, state: 'scheduled' }];
+    const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'schedule-id' });
     expect(prepared).toMatchObject({ action: 'schedule', name: 'Nightly', profile: 'default' });
     expect(f.calls).not.toHaveBeenCalled();
     const paused = await confirm(prepared.confirmation!);
     expect(paused).toMatchObject({ accepted: true, schedules: [{ id: 'schedule-id', enabled: false }] });
     expect(f.calls).toHaveBeenCalledExactlyOnceWith('cron.manage', { profile: 'default', action: 'pause', name: 'schedule-id' });
     f.receipt = null; // The mock stores one receipt; production queries by each unique request id.
-    const resumedPrepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'resume', scheduleId: 'schedule-id' });
+    const resumedPrepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'resume', scheduleId: 'schedule-id' });
     const resumed = await confirm(resumedPrepared.confirmation!);
     expect(resumed).toMatchObject({ accepted: true, schedules: [{ id: 'schedule-id', enabled: true }] });
     expect('output' in resumed && resumed.output).toContain('may run soon and use model usage');
     expect(f.calls).toHaveBeenCalledTimes(2);
   });
 
+  it('refuses to resume a completed schedule without reserving a receipt or dispatching', async () => {
+    f.schedules = [{ id: 'completed-id', name: 'Finished once', enabled: false, state: 'completed' }];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'resume', scheduleId: 'completed-id' })).rejects.toThrow('Only a scheduled job can be paused');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull(); expect(f.row.status).toBe('idle');
+  });
+
   it('fails closed for invented schedules and unscoped schedule results', async () => {
-    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'invented' })).rejects.toThrow('current state');
-    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true }]; f.unscoped = true;
-    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'schedule-id' })).rejects.toThrow('profile-scoped schedules');
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'invented' })).rejects.toThrow('Only a scheduled job can be paused');
+    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true, state: 'scheduled' }]; f.unscoped = true;
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'schedule-id' })).rejects.toThrow('profile-scoped schedules');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
+  });
+
+  it('toggles only a listed non-bundled plugin with profile scope, confirmation, and fresh readback', async () => {
+    f.plugins = [{ key: 'category:helper', name: 'Helper', source: 'user', status: 'not enabled' }];
+    const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'category:helper' });
+    expect(prepared).toMatchObject({ action: 'plugin', name: 'Helper', profile: 'default', enabled: true });
+    expect(f.calls).not.toHaveBeenCalled();
+    const result = await confirm(prepared.confirmation!);
+    expect(result).toMatchObject({ accepted: true, plugins: [{ key: 'category:helper', status: 'enabled' }] });
+    expect(f.calls).toHaveBeenCalledExactlyOnceWith('plugins.manage', { profile: 'default', action: 'toggle', key: 'category:helper', enable: true });
+    expect(await confirm(prepared.confirmation!)).toMatchObject({ duplicate: true, accepted: true });
+    expect(f.calls).toHaveBeenCalledOnce();
+  });
+
+  it('rejects invented, bundled, and indeterminate plugin states', async () => {
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'invented' })).rejects.toThrow('supported user-installed');
+    f.plugins = [{ key: 'core:helper', name: 'Helper', source: 'bundled', status: 'disabled' }];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'core:helper' })).rejects.toThrow('supported user-installed');
+    f.plugins = [{ key: 'user:helper', name: 'Helper', source: 'user', status: 'unknown' }];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'disable-plugin', pluginKey: 'user:helper' })).rejects.toThrow('supported user-installed');
     expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
   });
 
   it('refuses archived or invented ids, foreign owners, and a mismatched authenticated profile', async () => {
     f.list = [{ id: 'archived', slug: 'old', name: 'Old', folders: [], archived: true }];
-    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'select', projectId: 'archived' })).rejects.toThrow('active project');
-    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'select', projectId: 'invented' })).rejects.toThrow('active project');
-    await expect(nativeProjectOperation('intruder', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'X' })).rejects.toThrow('not found');
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'select', projectId: 'archived' })).rejects.toThrow('active project');
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'select', projectId: 'invented' })).rejects.toThrow('active project');
+    await expect(nativeWorkspaceOperation('intruder', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'X' })).rejects.toThrow('not found');
     f.profiles.mockResolvedValueOnce([{ name: 'other' }]);
     await expect(prepareCreate()).rejects.toThrow('profile not found');
     expect(f.calls).not.toHaveBeenCalled();

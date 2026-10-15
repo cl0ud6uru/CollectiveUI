@@ -12,12 +12,13 @@ import { ownedNativeSession, profileName } from './sessions';
 import { nativeHub } from './hub';
 import { remoteAccess } from './store';
 import { NativeConnectionChanged, NativeRpcError, record } from './socket';
-import { projectProjection, scheduleProjection } from './operations';
+import { pluginProjection, projectProjection, scheduleProjection } from './operations';
 
-export const projectOperationInput = z.union([
+export const workspaceOperationInput = z.union([
   z.object({ operation: z.literal('prepare'), action: z.literal('create'), name: z.string().trim().min(1).max(80) }).strict(),
   z.object({ operation: z.literal('prepare'), action: z.literal('select'), projectId: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('prepare'), action: z.enum(['pause', 'resume']), scheduleId: z.string().min(1).max(200) }).strict(),
+  z.object({ operation: z.literal('prepare'), action: z.enum(['enable-plugin', 'disable-plugin']), pluginKey: z.string().min(1).max(300) }).strict(),
   z.object({ operation: z.literal('confirm'), confirmation: z.string().min(1).max(4000) }).strict(),
 ]);
 
@@ -27,23 +28,32 @@ const claimSchema = z.discriminatedUnion('action', [
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
     socketEpoch: z.number().int().positive(), action: z.literal('select'), projectId: z.string().min(1).max(200), projectName: z.string().max(300), expiresAt: z.number().int() }).strict(),
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
-    socketEpoch: z.number().int().positive(), action: z.literal('schedule'), scheduleId: z.string().min(1).max(200), scheduleName: z.string().max(300), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
+    socketEpoch: z.number().int().positive(), action: z.literal('schedule'), scheduleAction: z.enum(['pause', 'resume']), scheduleId: z.string().min(1).max(200), scheduleName: z.string().max(300), scheduleState: z.string().max(100), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
+  z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
+    socketEpoch: z.number().int().positive(), action: z.literal('plugin'), pluginKey: z.string().min(1).max(300), pluginName: z.string().max(300), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
 ]);
 type Claim = z.infer<typeof claimSchema>;
 type Session = typeof remoteHermesSessions.$inferSelect;
-const binding = (owner: string, connection: string, session: string) => JSON.stringify(['remote-hermes-project:v1', owner, connection, session]);
+const binding = (owner: string, connection: string, session: string) => JSON.stringify(['remote-hermes-workspace:v1', owner, connection, session]);
+const pluginState = (status: string) => status === 'enabled' ? true : status === 'disabled' || status === 'not enabled' ? false : null;
+type ScheduleClaim = Extract<Claim, { action: 'schedule' }>;
+const scheduleStillReady = (schedule: { enabled: boolean; state: string }, claim: ScheduleClaim) => schedule.state === claim.scheduleState &&
+  (claim.scheduleAction === 'pause' ? schedule.enabled && schedule.state === 'scheduled' : schedule.state === 'paused' || schedule.state === 'error');
+const scheduleMatches = (schedule: { enabled: boolean; state: string }, claim: ScheduleClaim) => claim.scheduleAction === 'pause'
+  ? !schedule.enabled && schedule.state === 'paused'
+  : schedule.enabled && schedule.state === 'scheduled';
 
 function readClaim(token: string, aad: string): Claim {
   try {
     const claim = claimSchema.parse(JSON.parse(decrypt(token, aad)));
     if (claim.expiresAt <= Date.now() || claim.expiresAt > Date.now() + 60_000) throw new Error();
     return claim;
-  } catch { throw new HttpError(409, 'This project confirmation is invalid or expired. Review the Hermes profile and try again.'); }
+  } catch { throw new HttpError(409, 'This Hermes confirmation is invalid or expired. Review the profile and try again.'); }
 }
 
 /** Project and schedule changes use only pinned native RPCs and never accept filesystem paths. */
-export async function nativeProjectOperation(ownerId: string, connectionId: string, sessionId: string, raw: unknown) {
-  const input = projectOperationInput.parse(raw);
+export async function nativeWorkspaceOperation(ownerId: string, connectionId: string, sessionId: string, raw: unknown) {
+  const input = workspaceOperationInput.parse(raw);
   const initialRow = await ownedNativeSession(ownerId, connectionId, sessionId);
   assertRemoteHermesAdmission(await getSetting('remoteHermes'));
   const aad = binding(ownerId, connectionId, sessionId);
@@ -92,6 +102,9 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     if (value.scoped !== row.profile) throw new HttpError(501, 'This Hermes version cannot confirm profile-scoped schedules.');
     return scheduleProjection(value);
   }
+  async function plugins(epoch: number) {
+    return pluginProjection(await hub.socket.callConnected('plugins.manage', { profile: row.profile, action: 'list' }, epoch, 30_000));
+  }
 
   if (input.operation === 'prepare') {
     const snapshot = idle(row);
@@ -108,15 +121,26 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       if (!project || project.archived) throw new HttpError(409, 'Choose an active project from the refreshed Hermes list.');
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
         action: 'select', projectId: project.id, projectName: project.name, expiresAt: Date.now() + 60_000 };
-    } else {
+    } else if (input.action === 'pause' || input.action === 'resume') {
       const listed = await schedules(snapshot.socketEpoch);
       const schedule = listed.schedules.find(value => value.id === input.scheduleId);
-      if (!schedule || schedule.enabled !== (input.action === 'pause')) throw new HttpError(409, 'Choose a schedule with a current state from the refreshed Hermes list.');
+      const resumable = schedule && (schedule.state === 'paused' || schedule.state === 'error');
+      if (!schedule || input.action === 'pause' && (!schedule.enabled || schedule.state !== 'scheduled') || input.action === 'resume' && !resumable)
+        throw new HttpError(409, 'Only a scheduled job can be paused, and only paused or recoverable error jobs can be resumed.');
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
-        action: 'schedule', scheduleId: schedule.id, scheduleName: schedule.name, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
-    }
-    return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action, enabled: claim.action === 'schedule' ? claim.enabled : undefined,
-      name: claim.action === 'create' ? claim.name : claim.action === 'select' ? claim.projectName : claim.scheduleName,
+        action: 'schedule', scheduleAction: input.action, scheduleId: schedule.id, scheduleName: schedule.name, scheduleState: schedule.state, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
+    } else if (input.action === 'enable-plugin' || input.action === 'disable-plugin') {
+      const listed = await plugins(snapshot.socketEpoch);
+      const plugin = listed.plugins.find(value => value.key === input.pluginKey);
+      if (!plugin || plugin.source !== 'user' || !['enabled', 'disabled', 'not enabled'].includes(plugin.status))
+        throw new HttpError(409, 'Choose a supported user-installed plugin from the refreshed Hermes list.');
+      const enabled = input.action === 'enable-plugin';
+      if ((plugin.status === 'enabled') === enabled) throw new HttpError(409, 'This plugin already has the requested state. Refresh the list before continuing.');
+      claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
+        action: 'plugin', pluginKey: plugin.key, pluginName: plugin.name, enabled, expiresAt: Date.now() + 60_000 };
+    } else throw new HttpError(400, 'Unsupported Hermes operation.');
+    return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action, enabled: claim.action === 'schedule' || claim.action === 'plugin' ? claim.enabled : undefined,
+      name: claim.action === 'create' ? claim.name : claim.action === 'select' ? claim.projectName : claim.action === 'schedule' ? claim.scheduleName : claim.pluginName,
       profile: row.profile, title: snapshot.view.title };
   }
 
@@ -124,15 +148,21 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   const identity = compatible(row);
   if (claim.profile !== row.profile || claim.runtimeId !== identity.row.runtimeId || claim.storedId !== identity.row.storedId || claim.socketEpoch !== identity.socketEpoch)
     throw new HttpError(409, 'The native chat changed after confirmation. Review it and request a new confirmation.');
-  const digest = hmacSha256Hex(toolApprovalSecret('native-hermes-project-receipt:v1'), JSON.stringify(claim));
+  const digest = hmacSha256Hex(toolApprovalSecret('native-hermes-workspace-receipt:v1'), JSON.stringify(claim));
   const [existingReceipt] = await db.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, sessionId), eq(remoteHermesTurns.requestId, claim.requestId)));
   if (existingReceipt) {
     if (existingReceipt.digest !== digest) throw new HttpError(409, 'This project confirmation was already used for different content.');
     if (claim.action === 'schedule') {
       const current = await schedules(claim.socketEpoch);
-      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled);
+      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim));
       return { accepted: complete, duplicate: true, schedules: current.schedules,
         output: complete ? 'This schedule request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
+    }
+    if (claim.action === 'plugin') {
+      const current = await plugins(claim.socketEpoch);
+      const complete = current.plugins.some(plugin => plugin.key === claim.pluginKey && pluginState(plugin.status) === claim.enabled);
+      return { accepted: complete, duplicate: true, plugins: current.plugins,
+        output: complete ? 'This plugin request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
     }
     const current = await projects(claim.socketEpoch);
     const complete = claim.action === 'create'
@@ -144,7 +174,12 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   if (claim.action === 'schedule') {
     const listed = await schedules(claim.socketEpoch);
     const current = listed.schedules.find(schedule => schedule.id === claim.scheduleId);
-    if (!current || current.enabled === claim.enabled) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
+    if (!current || !scheduleStillReady(current, claim)) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
+  } else if (claim.action === 'plugin') {
+    const listed = await plugins(claim.socketEpoch);
+    const current = listed.plugins.find(plugin => plugin.key === claim.pluginKey);
+    if (!current || current.source !== 'user' || !['enabled', 'disabled', 'not enabled'].includes(current.status) || (current.status === 'enabled') === claim.enabled)
+      throw new HttpError(409, 'This plugin changed after confirmation. Refresh the plugin list and review it again.');
   } else {
     const listed = await projects(claim.socketEpoch);
     if (claim.action === 'select' && !listed.projects.some(project => project.id === claim.projectId && !project.archived))
@@ -171,9 +206,15 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   if (!reserved) {
     if (claim.action === 'schedule') {
       const current = await schedules(claim.socketEpoch);
-      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled);
+      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim));
       return { accepted: complete, duplicate: true, schedules: current.schedules,
         output: complete ? 'This schedule request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
+    }
+    if (claim.action === 'plugin') {
+      const current = await plugins(claim.socketEpoch);
+      const complete = current.plugins.some(plugin => plugin.key === claim.pluginKey && pluginState(plugin.status) === claim.enabled);
+      return { accepted: complete, duplicate: true, plugins: current.plugins,
+        output: complete ? 'This plugin request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
     }
     const current = await projects(claim.socketEpoch);
     const complete = claim.action === 'create'
@@ -193,13 +234,14 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       const active = sameTarget(current, claim);
       if (claim.expiresAt <= Date.now() || !current || current.status !== 'admitting' || current.admissionRequestId !== claim.requestId || current.queueRequestId ||
         active.view.running || active.view.queuePending || active.view.queued || active.pending.size || active.view.prompts.length)
-        throw new HttpError(409, 'This project confirmation is no longer ready. Review the Hermes chat and confirm again.');
+        throw new HttpError(409, 'This Hermes confirmation is no longer ready. Review the selected chat and confirm again.');
       sent = true;
-      const method = claim.action === 'create' ? 'projects.create' : claim.action === 'select' ? 'projects.set_active' : 'cron.manage';
+      const method = claim.action === 'create' ? 'projects.create' : claim.action === 'select' ? 'projects.set_active' : claim.action === 'plugin' ? 'plugins.manage' : 'cron.manage';
       const params = claim.action === 'create'
         ? { profile: claim.profile, name: claim.name, slug: claim.slug, folders: [], use: false }
         : claim.action === 'select' ? { profile: claim.profile, id: claim.projectId }
-          : { profile: claim.profile, action: claim.enabled ? 'resume' : 'pause', name: claim.scheduleId };
+          : claim.action === 'schedule' ? { profile: claim.profile, action: claim.scheduleAction, name: claim.scheduleId }
+            : { profile: claim.profile, action: 'toggle', key: claim.pluginKey, enable: claim.enabled };
       return hub.socket.dispatchConnected(method, params, claim.socketEpoch, 30_000, tx);
     });
     const replyValue = await reply;
@@ -213,15 +255,28 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       throw new HttpError(502, 'Hermes did not confirm the selected active project. Refresh before continuing.');
     } else if (claim.action === 'schedule') {
       const changed = record(replyValue.job);
-      if (replyValue.success !== true || changed.job_id !== claim.scheduleId || changed.enabled !== claim.enabled)
+      if (replyValue.success !== true || changed.job_id !== claim.scheduleId || !scheduleMatches({ enabled: changed.enabled === true, state: String(changed.state ?? '') }, claim))
         throw new HttpError(502, 'Hermes did not confirm the requested schedule state. Refresh before continuing.');
+    } else if (claim.action === 'plugin') {
+      const plugin = record(replyValue.plugin);
+      if (replyValue.ok !== true || replyValue.name !== claim.pluginKey || plugin.key !== claim.pluginKey || pluginState(String(plugin.status)) !== claim.enabled)
+        throw new HttpError(502, 'Hermes did not confirm the requested plugin state. Refresh before continuing.');
     }
     if (claim.action === 'schedule') {
       const latest = await schedules(claim.socketEpoch);
-      if (!latest.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled))
+      if (!latest.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim)))
         throw new HttpError(502, 'Hermes readback did not match the requested schedule state. The result is uncertain; refresh before taking action.');
       await settle('idle');
       return { accepted: true, duplicate: false, schedules: latest.schedules, output: claim.enabled ? 'Schedule resumed; it may run soon and use model usage.' : 'Schedule paused.' };
+    }
+    if (claim.action === 'plugin') {
+      const latest = await plugins(claim.socketEpoch);
+      const plugin = latest.plugins.find(value => value.key === claim.pluginKey);
+      if (!plugin || pluginState(plugin.status) !== claim.enabled)
+        throw new HttpError(502, 'Hermes plugin readback did not match the requested change. The result is uncertain; refresh before taking action.');
+      await settle('idle');
+      return { accepted: true, duplicate: false, plugins: latest.plugins,
+        output: claim.enabled ? `Plugin “${claim.pluginName}” enabled; activation may add tools or skills to open chats.` : `Plugin “${claim.pluginName}” disabled in profile settings${replyValue.restart_required === true ? '; an already-running gateway may keep its handlers until restart' : ''}.` };
     }
     const latest = await projects(claim.socketEpoch);
     const matched = claim.action === 'create'

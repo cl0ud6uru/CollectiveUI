@@ -58,17 +58,17 @@ describe('native workspace inspection', () => {
   });
   it('falls back to legacy plugin discovery only for unsupported methods, never auth or uncertain failures', async () => {
     f.call.mockRejectedValueOnce(new HttpError(501, 'Unsupported')).mockResolvedValueOnce({ plugins: [{ name: 'Example', version: '1', enabled: true }] });
-    expect(await inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).toEqual({ plugins: [{ name: 'Example', version: '1', status: 'enabled', source: '' }] });
+    expect(await inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).toEqual({ plugins: [{ key: '', name: 'Example', version: '1', status: 'enabled', source: '' }] });
     expect(f.call.mock.calls.map(([method]) => method)).toEqual(['plugins.manage', 'plugins.list']);
     f.call.mockClear(); f.call.mockRejectedValueOnce(new HttpError(401, 'Sign in again'));
     await expect(inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).rejects.toThrow('Sign in again'); expect(f.call).toHaveBeenCalledOnce();
   });
   it('lists schedules only from a profile-proven native cron RPC and projects out prompts and delivery data', async () => {
-    f.call.mockResolvedValueOnce({ scoped: 'default', jobs: [{ job_id: 'j', name: 'Example', enabled: false, schedule: '0 7 * * *', next_run_at: '2026-10-06T07:00:00Z', prompt: 'synthetic-hidden-prompt', deliver: 'synthetic-secret' }] });
+    f.call.mockResolvedValueOnce({ scoped: 'default', jobs: [{ job_id: 'j', name: 'Example', enabled: false, state: 'paused', schedule: '0 7 * * *', next_run_at: '2026-10-06T07:00:00Z', prompt: 'synthetic-hidden-prompt', deliver: 'synthetic-secret' }] });
     const view = await inspectNative('owner', 'connection', { panel: 'schedules', profile: 'default' });
     expect(f.call).toHaveBeenCalledExactlyOnceWith('cron.manage', { profile: 'default', action: 'list', include_disabled: true });
     expect(f.fetch).not.toHaveBeenCalled();
-    expect(JSON.stringify(view)).not.toContain('synthetic'); expect(view).toEqual({ schedules: [{ id: 'j', name: 'Example', enabled: false, schedule: '0 7 * * *', nextRun: '2026-10-06T07:00:00Z', lastStatus: '' }] });
+    expect(JSON.stringify(view)).not.toContain('synthetic'); expect(view).toEqual({ schedules: [{ id: 'j', name: 'Example', enabled: false, state: 'paused', schedule: '0 7 * * *', nextRun: '2026-10-06T07:00:00Z', lastStatus: '' }] });
   });
   it('fails closed when a native gateway cannot prove cron profile scoping', async () => {
     f.call.mockResolvedValueOnce({ jobs: [{ job_id: 'j', name: 'Other profile' }] });

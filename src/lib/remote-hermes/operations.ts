@@ -16,10 +16,10 @@ export function projectProjection(value: unknown) {
   return { activeId: string(result.active_id), projects: rows(result.projects).map(p => ({ id: string(p.id), slug: string(p.slug, 200), name: string(p.name), archived: p.archived === true, folders: rows(p.folders).map(f => ({ path: string(f.path, 2048), primary: f.is_primary === true })).filter(f => validDirectory(f.path)) })) };
 }
 export function scheduleProjection(value: unknown) {
-  return { schedules: rows(Array.isArray(value) ? value : record(value).jobs).map(p => ({ id: string(p.id ?? p.job_id), name: string(p.name), enabled: p.enabled !== false && p.paused !== true, schedule: string(typeof p.schedule === 'string' ? p.schedule : record(p.schedule).display), nextRun: string(p.next_run_at ?? p.next_run), lastStatus: string(p.last_status) })) };
+  return { schedules: rows(Array.isArray(value) ? value : record(value).jobs).map(p => ({ id: string(p.id ?? p.job_id), name: string(p.name), enabled: p.enabled !== false && p.paused !== true, state: string(p.state, 100), schedule: string(typeof p.schedule === 'string' ? p.schedule : record(p.schedule).display), nextRun: string(p.next_run_at ?? p.next_run), lastStatus: string(p.last_status) })) };
 }
 export function pluginProjection(value: unknown) {
-  return { plugins: rows(record(value).plugins).map(p => ({ name: string(p.name), version: string(p.version), status: string(p.status) || (p.enabled === true ? 'enabled' : p.enabled === false ? 'disabled' : 'unknown'), source: string(p.source) })) };
+  return { plugins: rows(record(value).plugins).map(p => ({ key: string(p.key, 300), name: string(p.name), version: string(p.version), status: string(p.status) || (p.enabled === true ? 'enabled' : p.enabled === false ? 'disabled' : 'unknown'), source: string(p.source) })) };
 }
 export function systemProjection(value: unknown) {
   const p = record(value);

@@ -3,9 +3,9 @@ import { requirePrincipal, errorResponse } from '@/lib/session';
 import { assertAuthOrigin } from '@/lib/auth/origin';
 import { HttpError } from '@/lib/authz';
 import { inspectNative } from '@/lib/remote-hermes/operations';
-import { nativeProjectOperation, projectOperationInput } from '@/lib/remote-hermes/projects';
+import { nativeWorkspaceOperation, workspaceOperationInput } from '@/lib/remote-hermes/operations-mutations';
 
-const envelope = z.object({ sessionId: z.string().min(1).max(200), input: projectOperationInput }).strict();
+const envelope = z.object({ sessionId: z.string().min(1).max(200), input: workspaceOperationInput }).strict();
 const headers = { 'Cache-Control': 'private, no-store' };
 
 export async function GET(request: Request, context: { params: Promise<{ connectionId: string }> }) {
@@ -24,12 +24,12 @@ export async function POST(request: Request, context: { params: Promise<{ connec
     const principal = await requirePrincipal(); assertAuthOrigin(request.headers);
     const reader = request.body?.getReader(); if (!reader) throw new HttpError(400, 'Missing project request.');
     let size = 0; const chunks: Uint8Array[] = [];
-    try { for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 8_000) throw new HttpError(413, 'Project request is too large.'); chunks.push(value); } }
+    try { for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 8_000) throw new HttpError(413, 'Hermes operations request is too large.'); chunks.push(value); } }
     finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     let raw: unknown; try { raw = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new HttpError(400, 'Invalid project request.'); }
     const input = envelope.parse(raw);
     const { connectionId } = await context.params;
-    return Response.json(await nativeProjectOperation(principal.user.id, connectionId, input.sessionId, input.input), { headers });
+    return Response.json(await nativeWorkspaceOperation(principal.user.id, connectionId, input.sessionId, input.input), { headers });
   } catch (error) {
     const status = error instanceof HttpError ? error.status : error instanceof z.ZodError ? 400 : 502;
     return Response.json({ error: error instanceof HttpError ? error.message : status === 400 ? 'Invalid project request.' : 'Hermes could not confirm this project change. Refresh the project list and verify its outcome before continuing.' }, { status, headers });
