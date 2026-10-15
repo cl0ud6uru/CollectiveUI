@@ -224,6 +224,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     <section className="min-w-0 space-y-4">
       {!enabled && <p role="status" className="rounded-lg border border-border p-3 text-sm">Personal remote Hermes is disabled. Active turns can finish; you can still answer their prompts or stop them.</p>}
       {error && <p role="alert" className="rounded-lg border border-danger p-3 text-sm">{error}</p>}
+      {sessionId && (recoveryOpen || snapshot?.uncertain || !snapshot && (error || browse.linked.some(item => item.id === sessionId && ['uncertain', 'admitting'].includes(item.status)))) && <NativeRecovery key={`recovery-${sessionId}`} connectionId={connectionId} sessionId={sessionId} disabled={busy} onOpenChange={setRecoveryOpen} onApplied={() => { setSnapshot(null); setError(''); setRecoveryGeneration(value => value + 1); }} />}
       {!sessionId ? <p className="text-muted">Choose a conversation or start a new Hermes chat.</p> : !snapshot ? <p role="status">Opening Hermes conversation…</p> : <>
         <header className="flex flex-wrap items-center gap-2">
           <h2 className="font-medium">{snapshot.title}</h2><span className="text-xs text-muted">{snapshot.model} · {snapshot.connection}</span>
@@ -233,7 +234,6 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
           <Button size="sm" variant="outline" disabled={busy || !enabled} onClick={() => void inspect('context')}>Context</Button>
           {(snapshot.running || snapshot.uncertain) && <Button size="sm" variant="danger" disabled={busy} onClick={() => void action({ operation: 'stop' })}>Stop</Button>}
         </header>
-        {snapshot.uncertain && <NativeRecovery key={`recovery-${sessionId}`} connectionId={connectionId} sessionId={sessionId} disabled={busy} onOpenChange={setRecoveryOpen} onApplied={() => { setSnapshot(null); setRecoveryGeneration(value => value + 1); }} />}
         <NativeAdministration key={sessionId} connectionId={connectionId} sessionId={sessionId} allowed={enabled} running={snapshot.running || snapshot.uncertain || snapshot.queuePending || !!snapshot.queued} />
         {Object.keys(snapshot.usage).length > 0 && <p className="text-xs text-muted">{Object.entries(snapshot.usage).map(([k, v]) => `${k.replaceAll('_', ' ')}: ${v}`).join(' · ')}</p>}
         {snapshot.uncertain && <p role="status" className="text-sm">Hermes has not confirmed the last operation. This chat is being checked automatically. Start a new chat if its outcome cannot be recovered; sending again could repeat the work.</p>}

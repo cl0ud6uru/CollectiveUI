@@ -6,9 +6,9 @@ const id = z.string().min(1).max(200);
 /** Persisted intent data contains identities and counters only, never prompts or credentials. */
 export const recoveryOwnership = z.object({
   protocol: z.literal('collective.portal-hub-ownership.v1'), ownerId: id, connectionId: id, instanceId: id,
-  leaseGeneration: positive, sessionId: id, profile: id, storedId: id, runtimeId: id,
-  sessionRevision: nonnegative, ownershipGeneration: nonnegative, socketEpoch: positive,
-  nativeFence: z.object({ protocol: z.literal('collective.native-hub-owner.v1'), generation: positive, socketEpoch: positive, nativeGeneration: positive }).strict(),
+  leaseGeneration: positive, sessionId: id, profile: z.string().min(1).max(100), storedId: id, runtimeId: id,
+  sessionRevision: nonnegative, ownershipGeneration: nonnegative, socketEpoch: positive, portalSocketEpoch: positive,
+  nativeFence: z.object({ protocol: z.literal('collective.native-hub-owner.v1'), generation: positive, socketEpoch: positive, nativeGeneration: positive, phase: z.enum(['recovery', 'full']), recoveryId: z.string().uuid().nullable(), recoverySessionId: id.nullable(), recoveryStoredSessionId: id.nullable() }).strict().nullable(),
 }).strict();
 export const recoveryBinding = z.object({
   ownership: recoveryOwnership,

@@ -11,6 +11,9 @@ export const remoteHermesRecoveries = pgTable('remote_hermes_recoveries', {
   connectionId: text('connection_id').notNull().references(() => remoteHermesConnections.id, { onDelete: 'cascade' }),
   sessionId: text('session_id').notNull().references(() => remoteHermesSessions.id, { onDelete: 'cascade' }),
   binding: jsonb('binding').$type<RecoveryBinding>().notNull(),
+  claimedOwnership: jsonb('claimed_ownership').$type<RecoveryBinding['ownership']>(),
+  completedOwnership: jsonb('completed_ownership').$type<RecoveryBinding['ownership']>(),
+  nativeRequestedAt: timestamp('native_requested_at', { withTimezone: true }),
   state: text('state').$type<'prepared' | 'pending' | 'uncertain' | 'applied' | 'superseded'>().notNull(),
   receipt: jsonb('receipt').$type<NativeDrainReceipt>(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
@@ -21,6 +24,8 @@ export const remoteHermesRecoveries = pgTable('remote_hermes_recoveries', {
   uniqueIndex('remote_hermes_recovery_active_idx').on(t.sessionId).where(sql`${t.state} in ('prepared','pending','uncertain')`),
   check('remote_hermes_recovery_state_check', sql`${t.state} in ('prepared','pending','uncertain','applied','superseded')`),
   check('remote_hermes_recovery_binding_bound', sql`jsonb_typeof(${t.binding}) = 'object' and octet_length(${t.binding}::text) <= 16000`),
+  check('remote_hermes_recovery_ownership_bound', sql`(${t.claimedOwnership} is null or (jsonb_typeof(${t.claimedOwnership}) = 'object' and octet_length(${t.claimedOwnership}::text) <= 16000)) and (${t.completedOwnership} is null or (jsonb_typeof(${t.completedOwnership}) = 'object' and octet_length(${t.completedOwnership}::text) <= 16000))`),
+  check('remote_hermes_recovery_terminal_check', sql`${t.state} <> 'applied' or (${t.confirmedAt} is not null and ${t.nativeRequestedAt} is not null and ${t.receipt}->>'state' = 'drained' and ${t.receipt}->>'reason' = 'drained' and ${t.receipt}->>'recovery_id' = ${t.id} and ${t.completedOwnership}#>>'{nativeFence,phase}' = 'full' and ${t.completedOwnership}#>>'{nativeFence,recoveryId}' = ${t.id}) is true`),
   check('remote_hermes_recovery_receipt_bound', sql`${t.receipt} is null or (jsonb_typeof(${t.receipt}) = 'object' and octet_length(${t.receipt}::text) <= 24000)`),
 ]);
 

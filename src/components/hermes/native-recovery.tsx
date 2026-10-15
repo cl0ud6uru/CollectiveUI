@@ -34,7 +34,7 @@ export function NativeRecovery({ connectionId, sessionId, disabled, onOpenChange
   return <>
     <Button size="sm" variant="outline" disabled={disabled || busy} onClick={() => void request('prepare')}>Review recovery</Button>
     <Dialog open={open} onOpenChange={value => { if (!value) close(); }}><DialogContent title="Recover unresolved Hermes work">
-      <p>This cancels unresolved work in this native conversation. Completed output and conversation history remain. Your message and protected answers will not be sent again.</p>
+      <p>This cancels unresolved work in this native conversation. Other conversations in this profile may pause while ownership is fenced. Completed output and conversation history remain; earlier external effects may be uncertain. Your message and protected answers will not be sent again.</p>
       {intent?.state === 'prepared' && <>
         <p className="mt-3">Profile: {intent.profile}. Reserved operations: {intent.reservationCount}. Confirm within one minute; any conversation or ownership change invalidates this confirmation.</p>
         <Button className="mt-3" variant="danger" disabled={busy || expired} onClick={() => void request('confirm')}>Cancel unresolved work and recover</Button>

@@ -41,7 +41,7 @@ function validateBinding(input: NativeDrainBinding) {
   if (new Set(binding.reservation_ids).size !== binding.reservation_ids.length) throw new HttpError(400, 'Recovery reservation identities must be unique.');
   return binding;
 }
-function validateReceipt(raw: unknown, binding: NativeDrainBinding): NativeDrainReceipt {
+export function validateReceipt(raw: unknown, binding: NativeDrainBinding): NativeDrainReceipt {
   const parsed = receiptSchema.safeParse(raw);
   if (!parsed.success) throw new HttpError(502, 'Native recovery returned invalid evidence.');
   const receipt = parsed.data;

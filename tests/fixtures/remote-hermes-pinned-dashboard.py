@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import hashlib
 import importlib.metadata
+import importlib.util
 import ipaddress
 import json
 import os
@@ -16,17 +17,38 @@ import socket
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 
 PIN = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 SOURCE = Path(os.environ["HERMES_SOURCE"]).resolve()
+RECOVERY_ADAPTERS = os.environ.get("REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE") == "1"
 ROOT = Path(__file__).resolve().parents[2]
 assert subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip() == PIN
 assert not subprocess.check_output(["git", "-C", str(SOURCE), "status", "--porcelain", "--untracked-files=all"], text=True).strip()
 assert not (SOURCE / ".env").exists(), "A source checkout with credentials is not a fixture"
 TEMP = tempfile.TemporaryDirectory(prefix="collective-pinned-dashboard-")
 HOME = Path(TEMP.name).resolve()
+# Explicit composed-adapter mode changes only a tracked archive inside the disposable home.
+# The original clean pin remains untouched; this is never an installation/deployment path.
+if RECOVERY_ADAPTERS:
+    copy = HOME / "source"
+    copy.mkdir()
+    archive = subprocess.Popen(["git", "-C", str(SOURCE), "archive", PIN], stdout=subprocess.PIPE)
+    with tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
+        tar.extractall(copy, filter="data")
+    assert archive.wait() == 0
+    for script, module in (("install-hermes-recovery.py", "native_recovery.py"),
+                           ("install-hermes-hub-owner.py", "native_hub_owner.py")):
+        spec = importlib.util.spec_from_file_location("fixture_installer_" + module.removesuffix(".py"), ROOT / "scripts" / script)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        originals = {name: (copy / name).read_text() for name in installer.TARGETS}
+        for name, content in installer.patch_sources(originals).items():
+            (copy / name).write_text(content)
+        (copy / (getattr(installer, "MODULE", None) or installer.OWNER_MODULE)).write_bytes((ROOT / "src/hermes-recovery" / module).read_bytes())
+    SOURCE = copy
 os.environ.clear()
 os.environ.update(PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", HOME=str(HOME),
                   HERMES_HOME=str(HOME / "profile"), HERMES_DISABLE_LAZY_INSTALLS="1",
@@ -105,6 +127,7 @@ TOKENS = {}
 REFRESH = {}
 DROP_ACK = False
 CONNECTIONS = set()
+RECOVERY_RELEASE = threading.Event()
 
 class FixtureProvider(DashboardAuthProvider):
     name = "synthetic"
@@ -152,6 +175,8 @@ class FixtureAgent(SyntheticHeavyAgent):
             server._ask("clarify", self.sid, {"questions": [{"qid": "q1", "question": "Synthetic question", "choices": ["One", "Two"]}]}, timeout=10)
         elif "fixture-approval" in text:
             server._ask("approval", self.sid, {"command": "synthetic-noop", "choices": ["once", "deny"]}, timeout=10)
+        if "fixture-drain-hold" in text:
+            RECOVERY_RELEASE.wait(20)  # Deliberately ignores interrupt until the synthetic control releases it.
         if "fixture-hold" in text:
             deadline = time.monotonic() + 10
             while not self._interrupt.is_set() and time.monotonic() < deadline:
@@ -218,6 +243,8 @@ async def control(request: Request):
     body = await request.json()
     if body == {"drop_next_ack": True}:
         DROP_ACK = True
+    elif RECOVERY_ADAPTERS and body == {"release_recovery_worker": True}:
+        RECOVERY_RELEASE.set()
     elif body == {"disconnect": True}:
         for connection in list(CONNECTIONS):
             with contextlib.suppress(Exception):
@@ -233,7 +260,7 @@ app.router.routes[:] = controls + [route for route in app.router.routes if route
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
 listener.listen(128)
-print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT}), file=sys.__stdout__, flush=True)
+print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT, "recoveryAdapters": RECOVERY_ADAPTERS}), file=sys.__stdout__, flush=True)
 try:
     uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="error")).run(sockets=[listener])
 finally:
