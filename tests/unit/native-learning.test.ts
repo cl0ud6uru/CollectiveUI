@@ -7,7 +7,7 @@ import type { PortalUIMessage } from "@/lib/chat/store";
 import type { ReviewedLesson } from "@/lib/agent/learning/types";
 import type { Tx } from "@/db";
 
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, query: null as Tx | null, generate: vi.fn(), decide: vi.fn(), enqueue: vi.fn(async () => "job") }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, query: null as Tx | null, generate: vi.fn(), decide: vi.fn(), embed: vi.fn(async () => null as number[][] | null), enqueue: vi.fn(async () => "job") }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", async () => {
   const { PGlite } = await import("@electric-sql/pglite");
@@ -18,7 +18,7 @@ vi.mock("@/db", async () => {
 });
 vi.mock("ai", async original => ({ ...await original<typeof import("ai")>(), generateText: fixture.generate }));
 vi.mock("@/lib/jobs", () => ({ QUEUES: { learningReview: "learning.review" }, enqueue: fixture.enqueue }));
-vi.mock("@/lib/llm", async original => ({ ...await original<typeof import("@/lib/llm")>(), resolveModel: async () => ({ model: {} }) }));
+vi.mock("@/lib/llm", async original => ({ ...await original<typeof import("@/lib/llm")>(), resolveModel: async () => ({ model: {} }), embedTexts: fixture.embed }));
 vi.mock("@/lib/llm/providers/decisions", () => ({ requestDecision: fixture.decide }));
 vi.mock("@/lib/hermes-team/learning", async original => {
   const learning = await original<typeof import("@/lib/hermes-team/learning")>();
@@ -61,7 +61,7 @@ const toolPart = (over: object = {}) => ({
 beforeAll(async () => {
   await fixture.client!.waitReady;
   for (const file of readdirSync("src/db/migrations").filter(f => f.endsWith(".sql")).sort()) {
-    await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, "utf8").replace("CREATE EXTENSION IF NOT EXISTS vector;", "").replace(/\bvector\b/g, "real[]"));
+    await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, "utf8").replace("CREATE EXTENSION IF NOT EXISTS vector;", "").replace(/(CREATE TABLE "memories" \([\s\S]*?"embedding" )vector,/, "$1text,").replace(/\bvector\b/g, "real[]"));
   }
 }, 45000);
 beforeEach(async () => {
@@ -170,7 +170,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
     const ordinaryContent = "Use a short update summary.";
     const preferenceContent = { ...content, name: "Report format", description: "Use my report layout.", instructions: "Lead with a summary." };
-    const [ordinary] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: ordinaryContent }).returning();
+    const [ordinary] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: ordinaryContent, embedding: [0.1, 0.2] }).returning();
     const [preference] = await db.insert(schema.botLearnings).values({
       botId: "bot", userId: "member", topic: "report-format", kind: "preference", status: "active",
       content: preferenceContent, verification: "The user explicitly requested this format.", version: 1,
@@ -179,19 +179,22 @@ describe("native learning with real PostgreSQL migrations", () => {
       learningId: preference.id, version: 1, status: "active", kind: "preference", content: preferenceContent,
       verification: "The user explicitly requested this format.",
     });
-    const ctx = { principal: member, bot, conversationId: "chat" } as AgentCtx;
+    const ctx = { principal: member, bot, app: {} as never, conversationId: "chat", depth: 0, background: false, toolSettings: await getSetting("tools"), usage: { pending: [] } } as AgentCtx;
     const entries = memoryTools(ctx);
     const correct = entries.find(entry => entry.name === "correct_memory")!.tool.execute!;
-    const args = { toolCallId: "correction", messages: [], context: undefined };
+    const controller = new AbortController();
+    const args = { toolCallId: "correction", messages: [], context: undefined, abortSignal: controller.signal };
+    fixture.embed.mockResolvedValueOnce([[0.5, 0.25]]);
 
     expect(await correct({ id: ordinary.id, fact: "Lead with a concise executive summary." }, args as never)).toMatchObject({
-      corrected: true, status: "corrected", recordType: "ordinary_memory",
+      corrected: true, status: "corrected", recordType: "ordinary_memory", recallStatus: "semantic",
     });
+    expect(fixture.embed).toHaveBeenCalledWith(["Lead with a concise executive summary."], { userId: "member", botId: "bot", conversationId: "chat" }, expect.objectContaining({ abortSignal: controller.signal, usage: ctx.usage }));
     expect(await correct({ id: preference.id, fact: "Use a concise executive summary before the details." }, args as never)).toMatchObject({
       corrected: true, status: "corrected", recordType: "learned_preference",
     });
-    expect((await db.select({ content: schema.memories.content }).from(schema.memories).where(eq(schema.memories.id, ordinary.id)))[0].content)
-      .toBe("Lead with a concise executive summary.");
+    expect((await db.select({ content: schema.memories.content, embedding: schema.memories.embedding }).from(schema.memories).where(eq(schema.memories.id, ordinary.id)))[0])
+      .toEqual({ content: "Lead with a concise executive summary.", embedding: [0.5, 0.25] });
     expect((await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.id, preference.id)))[0]).toMatchObject({
       userId: "member", botId: "bot", kind: "preference", status: "active", version: 2,
       content: { ...preferenceContent, description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details." },
@@ -235,6 +238,35 @@ describe("native learning with real PostgreSQL migrations", () => {
       { version: 2, content: pending },
       { version: 1, content: approved },
     ]);
+  });
+
+  it("aborts a stopped correction and rejects a stale embedding after a concurrent memory edit", async () => {
+    const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
+    const [row] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: "Original memory." }).returning();
+    const correct = memoryTools({ principal: member, bot, conversationId: "chat" } as AgentCtx).find(entry => entry.name === "correct_memory")!.tool.execute!;
+    const controller = new AbortController(); controller.abort();
+    await expect(correct({ id: row.id, fact: "Stopped change." }, { toolCallId: "stopped", messages: [], context: undefined, abortSignal: controller.signal } as never)).rejects.toMatchObject({ name: "AbortError" });
+    expect(fixture.embed).not.toHaveBeenCalled();
+    expect((await db.select({ content: schema.memories.content }).from(schema.memories).where(eq(schema.memories.id, row.id)))[0].content).toBe("Original memory.");
+
+    fixture.embed.mockImplementationOnce(async () => {
+      await db.update(schema.memories).set({ content: "Concurrent correction." }).where(eq(schema.memories.id, row.id));
+      return [[0.7, 0.3]];
+    });
+    expect(await correct({ id: row.id, fact: "Stale request." }, { toolCallId: "stale", messages: [], context: undefined } as never))
+      .toMatchObject({ corrected: false, status: "conflict", recordType: "ordinary_memory" });
+    expect((await db.select({ content: schema.memories.content }).from(schema.memories).where(eq(schema.memories.id, row.id)))[0].content).toBe("Concurrent correction.");
+  });
+
+  it("uses recent-recall fallback when embedding a corrected ordinary memory is unavailable", async () => {
+    const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
+    const [row] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: "Original memory." }).returning();
+    fixture.embed.mockRejectedValueOnce(new Error("fixture embedding unavailable"));
+    const correct = memoryTools({ principal: member, bot, conversationId: "chat" } as AgentCtx).find(entry => entry.name === "correct_memory")!.tool.execute!;
+    expect(await correct({ id: row.id, fact: "Updated detail." }, { toolCallId: "fallback", messages: [], context: undefined } as never))
+      .toMatchObject({ corrected: true, recallStatus: "recent_fallback", message: expect.stringContaining("recent-memory recall") });
+    expect((await db.select({ content: schema.memories.content, embedding: schema.memories.embedding }).from(schema.memories).where(eq(schema.memories.id, row.id)))[0])
+      .toEqual({ content: "Updated detail.", embedding: null });
   });
 
   it("reports forget no-ops honestly, avoids repeating failed IDs, and archives only its owner's active bot preference", async () => {

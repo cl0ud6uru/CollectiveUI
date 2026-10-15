@@ -22,8 +22,10 @@ describe("memory tool collapsed result labels", () => {
     ["forget", { status: "forgotten", deleted: true, recordType: "ordinary_memory" }, "Memory forgotten"],
     ["forget", { status: "forgotten", deleted: true, recordType: "learned_preference" }, "Learned preference forgotten"],
     ["correct_memory", { status: "corrected", corrected: true, recordType: "ordinary_memory" }, "Memory corrected"],
+    ["correct_memory", { status: "corrected", corrected: true, recordType: "ordinary_memory", recallStatus: "recent_fallback" }, "Memory corrected · recent recall"],
     ["correct_memory", { status: "corrected", corrected: true, recordType: "learned_preference" }, "Learned preference corrected"],
     ["correct_memory", { status: "corrected_pending", corrected: true }, "Correction saved for review"],
+    ["correct_memory", { status: "conflict", corrected: false }, "Memory changed — refresh before retrying"],
   ])("shows an honest collapsed %s result", (name, output, label) => {
     const html = renderResult(name, output);
     expect(html).toContain(label);

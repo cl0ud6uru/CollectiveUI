@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { botLearnings, memories } from "@/db/schema";
 import { addMemory } from "../memory";
+import { embedTexts } from "@/lib/llm";
 import type { AgentCtx, ToolEntry } from "../types";
 import { changeLearning } from "../learning/store";
 
@@ -35,7 +36,8 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
       tool: tool({
         description: "Forget an ordinary saved memory or an active personal learned preference by exact id. If the result is unchanged or unsupported, do not retry the same id; use correct_memory for a correction.",
         inputSchema: z.object({ id: z.string() }),
-        execute: async ({ id }) => {
+        execute: async ({ id }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
           const unchangedType = unchangedForgetIds.get(id);
           if (unchangedType) {
             return { deleted: false, status: "repeat_noop", recordType: unchangedType, message: "This exact target already returned no change in this turn. Do not retry it without a relevant state change." };
@@ -51,6 +53,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
               eq(botLearnings.id, id), eq(botLearnings.userId, userId), eq(botLearnings.botId, ctx.bot.id), eq(botLearnings.kind, "preference"),
             )) : [];
           if (learning?.status === "active") {
+            abortSignal?.throwIfAborted();
             await changeLearning(ctx.principal, learning.id, learning.version, { status: "archived" });
             return { deleted: true, status: "forgotten", recordType: "learned_preference" };
           }
@@ -70,13 +73,26 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
       tool: tool({
         description: "Correct a saved memory or personal learned preference by its exact id. Ordinary memories are updated in place. Learned preferences receive a new revision and keep their existing ownership and approval state. Do not use this for shared procedures or policies.",
         inputSchema: z.object({ id: z.string(), fact: z.string().trim().min(1).max(1000) }),
-        execute: async ({ id, fact }) => {
-          const [memory] = await db.select({ id: memories.id }).from(memories).where(and(eq(memories.id, id), eq(memories.userId, userId)));
+        execute: async ({ id, fact }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
+          const [memory] = await db.select({ id: memories.id, botId: memories.botId, content: memories.content, updatedAt: memories.updatedAt })
+            .from(memories).where(and(eq(memories.id, id), eq(memories.userId, userId)));
           if (memory) {
-            await db.update(memories).set({ content: fact, embedding: null, updatedAt: new Date() })
-              .where(and(eq(memories.id, id), eq(memories.userId, userId)));
+            const embedded = await embedTexts([fact], { userId, botId: memory.botId, conversationId: ctx.conversationId }, {
+              ...(abortSignal ? { abortSignal } : {}), ...(ctx.usage ? { usage: ctx.usage } : {}),
+            }).catch(() => null);
+            abortSignal?.throwIfAborted();
+            const [embedding] = embedded ?? [];
+            const [updated] = await db.update(memories).set({ content: fact, embedding: embedding ?? null, updatedAt: new Date() })
+              .where(and(eq(memories.id, id), eq(memories.userId, userId), eq(memories.content, memory.content), eq(memories.updatedAt, memory.updatedAt)))
+              .returning({ id: memories.id });
+            if (!updated) return { corrected: false, status: "conflict", recordType: "ordinary_memory", message: "This memory changed during correction. No update was made; refresh its current value before retrying." };
             unchangedForgetIds.delete(id);
-            return { corrected: true, status: "corrected", recordType: "ordinary_memory" };
+            return {
+              corrected: true, status: "corrected", recordType: "ordinary_memory",
+              recallStatus: embedding ? "semantic" : "recent_fallback",
+              ...(!embedding ? { message: "No embedding was available; this memory remains eligible through recent-memory recall." } : {}),
+            };
           }
 
           const [learning] = ctx.bot ? await db.select({ id: botLearnings.id, version: botLearnings.version, status: botLearnings.status, content: botLearnings.content })
@@ -85,6 +101,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
             )) : [];
           if (!learning) return { corrected: false, status: "not_found", recordType: "unknown", message: "No matching memory or personal learned preference was changed." };
 
+          abortSignal?.throwIfAborted();
           await changeLearning(ctx.principal, learning.id, learning.version, {
             content: { ...learning.content, description: fact, instructions: fact },
           });
