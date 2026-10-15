@@ -136,7 +136,6 @@ export class RunEventWriter {
     this.writing = true;
     try {
       const res = await this.append(events);
-      if (res === "rejected") return; // the batch was dropped (logged); the run carries on
       if (!res) return this.loseLease();
       this.seq = res.lastSeq;
       this.lastWriteAt = Date.now();
@@ -155,18 +154,18 @@ export class RunEventWriter {
 
   /**
    * One fenced transaction, retried on database errors for about half the stale period (a failover, a network blip:
-   * the lease is still ours); null when the fence failed or the database stayed down, "rejected" when Postgres refused
-   * the data itself (SQLSTATE class 22; nothing gets better by retrying, and losing the lease would drop the reply).
+   * the lease is still ours); null when the fence failed, the database stayed down, or Postgres rejected the data.
+   * A rejected batch cannot safely be skipped: stop the producer and let recovery close the committed log prefix.
    */
-  private async append(events: EventDraft[]): Promise<AppendResult | null | "rejected"> {
+  private async append(events: EventDraft[]): Promise<AppendResult | null> {
     const { runId, segment, holder } = this.opts;
     for (let attempt = 0; ; attempt++) {
       try {
         return await db.transaction((tx) => appendEventsTx(tx, runId, segment, events, { holder }));
       } catch (err) {
         if (sqlState(err)?.startsWith("22")) {
-          console.error(`[runs] run ${runId}: the event log refused a batch of ${events.length} event(s); dropped`, err);
-          return "rejected";
+          console.error(`[runs] run ${runId}: the event log refused a batch of ${events.length} event(s); stopping the writer`, err);
+          return null;
         }
         if (attempt >= RETRY_MS.length) {
           console.error(`[runs] run ${runId}: giving up on the event log after ${attempt + 1} attempts`, err);
