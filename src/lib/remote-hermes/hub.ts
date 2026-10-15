@@ -18,7 +18,8 @@ import { HUB_OWNER_LEASE_MS, NATIVE_HUB_OWNER_PROTOCOL, PORTAL_HUB_OWNERSHIP_PRO
 import { recoveryBinding, recoveryOwnership } from './recovery-contract';
 
 type Session = typeof remoteHermesSessions.$inferSelect;
-type Cached = { row: Session; view: NativeSessionView; pending: Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>; refreshedAt: number; eventRevision: number; socketEpoch: number; ownerInstanceId: string; leaseGeneration: number; ownerSocketEpoch: number };
+type PendingPrompt = { nativeId: string | number; prompt: NativePrompt; params: RpcRecord; socketEpoch: number };
+type Cached = { row: Session; view: NativeSessionView; pending: Map<string, PendingPrompt>; refreshedAt: number; eventRevision: number; socketEpoch: number; ownerInstanceId: string; leaseGeneration: number; ownerSocketEpoch: number };
 const processInstanceId = randomUUID();
 export class NativeHub {
   readonly changes = new EventEmitter();
@@ -494,19 +495,19 @@ export class NativeHub {
     const storedId = typeof snapshot.stored_session_id === 'string' ? snapshot.stored_session_id : row.storedId;
     if (!runtimeId) throw new HttpError(502, 'Hermes did not return a native session identity.');
     const view = sessionView(row.id, row.profile, snapshot, this.socket.state);
-    const pending = new Map<string, { nativeId: string | number; prompt: NativePrompt; params: RpcRecord }>();
+    const pending = new Map<string, PendingPrompt>();
     for (const raw of Array.isArray(snapshot.open_requests) ? snapshot.open_requests : []) {
       const request = record(raw);
       if ((typeof request.id !== 'string' && typeof request.id !== 'number') || typeof request.method !== 'string') continue;
       if (record(request.params).session_id !== runtimeId) continue;
       const prompt = promptView(request.id, request.method, request.params);
-      if (prompt) pending.set(prompt.id, { nativeId: request.id, prompt, params: record(request.params) });
-      else await this.socket.answer(request.id).catch(() => {});
+      if (prompt) pending.set(prompt.id, { nativeId: request.id, prompt, params: record(request.params), socketEpoch });
+      else await this.socket.answer(request.id, undefined, socketEpoch).catch(() => {});
     }
     const approval = record(snapshot.pending_approval);
     if (typeof approval.request_id === 'string' && ![...pending.values()].some(p => p.params.request_id === approval.request_id)) {
       const prompt = promptView(`approval-${approval.request_id}`, 'approval', approval)!;
-      pending.set(prompt.id, { nativeId: prompt.id, prompt, params: { ...approval, fallbackApproval: true } });
+      pending.set(prompt.id, { nativeId: prompt.id, prompt, params: { ...approval, fallbackApproval: true }, socketEpoch });
     }
     view.prompts = [...pending.values()].map(p => p.prompt);
     const current = await db.transaction(async tx => {
@@ -597,8 +598,8 @@ export class NativeHub {
     cached.eventRevision++;
     if (frame.id !== undefined && frame.method && frame.method !== 'event') {
       const prompt = promptView(frame.id, frame.method, p);
-      if (!prompt) { void this.socket.answer(frame.id).catch(() => {}); return; }
-      cached.pending.set(prompt.id, { nativeId: frame.id, prompt, params: p });
+      if (!prompt) { void this.socket.answer(frame.id, undefined, socketEpoch).catch(() => {}); return; }
+      cached.pending.set(prompt.id, { nativeId: frame.id, prompt, params: p, socketEpoch });
       cached.view.prompts = [...cached.pending.values()].map(v => v.prompt);
       cached.view.running = true;
       this.changes.emit(cached.row.id); return;
@@ -660,8 +661,8 @@ export class NativeHub {
     const pending = cached.pending.get(requestId);
     if (!pending) throw new HttpError(409, 'This native prompt has expired or was answered elsewhere.');
     const result = answerFor(pending.prompt, input);
-    if (pending.params.fallbackApproval) await this.socket.call('approval.respond', { session_id: cached.row.runtimeId, profile: row.profile, request_id: pending.params.request_id, choice: result.choice });
-    else await this.socket.answer(pending.nativeId, result);
+    if (pending.params.fallbackApproval) await this.socket.callConnected('approval.respond', { session_id: cached.row.runtimeId, profile: row.profile, request_id: pending.params.request_id, choice: result.choice }, pending.socketEpoch);
+    else await this.socket.answer(pending.nativeId, result, pending.socketEpoch);
     cached.pending.delete(requestId); cached.view.prompts = [...cached.pending.values()].map(p => p.prompt);
     return { answered: true };
   }

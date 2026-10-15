@@ -177,8 +177,36 @@ class HubOwner:
 
     def _current_row(self, profile, home):
         with self._database(home) as db:
-            row = db.execute("SELECT native_generation, portal_connection_id, portal_instance_id, portal_generation, portal_socket_epoch, phase, recovery_id, recovery_session_id, recovery_stored_session_id FROM collective_hub_owner WHERE profile=?", (profile,)).fetchone()
-        return row
+            row = self._row_for_home(db, home)
+        return row[1:] if row else None
+
+    def _row_for_home(self, db, home):
+        """Find the single durable owner row for a resolved profile home.
+
+        Hermes accepts profile aliases that can resolve to the same directory. The
+        durable ledger must therefore be keyed by that directory, while legacy
+        rows keyed by a profile name remain discoverable until the next claim
+        atomically canonicalizes them.
+        """
+        resolved = Path(home).resolve()
+        matches = []
+        rows = db.execute("SELECT profile, native_generation, portal_connection_id, portal_instance_id, portal_generation, portal_socket_epoch, phase, recovery_id, recovery_session_id, recovery_stored_session_id FROM collective_hub_owner").fetchall()
+        for row in rows:
+            key = row[0]
+            same_home = key == str(resolved)
+            if not same_home:
+                try:
+                    candidate = self.server._profile_home(key) or self.server._hermes_home
+                    same_home = Path(candidate).resolve() == resolved
+                except (OSError, TypeError, ValueError):
+                    same_home = False
+            if same_home:
+                matches.append(row)
+        if len(matches) > 1:
+            raise ValueError("multiple native owner rows resolve to the same profile home")
+        if not matches:
+            return None
+        return matches[0]
 
     def _durably_current(self, binding):
         try:
@@ -284,7 +312,10 @@ class HubOwner:
                     if current_binding is None or current_binding.phase != "recovery" or current_binding.recovery_id != p.recovery_id:
                         return self._err(rid, "A native profile worker is still active; use the confirmed native recovery flow.")
                 with self._database(home, immediate=True) as db:
-                    row = db.execute("SELECT native_generation,portal_connection_id,portal_instance_id,portal_generation,portal_socket_epoch,phase,recovery_id,recovery_session_id,recovery_stored_session_id FROM collective_hub_owner WHERE profile=?", (profile,)).fetchone()
+                    row = self._row_for_home(db, home)
+                    row_key = row[0] if row else None
+                    if row:
+                        row = row[1:]
                     old = int(row[0]) if row else 0
                     if p.phase == "recovery" and row and row[5] == "recovery" and (
                         p.recovery_id, p.recovery_session_id, p.recovery_stored_session_id
@@ -320,8 +351,10 @@ class HubOwner:
                         elif p.phase == "full" and active:
                             return self._err(rid, "A native profile worker is still active; ownership was not changed.")
                         native_generation = old + 1
+                        if row_key is not None and row_key != str(home):
+                            db.execute("DELETE FROM collective_hub_owner WHERE profile=?", (row_key,))
                         db.execute("INSERT INTO collective_hub_owner (profile,native_generation,portal_connection_id,portal_instance_id,portal_generation,portal_socket_epoch,phase,recovery_id,recovery_session_id,recovery_stored_session_id,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(profile) DO UPDATE SET native_generation=excluded.native_generation, portal_connection_id=excluded.portal_connection_id, portal_instance_id=excluded.portal_instance_id, portal_generation=excluded.portal_generation, portal_socket_epoch=excluded.portal_socket_epoch, phase=excluded.phase, recovery_id=excluded.recovery_id, recovery_session_id=excluded.recovery_session_id, recovery_stored_session_id=excluded.recovery_stored_session_id, updated_at=excluded.updated_at",
-                                   (profile, native_generation, p.portal_connection_id, p.portal_instance_id, p.portal_generation, p.portal_socket_epoch, p.phase, p.recovery_id, p.recovery_session_id, p.recovery_stored_session_id, time.time_ns()))
+                                   (str(home), native_generation, p.portal_connection_id, p.portal_instance_id, p.portal_generation, p.portal_socket_epoch, p.phase, p.recovery_id, p.recovery_session_id, p.recovery_stored_session_id, time.time_ns()))
                 binding = Binding(profile, str(home), transport, p.portal_connection_id, p.portal_instance_id,
                                   p.portal_generation, p.portal_socket_epoch, native_generation, p.phase, p.recovery_id, p.recovery_session_id, p.recovery_stored_session_id)
                 with self._guard:
@@ -522,26 +555,31 @@ class HubOwner:
         try:
             home = Path(self.server._session_home(session)).resolve()
         except (OSError, ValueError, TypeError):
-            return target
+            return lambda *args, **kwargs: None
         binding = _active_binding.get()
         if binding is None:
             with self._guard:
                 binding = self._owners.get(str(home))
-        if binding is None:
-            return target
         def guarded_target(*args, **kwargs):
             with self._locked(home, wait=self._LOCK_WAIT_SECONDS):
-                if not binding.same_claim(self._current_owner(str(home))) or not self._durably_current(binding):
+                current = self._current_owner(str(home))
+                if binding is None:
+                    # Work queued before a portal claim may run only while the
+                    # profile still has no durable or in-process owner.
+                    if current is not None or self._durable_owner_exists(home):
+                        return None
+                elif not binding.same_claim(current) or not self._durably_current(binding):
                     return None  # stale queued/deferred work never begins
-                if binding.phase != "full":
+                elif binding.phase != "full":
                     return None  # recovery-only ownership never starts ordinary background work
                 with self._guard:
                     self._active_workers[str(home)] = self._active_workers.get(str(home), 0) + 1
-            token = _active_binding.set(binding)
+            token = _active_binding.set(binding) if binding is not None else None
             try:
                 return target(*args, **kwargs)
             finally:
-                _active_binding.reset(token)
+                if token is not None:
+                    _active_binding.reset(token)
                 with self._guard:
                     remaining = self._active_workers.get(str(home), 0) - 1
                     if remaining > 0:
@@ -566,17 +604,14 @@ class HubOwner:
             req = self.server._server_requests._open.get(str(frame.get("id")))
             sid = req.sid if req is not None else None
         if req is None:
-            return resolve(frame)
+            return False
         with self.server._sessions_lock:
             session = self.server._sessions.get(sid)
         if session is None:
-            with self._guard:
-                bound_transport = transport in self._transports
-            if bound_transport:
-                return False
-            if transport is not None and not isinstance(transport, WSTransport):
-                return False
-            return resolve(frame)
+            # A request that outlived its runtime cannot be safely attributed to
+            # a profile or socket generation. Keep it unresolved rather than
+            # accepting an answer from an unscoped transport.
+            return False
         home = Path(self.server._session_home(session)).resolve()
         with self._guard:
             binding = self._transports.get(transport)
@@ -610,6 +645,31 @@ class HubOwner:
             guarded = self.protect_worker(target, session) if session is not None else target
             return original_start(guarded, name=name, session=session) if session is not None else original_start(guarded, name=name)
         self.server._start_session_work = start
+        original_auxiliary = getattr(self.server, "_collective_start_auxiliary_work", None)
+        if original_auxiliary is not None:
+            def auxiliary(target, *, name, session):
+                try:
+                    home = Path(self.server._session_home(session)).resolve()
+                    sid = self.server._session_lookup_key(session)
+                    with self._locked(home, wait=self._LOCK_WAIT_SECONDS):
+                        with self.server._sessions_lock:
+                            if self.server._sessions.get(sid) is not session or session.get("_closing"):
+                                return None
+                        active = _active_binding.get()
+                        with self._guard:
+                            owner = self._owners.get(str(home))
+                        if active is not None:
+                            if active.home != str(home) or not active.same_claim(owner) or not self._durably_current(active) or active.phase != "full":
+                                return None
+                        elif owner is not None or self._durable_owner_exists(home):
+                            # An owner-bound caller must carry its exact request
+                            # context; never let stale async work inherit a new claim.
+                            return None
+                        guarded = self.protect_worker(target, session)
+                        return original_auxiliary(guarded, name=name, session=session)
+                except (OSError, TypeError, ValueError, TimeoutError):
+                    return None
+            self.server._collective_start_auxiliary_work = auxiliary
         for name, handler in list(self.server._methods.items()):
             if name in {"collective.hub_owner.capabilities", "collective.hub_owner.current", "collective.hub_owner.claim"}:
                 continue
