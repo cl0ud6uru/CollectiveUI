@@ -15,7 +15,7 @@ const bundle = await build({ entryPoints: [entry], write: false, bundle: true, p
 const requests = [];
 let scheduleEnabled = true;
 let scheduleState = 'scheduled';
-let pluginEnabled = false;
+let pluginStatus = 'not enabled';
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
@@ -30,9 +30,12 @@ const server = createServer((req, res) => {
       if (envelope.input.operation === 'prepare') { const scheduled = envelope.input.action === 'pause' || envelope.input.action === 'resume'; const plugin = envelope.input.action === 'enable-plugin' || envelope.input.action === 'disable-plugin'; res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: scheduled ? 'schedule' : plugin ? 'plugin' : envelope.input.action, enabled: envelope.input.action === 'resume' || envelope.input.action === 'enable-plugin', name: scheduled ? 'Fixture schedule' : plugin ? 'Fixture plugin' : envelope.input.name, profile: 'default', title: 'Fixture chat' })); return; }
       if (requests.at(-2)?.input?.action === 'pause') { scheduleEnabled = false; scheduleState = 'paused'; }
       if (requests.at(-2)?.input?.action === 'resume') { scheduleEnabled = true; scheduleState = 'scheduled'; }
-      if (requests.at(-2)?.input?.action === 'enable-plugin') pluginEnabled = true;
-      if (requests.at(-2)?.input?.action === 'disable-plugin') pluginEnabled = false;
-      res.end(JSON.stringify({ accepted: true, duplicate: false, schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled }], projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }], activeId: '' }));
+      if (requests.at(-2)?.input?.action === 'enable-plugin') pluginStatus = 'enabled';
+      if (requests.at(-2)?.input?.action === 'disable-plugin') pluginStatus = 'disabled';
+      const lastAction = requests.at(-2)?.input?.action;
+      res.end(JSON.stringify({ accepted: true, duplicate: false,
+        output: lastAction === 'enable-plugin' ? 'Plugin enabled in profile settings. Hermes confirms the running gateway reloaded. Activation may add tools or skills to open chats.' : lastAction === 'disable-plugin' ? 'Plugin disabled in profile settings. A running gateway may keep its handlers until restarted.' : 'Hermes change confirmed.',
+        schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled }], projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }], activeId: '' }));
     });
     return;
   }
@@ -41,7 +44,7 @@ const server = createServer((req, res) => {
   const fixtures = {
     projects: { projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }] },
     schedules: { schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled, state: scheduleState, schedule: '0 7 * * *' }, { id: 'done', name: 'Completed schedule', enabled: false, state: 'completed', schedule: 'once' }] },
-    plugins: { plugins: [{ key: 'tools:fixture', name: 'Fixture plugin', version: '1.0', status: pluginEnabled ? 'enabled' : 'not enabled', source: 'user' }] },
+    plugins: { plugins: [{ key: 'tools:fixture', name: 'Fixture plugin', version: '1.0', status: pluginStatus, source: 'user' }] },
     system: { version: 'Fixture version', cpuCount: 4, cpuPercent: 10, memory: { total: 1000, used: 500, percent: 50 } },
     files: { roots: ['/workspace'], directory: url.searchParams.get('path') || '/workspace', entries: url.searchParams.get('path') === '/workspace/src' ? [{ name: 'example.ts', path: '/workspace/src/example.ts', directory: false }] : [{ name: 'src', path: '/workspace/src', directory: true }] },
   };
@@ -87,6 +90,12 @@ try {
   await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('may add capabilities to open chats');
   await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
   await expect(page.getByText('Status: enabled')).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'gateway reloaded' })).toBeVisible();
+  await page.getByRole('button', { name: 'Review disable', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('may keep its handlers until restart');
+  await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
+  await expect(page.getByText('Status: disabled')).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'handlers until restarted' })).toBeVisible();
   await page.getByRole('button', { name: 'System', exact: true }).click();
   await expect(page.getByText('Fixture version', { exact: true })).toBeVisible();
   await page.getByLabel('Hermes workspace profile').click(); await page.getByRole('option', { name: 'work', exact: true }).click();

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NativeConnectionChanged, NativeRpcError } from '@/lib/remote-hermes/socket';
+import { NativeConnectionChanged } from '@/lib/remote-hermes/socket';
 
-const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], schedules: [] as Record<string, unknown>[], plugins: [] as Record<string, unknown>[], activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
+const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], schedules: [] as Record<string, unknown>[], plugins: [] as Record<string, unknown>[], pluginReads: 0, pluginReadFlipAt: 0, activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
   row: {} as Record<string, unknown>, receipt: null as null | { requestId: string; digest: string }, cached: {} as { row: Record<string, unknown>; view: Record<string, unknown>; pending: Map<string, unknown>; socketEpoch: number } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled }) }));
 vi.mock('@/lib/remote-hermes/policy', () => ({ assertRemoteHermesAdmission: (value: { enabled: boolean }) => { if (!value.enabled) throw new Error('Personal remote Hermes is disabled'); } }));
@@ -16,7 +16,10 @@ vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
     callConnected: async (method: string) => {
       if (method === 'projects.list') return { active_id: f.activeId || null, projects: f.list };
       if (method === 'cron.manage') return { scoped: f.unscoped ? 'other' : 'default', jobs: f.schedules };
-      expect(method).toBe('plugins.manage'); return { plugins: f.plugins };
+      expect(method).toBe('plugins.manage');
+      ++f.pluginReads;
+      if (f.pluginReadFlipAt === f.pluginReads) f.plugins[0].source = 'bundled';
+      return { plugins: f.plugins };
     },
     dispatchConnected: async (method: string, params: Record<string, unknown>, epoch: number) => {
       if (f.beforeSend || epoch !== f.cached.socketEpoch) throw new NativeConnectionChanged();
@@ -61,7 +64,7 @@ const confirm = (confirmation: string) => nativeWorkspaceOperation('owner', 'con
 
 describe('confirmed native Hermes workspace operations', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.schedules = []; f.plugins = []; f.activeId = ''; f.receipt = null;
+    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.schedules = []; f.plugins = []; f.pluginReads = f.pluginReadFlipAt = 0; f.activeId = ''; f.receipt = null;
     f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: 'idle', revision: 1, queueRequestId: null };
     f.cached = { row: f.row, view: { title: 'Synthetic chat', profile: 'default', nativeProfile: 'default', running: false, uncertain: false, queuePending: false, queued: '', prompts: [] }, pending: new Map(), socketEpoch: 1 };
     f.profiles.mockResolvedValue([{ name: 'default' }]);
@@ -82,7 +85,7 @@ describe('confirmed native Hermes workspace operations', () => {
       const plugin = f.plugins.find(value => value.key === params.key);
       if (!plugin) throw new Error('plugin not found');
       plugin.status = params.enable ? 'enabled' : 'disabled';
-      return { ok: true, name: plugin.key, plugin };
+      return { ok: true, name: plugin.key, plugin, gateway_reloaded: params.enable, restart_required: !params.enable };
     });
   });
 
@@ -161,17 +164,53 @@ describe('confirmed native Hermes workspace operations', () => {
     expect(f.calls).not.toHaveBeenCalled();
     const result = await confirm(prepared.confirmation!);
     expect(result).toMatchObject({ accepted: true, plugins: [{ key: 'category:helper', status: 'enabled' }] });
+    expect('output' in result && result.output).toContain('Hermes confirms the running gateway reloaded');
     expect(f.calls).toHaveBeenCalledExactlyOnceWith('plugins.manage', { profile: 'default', action: 'toggle', key: 'category:helper', enable: true });
     expect(await confirm(prepared.confirmation!)).toMatchObject({ duplicate: true, accepted: true });
     expect(f.calls).toHaveBeenCalledOnce();
+    f.receipt = null;
+    const disabling = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'disable-plugin', pluginKey: 'category:helper' });
+    const disabled = await confirm(disabling.confirmation!);
+    expect(disabled).toMatchObject({ accepted: true, plugins: [{ key: 'category:helper', status: 'disabled' }] });
+    expect('output' in disabled && disabled.output).toContain('may keep its handlers until restarted');
+    expect(f.calls).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires an exact unique canonical plugin key and rejects identity changes before dispatch', async () => {
+    f.plugins = [{ key: 'category:helper', name: 'Helper', source: 'user', status: 'not enabled' }];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'Helper' }))
+      .rejects.toThrow('unambiguous user-installed');
+    f.plugins.push({ ...f.plugins[0] });
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'category:helper' }))
+      .rejects.toThrow('unambiguous user-installed');
+    f.plugins = [{ key: 'category:helper', name: 'Helper', source: 'user', status: 'not enabled' }];
+    const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'category:helper' });
+    f.plugins[0].source = 'bundled';
+    await expect(confirm(prepared.confirmation!)).rejects.toThrow('plugin changed after confirmation');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
+  });
+
+  it('refuses plugin mutations when the native inventory exceeds the complete verification bound', async () => {
+    f.plugins = Array.from({ length: 501 }, (_, index) => ({ key: `category:${index}`, name: `Plugin ${index}`, source: 'user', status: 'disabled' }));
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'category:500' }))
+      .rejects.toThrow('incomplete plugin inventory');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
+  });
+
+  it('leaves the receipt uncertain if plugin provenance changes during native readback', async () => {
+    f.plugins = [{ key: 'category:helper', name: 'Helper', source: 'user', status: 'not enabled' }];
+    const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'category:helper' });
+    f.pluginReadFlipAt = 3; // prepare list, confirm preflight, then post-dispatch readback
+    await expect(confirm(prepared.confirmation!)).rejects.toThrow('plugin readback did not match');
+    expect(f.calls).toHaveBeenCalledOnce(); expect(f.row.status).toBe('uncertain');
   });
 
   it('rejects invented, bundled, and indeterminate plugin states', async () => {
-    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'invented' })).rejects.toThrow('supported user-installed');
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'invented' })).rejects.toThrow('supported, unambiguous user-installed');
     f.plugins = [{ key: 'core:helper', name: 'Helper', source: 'bundled', status: 'disabled' }];
-    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'core:helper' })).rejects.toThrow('supported user-installed');
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'core:helper' })).rejects.toThrow('supported, unambiguous user-installed');
     f.plugins = [{ key: 'user:helper', name: 'Helper', source: 'user', status: 'unknown' }];
-    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'disable-plugin', pluginKey: 'user:helper' })).rejects.toThrow('supported user-installed');
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'disable-plugin', pluginKey: 'user:helper' })).rejects.toThrow('supported, unambiguous user-installed');
     expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
   });
 

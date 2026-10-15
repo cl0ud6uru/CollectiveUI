@@ -36,6 +36,15 @@ type Claim = z.infer<typeof claimSchema>;
 type Session = typeof remoteHermesSessions.$inferSelect;
 const binding = (owner: string, connection: string, session: string) => JSON.stringify(['remote-hermes-workspace:v1', owner, connection, session]);
 const pluginState = (status: string) => status === 'enabled' ? true : status === 'disabled' || status === 'not enabled' ? false : null;
+type ListedPlugin = { key: string; name: string; status: string; source: string };
+function listedUserPlugin(plugins: ListedPlugin[], key: string, name?: string) {
+  const matches = plugins.filter(plugin => plugin.key === key);
+  if (matches.length !== 1) return undefined;
+  const plugin = matches[0];
+  if (!plugin.key || plugin.source !== 'user' || !plugin.name || name !== undefined && plugin.name !== name ||
+    !['enabled', 'disabled', 'not enabled'].includes(plugin.status)) return undefined;
+  return plugin;
+}
 type ScheduleClaim = Extract<Claim, { action: 'schedule' }>;
 const scheduleStillReady = (schedule: { enabled: boolean; state: string }, claim: ScheduleClaim) => schedule.state === claim.scheduleState &&
   (claim.scheduleAction === 'pause' ? schedule.enabled && schedule.state === 'scheduled' : schedule.state === 'paused' || schedule.state === 'error');
@@ -103,7 +112,10 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
     return scheduleProjection(value);
   }
   async function plugins(epoch: number) {
-    return pluginProjection(await hub.socket.callConnected('plugins.manage', { profile: row.profile, action: 'list' }, epoch, 30_000));
+    const value = record(await hub.socket.callConnected('plugins.manage', { profile: row.profile, action: 'list' }, epoch, 30_000));
+    if (!Array.isArray(value.plugins) || value.plugins.length > 500)
+      throw new HttpError(502, 'Hermes returned an incomplete plugin inventory. Refresh it before changing a plugin.');
+    return pluginProjection(value);
   }
 
   if (input.operation === 'prepare') {
@@ -131,9 +143,8 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
         action: 'schedule', scheduleAction: input.action, scheduleId: schedule.id, scheduleName: schedule.name, scheduleState: schedule.state, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
     } else if (input.action === 'enable-plugin' || input.action === 'disable-plugin') {
       const listed = await plugins(snapshot.socketEpoch);
-      const plugin = listed.plugins.find(value => value.key === input.pluginKey);
-      if (!plugin || plugin.source !== 'user' || !['enabled', 'disabled', 'not enabled'].includes(plugin.status))
-        throw new HttpError(409, 'Choose a supported user-installed plugin from the refreshed Hermes list.');
+      const plugin = listedUserPlugin(listed.plugins, input.pluginKey);
+      if (!plugin) throw new HttpError(409, 'Choose a supported, unambiguous user-installed plugin from the refreshed Hermes list.');
       const enabled = input.action === 'enable-plugin';
       if ((plugin.status === 'enabled') === enabled) throw new HttpError(409, 'This plugin already has the requested state. Refresh the list before continuing.');
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
@@ -160,7 +171,8 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
     }
     if (claim.action === 'plugin') {
       const current = await plugins(claim.socketEpoch);
-      const complete = current.plugins.some(plugin => plugin.key === claim.pluginKey && pluginState(plugin.status) === claim.enabled);
+      const plugin = listedUserPlugin(current.plugins, claim.pluginKey, claim.pluginName);
+      const complete = !!plugin && pluginState(plugin.status) === claim.enabled;
       return { accepted: complete, duplicate: true, plugins: current.plugins,
         output: complete ? 'This plugin request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
     }
@@ -177,8 +189,8 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
     if (!current || !scheduleStillReady(current, claim)) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
   } else if (claim.action === 'plugin') {
     const listed = await plugins(claim.socketEpoch);
-    const current = listed.plugins.find(plugin => plugin.key === claim.pluginKey);
-    if (!current || current.source !== 'user' || !['enabled', 'disabled', 'not enabled'].includes(current.status) || (current.status === 'enabled') === claim.enabled)
+    const current = listedUserPlugin(listed.plugins, claim.pluginKey, claim.pluginName);
+    if (!current || (current.status === 'enabled') === claim.enabled)
       throw new HttpError(409, 'This plugin changed after confirmation. Refresh the plugin list and review it again.');
   } else {
     const listed = await projects(claim.socketEpoch);
@@ -212,7 +224,8 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
     }
     if (claim.action === 'plugin') {
       const current = await plugins(claim.socketEpoch);
-      const complete = current.plugins.some(plugin => plugin.key === claim.pluginKey && pluginState(plugin.status) === claim.enabled);
+      const plugin = listedUserPlugin(current.plugins, claim.pluginKey, claim.pluginName);
+      const complete = !!plugin && pluginState(plugin.status) === claim.enabled;
       return { accepted: complete, duplicate: true, plugins: current.plugins,
         output: complete ? 'This plugin request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
     }
@@ -259,7 +272,8 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
         throw new HttpError(502, 'Hermes did not confirm the requested schedule state. Refresh before continuing.');
     } else if (claim.action === 'plugin') {
       const plugin = record(replyValue.plugin);
-      if (replyValue.ok !== true || replyValue.name !== claim.pluginKey || plugin.key !== claim.pluginKey || pluginState(String(plugin.status)) !== claim.enabled)
+      if (replyValue.ok !== true || replyValue.name !== claim.pluginKey || plugin.key !== claim.pluginKey || plugin.name !== claim.pluginName ||
+        plugin.source !== 'user' || pluginState(String(plugin.status)) !== claim.enabled)
         throw new HttpError(502, 'Hermes did not confirm the requested plugin state. Refresh before continuing.');
     }
     if (claim.action === 'schedule') {
@@ -271,12 +285,19 @@ export async function nativeWorkspaceOperation(ownerId: string, connectionId: st
     }
     if (claim.action === 'plugin') {
       const latest = await plugins(claim.socketEpoch);
-      const plugin = latest.plugins.find(value => value.key === claim.pluginKey);
+      const plugin = listedUserPlugin(latest.plugins, claim.pluginKey, claim.pluginName);
       if (!plugin || pluginState(plugin.status) !== claim.enabled)
         throw new HttpError(502, 'Hermes plugin readback did not match the requested change. The result is uncertain; refresh before taking action.');
       await settle('idle');
+      const runningGateway = replyValue.gateway_reloaded === true
+        ? 'Hermes confirms the running gateway reloaded.'
+        : replyValue.restart_required === true
+          ? 'Hermes could not confirm a gateway reload; restart may be required for running handlers to update.'
+          : 'Hermes did not confirm the running gateway state; verify it before relying on the change.';
       return { accepted: true, duplicate: false, plugins: latest.plugins,
-        output: claim.enabled ? `Plugin “${claim.pluginName}” enabled; activation may add tools or skills to open chats.` : `Plugin “${claim.pluginName}” disabled in profile settings${replyValue.restart_required === true ? '; an already-running gateway may keep its handlers until restart' : ''}.` };
+        output: claim.enabled
+          ? `Plugin “${claim.pluginName}” enabled in profile settings. ${runningGateway} Activation may add tools or skills to open chats.`
+          : `Plugin “${claim.pluginName}” disabled in profile settings. ${replyValue.restart_required === true ? 'A running gateway may keep its handlers until restarted.' : runningGateway}` };
     }
     const latest = await projects(claim.socketEpoch);
     const matched = claim.action === 'create'
