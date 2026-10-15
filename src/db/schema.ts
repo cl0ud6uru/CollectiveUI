@@ -105,10 +105,31 @@ export const remoteHermesSessions = pgTable('remote_hermes_sessions', {
   revision: integer('revision').notNull().default(0),
   queueRequestId: text('queue_request_id'),
   queueStatus: text('queue_status').$type<'admitting' | 'queued' | 'uncertain'>(),
+  /** Invalidates process-local runtime/cache bindings after an owner-confirmed native recovery. */
+  ownershipGeneration: bigint('ownership_generation', { mode: 'number' }).notNull().default(0),
   createdAt: createdAt(), updatedAt: updatedAt(),
 }, t => [uniqueIndex('remote_hermes_session_native_idx').on(t.connectionId, t.profile, t.storedId),
   check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`),
+  check('remote_hermes_session_ownership_generation_check', sql`${t.ownershipGeneration} >= 0`),
   check('remote_hermes_queue_check', sql`(${t.queueRequestId} is null) = (${t.queueStatus} is null) and (${t.queueStatus} is null or ${t.queueStatus} in ('admitting','queued','uncertain'))`)]);
+
+/** Durable election state for process-local native socket hubs. Native fencing proof is recorded
+ * separately and only after the opt-in native owner adapter acknowledges the exact epoch. */
+export const remoteHermesHubOwners = pgTable('remote_hermes_hub_owners', {
+  connectionId: text('connection_id').primaryKey().references(() => remoteHermesConnections.id, { onDelete: 'cascade' }),
+  ownerInstanceId: text('owner_instance_id').notNull(),
+  generation: bigint('generation', { mode: 'number' }).notNull().default(1),
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }).notNull(),
+  socketEpoch: bigint('socket_epoch', { mode: 'number' }).notNull().default(0),
+  nativeProtocol: text('native_protocol'),
+  nativeGeneration: bigint('native_generation', { mode: 'number' }),
+  nativeSocketEpoch: bigint('native_socket_epoch', { mode: 'number' }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [
+  check('remote_hermes_hub_owner_generation_check', sql`${t.generation} > 0`),
+  check('remote_hermes_hub_owner_socket_epoch_check', sql`${t.socketEpoch} >= 0`),
+  check('remote_hermes_hub_native_fence_check', sql`((${t.nativeProtocol} is null and ${t.nativeGeneration} is null and ${t.nativeSocketEpoch} is null) or (${t.nativeProtocol} = 'collective.native-hub-owner.v1' and ${t.nativeGeneration} > 0 and ${t.nativeSocketEpoch} = ${t.socketEpoch})) is true`),
+]);
 
 /** Write-ahead receipts prevent an HTTP retry from submitting the same prompt twice. No prompt text is stored. */
 export const remoteHermesTurns = pgTable('remote_hermes_turns', {
@@ -1920,3 +1941,7 @@ export const codexApprovals = pgTable('codex_approvals', {
   binding: text('binding').notNull(), threadId: text('thread_id').notNull(), turnId: text('turn_id').notNull(),
   decision: text('decision').$type<'decline' | 'cancel'>(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, t => [index('codex_approvals_run_idx').on(t.runId), check('codex_approval_decision_check', sql`${t.decision} is null or ${t.decision} in ('decline', 'cancel')`)]);
+
+
+// The recovery journal has its own protocol module; re-export it into Drizzle's schema.
+export { remoteHermesRecoveries } from './remote-hermes-recovery-schema';
