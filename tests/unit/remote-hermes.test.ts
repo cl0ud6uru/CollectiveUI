@@ -103,6 +103,36 @@ describe('Hermes native dashboard authentication', () => {
     await expect(client.setMcpServerEnabled('default', 'server', false)).rejects.toThrow('did not confirm');
     await expect(client.setMcpServerEnabled('default', '../config', false)).rejects.toThrow();
   });
+  it('uses only the pinned profile-scoped credential pool routes and discards token previews', async () => {
+    const transport = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      if (init.method === 'POST') {
+        expect(url.pathname).toBe('/hermes/api/credentials/pool');
+        expect(url.searchParams.get('profile')).toBe('worker');
+        expect(JSON.parse(String(init.body))).toEqual({ provider: 'openrouter', api_key: 'synthetic-provider-secret', label: 'Account one' });
+        return Response.json({ ok: true, provider: 'openrouter', count: 1 });
+      }
+      expect(url.pathname).toBe('/hermes/api/credentials/pool');
+      expect(url.searchParams.get('profile')).toBe('worker');
+      expect(init.method).toBe('GET');
+      return Response.json({ providers: [{ provider: 'openrouter', entries: [{ index: 1, id: 'opaque-id', label: 'Account one', auth_type: 'api_key', source: 'manual', priority: 0, last_status: 'ready', request_count: 0, token_preview: '****cret', has_refresh: false }] }] });
+    }) as unknown as typeof fetch;
+    const client = new DashboardClient('https://example.com/hermes', transport, { mode: 'sessionToken', sessionToken: 'synthetic-session-token' });
+    await expect(client.addCredentialPoolEntry('worker', 'openrouter', 'synthetic-provider-secret', 'Account one')).resolves.toEqual({ ok: true, provider: 'openrouter', count: 1 });
+    const readback = await client.credentialPool('worker');
+    expect(readback.providers[0]?.entries[0]).toEqual({ index: 1, id: 'opaque-id', label: 'Account one', authType: 'api_key', source: 'manual', priority: 0, lastStatus: 'ready', requestCount: 0, hasRefresh: false });
+    expect(JSON.stringify(readback)).not.toContain('tokenPreview');
+    expect(JSON.stringify(readback)).not.toContain('synthetic-provider-secret');
+    expect(transport).toHaveBeenCalledTimes(2);
+    const [, init] = (transport as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('synthetic-session-token');
+  });
+  it('rejects unsafe provider pool ids before dispatch', async () => {
+    const transport = vi.fn(async () => Response.json({ ok: true, provider: 'openrouter', count: 1 })) as unknown as typeof fetch;
+    const client = new DashboardClient('https://example.com/hermes', transport);
+    await expect(client.addCredentialPoolEntry('worker', '../config', 'secret', 'Account')).rejects.toThrow();
+    expect(transport).not.toHaveBeenCalled();
+  });
   it('uses PKCE with attempt-local cookies and returns tokens without retaining passwords', async () => {
     const { transport, calls } = passwordGateway();
     const result = await new DashboardClient('https://example.com/hermes', transport).passwordLogin('alice', 'temporary-password');

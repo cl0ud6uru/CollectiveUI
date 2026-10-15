@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, probeSummary } from '@/lib/remote-hermes/administration-contract';
 import { HttpError } from '@/lib/authz';
 
-const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, receipt: null as null | { digest: string }, call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn() }));
+const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, receipt: null as null | { digest: string }, call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn(), addPool: vi.fn(), readPool: vi.fn() }));
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string) => { if (owner !== 'owner') throw new Error('not found'); return { id: 'session', profile: f.profile, status: f.status, queueRequestId: f.queueRequestId }; } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
-vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { profiles: f.profiles, setMcpServerEnabled: f.setEnabled } }; } }));
+vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { profiles: f.profiles, setMcpServerEnabled: f.setEnabled, addCredentialPoolEntry: f.addPool, credentialPool: f.readPool } }; } }));
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
 vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown) => run({
   select: () => ({ from: (table: { [key: symbol]: unknown }) => {
@@ -18,7 +18,7 @@ vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown
 import { nativeAdministration } from '@/lib/remote-hermes/administration';
 const requestId = 'f1eeac5a-c19f-4b5b-97ef-a1cd7b02e658';
 describe('native administration protocol and isolation', () => {
-  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
+  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.addPool.mockResolvedValue({ provider: 'openrouter', count: 1 }); f.readPool.mockResolvedValue({ providers: [{ provider: 'openrouter', entries: [{ index: 1, id: 'synthetic-id', label: 'Remote account f1eeac5a', authType: 'api_key', source: 'manual', priority: 0, requestCount: 0, hasRefresh: false }] }] }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
   it('rejects unowned sessions before native RPC', async () => {
     await expect(nativeAdministration('other', 'connection', 'session', { operation: 'inspect' })).rejects.toThrow('not found'); expect(f.call).not.toHaveBeenCalled();
   });
@@ -33,6 +33,8 @@ describe('native administration protocol and isolation', () => {
     expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://mcp.example.test/mcp?token=secret', confirmed: true }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://mcp.example.test/mcp', command: 'sh', confirmed: true }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'bad name', url: 'https://mcp.example.test/mcp', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'providerKey', requestId, provider: 'Bad Provider', label: 'account', apiKey: 'secret', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'providerKey', requestId, provider: 'openrouter', label: 'account', apiKey: 'secret' }).success).toBe(false);
   });
   it('sends chat settings only with the bound runtime session and explicit session scope', async () => {
     await nativeAdministration('owner', 'connection', 'session', { operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'session' });
@@ -77,6 +79,31 @@ describe('native administration protocol and isolation', () => {
     f.call.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
     await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
     expect(await nativeAdministration('owner', 'connection', 'session', input)).toEqual({ accepted: true, duplicate: true }); expect(f.call).toHaveBeenCalledOnce();
+  });
+  it('adds a manual provider key only after confirmation and returns redacted profile readback', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const result = await nativeAdministration('owner', 'connection', 'session', input);
+    expect(result).toEqual({ accepted: true, provider: 'openrouter', label: 'Remote account f1eeac5a', count: 1 });
+    expect(f.addPool).toHaveBeenCalledExactlyOnceWith('default', 'openrouter', 'synthetic-provider-secret', 'Remote account f1eeac5a');
+    expect(f.readPool).toHaveBeenCalledExactlyOnceWith('default');
+    expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-provider-secret');
+    expect(f.receipt?.digest).not.toContain('synthetic-provider-secret');
+  });
+  it('does not replay an uncertain provider-key write after a lost acknowledgement', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.addPool.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, duplicate: true });
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).not.toHaveBeenCalled();
+  });
+  it('requires an idle owner-bound session and authoritative provider readback', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.runtimeRunning = true;
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('Finish');
+    expect(f.receipt).toBeNull(); expect(f.addPool).not.toHaveBeenCalled();
+    f.runtimeRunning = false; f.readPool.mockResolvedValue({ providers: [] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('provider pool');
+    expect(f.receipt).not.toBeNull(); expect(f.addPool).toHaveBeenCalledOnce();
   });
   it('blocks administration during an active turn and disallows unlisted presets', async () => {
     f.status = 'running';

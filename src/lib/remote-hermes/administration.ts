@@ -154,6 +154,12 @@ export async function nativeAdministration(ownerId: string, connectionId: string
       if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed during the update. Refresh to check its outcome.');
       return { reply: Promise.resolve({ ok: true }) };
     }
+    if (input.operation === 'providerKey') {
+      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed. Refresh and confirm this change again.');
+      const result = await access.client.addCredentialPoolEntry(row.profile, input.provider, input.apiKey, input.label);
+      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed during the update. Refresh to check its outcome.');
+      return { reply: Promise.resolve(result) };
+    }
     if (input.operation === 'setting') return hub.socket.dispatchConnected('config.set', { profile: row.profile, ...(input.scope === 'session' ? { session_id: params.session_id, scope: 'session' } : { scope: 'global' }), key: input.key, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'install') return hub.socket.dispatchConnected('mcp.servers.add', { profile: row.profile, name: input.preset, preset: input.preset }, epoch, 30_000, tx);
     if (input.operation === 'customServer') return hub.socket.dispatchConnected('mcp.servers.add', {
@@ -165,6 +171,17 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   });
   const result = await reply;
   if (input.operation === 'setting') return { accepted: true, value: settingValue(input.key, result) };
+  if (input.operation === 'providerKey') {
+    if (result.provider !== input.provider || !Number.isSafeInteger(result.count) || result.count < 1)
+      throw new HttpError(502, 'Hermes did not confirm the provider account write. Refresh to check its outcome.');
+    // Hermes' pinned readback returns a masked token preview. The typed client
+    // discards it and exposes only metadata needed to confirm this profile write.
+    const pool = await access.client.credentialPool(row.profile);
+    const entries = pool.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
+    if (entries.length !== result.count || !entries.some(entry => entry.label === input.label && entry.authType === 'api_key' && entry.source === 'manual'))
+      throw new HttpError(502, 'Hermes did not confirm the account in its provider pool. Refresh to check its outcome.');
+    return { accepted: true, provider: input.provider, label: input.label, count: entries.length };
+  }
   if (input.operation === 'remove') {
     if (result.ok !== true || result.removed !== true) throw new HttpError(502, 'Hermes did not confirm removal. Refresh to check its outcome.');
     const current = await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000);
