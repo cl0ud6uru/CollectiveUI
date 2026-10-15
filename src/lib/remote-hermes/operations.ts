@@ -19,7 +19,15 @@ export function scheduleProjection(value: unknown) {
   return { schedules: rows(Array.isArray(value) ? value : record(value).jobs).map(p => ({ id: string(p.id ?? p.job_id), name: string(p.name), enabled: p.enabled !== false && p.paused !== true, state: string(p.state, 100), schedule: string(typeof p.schedule === 'string' ? p.schedule : record(p.schedule).display), nextRun: string(p.next_run_at ?? p.next_run), lastStatus: string(p.last_status) })) };
 }
 export function pluginProjection(value: unknown) {
-  return { plugins: rows(record(value).plugins).map(p => ({ name: string(p.name), version: string(p.version), status: string(p.status) || (p.enabled === true ? 'enabled' : p.enabled === false ? 'disabled' : 'unknown'), source: string(p.source) })) };
+  return { plugins: rows(record(value).plugins).map(p => ({
+    // Keys are mutation identities. Never truncate one into a different, valid-looking key.
+    key: typeof p.key === 'string' && p.key.length <= 300 ? p.key : '',
+    // Names are bound into the confirmation copy/readback too, so truncation must not masquerade as identity.
+    name: typeof p.name === 'string' && p.name.length <= 300 ? p.name : '',
+    version: string(p.version),
+    status: string(p.status) || (p.enabled === true ? 'enabled' : p.enabled === false ? 'disabled' : 'unknown'),
+    source: string(p.source),
+  })) };
 }
 export function systemProjection(value: unknown) {
   const p = record(value);
