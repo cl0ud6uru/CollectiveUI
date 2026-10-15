@@ -722,6 +722,63 @@ export const petCatalog = pgTable("pet_catalog", {
   check("pet_catalog_sprite_hd_size", sql`${t.spriteHd} is null or octet_length(${t.spriteHd}) between 1 and 12582912`),
   check("pet_catalog_status", sql`${t.status} in ('draft', 'published', 'unpublished')`)]);
 
+/** Durable, private receipts for explicitly consented pet-art generation. A running slot is never replayed on reload. */
+export const petGenerationJobs = pgTable("pet_generation_jobs", {
+  id: text("id").primaryKey().$defaultFn(newId),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  /** Keep the saved connection ID as historical provenance without blocking credential removal. */
+  providerConnectionId: text("provider_connection_id").notNull(),
+  modelId: text("model_id").notNull(),
+  displayName: text("display_name").notNull(),
+  description: text("description").notNull(),
+  credit: text("credit").notNull().default("AI generated with OpenAI"),
+  reference: petBytes("reference"),
+  appearance: petBytes("appearance"),
+  appearanceState: text("appearance_state").notNull().default("needs_consent"),
+  appearanceAttempt: integer("appearance_attempt").notNull().default(0),
+  appearanceConsentAt: timestamp("appearance_consent_at", { withTimezone: true }),
+  appearanceApprovedAt: timestamp("appearance_approved_at", { withTimezone: true }),
+  appearanceInputTokens: integer("appearance_input_tokens"),
+  appearanceOutputTokens: integer("appearance_output_tokens"),
+  appearanceErrorCode: text("appearance_error_code"),
+  buildConsentAt: timestamp("build_consent_at", { withTimezone: true }),
+  preview: petBytes("preview"),
+  catalogPetId: text("catalog_pet_id").references(() => petCatalog.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [index("pet_generation_jobs_owner_idx").on(t.ownerId, t.createdAt),
+  check("pet_generation_jobs_appearance_state_check", sql`${t.appearanceState} in ('needs_consent', 'queued', 'running', 'succeeded', 'failed', 'uncertain', 'approved')`),
+  check("pet_generation_jobs_reference_size", sql`${t.reference} is null or octet_length(${t.reference}) between 1 and 1048576`),
+  check("pet_generation_jobs_appearance_size", sql`${t.appearance} is null or octet_length(${t.appearance}) between 1 and 4194304`),
+  check("pet_generation_jobs_preview_size", sql`${t.preview} is null or octet_length(${t.preview}) between 1 and 4194304`),
+  check("pet_generation_jobs_usage_nonnegative", sql`(${t.appearanceInputTokens} is null or ${t.appearanceInputTokens} >= 0) and (${t.appearanceOutputTokens} is null or ${t.appearanceOutputTokens} >= 0)`)]);
+
+export const petGenerationSlots = pgTable("pet_generation_slots", {
+  id: text("id").primaryKey().$defaultFn(newId),
+  jobId: text("job_id").notNull().references(() => petGenerationJobs.id, { onDelete: "cascade" }),
+  slotKey: text("slot_key").notNull(),
+  attempt: integer("attempt").notNull().default(1),
+  prompt: text("prompt").notNull(),
+  consentVersion: integer("consent_version").notNull().default(1),
+  consentSummary: text("consent_summary").notNull(),
+  status: text("status").notNull().default("queued"),
+  consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  image: petBytes("image"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  costMicros: bigint("cost_micros", { mode: "number" }),
+  errorCode: text("error_code"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [uniqueIndex("pet_generation_slots_job_slot_attempt_idx").on(t.jobId, t.slotKey, t.attempt),
+  index("pet_generation_slots_job_status_idx").on(t.jobId, t.status),
+  check("pet_generation_slots_status_check", sql`${t.status} in ('queued', 'running', 'succeeded', 'failed', 'uncertain')`),
+  check("pet_generation_slots_consent_version_check", sql`${t.consentVersion} > 0`),
+  check("pet_generation_slots_image_size", sql`${t.image} is null or octet_length(${t.image}) between 1 and 4194304`),
+  check("pet_generation_slots_usage_nonnegative", sql`(${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0)`)]);
+
 export const botPetDefaults = pgTable("bot_pet_defaults", {
   botId: text("bot_id").primaryKey().references(() => bots.id, { onDelete: "cascade" }),
   appearance: text("appearance").$type<BotPetDefault["appearance"]>().notNull(),
