@@ -134,6 +134,10 @@ Enter an **existing local administrator's** username/email and a new hidden pass
 
 You can enable both options at once. Hybrid users are matched by UPN, so either sign-in method reaches the same account. Set `AUTH_ENTRA_ENABLED=false` or `LDAP_ENABLED=false` to turn one off.
 
+Group saves and deletions must retain the acting administrator's effective access. Removing an admin role, direct membership or directory mapping, or deleting the group, is blocked if it would remove that person's final grant. Direct user grants, directory environment grants and other qualifying portal groups remain valid alternatives; local accounts still do not inherit directory environment grants. To hand off administration intentionally, retain another grant first or ask another administrator to perform the change. A blocked save keeps the editor draft and shows the handoff guidance; a blocked deletion keeps the row and shows the same guidance.
+
+The guard re-reads effective access before and after the change inside one transaction. Group mutations share the existing account-mutation advisory lock with direct user-role changes, and lock the acting user's row after Team bot locks to coordinate directory synchronization. Competing group removals therefore cannot both validate against an obsolete remaining grant. Rejection rolls back group fields, memberships, mappings and any LDAP users staged by that save. This protects the actor from accidental self-removal; another authorized administrator can still deliberately change that person's access.
+
 **Bootstrap admins:** set `ADMIN_UPNS` and/or `ADMIN_GROUPS`, separated by semicolons (LDAP DNs contain commas). After that, grant admin rights through groups or on the Users page.
 
 ## Workspaces (sandboxed commands)
