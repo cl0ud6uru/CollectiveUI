@@ -168,14 +168,14 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     return result;
   };
   try {
-  if (profileLock) {
+  if (input.operation === 'customServer') {
     // The unlocked preflight above keeps the normal fast rejection path. Repeat
     // it after acquiring the cross-process lock; this result controls whether a
     // receipt or native write may be created.
     if (profileLockLost) throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
     const currentInventory = await callWithProfileLock('mcp.servers.list', { profile: row.profile });
     if (profileLockLost) throw new HttpError(409, 'The profile lock connection was lost. Refresh before retrying this change.');
-    assertCustomServerInventory(currentInventory, input as CustomServerInput);
+    assertCustomServerInventory(currentInventory, input);
   }
   const lock = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
     assertProfileLock();
@@ -209,14 +209,6 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     assertProfileLock();
     return result;
   };
-  let providerBaselineIds = new Set<string>();
-  if (input.operation === 'providerKey') {
-    const before = await dispatchDashboard(client => client.credentialPool(row.profile));
-    const entries = before.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
-    providerBaselineIds = new Set(entries.map(entry => entry.id));
-    if (entries.some(entry => entry.label === nativeProviderPoolRequestLabel(input.label, input.requestId)))
-      throw new HttpError(409, 'This request-specific provider label already exists. Use a new confirmation request to avoid attributing another account.');
-  }
   if (input.operation === 'test') {
     const { reply } = await db.transaction(async tx => {
       await lock(tx);
@@ -226,10 +218,26 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   }
   // A keyed digest prevents offline guessing of protected credential inputs.
   const digest = hmacSha256Hex(toolApprovalSecret('native-administration-receipt:v1'), JSON.stringify(input));
+  const matchingReceipt = async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => {
+    const [receipt] = await tx.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, row.id), eq(remoteHermesTurns.requestId, input.requestId)));
+    if (receipt && receipt.digest !== digest) throw new HttpError(409, 'This operation receipt belongs to different content.');
+    return !!receipt;
+  };
+  let providerBaselineIds = new Set<string>();
+  if (input.operation === 'providerKey') {
+    // A lost POST acknowledgement can leave this request's label in the pool.
+    // Resolve its receipt before applying baseline/collision checks to new work.
+    const duplicate = await transactionDb.transaction(async tx => { await lock(tx); return matchingReceipt(tx); });
+    if (duplicate) return { accepted: true, duplicate: true };
+    const before = await dispatchDashboard(client => client.credentialPool(row.profile));
+    const entries = before.providers.find(provider => provider.provider === input.provider)?.entries ?? [];
+    providerBaselineIds = new Set(entries.map(entry => entry.id));
+    if (entries.some(entry => entry.label === nativeProviderPoolRequestLabel(input.label, input.requestId)))
+      throw new HttpError(409, 'This request-specific provider label already exists. Use a new confirmation request to avoid attributing another account.');
+  }
   const reserved = await transactionDb.transaction(async tx => {
     await lock(tx);
-    const [receipt] = await tx.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, row.id), eq(remoteHermesTurns.requestId, input.requestId)));
-    if (receipt) { if (receipt.digest !== digest) throw new HttpError(409, 'This operation receipt belongs to different content.'); return false; }
+    if (await matchingReceipt(tx)) return false;
     assertProfileLock();
     await tx.insert(remoteHermesTurns).values({ id: newId(), sessionId: row.id, requestId: input.requestId, digest });
     return true;

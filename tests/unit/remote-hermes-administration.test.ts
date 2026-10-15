@@ -114,12 +114,57 @@ describe('native administration protocol and isolation', () => {
     expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-provider-secret');
     expect(f.receipt?.digest).not.toContain('synthetic-provider-secret');
   });
+  it('adds a provider key when the profile already has MCP servers', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const operationLabel = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    f.call.mockResolvedValue({ servers: [{ name: 'existing-mcp', source: 'config', transport: 'http', env: [] }] });
+    f.readPool.mockResolvedValueOnce({ providers: [] }).mockResolvedValueOnce({ providers: [{ provider: 'openrouter', entries: [{ id: 'synthetic-new-id', label: operationLabel, authType: 'api_key', source: 'manual' }] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, provider: 'openrouter', label: operationLabel, count: 1 });
+    expect(f.addPool).toHaveBeenCalledExactlyOnceWith('default', 'openrouter', input.apiKey, operationLabel);
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
   it('does not replay an uncertain provider-key write after a lost acknowledgement', async () => {
     const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
     f.addPool.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
     await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
     await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, duplicate: true });
-    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledTimes(2);
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledOnce();
+  });
+  it('returns the matching receipt when a provider row persists before its acknowledgement is lost', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const entries: { id: string; label: string; authType: string; source: string }[] = [];
+    f.readPool.mockImplementation(async () => ({ providers: [{ provider: input.provider, entries }] }));
+    f.addPool.mockImplementationOnce(async (_profile, _provider, _apiKey, label: string) => {
+      expect(f.profileAdvisoryHeld).toBe(true);
+      entries.push({ id: 'synthetic-persisted-id', label, authType: 'api_key', source: 'manual' });
+      throw new Error('Synthetic lost acknowledgement');
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    expect(entries).toHaveLength(1);
+    const receipt = { ...f.receipt };
+    await expect(nativeAdministration('other', 'connection', 'session', input)).rejects.toThrow('not found');
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, duplicate: true });
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledOnce();
+    expect(f.receipt).toEqual(receipt);
+    expect(JSON.stringify(f.receipt)).not.toContain(input.apiKey);
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
+  it.each([
+    { apiKey: 'synthetic-different-secret' }, { provider: 'openai' }, { label: 'Different account' },
+  ])('rejects a provider receipt retry with changed content (%o)', async change => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.addPool.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    await expect(nativeAdministration('owner', 'connection', 'session', { ...input, ...change })).rejects.toThrow('receipt belongs to different content');
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.receipt)).not.toContain(input.apiKey);
+  });
+  it('rejects a colliding provider label for a new request before reserving a receipt', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.readPool.mockResolvedValue({ providers: [{ provider: input.provider, entries: [{ id: 'synthetic-existing-id', label: nativeProviderPoolRequestLabel(input.label, input.requestId), authType: 'api_key', source: 'manual' }] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('request-specific provider label already exists');
+    expect(f.receipt).toBeNull(); expect(f.addPool).not.toHaveBeenCalled();
   });
   it('rechecks private destination authorization after the receipt and before provider POST', async () => {
     f.revokeAfterReceipt = true;
