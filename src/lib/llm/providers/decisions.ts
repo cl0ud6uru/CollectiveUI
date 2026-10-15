@@ -1,6 +1,6 @@
 // Used by the native Node worker as well as web server code; never import into a client component.
 import { z } from "zod";
-import { DECISIONS_BASE, DECISIONS_MODEL } from "@/lib/decisions-policy";
+import { DECISIONS_BASE, DECISIONS_CONTEXT_WINDOW_TOKENS, DECISIONS_MODEL, DECISIONS_OUTPUT_TOKENS } from "@/lib/decisions-policy";
 import type { ProviderContext } from "./types";
 
 export type DecisionQuestion = { type: "predicate"; name: string; instructions: string } |
@@ -19,11 +19,21 @@ export type DecisionResult = { status: "ok"; answers: z.infer<typeof answer>[]; 
 
 /** Direct Decisions wire contract; never uses Responses/tool execution or environment credentials. */
 export async function requestDecision(ctx: ProviderContext, input: string, questions: DecisionQuestion[],
-  options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<DecisionResult> {
+  options: { signal?: AbortSignal; timeoutMs?: number; contextWindowTokens?: number; maxOutputTokens?: number } = {}): Promise<DecisionResult> {
   if (ctx.kind !== "openai" || ctx.secret?.type !== "api-key" || !ctx.secret.apiKey ||
       (ctx.baseUrl && ctx.baseUrl.replace(/\/$/, "") !== DECISIONS_BASE)) return { status: "unavailable" };
   if (!input.trim() || input.length > 6000 || !questions.length || questions.length > 32) return { status: "invalid" };
   const config = ctx.config as { organization?: string; project?: string };
+  const contextWindowTokens = options.contextWindowTokens ?? DECISIONS_CONTEXT_WINDOW_TOKENS;
+  const maxOutputTokens = options.maxOutputTokens ?? DECISIONS_OUTPUT_TOKENS;
+  if (!Number.isSafeInteger(contextWindowTokens) || !Number.isSafeInteger(maxOutputTokens) ||
+      contextWindowTokens < 1 || maxOutputTokens < 1 || maxOutputTokens >= contextWindowTokens ||
+      contextWindowTokens - maxOutputTokens < 1_024) return { status: "invalid" };
+  const body = JSON.stringify({ model: DECISIONS_MODEL, input, questions, max_output_tokens: maxOutputTokens });
+  // This fixed-model endpoint bypasses the AI SDK's per-step context guard. Budget its exact request JSON with
+  // a two-byte-per-token safety factor, reserve bounded output, and reject before dispatch when it cannot fit.
+  const estimatedInputTokens = Math.ceil(new TextEncoder().encode(body).byteLength * 2);
+  if (estimatedInputTokens + maxOutputTokens > contextWindowTokens) return { status: "invalid" };
   const controller = new AbortController();
   const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -38,7 +48,7 @@ export async function requestDecision(ctx: ProviderContext, input: string, quest
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${ctx.secret!.type === "api-key" ? ctx.secret!.apiKey : ""}`,
           ...(config.organization ? { "OpenAI-Organization": config.organization } : {}),
           ...(config.project ? { "OpenAI-Project": config.project } : {}) },
-        body: JSON.stringify({ model: DECISIONS_MODEL, input, questions }),
+        body,
       });
       // Error bodies can echo private input. Do not read or log them.
       if (!res.ok) { await res.body?.cancel(); return { status: "unavailable" }; }

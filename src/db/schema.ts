@@ -426,6 +426,8 @@ export const aiApps = pgTable(
     systemPrompt: text("system_prompt"),
     temperature: real("temperature"),
     maxTokens: integer("max_tokens"),
+    /** Optional model input context window; maxTokens remains the generation reserve. */
+    contextWindowTokens: integer("context_window_tokens"),
     supportsVision: boolean("supports_vision").notNull().default(false),
     supportsTools: boolean("supports_tools").notNull().default(false),
     embeddingModel: text("embedding_model"), // if set, this endpoint can also produce embeddings

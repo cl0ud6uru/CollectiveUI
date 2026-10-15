@@ -414,6 +414,13 @@
       "when": 1792030249732,
       "tag": "0058_openrouter_models",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792051010059,
+      "tag": "0059_agent_context_budget",
+      "breakpoints": true
     }
   ]
 }
