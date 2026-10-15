@@ -630,3 +630,7 @@ All come from `src/db/schema.ts`, then `npm run db:generate`, then `npm run db:m
 4. **Prompt-injection exfiltration.** Per-user internal networks, a default-empty egress allowlist, secrets never in sandboxes, IP-bound short-lived tokens, ask-by-default commands.
 5. **Protocol churn** (Codex app-server is experimental; the Claude control protocol is undocumented). Exact pins, generated types, recorded fixtures plus fake binaries, fail-closed handling of unknown requests.
 6. **Durable-run correctness.** Full-message replay, boundary tails, LISTEN before SELECT with re-query on reconnect, a heartbeat sweeper, an approval TTL that denies, and the fake-driver e2e suite gating merges.
+
+## Native approval budget checks
+
+Native approval answers check the retained deadline and model-step budget while holding the run row lock, before changing the message or appending decision events. Exhausted direct and delegated replies return a 409 explaining that a new request is needed. Partial delegated answers use the same check. Requeue and execution recheck the budget; approvals never renew the deadline, reset consumed steps, or raise the retained step cap. Hermes continuations keep their own provider lifecycle.

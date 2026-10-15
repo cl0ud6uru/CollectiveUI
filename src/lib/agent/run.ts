@@ -10,6 +10,7 @@ import { toolApprovalSecret } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
 import { redactSecrets } from "@/lib/redact";
 import { generateTitle, newUsageScope, resolveModel, userFacingMessage, utilityApp, type BillingSource } from "@/lib/llm";
+import { assertNativeContinuationBudget } from "@/lib/runs/native-budget";
 import type { ResumeState, RunHandle } from "@/lib/runs/types";
 import { HttpError } from "@/lib/authz";
 import { getSetting } from "@/lib/settings";
@@ -86,8 +87,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     sessionVersion: principal.user.sessionVersion, stepsUsed: previousNative?.stepsUsed ?? 0, background,
     maxSteps: Math.min(bot ? bot.maxSteps : 1, toolSettings.maxStepsCap, previousNative?.maxSteps ?? Infinity), taskIds: [],
   } : undefined;
-  if (native && (native.deadlineAt <= Date.now() || native.stepsUsed >= native.maxSteps))
-    throw new HttpError(409, "This reply exhausted its deadline or model-step budget. Start a new request to continue.");
+  assertNativeContinuationBudget(native ? { native } : null);
   const ctx: AgentCtx = { principal, conversationId: conversation.id, bot, app, depth: delegated?.task.depth ?? 0, background, toolSettings, usage, nativeSearchMode: conversation.nativeSearchMode,
     ...(opts.run?.holder && opts.run.deadlineAt ? { execution: { holder: opts.run.holder, deadlineAt: opts.run.deadlineAt, segment: opts.run.segment } } : {}),
     ...(native ? { awaitTask: (taskId: string) => { if (!native.taskIds.includes(taskId)) native.taskIds.push(taskId); } } : {}),

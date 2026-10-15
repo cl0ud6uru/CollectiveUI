@@ -12,6 +12,7 @@ import { and, asc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db, type DbOrTx, type Tx } from "@/db";
 import { agentRuns, delegatedTasks, hermesRunContexts } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
+import { assertNativeContinuationBudget } from "./native-budget";
 import { appendEventsTx, notifyRun } from "./log";
 import { HOLDING_STATUSES, type AgentRun, type AgentRunStatus, type EventDraft, type FinalStatus, type ResumeState } from "./types";
 
@@ -204,6 +205,7 @@ export async function requeueRunTx(tx: Tx, runId: string, userId: string, chunks
     .where(and(eq(agentRuns.id, runId), eq(agentRuns.userId, userId)))
     .for("update");
   if (!cur || !["worker", "async_delegate"].includes(cur.executionMode) || cur.status !== "waiting" || cur.cancelRequestedAt) return null;
+  assertNativeContinuationBudget(cur.resumeState as ResumeState | null);
   const appended = chunks.length
     ? await appendEventsTx(
         tx,

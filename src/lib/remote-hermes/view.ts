@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { record, type RpcRecord, type SocketState } from './socket';
 
 const displayText = (v: unknown, max = 32000) => typeof v === 'string' ? v.slice(0, max) : '';
-export type NativePrompt = { id: string; method: string; title: string; command: string; choices: string[]; questions: { id: string; question: string; choices: string[] }[] };
+export type NativePrompt = { delivery?: 'sending' | 'sent' | 'uncertain'; id: string; method: string; title: string; command: string; choices: string[]; questions: { id: string; question: string; choices: string[] }[] };
 export type NativeSessionView = {
   id: string; title: string; profile: string; running: boolean; uncertain: boolean; connection: SocketState;
   messages: { id: string; role: string; text: string }[]; partial: string;

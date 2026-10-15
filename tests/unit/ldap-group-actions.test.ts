@@ -1,13 +1,13 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-const fixture = vi.hoisted(() => ({ admin: vi.fn(), find: vi.fn(), save: vi.fn() }));
+const fixture = vi.hoisted(() => ({ admin: vi.fn(), find: vi.fn(), save: vi.fn(), remove: vi.fn() }));
 vi.mock("@/lib/session", () => ({ requireAdmin: fixture.admin }));
 vi.mock("@/lib/admin/groups", () => ({ findLdapGroupMember: fixture.find }));
-vi.mock("@/app/admin/actions", () => ({ saveGroup: fixture.save }));
+vi.mock("@/app/admin/actions", () => ({ saveGroup: fixture.save, deleteGroup: fixture.remove }));
 vi.mock("@/lib/authz", () => ({ HttpError: class extends Error { constructor(public status: number, message: string) { super(message); } } }));
 import { HttpError } from "@/lib/authz";
-import { findLdapUserForGroup, saveGroupWithFeedback } from "@/app/admin/groups/ldap-actions";
+import { deleteGroupWithFeedback, findLdapUserForGroup, saveGroupWithFeedback } from "@/app/admin/groups/ldap-actions";
 const input = { name: "Helpdesk", isAdmin: false, canCreateBots: true, mappings: [], memberIds: [], ldapUsernames: ["alice"] };
 beforeEach(() => { vi.resetAllMocks(); fixture.admin.mockResolvedValue({ user: { id: "admin" } }); });
 
@@ -35,6 +35,21 @@ it("authorizes before lookup or mutation, and never serializes unexpected except
   fixture.admin.mockRejectedValueOnce(new Error("forbidden"));
   await expect(saveGroupWithFeedback(input)).rejects.toThrow("forbidden");
   expect(fixture.save).not.toHaveBeenCalled();
+  fixture.admin.mockRejectedValueOnce(new Error("forbidden"));
+  await expect(deleteGroupWithFeedback("admins")).rejects.toThrow("forbidden");
+  expect(fixture.remove).not.toHaveBeenCalled();
   fixture.find.mockRejectedValueOnce(new Error("private SQL detail"));
   await expect(findLdapUserForGroup("alice")).rejects.toThrow("private SQL detail");
+});
+
+it("preserves actionable self-lockout feedback for save and delete without reporting success", async () => {
+  const message = "This change would remove your administrator access. Ask another administrator to perform an intentional handoff.";
+  fixture.save.mockRejectedValueOnce(new HttpError(400, message));
+  fixture.remove.mockRejectedValueOnce(new HttpError(400, message));
+  expect(await saveGroupWithFeedback(input)).toEqual({ ok: false, error: message });
+  expect(await deleteGroupWithFeedback("admins")).toEqual({ ok: false, error: message });
+  expect(await deleteGroupWithFeedback("admins")).toEqual({ ok: true });
+  expect(fixture.remove).toHaveBeenLastCalledWith("admins");
+  fixture.remove.mockRejectedValueOnce(new Error("private SQL detail"));
+  await expect(deleteGroupWithFeedback("admins")).rejects.toThrow("private SQL detail");
 });

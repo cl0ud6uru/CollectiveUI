@@ -10,6 +10,7 @@ import { providerConnectionAad } from "@/lib/llm/provider-connections";
 import { getSetting, setSetting } from "@/lib/settings";
 import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
 import { rewrapBillingSecrets } from "@/lib/billing/secrets";
+import { carryServicePublications } from "@/lib/bots/service";
 
 /**
  * Re-encrypts every stored secret under the primary key (with AAD). Idempotent: values that are already
@@ -47,9 +48,16 @@ export async function rewrapAllSecrets(): Promise<number> {
 
   // App credentials are bound to their row (AAD "ai_apps.api_key_enc|<id>"); older values used the column only.
   for (const row of await db.select({ id: aiApps.id, apiKeyEnc: aiApps.apiKeyEnc }).from(aiApps).where(isNotNull(aiApps.apiKeyEnc))) {
-    if (!appSecretNeedsRowBinding(row) && !needsRewrap(row.apiKeyEnc!)) continue;
-    await db.update(aiApps).set({ apiKeyEnc: sealAppSecret(row.id, openAppSecret(row)!) }).where(eq(aiApps.id, row.id));
-    changed++;
+    const moved = await db.transaction(async tx => {
+      const [before] = await tx.select().from(aiApps).where(eq(aiApps.id, row.id)).for("update");
+      if (!before?.apiKeyEnc || (!appSecretNeedsRowBinding(before) && !needsRewrap(before.apiKeyEnc))) return false;
+      const [after] = await tx.update(aiApps).set({ apiKeyEnc: sealAppSecret(before.id, openAppSecret(before)!) })
+        .where(eq(aiApps.id, before.id)).returning();
+      // Only the ciphertext changes. Carry publications that were current under the same row lock; never bless drift.
+      await carryServicePublications(tx, before, after);
+      return true;
+    });
+    if (moved) changed++;
   }
 
   for (const row of await db.select({ id: mcpServers.id, v: mcpServers.headersEnc }).from(mcpServers).where(isNotNull(mcpServers.headersEnc))) {
