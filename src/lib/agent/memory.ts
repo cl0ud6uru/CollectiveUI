@@ -59,9 +59,12 @@ export async function selectMemories(opts: {
 }
 
 export async function addMemory(userId: string, botId: string | null, content: string, sourceConversationId?: string, q: DbOrTx = db, abortSignal?: AbortSignal, usage?: UsageScope, mayWrite?: () => Promise<boolean>) {
+  abortSignal?.throwIfAborted();
   const [emb] = (await embedTexts([content], { userId, botId, conversationId: sourceConversationId }, { ...(abortSignal ? { abortSignal } : {}), ...(usage ? { usage } : {}), ...(q !== db ? { q, maxRetries: 0 } : {}) }).catch(error => { if (error instanceof NativeRunBudgetError) throw error; return null; })) ?? [];
+  abortSignal?.throwIfAborted();
   // Background embeddings can finish after consent changes, too.
   if (mayWrite && !(await mayWrite())) return null;
+  abortSignal?.throwIfAborted();
   const [row] = await q
     .insert(memories)
     .values({ userId, botId, content: content.slice(0, 1000), embedding: emb, sourceConversationId })

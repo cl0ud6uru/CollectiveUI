@@ -10,8 +10,8 @@ import type { Principal } from "@/lib/auth/groups";
 import { partsToText, type PortalUIMessage } from "@/lib/chat/store";
 import { toolApprovalSecret } from "@/lib/crypto";
 import { newId } from "@/lib/ids";
-import { redactSecrets } from "@/lib/redact";
-import { generateTitle, newUsageScope, resolveModel, userFacingMessage, utilityApp, type BillingSource } from "@/lib/llm";
+import { nativeErrorText } from "@/lib/llm/native-errors";
+import { generateTitle, newUsageScope, resolveModel, utilityApp, type BillingSource } from "@/lib/llm";
 import { assertNativeContinuationBudget } from "@/lib/runs/native-budget";
 import type { ResumeState, RunHandle } from "@/lib/runs/types";
 import { HttpError } from "@/lib/authz";
@@ -195,6 +195,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     const maxSteps = native ? native.maxSteps - native.stepsUsed : bot ? Math.min(bot.maxSteps, toolSettings.maxStepsCap) : 1;
     const result = streamText({
       model,
+      // UI conversion below records only the safe correlated diagnostic.
+      onError: () => {},
       instructions,
       messages,
       tools: toolset.tools,
@@ -263,7 +265,6 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
         streamError ??= err.message;
         return err.message;
       }
-      if (!(approvalErrorMessage(err) ?? userFacingMessage(err))) console.error("[agent] stream error", err);
       const text = produce(streamErrorText(err));
       streamError ??= text;
       return text;
@@ -308,9 +309,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
           // stays generic so provider error bodies never reach the browser. This also words tool errors (shown on the
           // tool's card), so the text is recorded as the turn's error only when it arrives as an error chunk (above).
           onError: (err) => {
-            const actionable = approvalErrorMessage(err) ?? userFacingMessage(err);
-            if (!actionable) console.error("[agent] model or tool error", err);
-            return produce(actionable ?? "An error occurred.");
+            return produce(nativeErrorText(err, approvalErrorMessage(err)));
           },
           messageMetadata: ({ part }) => {
             if (part.type === "start")
@@ -349,7 +348,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
         if (opts.persist) await opts.persist(input, { error });
         else await persistAssistantTurn(input);
       } catch (err) {
-        console.error("[agent] failed to persist response", err);
+        nativeErrorText(err);
       } finally {
         await toolset.close();
         await Promise.allSettled(usage.pending);
@@ -363,11 +362,9 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   return { stream, done, native, billing: { source: billing.source } };
 }
 
-/** What people see for an error that ends or interrupts a turn: actionable messages as is, anything else redacted. */
+/** Keep generic stream failures behind the same boundary as provider and tool errors. */
 function streamErrorText(err: unknown): string {
-  const actionable = approvalErrorMessage(err) ?? userFacingMessage(err);
-  if (actionable) return actionable;
-  return err instanceof Error ? `The model endpoint returned an error: ${redactSecrets(err.message)}` : "Something went wrong.";
+  return nativeErrorText(err, approvalErrorMessage(err));
 }
 
 function approvalErrorMessage(err: unknown) {

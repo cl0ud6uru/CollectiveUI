@@ -124,15 +124,18 @@ export class PortalWorkspace implements Experimental_SandboxSession {
   }
 
   /** Writes a file (parents created, replaced atomically); returns whether it was created. Serialized. */
-  writeRaw(path: string, content: Uint8Array) {
-    return this.serialize(() => this.writeNow(path, content));
+  writeRaw(path: string, content: Uint8Array, signal?: AbortSignal) {
+    return this.serialize(() => this.writeNow(path, content, signal));
   }
 
   /** writeRaw without taking the lock: only for callers already inside serialize() (read-modify-write). */
-  async writeNow(path: string, content: Uint8Array) {
+  async writeNow(path: string, content: Uint8Array, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (content.byteLength > MAX_FILE_BYTES) throw new Error(`Files are limited to ${MAX_FILE_BYTES / 1024 / 1024} MB`);
     this.onUse();
-    return this.client.writeFile(await this.ref(), { isolation: this.isolation, path, contentB64: Buffer.from(content).toString("base64"), runtimeProfileKey: this.runtimeProfileKey });
+    const ref = await this.ref();
+    signal?.throwIfAborted();
+    return this.client.writeFile(ref, { isolation: this.isolation, path, contentB64: Buffer.from(content).toString("base64"), runtimeProfileKey: this.runtimeProfileKey }, signal);
   }
 
   async writeTextFile(o: WriteTextOptions): Promise<void> {

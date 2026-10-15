@@ -34,12 +34,14 @@ import { BotAvatar } from "@/components/bots/bot-avatar";
 import { useOptionalPets, usePetEnvironment } from "@/components/pets/pet-context";
 import { Button } from "@/components/ui/button";
 import { isGrantable, isHermesTool } from "@/lib/agent/tool-names";
+import { memoryToolDoneLabel } from "@/lib/agent/tools/memory-result";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
 import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 import { useWorkspaceFileOpener } from "./workspace-context";
+import { toolDoneLabel } from "./tool-result-label";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -347,6 +349,8 @@ export function ToolPartView({
   const failed = part.state === "output-error";
   const denied = part.state === "output-denied";
   const output = part.state === "output-available" ? part.output : undefined;
+  const memoryResult = output && typeof output === "object" ? output as { status?: string; recordType?: string; recallStatus?: string; deleted?: boolean } : undefined;
+  const memoryDone = memoryToolDoneLabel(name, memoryResult, toolDoneLabel(name, output, d.done));
   const isDelegate = isDelegationTool(name);
   const artifact = workspaceArtifact(name, output);
   const preliminary = part.state === "output-available" && !!(part as { preliminary?: boolean }).preliminary;
@@ -365,7 +369,7 @@ export function ToolPartView({
       >
         {(running && !interrupted) || preliminaryRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : failed ? <AlertTriangle className="h-4 w-4 text-danger" /> : <Icon className="h-4 w-4" />}
         <span className={cn(running && !interrupted && "animate-pulse")}>
-          {denied ? `${d.done} — denied` : failed ? `${d.done} — failed` : interrupted ? `${d.running} — interrupted` : running || preliminaryRunning ? d.running : d.done}
+          {denied ? `${d.done} — denied` : failed ? `${d.done} — failed` : interrupted ? `${d.running} — interrupted` : running || preliminaryRunning ? d.running : memoryDone}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
