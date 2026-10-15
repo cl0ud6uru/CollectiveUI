@@ -236,6 +236,18 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
             if previous is not None:
                 os.environ["TERMINAL_ENV"] = previous
 
+    def test_broad_shared_roots_are_never_project_roots(self):
+        for root in (
+            "/", "/Applications", "/home", "/Library", "/media", "/mnt",
+            "/opt", "/private", "/private/tmp", "/run", "/srv", "/tmp",
+            "/Users", "/Volumes",
+        ):
+            self.assertFalse(workspace_module._root_is_approved(root, "/home/synthetic-user"), root)
+        # Reject the exact shared roots, while allowing a specific project child
+        # to proceed through the remaining project/session authorization checks.
+        for root in ("/tmp/myrepo", "/private/tmp/myrepo", "/mnt/myrepo"):
+            self.assertTrue(workspace_module._root_is_approved(root, "/home/synthetic-user"), root)
+
     def test_launch_fallback_settled_cwd_and_archived_project_are_not_roots(self):
         self.session["explicit_cwd"] = False
         self.assertFalse(self.call(action="list")["result"]["available"])

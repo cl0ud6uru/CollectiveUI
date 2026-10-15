@@ -36,7 +36,11 @@ _SENSITIVE = re.compile(
     r"config\.(?:json|ya?ml)|id_(?:rsa|ed25519)(?:\..*)?|.*\.(?:pem|p12|pfx|key))$",
     re.IGNORECASE,
 )
-_SYSTEM_ROOTS = ("/bin", "/boot", "/dev", "/etc", "/lib", "/private/etc", "/private/tmp", "/private/var", "/proc", "/root", "/sbin", "/sys", "/System", "/usr", "/var")
+_BROAD_UNSAFE_ROOTS = (
+    "/", "/Applications", "/home", "/Library", "/media", "/mnt", "/opt",
+    "/private", "/private/tmp", "/run", "/srv", "/tmp", "/Users", "/Volumes",
+)
+_SYSTEM_ROOTS = ("/bin", "/boot", "/dev", "/etc", "/lib", "/private/etc", "/private/var", "/proc", "/root", "/sbin", "/sys", "/System", "/usr", "/var")
 
 
 class WorkspaceFilesParams(Params):
@@ -90,7 +94,7 @@ def _canonical_directory(raw: str) -> str | None:
 
 
 def _root_is_approved(root: str, user_home: str) -> bool:
-    if root == os.path.sep or root == user_home or _within(user_home, root):
+    if root in _BROAD_UNSAFE_ROOTS or root == user_home or _within(user_home, root):
         return False  # Never grant an entire filesystem or home directory.
     if any(_within(root, protected) for protected in _SYSTEM_ROOTS):
         return False
