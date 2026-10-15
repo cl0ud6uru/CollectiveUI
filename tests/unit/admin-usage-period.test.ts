@@ -46,6 +46,8 @@ beforeEach(async () => {
     model: "fixture", purpose: "title" as const, billingSource: "org" as const,
     inputTokens: 5, outputTokens: 1, createdAt: ago(days),
   })));
+  // Preserve the database's full timestamp precision at the equality boundary.
+  await fixture.client!.exec("UPDATE messages SET created_at = now() - interval '30 days' WHERE id = 'reply-30'; UPDATE usage_events SET created_at = now() - interval '30 days' WHERE id = 'event-30'");
 });
 afterEach(async () => { await fixture.client!.exec("ROLLBACK"); });
 afterAll(async () => { await fixture.client!.close(); });
