@@ -14,7 +14,7 @@ try {
   const entry = path.join(dir, "entry.tsx"), actions = path.join(dir, "actions.ts"), ldap = path.join(dir, "ldap.ts"), navigation = path.join(dir, "navigation.ts"), auth = path.join(dir, "auth.ts"), entra = path.join(dir, "entra.ts");
   await writeFile(actions, "export const deleteGroup=async()=>{};");
   await writeFile(ldap, `const post=async(path,body)=>(await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
-export const findLdapUserForGroup=username=>post('/fixture/lookup',{username});export const saveGroupWithFeedback=input=>post('/fixture/save',input);`);
+export const findLdapUserForGroup=username=>post('/fixture/lookup',{username});export const saveGroupWithFeedback=input=>post('/fixture/save',input);export const deleteGroupWithFeedback=async()=>({ok:true});`);
   await writeFile(navigation, "export const useRouter=()=>({refresh(){}});");
   await writeFile(auth, "export const signIn=async()=>({ok:false,error:'CredentialsSignin',code:'directory_unavailable'});");
   await writeFile(entra, "export const entraLogin=async()=>{};");
@@ -68,7 +68,7 @@ createRoot(document.getElementById('root')).render(location.pathname==='/login'?
   await expect(dialog.getByText("Directory Alice", { exact: true })).toBeVisible();
   await dialog.getByRole("textbox", { name: "Name", exact: true }).fill("Helpdesk");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("LDAP lookup failed. Check directory connection, TLS certificate and service-account settings.")).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveText("LDAP lookup failed. Check directory connection, TLS certificate and service-account settings.");
   await expect(dialog).toBeVisible(); expect(saves[0].ldapUsernames).toEqual(["alice"]); expect(saves[0]).not.toHaveProperty("ldapMembers");
   saveMode = "success"; await dialog.getByRole("button", { name: "Save", exact: true }).click(); await expect(dialog).toHaveCount(0);
   expect(lookups.every(item => item.username === "alice")).toBe(true);
