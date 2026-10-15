@@ -29,6 +29,7 @@ MAX_RELATIVE_PATH = 1024
 MAX_DEPTH = 16
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _SENSITIVE = re.compile(
     r"^(?:\.env(?:\..*)?|\.ssh|\.aws|\.gnupg|\.config|\.hermes|\.codex|"
     r"credentials?(?:\..*)?|secrets?(?:\..*)?|vault(?:\..*)?|auth\.(?:json|ya?ml)|"
@@ -218,9 +219,14 @@ def _list(root: str, parts: list[str]) -> tuple[list[dict], bool]:
 def _read(root: str, parts: list[str]) -> str:
     if not parts:
         raise ValueError("A file path is required.")
+    if not _NONBLOCK:
+        raise OSError("nonblocking file access is unavailable")
     fd = _open_directory(root, parts[:-1])
     try:
-        file_fd = os.open(parts[-1], os.O_RDONLY | _NOFOLLOW, dir_fd=fd)
+        # The client can guess a path or a listed regular file can be replaced between
+        # listing and reading. Opening nonblocking ensures a FIFO/device cannot stall
+        # the RPC before we inspect the descriptor type.
+        file_fd = os.open(parts[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fd)
     finally:
         os.close(fd)
     try:

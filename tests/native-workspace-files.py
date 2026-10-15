@@ -10,6 +10,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tempfile
 import types
 import unittest
@@ -193,6 +194,10 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
         self.assertEqual(len(result["entries"]), 100)
         self.assertTrue(result["truncated"])
 
+    def test_fifo_and_regular_to_fifo_replacement_do_not_block(self):
+        completed = subprocess.run([sys.executable, __file__, "--fifo-probe"], capture_output=True, text=True, timeout=3)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_no_owner_fence_or_non_idle_session_cannot_access(self):
         token = _current_transport.set(self.transport_obj)
         owner_token = owner_module._active_binding.set(None)
@@ -217,5 +222,42 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
         self.assertFalse(self.call(action="list")["result"]["available"])
 
 
+def _fifo_probe():
+    fixture = WorkspaceFilesEndpointTests("test_list_and_read_are_root_relative_and_bounded")
+    fixture.setUp()
+    try:
+        workspace_id = fixture.call(action="list")["result"]["workspace_id"]
+        os.mkfifo(fixture.workspace / "guessed-pipe")
+        result = fixture.call(action="read", workspace_id=workspace_id, path="guessed-pipe")
+        if "error" not in result:
+            raise AssertionError("A guessed FIFO path must be rejected")
+
+        swapped = fixture.workspace / "listed-regular.txt"
+        swapped.write_text("synthetic regular file", encoding="utf8")
+        original_open = os.open
+        replaced = False
+
+        def replace_before_final_open(path, flags, *args, **kwargs):
+            nonlocal replaced
+            if path == "listed-regular.txt" and not replaced:
+                swapped.unlink()
+                os.mkfifo(swapped)
+                replaced = True
+            return original_open(path, flags, *args, **kwargs)
+
+        workspace_module.os.open = replace_before_final_open
+        try:
+            result = fixture.call(action="read", workspace_id=workspace_id, path="listed-regular.txt")
+        finally:
+            workspace_module.os.open = original_open
+        if not replaced or "error" not in result:
+            raise AssertionError("A regular file replaced by a FIFO must be rejected")
+    finally:
+        fixture.tearDown()
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:] == ["--fifo-probe"]:
+        _fifo_probe()
+    else:
+        unittest.main()
