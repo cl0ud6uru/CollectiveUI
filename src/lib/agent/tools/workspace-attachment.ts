@@ -4,7 +4,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { attachments, conversations, messages } from "@/db/schema";
 import { storage } from "@/lib/files/storage";
-import { cleanText } from "@/lib/sandbox/policy";
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import { MAX_FILE_BYTES, type PortalWorkspace } from "@/lib/sandbox/session";
 import type { AgentCtx, ToolEntry } from "../types";
 
@@ -40,7 +40,7 @@ export function workspaceAttachmentTool(ctx: AgentCtx, ws: PortalWorkspace): Too
             return { ok: true, path, filename: attachment.filename, bytes: data.length, imported: !existing };
           });
         } catch (err) {
-          return { ok: false, reason: "import_failed", message: cleanText(err instanceof Error ? err.message : String(err)).slice(0, 500) };
+          return { ok: false, reason: "import_failed", message: nativeErrorText(err) };
         }
       },
     }),

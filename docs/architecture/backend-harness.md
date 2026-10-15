@@ -638,6 +638,12 @@ Native approval answers check the retained deadline and model-step budget while 
 ## Rejected durable event batches
 
 A SQLSTATE class 22 data rejection is terminal for the segment writer. It does not retry or skip the batch and continue. The existing lease-loss abort path stops production and further writes; without heartbeats, the sweeper recovers the retained durable prefix under its row lock. Valid earlier output remains available. A side-effecting call whose result could not be committed is closed as interrupted and may have run; recovery does not replay it or claim the remote effect was undone. Database availability failures retain their bounded retry behavior.
+
 ## Native Stop settlement
 
 The executor checks the durable cancellation request again under the run row lock when settling an approval pause or final outcome. A Stop committed before that lock wins even if its abort notification is delayed. Cancellation closes pending approvals, updates the saved message, appends matching closing events and sets the terminal status in one transaction. The same holder fence remains required. Async task suspension keeps its existing cancellation check and row lock. Stop cannot reverse actions already dispatched.
+## Native error presentation
+
+Native direct, group, setup and tool error boundaries show existing typed connection, quota and approval guidance. Other failures use a generic message with a diagnostic reference; arbitrary provider/tool messages, response bodies, stacks and internal URLs are not forwarded. The matching server diagnostic contains only the reference, a fixed classification and a valid HTTP status when available. It deliberately omits raw detail because pattern redaction cannot identify arbitrary private values. SDK raw-error logging is replaced by this boundary. Local setup authorization/lifecycle HttpErrors retain their application-written guidance; admin connection tests keep their separate diagnostic contract.
+
+Returned tool failures use the same boundary, including workspace/file/import failure objects and MCP `isError` results, which retain their failure marker and serialized result budget. Known workspace codes reconstruct application-owned guidance instead of trusting a daemon message. Toolset connector/tool/skill load diagnostics omit raw exceptions as well. Normal command/file/tool content retains its existing content and redaction contract; a returned failure never becomes a successful result.
