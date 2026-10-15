@@ -18,7 +18,9 @@ interrupt, attachment, history or prompt-response handlers.
 The fixture checks the exact source HEAD and rejects tracked or untracked source changes and a
 source `.env`. Each child clears inherited environment variables, changes to a
 fresh temporary home/profile, refuses external DNS/TCP/datagrams and allows only
-local git inspection and PDF-rendering subprocesses. No user profile, account,
+local git inspection and PDF-rendering subprocesses through Python socket and
+subprocess guards. These are fixture guards, not an OS sandbox or a universal
+egress guarantee. No user profile, account,
 grant, deployment or policy change is involved. Diagnostics are not saved as raw
 artifacts. Tests assert zero external network attempts. Attachment assertions
 compare original-byte digests read only inside the disposable home.
@@ -72,7 +74,8 @@ This exposed an actual contract mismatch: `session.resume` rejects the REST-only
 `inline_images` field. The hub now omits that RPC argument; the REST history path
 retains its supported option.
 
-A synthetic agent proves protocol integration, not provider inference behavior,
+Synthetic authentication and agent responses prove protocol integration; live
+authentication and inference remain untested. They do not prove provider behavior,
 live infrastructure, upstream credential revocation or deployed network security.
 Native interrupt still does not provide an operation-correlated terminal receipt;
 an idle snapshot cannot release an uncertain admission. The harness deliberately
