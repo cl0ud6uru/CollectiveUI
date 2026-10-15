@@ -4,11 +4,12 @@ import type { Toolset } from "@/lib/agent/toolset";
 import type { Skill } from "@/db/schema";
 const h = vi.hoisted(() => ({ settings: vi.fn(), principal: vi.fn(), app: vi.fn(), bot: vi.fn(), provider: vi.fn(), catalog: vi.fn(), decide: vi.fn(), record: vi.fn() }));
 vi.mock("server-only", () => ({}));
+vi.mock("@/db", () => ({ db: { select: () => ({ from: () => ({ where: () => Object.assign(Promise.resolve([{}]), { orderBy: () => h.catalog() }) }) }) } }));
 vi.mock("@/lib/settings", () => ({ getSetting: h.settings }));
 vi.mock("@/lib/auth/groups", () => ({ loadPrincipal: h.principal }));
 vi.mock("@/lib/authz", () => ({ getAccessibleModel: h.app, getUsableBot: h.bot }));
 vi.mock("@/lib/llm/resolve", () => ({ providerContextFor: h.provider }));
-vi.mock("@/lib/agent/learning/store", () => ({ learnedSkillsForBot: vi.fn(), learningIsEnabled: vi.fn(), recordLearnedSkillUse: h.record }));
+vi.mock("@/lib/agent/learning/store", () => ({ learnedSkillsForBot: vi.fn(), learningIsEnabled: vi.fn(async () => false), recordLearnedSkillUse: h.record }));
 vi.mock("@/lib/agent/tools/skills", async original => ({ ...await original<typeof import("@/lib/agent/tools/skills")>(), currentSkillsForTurn: h.catalog }));
 vi.mock("@/lib/llm/providers/decisions", () => ({ requestDecision: h.decide }));
 import { skillPicking } from "@/lib/agent/skill-picking";
@@ -28,7 +29,7 @@ const result = (questions: { name: string }[], probabilities = [0.95, 0.05]) => 
   answers: questions.map((q, i) => ({ type: "predicate", name: q.name, probability: probabilities[i] })) });
 beforeEach(() => {
   vi.resetAllMocks();
-  h.settings.mockResolvedValue({ queenRouting: false, skillPicking: true, providerAppId: "api" });
+  h.settings.mockResolvedValue({ queenRouting: false, skillPicking: true, providerAppId: "api", disabledTools: [] });
   h.principal.mockResolvedValue(context().principal); h.bot.mockResolvedValue(context().bot);
   h.app.mockImplementation(async (_p, id) => id === "main" ? context().app : { id: "api", enabled: true, provider: "openai", credentialMode: "org", baseUrl: null });
   h.provider.mockResolvedValue({ kind: "openai", secret: { type: "api-key", apiKey: "private-key" }, baseUrl: null });

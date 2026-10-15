@@ -310,6 +310,23 @@ describe("native learning with real PostgreSQL migrations", () => {
     expect(slashInvokedSkill(await learnedSkillsForBot("bot", "owner"), routine.prompt)).toBeUndefined();
   });
 
+  it.each(["archive", "permissions", "revision", "opt-out", "company-off", "session"] as const)("revalidates %s after the skill loader is created", async reason => {
+    await reviewNativeRun("run");
+    const available = await learnedSkillsForBot("bot", "boss"); const selected = available[0];
+    const [bot] = await db.select().from(schema.bots); const [app] = await db.select().from(schema.aiApps);
+    const entry = skillTool({ bot, app, principal: boss } as AgentCtx, available)!;
+    if (reason === "archive") await changeLearning(owner, selected.id, selected.version, { status: "archived" });
+    if (reason === "permissions") await db.update(schema.bots).set({ visibility: "private" });
+    if (reason === "revision") await changeLearning(owner, selected.id, selected.version, { content: { ...content, instructions: "A new revision requiring a fresh turn." } });
+    if (reason === "opt-out") await db.update(schema.users).set({ prefs: { learningEnabled: false } }).where(eq(schema.users.id, "boss"));
+    if (reason === "company-off") await db.insert(schema.settings).values({ key: "tools", value: { learningEnabled: false } });
+    if (reason === "session") await db.update(schema.users).set({ sessionVersion: 1 }).where(eq(schema.users.id, "boss"));
+    const result = await entry.tool.execute!({ slug: selected.aliases![0] }, { toolCallId: "stale-load", messages: [], context: {} });
+    expect(result).toMatchObject({ error: expect.stringMatching(/changed|available/) });
+    expect(result).not.toHaveProperty("skill");
+    expect((await db.select().from(schema.botLearnings))[0].useCount).toBe(0);
+  });
+
   it("keeps legacy aliases inside the user's authorized learning scope", async () => {
     fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ scope: "user" })] } });
     await reviewNativeRun("run");
@@ -410,6 +427,9 @@ describe("native learning with real PostgreSQL migrations", () => {
 
   it("keeps the approved skill usable during a pending change and after rejection", async () => {
     await reviewNativeRun("run");
+    const offered = await learnedSkillsForBot("bot", "boss");
+    const [bot] = await db.select().from(schema.bots); const [app] = await db.select().from(schema.aiApps);
+    const loader = skillTool({ bot, app, principal: boss } as AgentCtx, offered)!;
     await db.insert(schema.settings).values({ key: "tools", value: { disabledTools: [], learningRequireApproval: true } });
     await db.update(schema.botLearningReviews).set({ completedAt: null });
     fixture.generate.mockResolvedValue({ output: { lessons: [lesson({ baseVersion: 1, instructions: "Proposed new verified steps." })] } });
@@ -417,6 +437,7 @@ describe("native learning with real PostgreSQL migrations", () => {
     const [old] = await learnedSkillsForBot("bot", "boss");
     expect(old.instructions).toBe(content.instructions);
     expect(old.version).toBe(1);
+    expect(await loader.tool.execute!({ slug: old.aliases![0] }, { toolCallId: "approved-fallback", messages: [], context: {} })).toMatchObject({ skillId: old.id, version: 1 });
     expect((await learningViews(boss, "bot"))[0].content.instructions).toBe(content.instructions);
     const [proposal] = await learningViews(owner, "bot");
     expect(proposal.status).toBe("pending");
