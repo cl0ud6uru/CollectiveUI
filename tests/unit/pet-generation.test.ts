@@ -80,6 +80,38 @@ describe("durable admin pet generation", () => {
     await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true })).rejects.toMatchObject({ status: 409 });
   });
 
+  it("does not dispatch appearance generation after admin access is revoked following the durable claim", async () => {
+    const job = await createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." });
+    const generator = vi.fn(async () => { throw new Error("must not dispatch"); }) as unknown as typeof generatePetImage;
+    const revokeAdmin = async () => { await db.update(schema.users).set({ isAdmin: false }).where(eq(schema.users.id, "admin")); };
+    await revokeAdmin();
+    await expect(generateAppearance(admin, job.id, true, undefined, generator)).rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id))).toHaveLength(0);
+    await db.update(schema.users).set({ isAdmin: true }).where(eq(schema.users.id, "admin"));
+    await expect(generateAppearance(admin, job.id, true, undefined, generator, false, revokeAdmin)).rejects.toMatchObject({ status: 403 });
+    expect(generator).not.toHaveBeenCalled();
+    expect((await db.select().from(schema.petGenerationJobs).where(eq(schema.petGenerationJobs.id, job.id)))[0]).toMatchObject({
+      appearanceState: "failed", appearanceErrorCode: "authorization_revoked",
+    });
+    expect((await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id)))[0]).toMatchObject({
+      slotKey: "appearance", status: "failed", errorCode: "authorization_revoked",
+    });
+  });
+
+  it("does not dispatch a sprite request after admin access is revoked following its claim", async () => {
+    const image = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
+    const job = await createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." });
+    await generateAppearance(admin, job.id, true, undefined, vi.fn(async () => ({ image })) as unknown as typeof generatePetImage);
+    await approvePetAppearance(admin, job.id);
+    await consentPetBuild(admin, job.id, true);
+    const generator = vi.fn(async () => { throw new Error("must not dispatch"); }) as unknown as typeof generatePetImage;
+    const revokeAdmin = async () => { await db.update(schema.users).set({ isAdmin: false }).where(eq(schema.users.id, "admin")); };
+    await expect(runPetGenerationSlot(admin, job.id, "idle", undefined, generator, revokeAdmin)).rejects.toMatchObject({ status: 403 });
+    expect(generator).not.toHaveBeenCalled();
+    expect((await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id))).find(slot => slot.slotKey === "idle"))
+      .toMatchObject({ status: "failed", errorCode: "authorization_revoked" });
+  });
+
   it("records an ambiguous lost reply as uncertain and only retries with a new consent receipt", async () => {
     const generatedImage = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
     const job = await createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." });

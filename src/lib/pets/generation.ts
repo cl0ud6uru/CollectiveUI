@@ -61,9 +61,12 @@ export async function createPetGenerationJob(p: Principal, input: { displayName:
   const credit = (input.credit ?? "AI generated with OpenAI").trim();
   if (!displayName || displayName.length > 80 || !description || description.length > 1000 || credit.length > 240 ||
     /[\u0000-\u001f\u007f]/.test(displayName + description + credit)) throw new HttpError(400, "Provide plain text for the name, description and credit, within their listed limits.");
-  const [job] = await db.insert(petGenerationJobs).values({ ownerId: p.user.id, providerConnectionId: connection.id, modelId: PET_IMAGE_MODEL,
-    displayName, description, credit, reference: input.reference }).returning({ id: petGenerationJobs.id, appearanceState: petGenerationJobs.appearanceState });
-  return job;
+  return db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
+    const [job] = await tx.insert(petGenerationJobs).values({ ownerId: p.user.id, providerConnectionId: connection.id, modelId: PET_IMAGE_MODEL,
+      displayName, description, credit, reference: input.reference }).returning({ id: petGenerationJobs.id, appearanceState: petGenerationJobs.appearanceState });
+    return job;
+  });
 }
 
 export async function listPetGenerationJobs(p: Principal) {
@@ -81,12 +84,13 @@ async function ownedJob(p: Principal, id: string) {
   return job;
 }
 
-export async function generateAppearance(p: Principal, id: string, consent: boolean, abortSignal?: AbortSignal, generator: ImageGenerator = generatePetImage, retry = false) {
+export async function generateAppearance(p: Principal, id: string, consent: boolean, abortSignal?: AbortSignal, generator: ImageGenerator = generatePetImage, retry = false, beforeDispatch?: () => Promise<void>) {
   if (consent !== true) throw new HttpError(400, "Appearance generation requires explicit cost consent.");
   requireAdmin(p);
   const { job, attemptId, attempt } = await db.transaction(async tx => {
     const [job] = await tx.select().from(petGenerationJobs).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id))).for("update");
     if (!job) throw new HttpError(404, "Pet generation draft not found.");
+    await assertFreshPetAdmin(p, tx);
     const allowed = retry ? ["failed", "uncertain"] : ["needs_consent"];
     if (!allowed.includes(job.appearanceState)) throw new HttpError(409, "Appearance generation has already started or needs a different action. Refresh this draft.");
     const [previous] = await tx.select({ attempt: petGenerationSlots.attempt, status: petGenerationSlots.status }).from(petGenerationSlots)
@@ -106,6 +110,8 @@ export async function generateAppearance(p: Principal, id: string, consent: bool
   let observedUsage: { inputTokens: number | null; outputTokens: number | null } | null = null;
   try {
     const connection = await currentConnectionForJob(job);
+    await beforeDispatch?.();
+    await assertFreshPetAdmin(p, db);
     const result = await generator({ connection, modelId: PET_IMAGE_MODEL,
       prompt: `Create one original, friendly animated assistant pet character concept as a full-body front view. Transparent background, centered with clear margins, no text, no props. Appearance brief: ${job.description}`,
       ...(job.reference ? { reference: job.reference } : {}), ...(abortSignal ? { abortSignal } : {}),
@@ -125,14 +131,15 @@ export async function generateAppearance(p: Principal, id: string, consent: bool
   } catch (error) {
     const invalidOutput = error instanceof Error && error.message === "invalid_image_output";
     const knownPreflightFailure = error instanceof HttpError;
+    const authorizationFailure = error instanceof HttpError && error.status === 403;
     const status = invalidOutput || knownPreflightFailure ? "failed" : "uncertain";
     await db.transaction(async tx => {
       await tx.update(petGenerationJobs).set({ appearanceState: status,
       appearanceInputTokens: observedUsage?.inputTokens ?? null, appearanceOutputTokens: observedUsage?.outputTokens ?? null,
-      appearanceErrorCode: invalidOutput ? "invalid_output" : knownPreflightFailure ? "connection_unavailable" : "provider_uncertain", updatedAt: new Date() })
+      appearanceErrorCode: invalidOutput ? "invalid_output" : authorizationFailure ? "authorization_revoked" : knownPreflightFailure ? "connection_unavailable" : "provider_uncertain", updatedAt: new Date() })
         .where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id), eq(petGenerationJobs.appearanceState, "running"), eq(petGenerationJobs.appearanceAttempt, attempt)));
       await tx.update(petGenerationSlots).set({ status, inputTokens: observedUsage?.inputTokens ?? null, outputTokens: observedUsage?.outputTokens ?? null,
-        errorCode: invalidOutput ? "invalid_output" : knownPreflightFailure ? "connection_unavailable" : "provider_uncertain", finishedAt: new Date(), updatedAt: new Date() })
+        errorCode: invalidOutput ? "invalid_output" : authorizationFailure ? "authorization_revoked" : knownPreflightFailure ? "connection_unavailable" : "provider_uncertain", finishedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(petGenerationSlots.id, attemptId), eq(petGenerationSlots.status, "running")));
     });
     if (error instanceof HttpError) throw error;
@@ -151,10 +158,13 @@ async function normalizeImage(image: Buffer) {
 
 export async function approvePetAppearance(p: Principal, id: string) {
   requireAdmin(p);
-  const [row] = await db.update(petGenerationJobs).set({ appearanceState: "approved", appearanceApprovedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id), eq(petGenerationJobs.appearanceState, "succeeded"))).returning({ id: petGenerationJobs.id });
-  if (!row) throw new HttpError(409, "Generate and inspect the appearance before approving it.");
-  return { state: "approved" as const };
+  return db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
+    const [row] = await tx.update(petGenerationJobs).set({ appearanceState: "approved", appearanceApprovedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id), eq(petGenerationJobs.appearanceState, "succeeded"))).returning({ id: petGenerationJobs.id });
+    if (!row) throw new HttpError(409, "Generate and inspect the appearance before approving it.");
+    return { state: "approved" as const };
+  });
 }
 
 export async function consentPetBuild(p: Principal, id: string, consent: boolean) {
@@ -163,6 +173,7 @@ export async function consentPetBuild(p: Principal, id: string, consent: boolean
   if (job.appearanceState !== "approved" || !job.appearanceApprovedAt) throw new HttpError(409, "Approve the appearance before authorizing sprite generation.");
   await currentConnectionForJob(job);
   return db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
     const [locked] = await tx.select().from(petGenerationJobs).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id))).for("update");
     if (!locked || locked.appearanceState !== "approved" || locked.buildConsentAt) throw new HttpError(409, "Sprite generation is already authorized or the appearance is not approved.");
     const now = new Date();
@@ -181,19 +192,28 @@ function slotPrompt(job: typeof petGenerationJobs.$inferSelect, key: SlotKey) {
     : `Use the attached approved character as an exact character reference. Create a transparent 4 by 2 contact sheet of eight consecutive ${state!.label.toLowerCase()} animation frames for the same character. One centered full-body figure per equal cell, consistent scale, no gutters, labels, shadows, or background. Description: ${job.description}`;
 }
 
-export async function runPetGenerationSlot(p: Principal, id: string, key: string, abortSignal?: AbortSignal, generator: ImageGenerator = generatePetImage) {
+export async function runPetGenerationSlot(p: Principal, id: string, key: string, abortSignal?: AbortSignal, generator: ImageGenerator = generatePetImage, beforeDispatch?: () => Promise<void>) {
   if (!slotKeys.includes(key)) throw new HttpError(400, "Unknown sprite slot.");
   const job = await ownedJob(p, id);
   if (!job.buildConsentAt || job.appearanceState !== "approved" || !job.appearance) throw new HttpError(409, "Approve the appearance and consent to sprite costs before generation.");
-  const connection = await currentConnectionForJob(job);
-  const [slot] = await db.select().from(petGenerationSlots).where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.slotKey, key))).orderBy(desc(petGenerationSlots.attempt)).limit(1);
-  if (!slot || slot.status !== "queued") throw new HttpError(409, "This slot has no queued request. Running or uncertain requests are never replayed automatically.");
-  const [claimed] = await db.update(petGenerationSlots).set({ status: "running", startedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(petGenerationSlots.id, slot.id), eq(petGenerationSlots.status, "queued"))).returning({ id: petGenerationSlots.id });
-  if (!claimed) throw new HttpError(409, "This slot request is already running or complete.");
+  await currentConnectionForJob(job);
+  const { slot, currentJob } = await db.transaction(async tx => {
+    const [currentJob] = await tx.select().from(petGenerationJobs).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id))).for("update");
+    if (!currentJob || !currentJob.buildConsentAt || currentJob.appearanceState !== "approved" || !currentJob.appearance) throw new HttpError(409, "Approve the appearance and consent to sprite costs before generation.");
+    await assertFreshPetAdmin(p, tx);
+    const [slot] = await tx.select().from(petGenerationSlots).where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.slotKey, key))).orderBy(desc(petGenerationSlots.attempt)).limit(1).for("update");
+    if (!slot || slot.status !== "queued") throw new HttpError(409, "This slot has no queued request. Running or uncertain requests are never replayed automatically.");
+    const [claimed] = await tx.update(petGenerationSlots).set({ status: "running", startedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(petGenerationSlots.id, slot.id), eq(petGenerationSlots.status, "queued"))).returning({ id: petGenerationSlots.id });
+    if (!claimed) throw new HttpError(409, "This slot request is already running or complete.");
+    return { slot, currentJob };
+  });
   let observedUsage: { inputTokens: number | null; outputTokens: number | null } | null = null;
   try {
-    const output = await generator({ connection, modelId: PET_IMAGE_MODEL, prompt: slot.prompt, reference: job.appearance, ...(abortSignal ? { abortSignal } : {}) });
+    const dispatchConnection = await currentConnectionForJob(currentJob);
+    await beforeDispatch?.();
+    await assertFreshPetAdmin(p, db);
+    const output = await generator({ connection: dispatchConnection, modelId: PET_IMAGE_MODEL, prompt: slot.prompt, reference: currentJob.appearance!, ...(abortSignal ? { abortSignal } : {}) });
     const inputTokens = output.inputTokens ?? null, outputTokens = output.outputTokens ?? null;
     observedUsage = { inputTokens, outputTokens };
     const image = await normalizeImage(output.image);
@@ -212,8 +232,9 @@ export async function runPetGenerationSlot(p: Principal, id: string, key: string
     return { status: "succeeded" as const, costMicros };
   } catch (error) {
     const invalidOutput = error instanceof Error && error.message === "invalid_image_output";
-    await db.update(petGenerationSlots).set({ status: invalidOutput ? "failed" : "uncertain", inputTokens: observedUsage?.inputTokens ?? null, outputTokens: observedUsage?.outputTokens ?? null,
-      errorCode: invalidOutput ? "invalid_output" : "provider_uncertain", finishedAt: new Date(), updatedAt: new Date() })
+    const authorizationFailure = error instanceof HttpError && error.status === 403;
+    await db.update(petGenerationSlots).set({ status: invalidOutput || authorizationFailure ? "failed" : "uncertain", inputTokens: observedUsage?.inputTokens ?? null, outputTokens: observedUsage?.outputTokens ?? null,
+      errorCode: invalidOutput ? "invalid_output" : authorizationFailure ? "authorization_revoked" : "provider_uncertain", finishedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(petGenerationSlots.id, slot.id), eq(petGenerationSlots.status, "running")));
     if (error instanceof HttpError) throw error;
     throw new HttpError(502, invalidOutput ? "The provider returned an unusable image. Authorize a separate paid retry to replace this slot." : "The provider response is uncertain. This request will not be replayed; authorize a separate paid retry only after reviewing its receipt.");
@@ -227,6 +248,7 @@ export async function retryPetGenerationSlot(p: Principal, id: string, key: stri
   if (!job.buildConsentAt || job.appearanceState !== "approved") throw new HttpError(409, "The approved, cost-consented job is required before retrying.");
   await currentConnectionForJob(job);
   return db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
     const [current] = await tx.select().from(petGenerationSlots).where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.slotKey, key))).orderBy(desc(petGenerationSlots.attempt)).limit(1).for("update");
     if (!current || current.attempt >= 3 || !["failed", "uncertain"].includes(current.status)) throw new HttpError(409, "Only failed or uncertain slots can receive a new, separately consented attempt, up to three attempts total.");
     const [next] = await tx.insert(petGenerationSlots).values({ jobId: id, slotKey: key, attempt: current.attempt + 1, prompt: current.prompt,
@@ -242,6 +264,7 @@ export async function getPetGenerationJob(p: Principal, id: string) {
   const stale = await db.select({ id: petGenerationSlots.id, slotKey: petGenerationSlots.slotKey, attempt: petGenerationSlots.attempt }).from(petGenerationSlots)
     .where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.status, "running"), lt(petGenerationSlots.updatedAt, staleBefore)));
   if (stale.length) await db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
     for (const slot of stale) await tx.update(petGenerationSlots).set({ status: "uncertain", errorCode: "stale_after_restart", finishedAt: new Date(), updatedAt: new Date() })
       .where(and(eq(petGenerationSlots.id, slot.id), eq(petGenerationSlots.status, "running")));
     const staleAppearance = stale.find(slot => slot.slotKey === "appearance");
@@ -294,7 +317,10 @@ async function refreshPreview(p: Principal, id: string) {
   const png = await canvas.composite(layers).png().toBuffer();
   const normalized = await normalizePetSprite(png, 2, "spritesheet.png");
   await validateV2Cells(normalized);
-  await db.update(petGenerationJobs).set({ preview: normalized, updatedAt: new Date() }).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id)));
+  await db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
+    await tx.update(petGenerationJobs).set({ preview: normalized, updatedAt: new Date() }).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id)));
+  });
 }
 
 async function markAtlasValidationFailures(p: Principal, id: string, error: unknown) {
@@ -302,12 +328,15 @@ async function markAtlasValidationFailures(p: Principal, id: string, error: unkn
   const failed = new Set<string>();
   for (const state of PET_ANIMATIONS) if (error.message.includes(`${state.name} frame `) || error.message.includes(`${state.name} unused cell `)) failed.add(state.name);
   if (error.message.includes("look ")) failed.add("directions");
-  for (const key of failed) {
-    const [slot] = await db.select({ id: petGenerationSlots.id }).from(petGenerationSlots)
-      .where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.slotKey, key))).orderBy(desc(petGenerationSlots.attempt)).limit(1);
-    if (slot) await db.update(petGenerationSlots).set({ status: "failed", errorCode: "atlas_validation", updatedAt: new Date() })
-      .where(and(eq(petGenerationSlots.id, slot.id), eq(petGenerationSlots.status, "succeeded")));
-  }
+  await db.transaction(async tx => {
+    await assertFreshPetAdmin(p, tx);
+    for (const key of failed) {
+      const [slot] = await tx.select({ id: petGenerationSlots.id }).from(petGenerationSlots)
+        .where(and(eq(petGenerationSlots.jobId, id), eq(petGenerationSlots.slotKey, key))).orderBy(desc(petGenerationSlots.attempt)).limit(1);
+      if (slot) await tx.update(petGenerationSlots).set({ status: "failed", errorCode: "atlas_validation", updatedAt: new Date() })
+        .where(and(eq(petGenerationSlots.id, slot.id), eq(petGenerationSlots.status, "succeeded")));
+    }
+  });
   return [...failed];
 }
 
