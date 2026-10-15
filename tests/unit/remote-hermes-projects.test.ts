@@ -267,6 +267,22 @@ describe('confirmed native Hermes workspace operations', () => {
     expect(f.receipt).toBeNull();
   });
 
+  it.each([
+    ['enable-plugin', 'disabled'],
+    ['disable-plugin', 'enabled'],
+  ] as const)('rejects %s when manifest-name aliases would mutate a second plugin', async (action, status) => {
+    f.plugins = [
+      { key: 'observability/langfuse', name: 'langfuse', source: 'bundled', status },
+      { key: 'obs/local-copy', name: 'langfuse', source: 'user', status },
+    ];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', {
+      operation: 'prepare', action, pluginKey: 'obs/local-copy',
+    })).rejects.toThrow('supported, unambiguous user-installed');
+    expect(f.calls.mock.calls.some(([method, params]) => method === 'plugins.manage' && (params as Record<string, unknown>)?.action === 'toggle')).toBe(false);
+    expect(f.receipt).toBeNull();
+    expect(f.plugins.map(plugin => plugin.status)).toEqual([status, status]);
+  });
+
   it('does not accept duplicate reconciliation after a plugin name collision appears', async () => {
     f.plugins = [{ key: 'probe', name: 'probe', source: 'user', status: 'disabled' }];
     const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'probe' });

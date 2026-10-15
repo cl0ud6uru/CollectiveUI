@@ -49,6 +49,13 @@ function listedUserPlugin(plugins: ListedPlugin[], key: string, name?: string) {
   const plugin = matches[0];
   if (!plugin.key || plugin.key !== key || plugin.source !== 'user' || !plugin.name || name !== undefined && plugin.name !== name ||
     !['enabled', 'disabled', 'not enabled'].includes(plugin.status)) return undefined;
+  // Native _plugin_aliases() mutates the canonical key, its bare leaf, and
+  // manifest name together in the allow/deny lists. Any overlap can toggle a
+  // second plugin as collateral, even when the requested canonical key itself
+  // resolves uniquely.
+  const aliases = new Set([plugin.key, plugin.key.split('/').at(-1)!, plugin.name!]);
+  if (plugins.some(other => other !== plugin && [other.key, other.key.split('/').at(-1), other.name].some(alias => alias !== undefined && aliases.has(alias))))
+    return undefined;
   return plugin;
 }
 type ScheduleClaim = Extract<Claim, { action: 'schedule' }>;

@@ -112,6 +112,46 @@ def main() -> None:
                 assert raw_user_key.strip() == "probe"
                 assert plugins_cmd._resolve_plugin_key(raw_user_key.strip()) == "tools/probe"
 
+        # _activate_key expands a canonical target to key + bare leaf + manifest
+        # name when removing opposing-list entries. A shared manifest alias can
+        # consequently change a second plugin: disabling removes its enabled
+        # alias; enabling removes its deny alias, which
+        # can reactivate a default-on bundled plugin. The portal must reject the
+        # collision before dispatch (covered by the matching zero-dispatch test).
+        bundled_dir = root / "bundled" / "observability" / "langfuse"
+        bundled_dir.mkdir(parents=True)
+        alias_collision = [
+            ("langfuse", "1.0", "Synthetic bundled backend", "bundled", bundled_dir, "observability/langfuse"),
+            ("langfuse", "1.0", "Synthetic user plugin", "user", plugin, "obs/local-copy"),
+        ]
+        with patch.object(plugins_cmd, "_discover_all_plugins", return_value=alias_collision):
+            for action, starting, expected_before, expected_other, bundled_kind in (
+                ("disable", "enabled: [langfuse]\ndisabled: []", "enabled", "not enabled", "standalone"),
+                ("enable", "enabled: []\ndisabled: [langfuse]", "disabled", "enabled", "backend"),
+            ):
+                (bundled_dir / "plugin.yaml").write_text(
+                    f"name: langfuse\nkind: {bundled_kind}\nversion: '1.0'\n", encoding="utf-8")
+                (profile_home / "config.yaml").write_text(f"plugins:\n  {starting.replace(chr(10), chr(10) + '  ')}\n", encoding="utf-8")
+                before = server.handle_request({
+                    "id": f"alias-before-{action}", "method": "plugins.manage",
+                    "params": {"action": "list", "profile": "fixture"},
+                })
+                assert "result" in before, before
+                bundled_before = next(r for r in before["result"]["plugins"] if r["key"] == "observability/langfuse")
+                assert bundled_before["status"] == expected_before
+                outcome = server.handle_request({
+                    "id": f"alias-{action}", "method": "plugins.manage",
+                    "params": {"action": "toggle", "profile": "fixture", "key": "obs/local-copy", "enable": action == "enable"},
+                })
+                assert "result" in outcome, outcome
+                after = server.handle_request({
+                    "id": f"alias-after-{action}", "method": "plugins.manage",
+                    "params": {"action": "list", "profile": "fixture"},
+                })
+                assert "result" in after, after
+                bundled_after = next(r for r in after["result"]["plugins"] if r["key"] == "observability/langfuse")
+                assert bundled_after["status"] == expected_other, (action, bundled_after)
+
         print("Pinned native plugins.manage list/toggle and ambiguous-key resolver conformance passed (synthetic profile).")
 
 
