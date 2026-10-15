@@ -152,3 +152,41 @@ Action tests prove principal/origin binding and honest audit outcomes. A real
 loopback WebSocket test verifies retired socket-reference release and no
 reconnection. Browser/assistive-technology validation and real-dashboard
 revocation are not established by these checks. No real connection was removed.
+
+### Transport trust and authentication URL diagnostics (#99, partial)
+
+Private-address approval permits the portal to route to a dashboard. It does not
+prove encryption, including for LAN, loopback, container or VPN-looking names.
+The connection form and saved HTTP connections now display that HTTP is not
+encrypted, that administrator approval does not encrypt it, and that passwords,
+tokens and protected replies can be exposed unless a separately verified tunnel
+protects the route. The administrator hint makes the same distinction. HTTPS
+remains the public-address requirement and the connection-form example. This
+change does not alter enabled policy, private approvals or trusted tunnels.
+
+Invalid base URLs and malformed native sign-in callback URLs now become bounded
+application errors without retaining Node's raw `input` URL property. Unexpected
+socket target/upgrade errors are replaced by a generic error without a raw cause;
+typed policy/authentication errors keep their deliberate messages. No token,
+ticket, authorization code, state, credential or callback URL is logged by these
+paths. Four regressions failed before these changes; eight disclosure/error tests
+now cover private/loopback HTTP warnings, disabled-admission saved connections,
+invalid URL diagnostics, socket-target failures and malformed native callbacks.
+The lifecycle fixture now uses the same typed policy error as production.
+
+WebSocket authentication still uses the verified native ticket path
+for password/OAuth access, and the native session-token query mode for dashboard
+session tokens. No ticket-exchange API for session-token mode is assumed. Because
+an authentication query must reach Hermes, application error sanitization cannot
+remove it from reverse-proxy, tunnel or upstream access logs. Those operators
+must omit query strings and redact `token`, `ticket`, `code`, `state` and
+`code_verifier`, plus Authorization/Cookie headers, from logs and diagnostics.
+Never paste actual upgrade or callback URLs into issues or documentation.
+
+Remaining implementation/acceptance work: choose and encode an explicit verified
+TLS/tunnel trust policy for approved private HTTP without blindly breaking trusted
+tunnels; verify any additional short-lived credential exchange against pinned
+runtime capability; and validate external proxy/upstream log handling. No proxy
+configuration, live transport policy, credential exchange/grant, paid inference
+or production deployment was changed or exercised here. These unit/SSR and
+loopback checks do not establish live encrypted transport or log-system hygiene.

@@ -3,7 +3,9 @@ import { HttpError } from "@/lib/authz";
 import type { RemoteHermesSettings } from "@/lib/settings";
 
 export function dashboardBase(raw: string): string {
-  const url = new URL(raw.trim());
+  let url: URL;
+  try { url = new URL(raw.trim()); }
+  catch { throw new HttpError(400, 'Enter a valid http(s) dashboard URL without credentials, query parameters or a fragment.'); }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash)
     throw new HttpError(400, 'Enter an http(s) dashboard URL without credentials, query parameters or a fragment.');
   url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/api\/(?:status|ws|health)$/, '');

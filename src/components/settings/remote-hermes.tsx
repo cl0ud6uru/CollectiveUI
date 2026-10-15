@@ -5,6 +5,7 @@ import { signIntoRemoteHermes, loadRemoteHermesProfiles, previewRemoteHermesRemo
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Select } from '@/components/ui/input';
+import { dashboardTransportDisclosure } from '@/lib/remote-hermes/transport-contract';
 import type { RemoteConnectionView } from '@/lib/remote-hermes/store';
 import type { RemoteHermesProfile } from '@/lib/remote-hermes/client';
 
@@ -27,6 +28,7 @@ export function RemoteHermes({ allowed, initial }: { allowed: boolean; initial: 
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     {connections.map(c => <div key={c.id} className="rounded-lg border border-border p-3 space-y-2">
       <p className="font-medium">{c.name}</p><p className="text-xs text-muted">{c.baseUrl} {c.version && `· Hermes ${c.version}`}</p>
+      {dashboardTransportDisclosure(c.baseUrl) && <p role="note" className="text-sm text-muted">{dashboardTransportDisclosure(c.baseUrl)}</p>}
       <Link href={`/hermes/${encodeURIComponent(c.id)}`} className="inline-block text-sm underline">Open Hermes</Link>
       <Button variant="outline" disabled={pending || !allowed} onClick={() => start(async () => {
         try { setProfiles(p => ({ ...p, [c.id]: [] })); const items = await loadRemoteHermesProfiles(c.id); setProfiles(p => ({ ...p, [c.id]: items })); setError(''); }
@@ -51,6 +53,7 @@ export function RemoteHermes({ allowed, initial }: { allowed: boolean; initial: 
       <fieldset disabled={pending} className="space-y-3">
         <Field label="Connection name"><Input value={name} onChange={e => setName(e.target.value)} required maxLength={100} /></Field>
         <Field label="Hermes dashboard URL" hint="The hermes serve address reachable from this portal, including any proxy path prefix."><Input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} required placeholder="https://hermes.example.com" /></Field>
+        {dashboardTransportDisclosure(baseUrl) && <p role="note" className="text-sm text-muted">{dashboardTransportDisclosure(baseUrl)}</p>}
         <Field label="Sign-in method"><Select value={mode} onChange={e => { setMode(e.target.value as typeof mode); setPassword(''); setToken(''); }}><option value="password">Username and password</option><option value="sessionToken">Dashboard session token</option></Select></Field>
         {mode === 'password' ? <><Field label="Hermes username"><Input value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" required /></Field><Field label="Hermes password" hint="Used only to sign in. The password is never saved."><Input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="off" required /></Field></> : <Field label="Dashboard session token"><Input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" required /></Field>}
         <Button type="submit">{pending ? 'Connecting…' : 'Sign in and discover profiles'}</Button>
