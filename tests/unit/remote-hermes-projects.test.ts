@@ -255,6 +255,18 @@ describe('confirmed native Hermes workspace operations', () => {
     expect(f.receipt).toBeNull();
   });
 
+  it.each(['probe ', '\u001cprobe', '\u0085probe'])('rejects canonical key %j when Python strip aliases it to a bundled manifest name', async pluginKey => {
+    f.plugins = [
+      { key: 'tools/probe', name: 'probe', source: 'bundled', status: 'enabled' },
+      { key: pluginKey, name: pluginKey, source: 'user', status: 'disabled' },
+    ];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', {
+      operation: 'prepare', action: 'enable-plugin', pluginKey,
+    })).rejects.toThrow('supported, unambiguous user-installed');
+    expect(f.calls.mock.calls.some(([method, params]) => method === 'plugins.manage' && (params as Record<string, unknown>)?.action === 'toggle')).toBe(false);
+    expect(f.receipt).toBeNull();
+  });
+
   it('does not accept duplicate reconciliation after a plugin name collision appears', async () => {
     f.plugins = [{ key: 'probe', name: 'probe', source: 'user', status: 'disabled' }];
     const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'probe' });

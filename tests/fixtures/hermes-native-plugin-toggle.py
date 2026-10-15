@@ -104,6 +104,13 @@ def main() -> None:
         ]
         with patch.object(plugins_cmd, "_discover_all_plugins", return_value=collision):
             assert plugins_cmd._resolve_plugin_key("probe") == "tools/probe"
+            # _plugins_toggle strips the incoming identifier with Python's
+            # str.strip() before this resolver. These raw user identifiers can
+            # therefore alias the bundled manifest name even though JS trim()
+            # does not remove every character in the set.
+            for raw_user_key in ("probe ", "\u001cprobe", "\u0085probe"):
+                assert raw_user_key.strip() == "probe"
+                assert plugins_cmd._resolve_plugin_key(raw_user_key.strip()) == "tools/probe"
 
         print("Pinned native plugins.manage list/toggle and ambiguous-key resolver conformance passed (synthetic profile).")
 

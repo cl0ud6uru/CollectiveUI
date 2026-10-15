@@ -41,6 +41,9 @@ function listedUserPlugin(plugins: ListedPlugin[], key: string, name?: string) {
   // Hermes' resolver accepts either the manifest name OR the canonical key and
   // returns the first discovery-order match. A key unique in the key column is
   // still unsafe when it equals another plugin's manifest name.
+  // Match Python str.strip(), which also removes U+001C..U+001F and U+0085
+  // (characters JavaScript trim does not all treat as whitespace).
+  if (!key || key.trim() !== key || /^[\u001c-\u001f\u0085]|[\u001c-\u001f\u0085]$/u.test(key)) return undefined;
   const matches = plugins.filter(plugin => plugin.key === key || plugin.name === key);
   if (matches.length !== 1) return undefined;
   const plugin = matches[0];
