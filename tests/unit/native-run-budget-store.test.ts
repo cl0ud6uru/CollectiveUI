@@ -10,7 +10,7 @@ vi.mock("@/db", async () => {
 import { db, schema } from "@/db";
 import { newUsageScope, type UsageContext } from "@/lib/llm/usage";
 import { nativeBudgetEnvelope, type NativeRunBudgetPolicy } from "@/lib/llm/run-budget-policy";
-import { nativeBudgetHandle, markNativeBudgetDispatched, releaseNativeBudget, reserveNativeBudget, retainNativeBudget, settleNativeBudget } from "@/lib/llm/run-budget-store";
+import { nativeBudgetApplies, nativeBudgetHandle, markNativeBudgetDispatched, releaseNativeBudget, reserveNativeBudget, retainNativeBudget, settleNativeBudget } from "@/lib/llm/run-budget-store";
 
 const input = { prompt: [{ role: "user", content: [{ type: "text", text: "Fixture" }] }] };
 const policy: NativeRunBudgetPolicy = { enabled: true, maxTokens: 100_000, maxCostMicros: 100_000, maxInputTokensPerCall: 50_000, maxOutputTokensPerCall: 1_000,
@@ -34,6 +34,20 @@ describe("durable shared native budget admission", () => {
     vi.stubEnv("NATIVE_RUN_BUDGET", ""); expect(await nativeBudgetHandle(context())).toBeNull();
     vi.stubEnv("NATIVE_RUN_BUDGET", JSON.stringify(policy)); expect(await nativeBudgetHandle({ ...context(), scope: newUsageScope() })).toBeNull();
     expect(await db.select().from(schema.nativeRunBudgets)).toHaveLength(0);
+  });
+  it("keeps an existing root authoritative when a continuation worker has configuration disabled", async () => {
+    const quote = nativeBudgetEnvelope(policy, policy.routes[0], input, 100);
+    vi.stubEnv("NATIVE_RUN_BUDGET", JSON.stringify({ ...policy, maxTokens: quote.tokens, maxCostMicros: null }));
+    const ctx = context(); const handle = (await nativeBudgetHandle(ctx))!;
+    const first = await reserveNativeBudget(handle, ctx, input, 100); await markNativeBudgetDispatched(first);
+    vi.stubEnv("NATIVE_RUN_BUDGET", "");
+    const child = context("child"); const existing = (await nativeBudgetHandle(child))!;
+    expect(existing.policy).toEqual(handle.policy);
+    expect(await nativeBudgetApplies(ctx.scope!.rootBudgetId)).toBe(true);
+    expect(await nativeBudgetApplies("new-root")).toBe(false);
+    await expect(reserveNativeBudget(existing, child, input, 100)).rejects.toThrow("configured company model budget");
+    expect(await nativeBudgetHandle(context("new", "new-root"))).toBeNull();
+    expect(await db.select().from(schema.nativeRunBudgetAttempts)).toHaveLength(1);
   });
   it("atomically shares exhaustion across concurrent root, delegate and continuation attempts", async () => {
     const quote = nativeBudgetEnvelope(policy, policy.routes[0], input, 100);

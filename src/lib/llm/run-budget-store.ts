@@ -8,15 +8,26 @@ import type { UsageContext } from "./usage";
 export type NativeBudgetHandle = { rootMessageId: string; userId: string; policy: NativeRunBudgetPolicy };
 export type NativeBudgetReceipt = { id: string; handle: NativeBudgetHandle };
 
+/** A tracked root remains capped across workers/config rollouts, even when creation of new budgets is off. */
+export async function nativeBudgetApplies(rootMessageId?: string): Promise<boolean> {
+  if (nativeRunBudgetPolicy()) return true;
+  if (!rootMessageId) return false;
+  return (await db.select({ id: budgets.rootMessageId }).from(budgets).where(eq(budgets.rootMessageId, rootMessageId))).length > 0;
+}
+
 export async function nativeBudgetHandle(ctx: UsageContext): Promise<NativeBudgetHandle | null> {
   const configured = nativeRunBudgetPolicy();
-  if (!configured || !ctx.scope?.rootBudgetId) return null;
+  if (!ctx.scope?.rootBudgetId) return null;
+  const rootMessageId = ctx.scope.rootBudgetId;
+  let [row] = await db.select().from(budgets).where(eq(budgets.rootMessageId, rootMessageId));
+  if (!row && !configured) return null;
   if (!ctx.userId || ctx.billingSource !== "org" || !ctx.billingRoute?.startsWith("api:")) {
     throw new NativeRunBudgetError("This runtime has no supported company run-budget contract. No billing fallback was selected.");
   }
-  const rootMessageId = ctx.scope.rootBudgetId;
-  await db.insert(budgets).values({ rootMessageId, userId: ctx.userId, policy: configured }).onConflictDoNothing();
-  const [row] = await db.select().from(budgets).where(eq(budgets.rootMessageId, rootMessageId));
+  if (!row) {
+    await db.insert(budgets).values({ rootMessageId, userId: ctx.userId, policy: configured! }).onConflictDoNothing();
+    [row] = await db.select().from(budgets).where(eq(budgets.rootMessageId, rootMessageId));
+  }
   if (!row || row.userId !== ctx.userId) throw new NativeRunBudgetError("The native run budget does not belong to this requester.");
   const parsed = NativeRunBudgetPolicySchema.safeParse(row.policy);
   if (!parsed.success) throw new NativeRunBudgetError("The native run budget policy needs administrator review.");

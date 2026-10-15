@@ -65,6 +65,18 @@ describe("native budget admission around the actual AI SDK dispatch", () => {
     await generateText({ model: wrapped(new MockLanguageModelV4({ doGenerate: off }), context("off", "off-root")), prompt: "Fixture", maxOutputTokens: 9_999 });
     expect(off.mock.calls[0][0]).toMatchObject({ maxOutputTokens: 9_999 });
   });
+  it("dispatches child attempts with the persisted root cap even after process configuration is disabled", async () => {
+    const dispatch = vi.fn(async (_params: unknown) => { void _params; return response(); });
+    await generateText({ model: wrapped(new MockLanguageModelV4({ doGenerate: dispatch }), context()), prompt: "Fixture", maxRetries: 0 });
+    vi.stubEnv("NATIVE_RUN_BUDGET", "");
+    const child = wrapped(new MockLanguageModelV4({ doGenerate: dispatch }), context("child"));
+    await generateText({ model: child, prompt: "Fixture", maxOutputTokens: 9999, maxRetries: 0 });
+    expect(dispatch.mock.calls[1][0]).toMatchObject({ maxOutputTokens: 64 });
+    expect((await db.select().from(schema.nativeRunBudgets))[0]).toMatchObject({ usedTokens: 10, reservedTokens: 0 });
+    await db.update(schema.nativeRunBudgets).set({ exhausted: true });
+    await expect(generateText({ model: child, prompt: "Fixture", maxRetries: 0 })).rejects.toThrow("configured company model budget");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
   it("gives SDK retries separate receipts and retains the failed attempt instead of refunding it", async () => {
     const dispatch = vi.fn().mockRejectedValueOnce(new APICallError({ message: "Synthetic retry", url: "https://fixture.invalid", requestBodyValues: {}, statusCode: 503, isRetryable: true, responseHeaders: { "retry-after": "0" } })).mockResolvedValueOnce(response());
     const ctx = context();
@@ -115,11 +127,13 @@ describe("native budget admission around the actual AI SDK dispatch", () => {
     fixture.embeddingDispatch.mockResolvedValue({ model, attribution: { billingRoute: "api:openai", providerConnectionId: "embedding-connection", providerOrganization: "fixture-org", providerProject: "fixture-project" } });
     const ctx = context("memory");
     await expect(embedTexts(["first", "second"], { userId: "actor", conversationId: null }, { usage: ctx.scope, maxRetries: 0 })).resolves.toEqual([[0.2], [0.2]]);
-    expect((await db.select().from(schema.nativeRunBudgets))[0]).toMatchObject({ rootMessageId: "root-reply", usedTokens: 14, reservedTokens: 0 });
+    vi.stubEnv("NATIVE_RUN_BUDGET", "");
+    await embedTexts(["third"], { userId: "actor" }, { usage: ctx.scope, maxRetries: 0 });
+    expect((await db.select().from(schema.nativeRunBudgets))[0]).toMatchObject({ rootMessageId: "root-reply", usedTokens: 21, reservedTokens: 0 });
     const receipts = await db.select().from(schema.nativeRunBudgetAttempts);
-    expect(receipts).toHaveLength(2); expect(receipts.every(row => row.state === "settled")).toBe(true);
+    expect(receipts).toHaveLength(3); expect(receipts.every(row => row.state === "settled")).toBe(true);
     const rows = await db.select().from(schema.usageEvents);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows.every(row => row.providerConnectionId === "embedding-connection" && row.messageId === "memory-reply" && row.inputTokens === 7)).toBe(true);
   });
   it("reserves direct decision calls and retains known input with unreported output", async () => {
@@ -132,6 +146,11 @@ describe("native budget admission around the actual AI SDK dispatch", () => {
     expect((await db.select().from(schema.usageEvents))[0]).toMatchObject({ purpose: "decision", appId: "decision-app", model: "gpt-6-luna", inputTokens: 11, outputTokens: null, messageId: "decision-reply" });
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body)).max_output_tokens).toBe(64);
+    vi.stubEnv("NATIVE_RUN_BUDGET", "");
+    await requestDecision(provider, "Fixture", [{ type: "predicate", name: "fixture", instructions: "Classify fixture" }], { usage: context("decision-child"), maxOutputTokens: 64 });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(schema.nativeRunBudgetAttempts)).toHaveLength(2);
+    expect((await db.select().from(schema.nativeRunBudgets))[0].reservedTokens).toBeGreaterThan(0);
   });
   it("shares direct decision exhaustion with root/delegate calls and releases complete reported usage", async () => {
     const questions = [{ type: "predicate" as const, name: "fixture", instructions: "Classify fixture" }];

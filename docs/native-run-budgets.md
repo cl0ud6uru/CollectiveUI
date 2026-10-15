@@ -1,6 +1,6 @@
 # Native request-tree model budgets
 
-`NATIVE_RUN_BUDGET` is an optional server/worker environment JSON policy. It is **off by default** (unset, empty, or exactly `{"enabled":false}`). No live policy is enabled by this change. Apply migration `0060_native_run_budgets` before opting in, and configure every web and worker process consistently. Invalid nonempty configuration refuses admission.
+`NATIVE_RUN_BUDGET` is an optional server/worker environment JSON policy. It is **off by default** (unset, empty, or exactly `{"enabled":false}`). No live policy is enabled by this change. Apply migration `0060_native_run_budgets` on deployment before running this code, and configure every web and worker process consistently. Invalid nonempty configuration refuses admission.
 
 An enabled policy creates one durable budget for a native assistant root message, owned by its requesting user. The same root identity follows synchronous/asynchronous delegates, child continuations, approval resumptions, group speakers, title generation, decision classifiers, memory-query/remember embeddings and knowledge-query embeddings. Separate user turns get separate budgets. Scheduled extraction, learning review and ingestion jobs that do not belong to a running request tree remain outside this policy. Remote/local Hermes, ChatGPT-plan and Codex execution do not implement this native contract; a capped native tree cannot silently route to them.
 
@@ -39,7 +39,7 @@ Complete nonnegative provider input/output counters settle once at the root's fr
 
 `native_run_budgets` and `native_run_budget_attempts` expose usage, outstanding capacity, frozen policy/rates, attempt state and run/model identity for operations. Receipt settlement/release is idempotent. They are admission records, not provider invoice reconciliation. There is no automatic expiry/refund of uncertain receipts or administrative reset API. Numeric reports outside the supported cost envelope retain capacity and close further admission rather than rounding down.
 
-Enabled configuration changes apply to newly created roots; existing roots retain their original rates and caps while enforcement remains enabled. Removing/disabling the environment policy is an explicit global opt-out, including existing roots. Stop/drain active runs before disabling it or changing deployment consistency. Old receipt state is retained for inspection.
+Enabled configuration changes apply to newly created roots. Existing root rows remain authoritative with their original rates and caps even if another process has the feature unset or configuration is later disabled. Disabling configuration only stops creation of new capped roots; it cannot refund or bypass existing roots. Keep deployment configuration consistent and retain receipt state for inspection.
 
 ## Validation and limits
 

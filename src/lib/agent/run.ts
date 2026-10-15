@@ -1,5 +1,6 @@
 import { isCodexApp } from '@/lib/codex/target';
-import { nativeRunBudgetPolicy, NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
+import { nativeBudgetApplies } from "@/lib/llm/run-budget-store";
 import { InvalidToolApprovalSignatureError } from "ai";
 import { convertToModelMessages, createUIMessageStream, isStepCount, streamText, toUIMessageStream, type UIMessageChunk } from "ai";
 import { eq } from "drizzle-orm";
@@ -69,7 +70,7 @@ export type TurnResult = {
  * (src/lib/runs/execute.ts) for every direct chat and routine segment; group chats have their own loop (group.ts).
  */
 export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
-  if (isCodexApp(opts.app) && nativeRunBudgetPolicy()) throw new NativeRunBudgetError("Codex has no supported native company budget contract. No billing fallback was selected.");
+  if (isCodexApp(opts.app) && await nativeBudgetApplies(opts.delegation?.task.rootMessageId ?? (opts.continuation ? opts.history.at(-1)?.id : opts.responseMessageId))) throw new NativeRunBudgetError("Codex has no supported native company budget contract. No billing fallback was selected.");
   if (isCodexApp(opts.app)) return (await import('@/lib/codex/run')).runCodexTurn(opts);
   const { principal, conversation, app, bot, history } = opts;
   const toolSettings = await getSetting("tools");
