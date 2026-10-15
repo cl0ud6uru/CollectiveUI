@@ -25,7 +25,7 @@ export function RemoteHermesSettingsCard({ initial }: { initial: RemoteHermesSet
       <Switch aria-label="Allow confirmed session YOLO changes" checked={allowSessionYolo} onCheckedChange={setAllowSessionYolo} disabled={pending} />
     </label>
     <p className="text-sm text-muted">Off by default. Conversation owners can explicitly confirm bypassing recoverable Hermes approval prompts for an idle conversation on a verified runtime. Other native clients sharing that conversation are affected. This does not permit profile-wide changes or remove Hermes hard deny rules.</p>
-    <Field label="Approved private dashboard URLs" hint="One exact dashboard base URL per line for LAN, loopback or Tailscale servers reachable from this portal. Public servers require HTTPS. This does not create a tunnel.">
+    <Field label="Approved private dashboard URLs" hint="One exact dashboard base URL per line for LAN, loopback or Tailscale servers reachable from this portal. Public servers require HTTPS. Approval permits routing; it does not encrypt HTTP or create a tunnel. Verify TLS or an encrypted tunnel before approving credential traffic.">
       <Textarea value={gateways} onChange={e => setGateways(e.target.value)} disabled={pending} rows={3} placeholder="http://hermes.internal:9119" />
     </Field>
     <Button disabled={pending} onClick={() => start(async () => {

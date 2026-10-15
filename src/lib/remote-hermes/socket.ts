@@ -105,7 +105,9 @@ export class DashboardSocket {
       this.ready = false; this.transportReady = false; this.ws?.terminate();
       if (e instanceof HttpError && [401, 403, 501].includes(e.status)) { this.wanted = false; this.setState(e.status === 501 ? 'disconnected' : 'auth_required'); }
       else this.schedule();
-      throw e;
+      // Node URL/upgrade/target errors may embed token or ticket query values.
+      // Keep trusted, deliberately phrased application errors; discard raw errors and causes.
+      throw e instanceof HttpError ? e : new HttpError(502, 'The Hermes socket could not connect. Check the dashboard URL and proxy WebSocket support.');
     }
   }
   private schedule() {
