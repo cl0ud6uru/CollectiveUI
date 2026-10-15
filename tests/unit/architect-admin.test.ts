@@ -342,6 +342,14 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     await expect(completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: secret })).rejects.toThrow(/expired or was already used/);
     expect(await db.select().from(s.providerConnections)).toHaveLength(0);
   });
+  it("revalidates stored draft metadata before displaying or completing the credential form", async () => {
+    const prepared = await execute("admin_prepare_provider_connection", { name: "Tampered metadata fixture" }) as { draftId: string };
+    await db.update(s.architectProviderConnectionDrafts).set({ baseUrl: "https://user:opaque-private@provider.example/v1" })
+      .where(eq(s.architectProviderConnectionDrafts.id, prepared.draftId));
+    expect(await loadArchitectProviderConnectionDraft("admin", 0, prepared.draftId)).toBeNull();
+    await expect(completeArchitectProviderConnectionDraft("admin", 0, { draftId: prepared.draftId, apiKey: "opaque-create-key-577" })).rejects.toThrow();
+    expect(await db.select().from(s.providerConnections)).toHaveLength(0);
+  });
   it("rolls back the connection and draft consumption if its transactional audit fails", async () => {
     const prepared = await execute("admin_prepare_provider_connection", { name: "Audit rollback fixture" }) as { draftId: string };
     await fixture.client!.exec(`CREATE FUNCTION architect_provider_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$

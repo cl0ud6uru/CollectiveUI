@@ -67,6 +67,16 @@ async function authorizeDraftContext(tx: Tx, actorId: string, sessionVersion: nu
   return { fresh, bot, app };
 }
 
+function validateConnectionDraftTarget(draft: Pick<typeof architectProviderConnectionDrafts.$inferSelect, "provider" | "baseUrl" | "organization" | "project">) {
+  const normalized = normalizeBaseUrl(draft.provider, draft.baseUrl);
+  if (!normalized.ok || normalized.value !== draft.baseUrl || (draft.provider !== "openai" && (draft.organization || draft.project)))
+    throw new HttpError(409, "The provider setup metadata changed. Prepare a new form in The Architect.");
+  const config = draft.provider === "openai" ? { organization: draft.organization ?? undefined, project: draft.project ?? undefined } : {};
+  const parsed = CONFIG_SCHEMAS[draft.provider].safeParse(config);
+  if (!parsed.success) throw new HttpError(409, "The provider setup metadata changed. Prepare a new form in The Architect.");
+  return parsed.data;
+}
+
 /** Create a metadata-only handoff. The credential is submitted later through the authenticated Admin form. */
 export async function prepareArchitectProviderConnection(ctx: AgentCtx, _actor: Principal, raw: unknown, signal?: AbortSignal) {
   const input = architectProviderConnectionDraftInput.parse(raw);
@@ -115,8 +125,10 @@ export async function loadArchitectProviderConnectionDraft(actorId: string, sess
       sql`${architectProviderConnectionDrafts.expiresAt} > clock_timestamp()`,
     ));
     if (!draft) return null;
-    try { await authorizeDraftContext(tx, actorId, sessionVersion, draft.botId, draft.conversationId); }
-    catch (error) { if (error instanceof HttpError && error.status === 403) return null; throw error; }
+    try {
+      await authorizeDraftContext(tx, actorId, sessionVersion, draft.botId, draft.conversationId);
+      validateConnectionDraftTarget(draft);
+    } catch (error) { if (error instanceof HttpError && [400, 403, 409].includes(error.status)) return null; throw error; }
     return { id: draft.id, provider: draft.provider, name: draft.name, baseUrl: draft.baseUrl,
       organization: draft.organization, project: draft.project, expiresAt: draft.expiresAt.toISOString() };
   });
@@ -139,9 +151,12 @@ export async function completeArchitectProviderConnectionDraft(actorId: string, 
     )).for("update");
     if (!draft) throw new HttpError(409, "This credential form expired or was already used. Prepare a new form in The Architect.");
     const { fresh } = await authorizeDraftContext(tx, actorId, sessionVersion, draft.botId, draft.conversationId);
-    const config = draft.provider === "openai" ? { organization: draft.organization ?? undefined, project: draft.project ?? undefined } : {};
     let secret: string | null;
-    try { secret = encodeSecretInput(draft.provider, CONFIG_SCHEMAS[draft.provider].parse(config), { apiKey: input.apiKey }); }
+    let config: ReturnType<typeof validateConnectionDraftTarget>;
+    try {
+      config = validateConnectionDraftTarget(draft);
+      secret = encodeSecretInput(draft.provider, config, { apiKey: input.apiKey });
+    }
     catch { throw new HttpError(400, "The API key could not be accepted. Check it and try a new credential form."); }
     if (!secret) throw new HttpError(400, "Enter an API key.");
     const connectionId = newId();
