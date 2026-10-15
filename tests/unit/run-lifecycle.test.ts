@@ -215,11 +215,18 @@ describe("runTurn", () => {
     );
     const persist = vi.fn(async () => {});
     const r = await turn({ persist });
-    expect(r.chunks.filter((c) => c.type === "error")).toEqual([{ type: "error", errorText: "An error occurred." }]);
-    expect(r.done.error).toBe("An error occurred.");
-    expect(persist).toHaveBeenCalledWith(expect.anything(), { error: "An error occurred." });
+    expect(r.done.error).toMatch(/^Something went wrong\. Try again\. Reference: [\w-]+\.$/);
+    expect(r.chunks.filter((c) => c.type === "error")).toEqual([{ type: "error", errorText: r.done.error }]);
+    expect(persist).toHaveBeenCalledWith(expect.anything(), { error: r.done.error });
   });
 
+  it("keeps arbitrary outer stream failures out of user-visible chunks", async () => {
+    h.buildToolset.mockResolvedValue({ tools: {}, skills: [], delegates: [], approval: () => undefined, close: h.close,
+      get warnings() { throw new Error("arbitrary-stream-fixture-secret https://private.fixture.invalid"); } });
+    const r = await turn();
+    expect(r.chunks.find(c => c.type === "error")).toMatchObject({ errorText: expect.stringMatching(/^Something went wrong\. Try again\. Reference:/) });
+    expect(JSON.stringify(r.chunks)).not.toMatch(/arbitrary-stream-fixture-secret|private\.fixture\.invalid/);
+  });
   it("an actionable model error is kept as is", async () => {
     useModel(async () => {
       throw new ProviderUnavailableError("Sign in with ChatGPT is turned off. Pick another model.");
@@ -235,7 +242,7 @@ describe("runTurn", () => {
         boom: tool({
           inputSchema: z.object({}),
           execute: async (): Promise<string> => {
-            throw new Error("nope");
+            throw new Error("arbitrary-tool-fixture-secret https://private.fixture.invalid");
           },
         }),
       },
@@ -251,6 +258,7 @@ describe("runTurn", () => {
     ]);
     const r = await turn({ bot: { id: "b1", maxSteps: 3 } as never });
     expect(r.chunks.some((c) => c.type === "tool-output-error")).toBe(true);
+    expect(JSON.stringify(r.chunks)).not.toMatch(/arbitrary-tool-fixture-secret|private\.fixture\.invalid/);
     expect(r.chunks.some((c) => c.type === "error")).toBe(false);
     expect(r.done.error).toBeUndefined();
   });

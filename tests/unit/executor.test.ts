@@ -127,6 +127,7 @@ vi.mock("@/lib/llm", () => ({
 
 import { agentRuns, aiApps, conversations, messages } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
+import { ChatGPTNotConnectedError } from "@/lib/llm/chatgpt/errors";
 import { executeRun } from "@/lib/runs/execute";
 import { RunAbort } from "@/lib/runs/types";
 
@@ -554,17 +555,19 @@ describe("executeRun", () => {
     await executeRun("run1");
     expect(finalizeCall()[3]).toMatchObject({ status: "failed", error: "This chat's bot changed." });
 
-    h.runTurn.mockRejectedValueOnce(Object.assign(new Error("secret upstream detail"), { userFacing: "Connect your ChatGPT account first." }));
+    h.runTurn.mockRejectedValueOnce(new ChatGPTNotConnectedError());
     await executeRun("run1");
     expect(finalizeCall()[3]).toEqual({
       status: "failed",
-      error: "Connect your ChatGPT account first.",
-      closing: [{ type: "error", errorText: "Connect your ChatGPT account first." }],
+      error: "Connect your ChatGPT account in Settings → Connected accounts to use this model.",
+      closing: [{ type: "error", errorText: "Connect your ChatGPT account in Settings → Connected accounts to use this model." }],
     });
 
     h.runTurn.mockRejectedValueOnce(new Error("ECONNREFUSED 10.0.0.1"));
     await executeRun("run1");
-    expect(finalizeCall()[3]).toMatchObject({ status: "failed", error: "Couldn't start this reply." });
+    expect(finalizeCall()[3]).toMatchObject({ status: "failed", error: expect.stringMatching(/^Something went wrong\. Try again\. Reference:/) });
+    expect(JSON.stringify(finalizeCall()[3])).not.toContain("10.0.0.1");
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain("10.0.0.1");
 
     h.resolveTurnTarget.mockRejectedValueOnce(new HttpError(400, "This bot's model endpoint is disabled"));
     await executeRun("run1");

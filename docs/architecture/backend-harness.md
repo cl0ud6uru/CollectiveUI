@@ -630,3 +630,7 @@ All come from `src/db/schema.ts`, then `npm run db:generate`, then `npm run db:m
 4. **Prompt-injection exfiltration.** Per-user internal networks, a default-empty egress allowlist, secrets never in sandboxes, IP-bound short-lived tokens, ask-by-default commands.
 5. **Protocol churn** (Codex app-server is experimental; the Claude control protocol is undocumented). Exact pins, generated types, recorded fixtures plus fake binaries, fail-closed handling of unknown requests.
 6. **Durable-run correctness.** Full-message replay, boundary tails, LISTEN before SELECT with re-query on reconnect, a heartbeat sweeper, an approval TTL that denies, and the fake-driver e2e suite gating merges.
+
+## Native error presentation
+
+Native direct, group, setup and tool error boundaries show existing typed connection, quota and approval guidance. Other failures use a generic message with a diagnostic reference; arbitrary provider/tool messages, response bodies, stacks and internal URLs are not forwarded. The matching server diagnostic contains only the reference, a fixed classification and a valid HTTP status when available. It deliberately omits raw detail because pattern redaction cannot identify arbitrary private values. SDK raw-error logging is replaced by this boundary. Local setup authorization/lifecycle HttpErrors retain their application-written guidance; admin connection tests keep their separate diagnostic contract.
