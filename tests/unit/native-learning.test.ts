@@ -28,7 +28,7 @@ vi.mock("@/lib/hermes-team/learning", async original => {
 
 import { db, schema } from "@/db";
 import { loadPrincipal } from "@/lib/auth/groups";
-import { changeLearning, learnedSkillsForBot, learnedPreferences, recordLearnedSkillUse, learningHistory, learningViews } from "@/lib/agent/learning/store";
+import { afterLearningMutationLock, changeLearning, learnedSkillsForBot, learnedPreferences, recordLearnedSkillUse, learningHistory, learningViews } from "@/lib/agent/learning/store";
 import { reviewNativeRun, scheduleLearningReview, recoverLearningReviews } from "@/lib/agent/learning/review";
 import { successfulToolEvidence, lessonDisposition } from "@/lib/agent/learning/policy";
 import { curateLearnedSkills } from "@/lib/agent/learning/curator";
@@ -240,6 +240,16 @@ describe("native learning with real PostgreSQL migrations", () => {
       { version: 2, content: pending },
       { version: 1, content: approved },
     ]);
+  });
+
+  it("honors Stop while a learned correction waits for its row lock", async () => {
+    const controller = new AbortController();
+    let releaseLock!: (value: string) => void;
+    const lockBarrier = new Promise<string>(resolve => { releaseLock = resolve; });
+    const result = afterLearningMutationLock(lockBarrier, controller.signal);
+    controller.abort();
+    releaseLock("row locked");
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("aborts a stopped correction and rejects a stale embedding after a concurrent memory edit", async () => {

@@ -54,7 +54,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
             )) : [];
           if (learning?.status === "active") {
             abortSignal?.throwIfAborted();
-            await changeLearning(ctx.principal, learning.id, learning.version, { status: "archived" });
+            await changeLearning(ctx.principal, learning.id, learning.version, { status: "archived" }, abortSignal);
             return { deleted: true, status: "forgotten", recordType: "learned_preference" };
           }
           if (learning?.status === "pending") {
@@ -107,7 +107,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
           abortSignal?.throwIfAborted();
           await changeLearning(ctx.principal, learning.id, learning.version, {
             content: { ...learning.content, description: fact, instructions: fact },
-          });
+          }, abortSignal);
           unchangedForgetIds.delete(id);
           return {
             corrected: true,

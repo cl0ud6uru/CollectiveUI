@@ -17,6 +17,7 @@ const renderResult = (name: string, output: object) => renderToStaticMarkup(crea
 describe("memory tool collapsed result labels", () => {
   it.each([
     ["forget", { status: "not_found", deleted: false }, "No matching memory changed"],
+    ["forget", { deleted: false }, "No matching memory changed"],
     ["forget", { status: "repeat_noop", deleted: false }, "No change — same target already checked"],
     ["forget", { status: "unsupported_pending", deleted: false }, "No change — review pending preference"],
     ["forget", { status: "forgotten", deleted: true, recordType: "ordinary_memory" }, "Memory forgotten"],

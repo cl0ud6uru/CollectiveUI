@@ -34,6 +34,7 @@ import { BotAvatar } from "@/components/bots/bot-avatar";
 import { useOptionalPets, usePetEnvironment } from "@/components/pets/pet-context";
 import { Button } from "@/components/ui/button";
 import { isGrantable, isHermesTool } from "@/lib/agent/tool-names";
+import { memoryToolDoneLabel } from "@/lib/agent/tools/memory-result";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
@@ -347,19 +348,8 @@ export function ToolPartView({
   const failed = part.state === "output-error";
   const denied = part.state === "output-denied";
   const output = part.state === "output-available" ? part.output : undefined;
-  const memoryResult = output && typeof output === "object" ? output as { status?: string; recordType?: string; recallStatus?: string } : undefined;
-  const memoryDone = name === "forget" ? ({
-    forgotten: memoryResult?.recordType === "learned_preference" ? "Learned preference forgotten" : "Memory forgotten",
-    repeat_noop: "No change — same target already checked",
-    unsupported_pending: "No change — review pending preference",
-    not_found: "No matching memory changed",
-  } as Record<string, string>)[memoryResult?.status ?? ""] ?? d.done
-    : name === "correct_memory" ? ({
-      corrected: memoryResult?.recordType === "learned_preference" ? "Learned preference corrected" : memoryResult?.recallStatus === "recent_fallback" ? "Memory corrected · recent recall" : "Memory corrected",
-      corrected_pending: "Correction saved for review",
-      conflict: "Memory changed — refresh before retrying",
-      not_found: "No matching memory changed",
-    } as Record<string, string>)[memoryResult?.status ?? ""] ?? d.done : d.done;
+  const memoryResult = output && typeof output === "object" ? output as { status?: string; recordType?: string; recallStatus?: string; deleted?: boolean } : undefined;
+  const memoryDone = memoryToolDoneLabel(name, memoryResult, d.done);
   const isDelegate = isDelegationTool(name);
   const artifact = workspaceArtifact(name, output);
   const preliminary = part.state === "output-available" && !!(part as { preliminary?: boolean }).preliminary;
