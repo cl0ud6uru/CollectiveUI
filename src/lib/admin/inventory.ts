@@ -8,6 +8,7 @@ import { resolvePrincipal, type Principal } from "@/lib/auth/groups";
 import { assertAdmin, notFound } from "@/lib/authz";
 import { getSetting } from "@/lib/settings";
 import { safeUrl } from "./secret-safe";
+import { providerConnectionUpdatedAtToken } from "./provider-connection-write";
 
 /*
  * Read-only admin inventory for The Architect (and any other admin surface). Every function checks assertAdmin itself
@@ -103,7 +104,7 @@ export async function adminListConnections(p: Principal) {
       .from(aiApps).orderBy(asc(aiApps.sortOrder), asc(aiApps.name)),
     db.select({ id: providerConnections.id, name: providerConnections.name, provider: providerConnections.provider, baseUrl: providerConnections.baseUrl,
       organization: providerConnections.organization, project: providerConnections.project, enabled: providerConnections.enabled,
-      hasKey: sql<boolean>`${providerConnections.credentialEnc} is not null`, updatedAt: providerConnections.updatedAt })
+      hasKey: sql<boolean>`${providerConnections.credentialEnc} is not null`, updatedAt: providerConnectionUpdatedAtToken })
       .from(providerConnections).orderBy(asc(providerConnections.name)),
     db.select({ appId: appAccess.appId, groupId: appAccess.groupId }).from(appAccess),
     db.select({ id: mcpServers.id, name: mcpServers.name, url: mcpServers.url, transport: mcpServers.transport, status: mcpServers.status,

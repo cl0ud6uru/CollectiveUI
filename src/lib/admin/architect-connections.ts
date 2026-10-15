@@ -7,7 +7,7 @@ import { HttpError } from "@/lib/authz";
 import { auditVia } from "@/lib/audit";
 import { lockArchitectActor, authorizeArchitectCall } from "@/lib/agent/tools/admin-guard";
 import type { AgentCtx } from "@/lib/agent/types";
-import { updateProviderConnectionMetadata } from "@/lib/admin/provider-connection-write";
+import { providerConnectionUpdatedAtToken, readProviderConnectionUpdatedAtToken, updateProviderConnectionMetadata } from "@/lib/admin/provider-connection-write";
 import { safeUrl } from "@/lib/admin/secret-safe";
 import { decodeSecret, type AppSecret } from "@/lib/llm/secrets";
 import { CATALOG, type SavedProviderKind } from "@/lib/llm/catalog";
@@ -31,9 +31,9 @@ async function prepareWrite(ctx: AgentCtx, tx: Tx): Promise<Principal> {
   return fresh;
 }
 
-function connectionSummary(row: ProviderConnection) {
+function connectionSummary(row: ProviderConnection, updatedAt: string) {
   return { id: row.id, name: row.name, provider: row.provider, baseUrl: safeUrl(row.baseUrl), organization: row.organization,
-    project: row.project, enabled: row.enabled, hasCredential: true, updatedAt: row.updatedAt.toISOString() };
+    project: row.project, enabled: row.enabled, hasCredential: true, updatedAt };
 }
 
 export async function updateArchitectProviderConnection(ctx: AgentCtx, _actor: Principal, raw: unknown, signal?: AbortSignal) {
@@ -42,11 +42,12 @@ export async function updateArchitectProviderConnection(ctx: AgentCtx, _actor: P
     const fresh = await prepareWrite(ctx, tx);
     const [current] = await tx.select().from(providerConnections).where(eq(providerConnections.id, input.connectionId)).for("update");
     if (!current) throw new HttpError(404, "Provider connection not found.");
-    if (current.updatedAt.getTime() !== new Date(input.expectedUpdatedAt).getTime())
+    const currentToken = await readProviderConnectionUpdatedAtToken(tx, current.id);
+    if (currentToken !== input.expectedUpdatedAt)
       throw new HttpError(409, "Provider connection changed. Read it again and request fresh approval.");
     const patch = { name: input.name ?? current.name, enabled: input.enabled ?? current.enabled };
     checkAbort(signal);
-    const saved = await updateProviderConnectionMetadata(tx, current, patch, new Date(input.expectedUpdatedAt));
+    const saved = await updateProviderConnectionMetadata(tx, current, patch, input.expectedUpdatedAt);
     const [readback] = await tx.select().from(providerConnections).where(and(eq(providerConnections.id, current.id), eq(providerConnections.updatedAt, saved.updatedAt)));
     if (!readback || readback.name !== patch.name || readback.enabled !== patch.enabled || readback.credentialEnc !== current.credentialEnc ||
       readback.provider !== current.provider || readback.baseUrl !== current.baseUrl || readback.organization !== current.organization || readback.project !== current.project)
@@ -55,22 +56,23 @@ export async function updateArchitectProviderConnection(ctx: AgentCtx, _actor: P
     await auditVia(fresh.user.id, via(ctx), "architect.provider_connection.update", current.id,
       { fields: Object.keys(input).filter(key => key !== "connectionId" && key !== "expectedUpdatedAt"), enabled: patch.enabled }, tx);
     checkAbort(signal);
-    return { status: "verified" as const, connection: connectionSummary(readback) };
+    const updatedAt = await tx.select({ token: providerConnectionUpdatedAtToken }).from(providerConnections).where(eq(providerConnections.id, readback.id));
+    return { status: "verified" as const, connection: connectionSummary(readback, updatedAt[0].token) };
   });
 }
 
 export async function testArchitectProviderConnection(ctx: AgentCtx, _actor: Principal, raw: unknown, signal?: AbortSignal) {
   const input = architectProviderConnectionTestInput.parse(raw);
-  const expectedAt = new Date(input.expectedUpdatedAt);
   const snapshot = await db.transaction(async tx => {
     const fresh = await prepareWrite(ctx, tx);
     const [row] = await tx.select().from(providerConnections).where(eq(providerConnections.id, input.connectionId)).for("share");
     if (!row) throw new HttpError(404, "Provider connection not found.");
-    if (row.updatedAt.getTime() !== expectedAt.getTime()) throw new HttpError(409, "Provider connection changed. Read it again before testing.");
+    const updatedAt = await readProviderConnectionUpdatedAtToken(tx, row.id);
+    if (updatedAt !== input.expectedUpdatedAt) throw new HttpError(409, "Provider connection changed. Read it again before testing.");
     if (!row.enabled) throw new HttpError(409, "Enable the provider connection in Admin before testing it.");
     if (CATALOG[row.provider].test !== "list") throw new HttpError(400, "This saved provider does not support a metadata-only connection test.");
     checkAbort(signal);
-    return { row, actorId: fresh.user.id };
+    return { row, actorId: fresh.user.id, updatedAt };
   });
 
   let outcome: ConnectionTestResult;
@@ -88,7 +90,7 @@ export async function testArchitectProviderConnection(ctx: AgentCtx, _actor: Pri
   await db.transaction(async tx => {
     const fresh = await prepareWrite(ctx, tx);
     const [current] = await tx.select().from(providerConnections).where(eq(providerConnections.id, snapshot.row.id)).for("share");
-    if (!current || current.updatedAt.getTime() !== expectedAt.getTime() || !current.enabled)
+    if (!current || await readProviderConnectionUpdatedAtToken(tx, current.id) !== snapshot.updatedAt || !current.enabled)
       throw new HttpError(409, "Provider connection changed while it was being tested. Read it again and retry.");
     checkAbort(signal);
     await auditVia(fresh.user.id, via(ctx), "architect.provider_connection.test", current.id,
@@ -97,6 +99,6 @@ export async function testArchitectProviderConnection(ctx: AgentCtx, _actor: Pri
   });
 
   return outcome.ok
-    ? { status: "verified" as const, models: outcome.models.slice(0, 50).map(model => model.slice(0, 160)), note: "The saved connection's metadata endpoint responded." }
+    ? { status: "verified" as const, modelsFound: outcome.models.length, note: "The saved connection's metadata endpoint responded. Model identifiers are withheld." }
     : { status: "failed" as const, message: "The saved connection could not be verified. Check its credential and endpoint in Admin." };
 }

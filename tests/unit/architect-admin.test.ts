@@ -249,27 +249,31 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     const credentialEnc = sealProviderCredential("provider", secret);
     await db.insert(s.providerConnections).values({ id: "provider", name: "Shared API", provider: "openai", baseUrl: null,
       organization: "org-a", project: "proj-a", credentialEnc, createdBy: admin.user.id });
+    await fixture.client!.exec("UPDATE provider_connections SET updated_at = '2026-10-15T10:11:12.123456Z'::timestamptz WHERE id = 'provider'");
     const [before] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
-    const updated = await execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: before.updatedAt.toISOString(), name: "Production API", enabled: false }) as { status: string; connection: { name: string; enabled: boolean; baseUrl: string | null; hasCredential: boolean } };
+    const beforeToken = (await adminListConnections(admin)).providerConnections[0].updatedAt;
+    expect(before.updatedAt.toISOString()).not.toBe(beforeToken);
+    const updated = await execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: beforeToken, name: "Production API", enabled: false }) as { status: string; connection: { name: string; enabled: boolean; baseUrl: string | null; hasCredential: boolean; updatedAt: string } };
     expect(updated).toMatchObject({ status: "verified", connection: { name: "Production API", enabled: false, baseUrl: null, hasCredential: true } });
     const [after] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
     expect(after).toMatchObject({ credentialEnc, provider: "openai", baseUrl: null, organization: "org-a", project: "proj-a" });
     expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
-    await expect(execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: before.updatedAt.toISOString(), enabled: true })).rejects.toThrow("could not be verified");
+    await expect(execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: beforeToken, enabled: true })).rejects.toThrow("could not be verified");
     expect((await db.select().from(s.auditLog)).filter(row => row.action === "architect.provider_connection.update")).toHaveLength(1);
   });
   it("tests a saved provider connection through a metadata endpoint and never returns its credential", async () => {
     const credentialEnc = sealProviderCredential("provider", secret);
     await db.insert(s.providerConnections).values({ id: "provider", name: "Shared API", provider: "openai", baseUrl: null, credentialEnc, createdBy: admin.user.id });
-    const [row] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
+    const updatedAt = (await adminListConnections(admin)).providerConnections[0].updatedAt;
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect((init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${secret}`);
-      return new Response(JSON.stringify({ data: [{ id: "fixture-model" }] }), { status: 200, headers: { "content-type": "application/json" } });
+      // Opaque provider metadata can echo an opaque stored credential that pattern redaction cannot recognize.
+      return new Response(JSON.stringify({ data: [{ id: secret }] }), { status: 200, headers: { "content-type": "application/json" } });
     });
     vi.stubGlobal("fetch", fetchMock);
     try {
-      const result = await execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: row.updatedAt.toISOString() });
-      expect(result).toMatchObject({ status: "verified", models: ["fixture-model"] });
+      const result = await execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: updatedAt });
+      expect(result).toMatchObject({ status: "verified", modelsFound: 1 });
       expect(JSON.stringify(result)).not.toContain(secret);
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.test" && JSON.stringify(audit.details).includes('"modelsFound":1'))).toBe(true);
@@ -278,17 +282,17 @@ describe("The Architect using real migrated PostgreSQL state", () => {
   it("rolls back provider metadata and test audits when their transaction barriers are cancelled", async () => {
     const credentialEnc = sealProviderCredential("provider", secret);
     await db.insert(s.providerConnections).values({ id: "provider", name: "Shared API", provider: "openai", credentialEnc, createdBy: admin.user.id });
-    const [row] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
+    const updatedAt = (await adminListConnections(admin)).providerConnections[0].updatedAt;
     let updateChecks = 0;
     const updateSignal = { throwIfAborted: () => { if (++updateChecks === 4) throw new Error(secret); } } as unknown as AbortSignal;
-    await expect(execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: row.updatedAt.toISOString(), name: "Cancelled" }, updateSignal)).rejects.toThrow("could not be verified");
+    await expect(execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: updatedAt, name: "Cancelled" }, updateSignal)).rejects.toThrow("could not be verified");
     expect((await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider")))[0].name).toBe("Shared API");
     expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.update")).toBe(false);
 
     const controller = new AbortController();
     vi.stubGlobal("fetch", async () => { controller.abort(); return new Response(JSON.stringify({ data: [] }), { status: 200 }); });
     try {
-      await expect(execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: row.updatedAt.toISOString() }, controller.signal)).rejects.toThrow("could not be verified");
+      await expect(execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: updatedAt }, controller.signal)).rejects.toThrow("could not be verified");
       expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.test")).toBe(false);
     } finally { vi.unstubAllGlobals(); }
   });
