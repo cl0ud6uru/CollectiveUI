@@ -74,7 +74,8 @@ describe('confirmed native Hermes project operations', () => {
       const schedule = f.schedules.find(value => value.id === params.name);
       if (!schedule) throw new Error('schedule not found');
       schedule.enabled = params.action === 'resume';
-      return { success: true, job: { job_id: schedule.id, enabled: schedule.enabled } };
+      schedule.state = params.action === 'resume' ? 'scheduled' : 'paused';
+      return { success: true, job: { job_id: schedule.id, enabled: schedule.enabled, state: schedule.state } };
     });
   });
 
@@ -118,7 +119,7 @@ describe('confirmed native Hermes project operations', () => {
   });
 
   it('pauses and resumes only a profile-scoped listed schedule after separate confirmation and readback', async () => {
-    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true }];
+    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true, state: 'scheduled' }];
     const prepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'schedule-id' });
     expect(prepared).toMatchObject({ action: 'schedule', name: 'Nightly', profile: 'default' });
     expect(f.calls).not.toHaveBeenCalled();
@@ -133,9 +134,18 @@ describe('confirmed native Hermes project operations', () => {
     expect(f.calls).toHaveBeenCalledTimes(2);
   });
 
+  it('never offers a completed schedule for resume or dispatches a replay', async () => {
+    f.schedules = [{ id: 'completed-id', name: 'Finished once', enabled: false, state: 'completed' }];
+    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'resume', scheduleId: 'completed-id' }))
+      .rejects.toThrow('Only a scheduled job can be paused');
+    expect(f.calls).not.toHaveBeenCalled();
+    expect(f.receipt).toBeNull();
+    expect(f.row.status).toBe('idle');
+  });
+
   it('fails closed for invented schedules and unscoped schedule results', async () => {
-    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'invented' })).rejects.toThrow('current state');
-    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true }]; f.unscoped = true;
+    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'invented' })).rejects.toThrow('Only a scheduled job can be paused');
+    f.schedules = [{ id: 'schedule-id', name: 'Nightly', enabled: true, state: 'scheduled' }]; f.unscoped = true;
     await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'pause', scheduleId: 'schedule-id' })).rejects.toThrow('profile-scoped schedules');
     expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
   });

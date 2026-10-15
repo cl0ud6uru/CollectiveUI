@@ -27,11 +27,17 @@ const claimSchema = z.discriminatedUnion('action', [
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
     socketEpoch: z.number().int().positive(), action: z.literal('select'), projectId: z.string().min(1).max(200), projectName: z.string().max(300), expiresAt: z.number().int() }).strict(),
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
-    socketEpoch: z.number().int().positive(), action: z.literal('schedule'), scheduleId: z.string().min(1).max(200), scheduleName: z.string().max(300), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
+    socketEpoch: z.number().int().positive(), action: z.literal('schedule'), scheduleAction: z.enum(['pause', 'resume']), scheduleId: z.string().min(1).max(200), scheduleName: z.string().max(300), scheduleState: z.string().max(100), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
 ]);
 type Claim = z.infer<typeof claimSchema>;
 type Session = typeof remoteHermesSessions.$inferSelect;
 const binding = (owner: string, connection: string, session: string) => JSON.stringify(['remote-hermes-project:v1', owner, connection, session]);
+type ScheduleClaim = Extract<Claim, { action: 'schedule' }>;
+const scheduleStillReady = (schedule: { enabled: boolean; state: string }, claim: ScheduleClaim) => schedule.state === claim.scheduleState &&
+  (claim.scheduleAction === 'pause' ? schedule.enabled && schedule.state === 'scheduled' : schedule.state === 'paused' || schedule.state === 'error');
+const scheduleMatches = (schedule: { enabled: boolean; state: string }, claim: ScheduleClaim) => claim.scheduleAction === 'pause'
+  ? !schedule.enabled && schedule.state === 'paused'
+  : schedule.enabled && schedule.state === 'scheduled';
 
 function readClaim(token: string, aad: string): Claim {
   try {
@@ -111,9 +117,11 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     } else {
       const listed = await schedules(snapshot.socketEpoch);
       const schedule = listed.schedules.find(value => value.id === input.scheduleId);
-      if (!schedule || schedule.enabled !== (input.action === 'pause')) throw new HttpError(409, 'Choose a schedule with a current state from the refreshed Hermes list.');
+      const resumable = schedule && (schedule.state === 'paused' || schedule.state === 'error');
+      if (!schedule || input.action === 'pause' && (!schedule.enabled || schedule.state !== 'scheduled') || input.action === 'resume' && !resumable)
+        throw new HttpError(409, 'Only a scheduled job can be paused, and only paused or recoverable error jobs can be resumed.');
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
-        action: 'schedule', scheduleId: schedule.id, scheduleName: schedule.name, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
+        action: 'schedule', scheduleAction: input.action, scheduleId: schedule.id, scheduleName: schedule.name, scheduleState: schedule.state, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
     }
     return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action, enabled: claim.action === 'schedule' ? claim.enabled : undefined,
       name: claim.action === 'create' ? claim.name : claim.action === 'select' ? claim.projectName : claim.scheduleName,
@@ -130,7 +138,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     if (existingReceipt.digest !== digest) throw new HttpError(409, 'This project confirmation was already used for different content.');
     if (claim.action === 'schedule') {
       const current = await schedules(claim.socketEpoch);
-      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled);
+      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim));
       return { accepted: complete, duplicate: true, schedules: current.schedules,
         output: complete ? 'This schedule request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
     }
@@ -144,7 +152,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   if (claim.action === 'schedule') {
     const listed = await schedules(claim.socketEpoch);
     const current = listed.schedules.find(schedule => schedule.id === claim.scheduleId);
-    if (!current || current.enabled === claim.enabled) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
+    if (!current || !scheduleStillReady(current, claim)) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
   } else {
     const listed = await projects(claim.socketEpoch);
     if (claim.action === 'select' && !listed.projects.some(project => project.id === claim.projectId && !project.archived))
@@ -171,7 +179,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   if (!reserved) {
     if (claim.action === 'schedule') {
       const current = await schedules(claim.socketEpoch);
-      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled);
+      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim));
       return { accepted: complete, duplicate: true, schedules: current.schedules,
         output: complete ? 'This schedule request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
     }
@@ -199,7 +207,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       const params = claim.action === 'create'
         ? { profile: claim.profile, name: claim.name, slug: claim.slug, folders: [], use: false }
         : claim.action === 'select' ? { profile: claim.profile, id: claim.projectId }
-          : { profile: claim.profile, action: claim.enabled ? 'resume' : 'pause', name: claim.scheduleId };
+          : { profile: claim.profile, action: claim.scheduleAction, name: claim.scheduleId };
       return hub.socket.dispatchConnected(method, params, claim.socketEpoch, 30_000, tx);
     });
     const replyValue = await reply;
@@ -213,12 +221,12 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       throw new HttpError(502, 'Hermes did not confirm the selected active project. Refresh before continuing.');
     } else if (claim.action === 'schedule') {
       const changed = record(replyValue.job);
-      if (replyValue.success !== true || changed.job_id !== claim.scheduleId || changed.enabled !== claim.enabled)
+      if (replyValue.success !== true || changed.job_id !== claim.scheduleId || !scheduleMatches({ enabled: changed.enabled === true, state: String(changed.state ?? '') }, claim))
         throw new HttpError(502, 'Hermes did not confirm the requested schedule state. Refresh before continuing.');
     }
     if (claim.action === 'schedule') {
       const latest = await schedules(claim.socketEpoch);
-      if (!latest.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled))
+      if (!latest.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim)))
         throw new HttpError(502, 'Hermes readback did not match the requested schedule state. The result is uncertain; refresh before taking action.');
       await settle('idle');
       return { accepted: true, duplicate: false, schedules: latest.schedules, output: claim.enabled ? 'Schedule resumed; it may run soon and use model usage.' : 'Schedule paused.' };
