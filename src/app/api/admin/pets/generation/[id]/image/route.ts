@@ -9,6 +9,7 @@ export async function GET(request: Request, context: Context) {
     const p = await requirePrincipal();
     const kind = new URL(request.url).searchParams.get("kind");
     if (kind !== "appearance" && kind !== "preview") throw new HttpError(400, "Choose a valid generated image.");
-    return petImage(await petGenerationImage(p, (await context.params).id, kind));
+    const revision = new URL(request.url).searchParams.get("revision");
+    return petImage(await petGenerationImage(p, (await context.params).id, kind, revision));
   } catch (error) { return petError(error); }
 }

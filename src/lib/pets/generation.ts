@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import { and, desc, eq, lt } from "drizzle-orm";
 import sharp, { type OverlayOptions } from "sharp";
 import { db, type Tx } from "@/db";
@@ -18,6 +19,17 @@ export const PET_IMAGE_MODEL = "gpt-image-2.5-sunburst" as const;
 const IMAGE_LIMIT = 4 * 1024 * 1024;
 const animationKeys = PET_ANIMATIONS.map(state => state.name);
 const slotKeys = [...animationKeys, "directions"];
+
+type PreviewReceipt = { id: string; key: string; status: string };
+function petPreviewToken(preview: Buffer | null, receipts: PreviewReceipt[]) {
+  if (!preview) return null;
+  const latest = new Map<string, PreviewReceipt>();
+  for (const receipt of receipts) if (!latest.has(receipt.key)) latest.set(receipt.key, receipt);
+  if (slotKeys.some(key => latest.get(key)?.status !== "succeeded")) return null;
+  const digest = createHash("sha256").update("pet-generation-preview-v1\0").update(preview);
+  for (const key of slotKeys) digest.update("\0").update(key).update("\0").update(latest.get(key)!.id);
+  return digest.digest("base64url");
+}
 
 type ImageGenerator = typeof generatePetImage;
 type SlotKey = typeof slotKeys[number];
@@ -294,16 +306,25 @@ export async function getPetGenerationJob(p: Principal, id: string) {
   }).from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt));
   const latest = new Map<string, number>();
   for (const slot of slots) latest.set(slot.slotKey, Math.max(latest.get(slot.slotKey) ?? 0, slot.attempt));
+  const receipts = await db.select({ id: petGenerationSlots.id, key: petGenerationSlots.slotKey, status: petGenerationSlots.status })
+    .from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt));
+  const previewToken = petPreviewToken(currentJob.preview, receipts);
   return { id: currentJob.id, displayName: currentJob.displayName, description: currentJob.description, credit: currentJob.credit, appearanceState: currentJob.appearanceState,
     appearanceConsentAt: currentJob.appearanceConsentAt, appearanceApprovedAt: currentJob.appearanceApprovedAt, buildConsentAt: currentJob.buildConsentAt,
-    hasAppearance: !!currentJob.appearance, hasPreview: !!currentJob.preview, previewErrorCode: currentJob.previewErrorCode, catalogPetId: currentJob.catalogPetId,
+    hasAppearance: !!currentJob.appearance, hasPreview: !!currentJob.preview && !!previewToken, previewToken, previewErrorCode: currentJob.previewErrorCode, catalogPetId: currentJob.catalogPetId,
     slots: slots.map(slot => ({ ...slot, isLatest: latest.get(slot.slotKey) === slot.attempt })) };
 }
 
-export async function petGenerationImage(p: Principal, id: string, kind: "appearance" | "preview") {
+export async function petGenerationImage(p: Principal, id: string, kind: "appearance" | "preview", expectedPreviewToken?: string | null) {
   const job = await ownedJob(p, id);
   const data = kind === "appearance" ? job.appearance : job.preview;
   if (!data) throw new HttpError(404, "Image is not available yet.");
+  if (kind === "preview") {
+    if (!expectedPreviewToken) throw new HttpError(400, "Reload the current preview before reviewing it.");
+    const receipts = await db.select({ id: petGenerationSlots.id, key: petGenerationSlots.slotKey, status: petGenerationSlots.status })
+      .from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt));
+    if (petPreviewToken(data, receipts) !== expectedPreviewToken) throw new HttpError(409, "The preview changed. Reload it and review the current artwork before continuing.");
+  }
   return data;
 }
 
@@ -336,8 +357,8 @@ export async function rebuildPetGenerationPreview(p: Principal, id: string, befo
 }
 
 /** Copy the owner's reviewed v2 preview into their private bot-pet row, using existing bot edit rules. */
-export async function assignPetGenerationPreviewPrivately(p: Principal, id: string, botId: string, visualReview: boolean) {
-  if (visualReview !== true) throw new HttpError(400, "Review all animation states, directions, and avatar previews before assigning this private pet.");
+export async function assignPetGenerationPreviewPrivately(p: Principal, id: string, botId: string, consent: { visualReview: unknown; previewToken: unknown }) {
+  if (consent.visualReview !== true || typeof consent.previewToken !== "string") throw new HttpError(400, "Review the current preview before assigning this private pet.");
   return db.transaction(async tx => {
     const [job] = await tx.select().from(petGenerationJobs)
       .where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id))).for("update");
@@ -346,11 +367,12 @@ export async function assignPetGenerationPreviewPrivately(p: Principal, id: stri
     const bot = await lockPetViewer(p, botId, tx);
     assertPersonalPetAllowed(bot);
     await assertFreshPetGenerationAccess(p, tx);
-    const slots = await tx.select({ key: petGenerationSlots.slotKey, attempt: petGenerationSlots.attempt, status: petGenerationSlots.status })
+    const slots = await tx.select({ id: petGenerationSlots.id, key: petGenerationSlots.slotKey, attempt: petGenerationSlots.attempt, status: petGenerationSlots.status })
       .from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt)).for("update");
     const latest = new Map<string, typeof slots[number]>();
     for (const slot of slots) if (!latest.has(slot.key)) latest.set(slot.key, slot);
-    if (slotKeys.some(key => latest.get(key)?.status !== "succeeded")) throw new HttpError(409, "The preview no longer matches the latest successful slot receipts. Rebuild it before assigning.");
+    if (petPreviewToken(job.preview, slots.map(slot => ({ id: slot.id, key: slot.key, status: slot.status }))) !== consent.previewToken ||
+      slotKeys.some(key => latest.get(key)?.status !== "succeeded")) throw new HttpError(409, "The preview changed. Review the current preview again before assigning.");
     const manifest: PetManifest = { displayName: job.displayName, description: job.description, spriteVersionNumber: 2, credit: job.credit };
     await tx.insert(botPets).values({ userId: p.user.id, botId, mode: "personal", appearance: "custom", catalogId: null,
       enabled: true, custom: manifest, sprite: job.preview, revision: newId() })
@@ -466,21 +488,26 @@ async function atlasCell(source: Buffer, index: number, columns: number, rows: n
   return { input: cell, left, top };
 }
 
-export async function savePetGenerationPreview(p: Principal, id: string, consent: { rights: unknown; visualReview: unknown }) {
+export async function savePetGenerationPreview(p: Principal, id: string, consent: { rights: unknown; visualReview: unknown; previewToken: unknown }) {
   if (consent.visualReview !== true) throw new HttpError(400, "Review all animation states, directions, and avatar previews before saving.");
   if (consent.rights !== "confirmed") throw new HttpError(400, "Confirm permission to share this generated artwork with signed-in users before saving a catalog draft.");
+  if (typeof consent.previewToken !== "string") throw new HttpError(400, "Reload and review the current preview before saving.");
   const job = await ownedJob(p, id);
   if (!job.preview || job.catalogPetId) throw new HttpError(409, "A complete validated preview is required; refresh to check for an existing draft.");
+  const initialSlots = await db.select({ id: petGenerationSlots.id, key: petGenerationSlots.slotKey, status: petGenerationSlots.status })
+    .from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt));
+  if (petPreviewToken(job.preview, initialSlots) !== consent.previewToken) throw new HttpError(409, "The preview changed. Review the current preview again before saving.");
   await validateV2Cells(job.preview);
   return db.transaction(async tx => {
     const [locked] = await tx.select().from(petGenerationJobs).where(and(eq(petGenerationJobs.id, id), eq(petGenerationJobs.ownerId, p.user.id))).for("update");
     if (!locked?.preview || locked.catalogPetId) throw new HttpError(409, "This preview was already saved or changed. Refresh the draft.");
     await assertFreshPetAdmin(p, tx);
-    const slots = await tx.select({ key: petGenerationSlots.slotKey, attempt: petGenerationSlots.attempt, status: petGenerationSlots.status })
+    const slots = await tx.select({ id: petGenerationSlots.id, key: petGenerationSlots.slotKey, attempt: petGenerationSlots.attempt, status: petGenerationSlots.status })
       .from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt)).for("update");
     const latest = new Map<string, typeof slots[number]>();
     for (const slot of slots) if (!latest.has(slot.key)) latest.set(slot.key, slot);
-    if (slotKeys.some(key => latest.get(key)?.status !== "succeeded")) throw new HttpError(409, "The preview no longer matches the latest successful slot receipts. Rebuild it before saving.");
+    if (petPreviewToken(locked.preview, slots.map(slot => ({ id: slot.id, key: slot.key, status: slot.status }))) !== consent.previewToken ||
+      slotKeys.some(key => latest.get(key)?.status !== "succeeded")) throw new HttpError(409, "The preview changed. Review the current preview again before saving.");
     const manifest: PetManifest = { displayName: locked.displayName, description: locked.description, spriteVersionNumber: 2, credit: locked.credit };
     const [pet] = await tx.insert(petCatalog).values({ createdBy: p.user.id, manifest, sprite: locked.preview }).returning({ id: petCatalog.id, revision: petCatalog.revision, status: petCatalog.status });
     await tx.insert(auditLog).values({ actorId: p.user.id, action: "pet.catalog_draft", target: pet.id,

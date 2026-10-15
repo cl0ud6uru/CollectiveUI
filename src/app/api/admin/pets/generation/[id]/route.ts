@@ -26,10 +26,10 @@ export async function POST(request: Request, context: Context) {
       case "retry":
         if (typeof body.slotKey !== "string") throw new HttpError(400, "A sprite slot is required.");
         return petJson(await retryPetGenerationSlot(p, id, body.slotKey, body.consent === true));
-      case "save": return petJson(await savePetGenerationPreview(p, id, { rights: body.rights, visualReview: body.visualReview }));
+      case "save": return petJson(await savePetGenerationPreview(p, id, { rights: body.rights, visualReview: body.visualReview, previewToken: body.previewToken }));
       case "assignPrivate":
         if (typeof body.botId !== "string") throw new HttpError(400, "Choose a bot for the private pet assignment.");
-        return petJson(await assignPetGenerationPreviewPrivately(p, id, body.botId, body.visualReview === true));
+        return petJson(await assignPetGenerationPreviewPrivately(p, id, body.botId, { visualReview: body.visualReview, previewToken: body.previewToken }));
       case "preview": return petJson(await rebuildPetGenerationPreview(p, id));
       default: throw new HttpError(400, "Unknown pet generation action.");
     }

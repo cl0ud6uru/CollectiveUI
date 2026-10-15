@@ -10,7 +10,7 @@ import { PetPreview } from "@/components/pets/pet-preview";
 type Connection = { id: string; name: string; provider: string; baseUrl: string | null; enabled: boolean };
 type Job = {
   id: string; displayName: string; description: string; credit: string; appearanceState: string; appearanceConsentAt: string | null;
-  appearanceApprovedAt: string | null; buildConsentAt: string | null; hasAppearance: boolean; hasPreview: boolean; previewErrorCode: string | null; catalogPetId: string | null;
+  appearanceApprovedAt: string | null; buildConsentAt: string | null; hasAppearance: boolean; hasPreview: boolean; previewToken: string | null; previewErrorCode: string | null; catalogPetId: string | null;
   slots: { slotKey: string; attempt: number; status: string; inputTokens: number | null; outputTokens: number | null; costMicros: number | null; errorCode: string | null; consentVersion: number; consentSummary: string; updatedAt: string; isLatest: boolean }[];
 };
 type SettingsPayload = { settings: PetGenerationSettings; connections: Connection[] };
@@ -52,8 +52,10 @@ export function PetGenerationBuilder({ initial }: { initial: BuilderInitial }) {
   const [notice, setNotice] = useState("");
   const [appearanceConsent, setAppearanceConsent] = useState(false);
   const [buildConsent, setBuildConsent] = useState(false);
-  const [shareRights, setShareRights] = useState(false);
-  const [visualReview, setVisualReview] = useState(false);
+  const [shareRightsPreviewToken, setShareRightsPreviewToken] = useState<string | null>(null);
+  const [reviewedPreviewToken, setReviewedPreviewToken] = useState<string | null>(null);
+  const visualReview = !!job?.previewToken && reviewedPreviewToken === job.previewToken;
+  const shareRights = !!job?.previewToken && shareRightsPreviewToken === job.previewToken;
   const [assignBotId, setAssignBotId] = useState(initial.assignableBots?.[0]?.id ?? "");
 
   async function refreshList() { setJobs(await api(collection)); }
@@ -92,7 +94,7 @@ export function PetGenerationBuilder({ initial }: { initial: BuilderInitial }) {
     try {
       const referenceBase64 = reference ? await fileBase64(reference) : undefined;
       const created = await api<{ id: string }>(collection, { method: "POST", body: JSON.stringify({ displayName: name, description, credit, ...(referenceBase64 ? { referenceBase64 } : {}) }) });
-      setJob(null); setJobId(created.id); setName(""); setDescription(""); setReference(null); setAppearanceConsent(false); setBuildConsent(false); setShareRights(false);
+      setJob(null); setJobId(created.id); setName(""); setDescription(""); setReference(null); setAppearanceConsent(false); setBuildConsent(false); setShareRightsPreviewToken(null); setReviewedPreviewToken(null);
       await refreshList(); setNotice("Private draft created. Generate the appearance only after reviewing the cost and consent below.");
     } catch (err) { setError(err instanceof Error ? err.message : "Could not create the draft."); }
     finally { setBusy(false); }
@@ -100,12 +102,16 @@ export function PetGenerationBuilder({ initial }: { initial: BuilderInitial }) {
 
   async function action(body: Record<string, unknown>, message: string) {
     if (!jobId || busy) return;
+    if (["retry", "slot", "preview", "assignPrivate"].includes(String(body.action))) {
+      setReviewedPreviewToken(null);
+      setShareRightsPreviewToken(null);
+    }
     setBusy(true); setError(""); setNotice("");
     try {
       await api(detail(jobId), { method: "POST", body: JSON.stringify(body) });
       if (body.action === "appearance" || body.action === "retryAppearance") setAppearanceConsent(false);
       if (body.action === "build") setBuildConsent(false);
-      if (body.action === "preview" || body.action === "assignPrivate") { setVisualReview(false); setShareRights(false); }
+      if (body.action === "preview" || body.action === "assignPrivate") { setReviewedPreviewToken(null); setShareRightsPreviewToken(null); }
       await refreshJob(); await refreshList(); setNotice(message);
       if (body.action === "save" || body.action === "assignPrivate") router.refresh();
     } catch (err) { await refreshJob().catch(() => undefined); setError(err instanceof Error ? err.message : "Pet generation request failed."); }
@@ -114,6 +120,7 @@ export function PetGenerationBuilder({ initial }: { initial: BuilderInitial }) {
 
   async function runQueued() {
     if (!jobId || busy || !job) return;
+    setReviewedPreviewToken(null); setShareRightsPreviewToken(null);
     setBusy(true); setError(""); setNotice("");
     try {
       for (const slot of job.slots) if (slot.status === "queued") {
@@ -154,7 +161,7 @@ export function PetGenerationBuilder({ initial }: { initial: BuilderInitial }) {
         <label className="grid gap-1 text-sm">Reference image (optional when a description is supplied; static PNG/JPEG/WebP, up to 1 MB)<input type="file" accept="image/png,image/jpeg,image/webp" onChange={event => setReference(event.target.files?.[0] ?? null)} /></label>
         <button className={petControl} disabled={busy || !settings.enabled}>{busy ? "Working…" : "Create private generation draft"}</button>
       </form>
-      <label className="grid gap-1 text-sm">Draft to continue<select className={petControl} value={jobId} onChange={event => { setJob(null); setVisualReview(false); setShareRights(false); setJobId(event.target.value); }}><option value="">Choose a draft</option>{jobs.map(row => <option key={row.id} value={row.id}>{row.displayName} · {row.appearanceState}</option>)}</select></label>
+      <label className="grid gap-1 text-sm">Draft to continue<select className={petControl} value={jobId} onChange={event => { setJob(null); setReviewedPreviewToken(null); setShareRightsPreviewToken(null); setJobId(event.target.value); }}><option value="">Choose a draft</option>{jobs.map(row => <option key={row.id} value={row.id}>{row.displayName} · {row.appearanceState}</option>)}</select></label>
       {job && <div className="space-y-3 rounded-lg border border-border p-3">
         <h3 className="font-medium">{job.displayName} · {job.appearanceState}</h3>
         {job.slots.filter(slot => slot.slotKey === "appearance").map(slot => <div key={`appearance:${slot.attempt}`} className="text-xs text-muted"><p>Appearance attempt {slot.attempt}: {slot.status}{slot.inputTokens !== null || slot.outputTokens !== null ? ` · ${slot.inputTokens ?? "?"} input / ${slot.outputTokens ?? "?"} output tokens` : ""}{slot.costMicros === null ? " · exact cost unavailable" : ` · ${slot.costMicros} micro-USD reported`}</p><details><summary>Consent receipt v{slot.consentVersion}</summary><p>{slot.consentSummary}</p></details></div>)}
@@ -164,7 +171,7 @@ export function PetGenerationBuilder({ initial }: { initial: BuilderInitial }) {
         {job.appearanceState === "succeeded" && <button className={petControl} disabled={busy} onClick={() => void action({ action: "approve" }, "Appearance approved. You can now authorize sprite generation.")}>Approve this appearance</button>}
         {job.appearanceState === "approved" && !job.buildConsentAt && <><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={buildConsent} onChange={event => setBuildConsent(event.target.checked)} />I authorize ten separate sprite requests: nine animation-state grids and one 16-direction grid. Each is billed at variable published token rates; I understand there is no fixed quote or hard cap.</label><button className={petControl} disabled={busy || !buildConsent} onClick={() => void action({ action: "build", consent: true }, "Ten durable sprite request receipts were created. Start them explicitly when ready.")}>Authorize ten sprite requests</button></>}
         {job.buildConsentAt && <><div className="space-y-1 text-sm" aria-live="polite">{job.slots.filter(slot => slot.slotKey !== "appearance").map(slot => <div key={`${slot.slotKey}:${slot.attempt}`} className="flex flex-wrap items-center justify-between gap-2"><span>{slot.slotKey} · attempt {slot.attempt} · {slot.status}{slot.inputTokens !== null || slot.outputTokens !== null ? ` · ${slot.inputTokens ?? "?"} input / ${slot.outputTokens ?? "?"} output tokens` : ""}{slot.costMicros === null ? " · exact cost unavailable" : ` · ${slot.costMicros} micro-USD reported`}</span>{!job.catalogPetId && slot.isLatest && slot.attempt < 3 && ["failed", "uncertain", "succeeded"].includes(slot.status) && <button className={`${petControl} text-xs`} disabled={busy} onClick={() => void retry(slot.slotKey, slot.status === "succeeded")}>{slot.status === "succeeded" ? "Replace this state…" : "Authorize a paid retry…"}</button>}<details className="basis-full text-xs text-muted"><summary>Consent receipt v{slot.consentVersion}</summary><p>{slot.consentSummary}</p></details></div>)}</div><p className="text-xs text-muted">A slot left running after a crash is not replayed. Check its receipt; authorize a separate request only if you accept the chance the first request was billed.</p><button className={petControl} disabled={busy || !job.slots.some(slot => slot.status === "queued" && slot.slotKey !== "appearance")} onClick={() => void runQueued()}>{busy ? "Requests running…" : "Start queued requests"}</button>{job.previewErrorCode && <p role="status" className="text-sm text-danger">The sprite images are saved, but preview assembly failed. Retry the preview assembly below; it makes no image request and has no generation charge.</p>}{!job.hasPreview && job.slots.filter(slot => slot.isLatest && slot.slotKey !== "appearance").length === 10 && job.slots.filter(slot => slot.isLatest && slot.slotKey !== "appearance").every(slot => slot.status === "succeeded") && <button className={petControl} disabled={busy} onClick={() => void action({ action: "preview" }, "The validated preview was rebuilt from completed receipts.")}>{job.previewErrorCode ? "Retry nonbillable preview assembly" : "Assemble validated preview from saved receipts"}</button>}</>}
-        {job.hasPreview && <><PetPreview src={`${detail(job.id)}/image?kind=preview`} manifest={{ displayName: job.displayName, description: job.description, credit: job.credit, spriteVersionNumber: 2 } satisfies PetManifest} /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={visualReview} onChange={event => setVisualReview(event.target.checked)} />I reviewed all nine animation states and sixteen directions, including the actual avatar sizes in light and dark previews. Structural validation cannot judge artwork quality.</label>{memberMode ? <><label className="grid gap-1 text-sm">Assign private pet to a bot you can use<select className={petControl} value={assignBotId} onChange={event => setAssignBotId(event.target.value)}><option value="">Choose a private caller bot</option>{initial.assignableBots?.map(bot => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label><button className={petControl} disabled={busy || !visualReview || !assignBotId} onClick={() => void action({ action: "assignPrivate", visualReview: true, botId: assignBotId }, "Reviewed v2 pet assigned privately to the selected bot.")}>Save and assign private pet</button></> : <><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={shareRights} onChange={event => setShareRights(event.target.checked)} />I confirm I have permission to add this generated artwork to the shared catalog; it will be saved as an unpublished draft.</label><button className={petControl} disabled={busy || !visualReview || !shareRights || !!job.catalogPetId} onClick={() => void action({ action: "save", rights: "confirmed", visualReview: true }, "Reviewed artwork saved as an unpublished catalog draft.")}>{job.catalogPetId ? "Saved as catalog draft" : "Save reviewed catalog draft"}</button></>}</>}
+        {job.hasPreview && job.previewToken && <><PetPreview src={`${detail(job.id)}/image?kind=preview&revision=${encodeURIComponent(job.previewToken)}`} manifest={{ displayName: job.displayName, description: job.description, credit: job.credit, spriteVersionNumber: 2 } satisfies PetManifest} /><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={visualReview} onChange={event => setReviewedPreviewToken(event.target.checked ? job.previewToken : null)} />I reviewed all nine animation states and sixteen directions, including the actual avatar sizes in light and dark previews. Structural validation cannot judge artwork quality.</label>{memberMode ? <><label className="grid gap-1 text-sm">Assign private pet to a bot you can use<select className={petControl} value={assignBotId} onChange={event => setAssignBotId(event.target.value)}><option value="">Choose a private caller bot</option>{initial.assignableBots?.map(bot => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</select></label><button className={petControl} disabled={busy || !visualReview || !assignBotId} onClick={() => void action({ action: "assignPrivate", visualReview: true, previewToken: job.previewToken, botId: assignBotId }, "Reviewed v2 pet assigned privately to the selected bot.")}>Save and assign private pet</button></> : <><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={shareRights} onChange={event => setShareRightsPreviewToken(event.target.checked ? job.previewToken : null)} />I confirm I have permission to add this generated artwork to the shared catalog; it will be saved as an unpublished draft.</label><button className={petControl} disabled={busy || !visualReview || !shareRights || !!job.catalogPetId} onClick={() => void action({ action: "save", rights: "confirmed", visualReview: true, previewToken: job.previewToken }, "Reviewed artwork saved as an unpublished catalog draft.")}>{job.catalogPetId ? "Saved as catalog draft" : "Save reviewed catalog draft"}</button></>}</>}
       </div>}
     </>}
     {notice && <p role="status" className="text-sm text-muted">{notice}</p>}{error && <p role="alert" className="text-sm text-danger">{error}</p>}
