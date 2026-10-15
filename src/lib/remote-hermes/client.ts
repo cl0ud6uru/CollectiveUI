@@ -123,7 +123,9 @@ export class DashboardClient {
     await res.body?.cancel();
     if (!cookies) throw new HttpError(502, 'Hermes did not create a native sign-in session.');
     const login = z.object({ next: z.string().max(8192) }).parse(await this.call('/auth/password-login', { provider, username, password }, { Cookie: cookies }));
-    const callback = new URL(login.next);
+    let callback: URL;
+    try { callback = new URL(login.next); }
+    catch { throw new HttpError(502, 'Hermes did not return a valid native sign-in callback.'); }
     if (callback.origin !== 'http://127.0.0.1:1' || callback.pathname !== '/callback' || callback.searchParams.get('state') !== state || !callback.searchParams.get('code'))
       throw new HttpError(502, 'Hermes returned an invalid sign-in callback.');
     const tokens = tokenSchema.parse(await this.call('/auth/native/token', { code: callback.searchParams.get('code'), code_verifier: verifier }));

@@ -78,3 +78,115 @@ Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac0853
 - Implement distributed hub ownership before multi-instance deployment; the sidebar roster and paged remote history are now implemented. Native remote chats remain distinct from Runs API conversation records and bot homes.
 
 References reviewed: Vory `622c9b41d1fcb2cee3564a328c11cd72cff7ee18` and Hermes native contracts at `79af3f6cea8067284a7ea5725078578b3f790adb`. No real credentials or private deployment configuration are included.
+
+### Prompt answer delivery (issue #91)
+
+Native JSON-RPC responses do not have a second acknowledgement. The socket waits
+for its write callback (or rejects on write failure, close, or a 30-second deadline)
+and fences the response to the socket epoch that supplied the pending request.
+A successful write means **sent**, not native acceptance. After sending, the hub
+drains any earlier refresh and reads a fresh snapshot. The answer API returns
+`{ sent: true, status: "pending" | "resolved" | "uncertain" }`: `resolved` means the
+native prompt is absent, which can also result from cancellation or another
+client. It does not certify that the protected value was used or an approved
+command executed. `uncertain` means the post-send snapshot failed.
+
+The hub reserves an answer before dispatch and keeps only a delivery marker on
+the pending prompt. Snapshot polling, repeated request frames and reconnection
+preserve that marker while the same request remains open. An attempted answer
+cannot be submitted again through that hub; the UI shows delivery status and
+removes its answer controls. A failed write retains an uncertain marker and
+reconciles without replaying the response. Values are never persisted, hashed,
+added to transcript projections or retained for retry. Allow-once/deny validation
+is unchanged. Approval snapshots that require `approval.respond` use the same
+socket-epoch fence and fresh-snapshot settlement.
+
+These markers are process-local, as are the socket's native request routes. They
+are not distributed answer receipts. A process restart or another portal replica
+can recover an open prompt only through native `session.resume`; this integration
+does not automatically resend any prior answer. Inspect the native dashboard if
+delivery remains uncertain. Stronger exactly-once confirmation across replicas
+requires a verified native receipt contract and the distributed ownership work
+in #96.
+
+Focused regressions cover held write callbacks, write errors, disconnect during
+write, stale socket epochs, concurrent answers, still-open prompts, resolved
+prompts, failed post-send snapshots and marker recovery without protected-value
+retention. Transport tests use real loopback WebSockets; hub tests use synthetic
+native snapshots and database boundaries. No real pinned dashboard compatibility
+or live authentication is established by these tests.
+
+### Owner removal and disconnect (#89)
+
+Settings → Connected accounts → Remote Hermes provides **Remove connection**, even
+when personal remote admission is disabled. The confirmation explains that local
+credentials, conversation links and submission receipts are deleted. Native
+conversations remain on Hermes, and active/queued work can continue there. This
+operation does not interrupt native work or revoke an upstream token/sign-in;
+use verified native account controls separately for that. No upstream revocation
+API is assumed or called.
+
+The server derives the owner from the authenticated principal and checks the
+mutation origin. Preview returns only the count of linked active/queued/uncertain
+portal sessions, not native IDs or credentials. Removal repeats that check under
+policy → owned connection → session locks. Active, waiting, admitting, uncertain
+or reserved queue work requires a separate checkbox confirmation. If work became
+active after an idle preview, the first removal attempt returns a fresh count
+without deleting anything. Counts describe linked portal state, not all work in
+other native clients.
+
+Credential-row deletion, cascading local bindings/receipts and the safe removal audit are atomic. Failed
+transactions, including failed audit inserts, leave the hub usable and local records intact. Only after commit
+does the current process retire its socket/hub; the closed socket reference and
+its authentication URL are released. Existing durable identity checks fence old
+references and other processes before their next dispatch/view. No distributed
+broadcast or recall of already-dispatched operations is claimed. Database/backups
+follow their normal retention policy; this is logical credential deletion, not a
+claim of storage-media zeroization. Reconnecting creates a fresh authorization
+identity and independently discovers retained native conversations.
+
+PGlite regressions execute migrations 0030–0032 and prove owner isolation,
+credential/binding/receipt cascades, all durable active states, activity appearing
+after preview, disabled-admission removal, rollback and post-commit retirement.
+Action tests prove principal/origin binding and honest audit outcomes. A real
+loopback WebSocket test verifies retired socket-reference release and no
+reconnection. Browser/assistive-technology validation and real-dashboard
+revocation are not established by these checks. No real connection was removed.
+
+### Transport trust and authentication URL diagnostics (#99, partial)
+
+Private-address approval permits the portal to route to a dashboard. It does not
+prove encryption, including for LAN, loopback, container or VPN-looking names.
+The connection form and saved HTTP connections now display that HTTP is not
+encrypted, that administrator approval does not encrypt it, and that passwords,
+tokens and protected replies can be exposed unless a separately verified tunnel
+protects the route. The administrator hint makes the same distinction. HTTPS
+remains the public-address requirement and the connection-form example. This
+change does not alter enabled policy, private approvals or trusted tunnels.
+
+Invalid base URLs and malformed native sign-in callback URLs now become bounded
+application errors without retaining Node's raw `input` URL property. Unexpected
+socket target/upgrade errors are replaced by a generic error without a raw cause;
+typed policy/authentication errors keep their deliberate messages. No token,
+ticket, authorization code, state, credential or callback URL is logged by these
+paths. Four regressions failed before these changes; eight disclosure/error tests
+now cover private/loopback HTTP warnings, disabled-admission saved connections,
+invalid URL diagnostics, socket-target failures and malformed native callbacks.
+The lifecycle fixture now uses the same typed policy error as production.
+
+WebSocket authentication still uses the verified native ticket path
+for password/OAuth access, and the native session-token query mode for dashboard
+session tokens. No ticket-exchange API for session-token mode is assumed. Because
+an authentication query must reach Hermes, application error sanitization cannot
+remove it from reverse-proxy, tunnel or upstream access logs. Those operators
+must omit query strings and redact `token`, `ticket`, `code`, `state` and
+`code_verifier`, plus Authorization/Cookie headers, from logs and diagnostics.
+Never paste actual upgrade or callback URLs into issues or documentation.
+
+Remaining implementation/acceptance work: choose and encode an explicit verified
+TLS/tunnel trust policy for approved private HTTP without blindly breaking trusted
+tunnels; verify any additional short-lived credential exchange against pinned
+runtime capability; and validate external proxy/upstream log handling. No proxy
+configuration, live transport policy, credential exchange/grant, paid inference
+or production deployment was changed or exercised here. These unit/SSR and
+loopback checks do not establish live encrypted transport or log-system hygiene.
