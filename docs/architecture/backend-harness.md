@@ -634,6 +634,10 @@ All come from `src/db/schema.ts`, then `npm run db:generate`, then `npm run db:m
 ## Native approval budget checks
 
 Native approval answers check the retained deadline and model-step budget while holding the run row lock, before changing the message or appending decision events. Exhausted direct and delegated replies return a 409 explaining that a new request is needed. Partial delegated answers use the same check. Requeue and execution recheck the budget; approvals never renew the deadline, reset consumed steps, or raise the retained step cap. Hermes continuations keep their own provider lifecycle.
+
 ## Rejected durable event batches
 
 A SQLSTATE class 22 data rejection is terminal for the segment writer. It does not retry or skip the batch and continue. The existing lease-loss abort path stops production and further writes; without heartbeats, the sweeper recovers the retained durable prefix under its row lock. Valid earlier output remains available. A side-effecting call whose result could not be committed is closed as interrupted and may have run; recovery does not replay it or claim the remote effect was undone. Database availability failures retain their bounded retry behavior.
+## Native Stop settlement
+
+The executor checks the durable cancellation request again under the run row lock when settling an approval pause or final outcome. A Stop committed before that lock wins even if its abort notification is delayed. Cancellation closes pending approvals, updates the saved message, appends matching closing events and sets the terminal status in one transaction. The same holder fence remains required. Async task suspension keeps its existing cancellation check and row lock. Stop cannot reverse actions already dispatched.
