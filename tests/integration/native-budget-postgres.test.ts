@@ -180,17 +180,22 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
     }
     return { app, bots, principal: (await loadPrincipal('owner'))! };
   }
-  async function group(harness: Awaited<ReturnType<typeof setupHarness>>) {
-    const { insertMessage } = await import('@/lib/chat/store'); const { runGroupTurn } = await import('@/lib/agent/group');
-    const [conversation] = await q.db.insert(q.schema.conversations).values({ userId: 'owner', isGroup: true, title: 'Synthetic group' }).returning();
-    const history = [{ id: `question-${conversation.id}`, role: 'user' as const, parts: [{ type: 'text' as const, text: 'Please begin' }] }];
-    await insertMessage(conversation.id, history[0], null);
+  async function group(harness: Awaited<ReturnType<typeof setupHarness>>, existingConversationId?: string) {
+    const { insertMessage, loadMessageRows, pathTo, rowToUIMessage } = await import('@/lib/chat/store'); const { runGroupTurn } = await import('@/lib/agent/group');
+    const [conversation] = existingConversationId
+      ? await q.db.select().from(q.schema.conversations).where(eq(q.schema.conversations.id, existingConversationId))
+      : await q.db.insert(q.schema.conversations).values({ userId: 'owner', isGroup: true, title: 'Synthetic group' }).returning();
+    const previous = existingConversationId ? pathTo(await loadMessageRows(conversation.id), conversation.currentLeafId).map(rowToUIMessage) : [];
+    const { newId } = await import('@/lib/ids');
+    const user = { id: newId(), role: 'user' as const, parts: [{ type: 'text' as const, text: 'Please begin' }] };
+    await insertMessage(conversation.id, user, conversation.currentLeafId);
+    const history = [...previous, user];
     const stream = await runGroupTurn({ principal: harness.principal, conversation, members: ['worker', 'writer'].map(id => ({ bot: harness.bots.find(bot => bot.id === id)!, app: harness.app })), history });
     const reader = stream.getReader(); const chunks = [];
     for (;;) { const part = await reader.read(); if (part.done) break; chunks.push(part.value); }
     const start = chunks.find(chunk => chunk.type === 'start');
     if (!start || start.type !== 'start') throw new Error('Missing persisted group reply identity');
-    return { id: start.messageId!, chunks };
+    return { id: start.messageId!, chunks, conversation, history };
   }
   async function start(harness: Awaited<ReturnType<typeof setupHarness>>, text: string) {
     const { startRun } = await import('@/lib/runs/store'); const { newId } = await import('@/lib/ids');
@@ -224,9 +229,15 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
     expect(calls).toHaveLength(1); expect(bounded.chunks.filter(chunk => chunk.type === 'data-bot-error')).toHaveLength(1);
     expect(await root(bounded.id)).toMatchObject({ usedTokens: cap, reservedTokens: 0 });
     expect(await attempts(bounded.id)).toHaveLength(1);
-    provider({ text: '@Writer please finish', chargeQuote: true });
-    const next = await group(harness);
+    vi.stubEnv('NATIVE_RUN_BUDGET', JSON.stringify(policy));
+    provider({ text: 'Finished the next user turn' });
+    const next = await group(harness, bounded.conversation.id);
+    expect(next.conversation.id).toBe(bounded.conversation.id);
+    expect(next.history.some(message => message.id === bounded.id)).toBe(true);
+    expect(next.history.at(-1)!.id).not.toBe(bounded.history.at(-1)!.id);
     expect(next.id).not.toBe(bounded.id); expect(calls).toHaveLength(1); expect(await attempts(next.id)).toHaveLength(1);
+    expect(await root(next.id)).toMatchObject({ policy, usedTokens: 5, reservedTokens: 0 });
+    expect(await root(bounded.id)).toMatchObject({ usedTokens: cap, reservedTokens: 0 });
   }, 30000);
 
   it('executes a durable approval continuation on its original charged root after configuration is disabled, without replay charges', async () => {
@@ -301,16 +312,19 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
       }
       expect((await root(setup.run.messageId)).reservedTokens).toBeGreaterThan(0);
     }
-    const before = await root(setup.run.messageId); const receiptCount = (await attempts(setup.run.messageId)).length; const dispatched = calls.length;
+    const before = await root(setup.run.messageId);
+    expect(before.exhausted).toBe(reason === 'exhausted');
+    if (reason === 'uncertain') { expect(before.reservedTokens).toBeGreaterThan(0); expect(before.reservedCostMicros).toBeGreaterThan(0); }
+    const receiptCount = (await attempts(setup.run.messageId)).length; const dispatched = calls.length;
     vi.stubEnv('NATIVE_RUN_BUDGET', '');
     const { answerTaskApproval } = await import('@/lib/delegation/approvals'); const { executeRun } = await import('@/lib/runs/execute'); const { getRun } = await import('@/lib/runs/state');
     await answerTaskApproval(setup.harness.principal, setup.conversation.id, { runId: setup.request.runId, approvalId: setup.request.part.approval!.id, approved: true });
     await executeRun(setup.task.childRunId!);
-    expect(await getRun(setup.task.childRunId!)).toMatchObject({ status: 'failed', error: expect.stringContaining('budget') });
-    await executeRun(setup.run.id); expect(await getRun(setup.run.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('budget') });
+    expect(await getRun(setup.task.childRunId!)).toMatchObject({ status: 'failed', error: 'This native request tree reached its configured company model budget. No provider request was sent and no billing fallback was selected.' });
+    await executeRun(setup.run.id); expect(await getRun(setup.run.id)).toMatchObject({ status: 'failed', error: 'This native request tree reached its configured company model budget. No provider request was sent and no billing fallback was selected.' });
     expect(sandbox.exec).toHaveBeenCalledTimes(1); // Approval authorizes this tool; model admission is a separate boundary.
     expect(calls).toHaveLength(dispatched); expect(await attempts(setup.run.messageId)).toHaveLength(receiptCount);
     expect(await q.db.select().from(q.schema.nativeRunBudgets)).toHaveLength(1);
-    expect(await root(setup.run.messageId)).toMatchObject({ usedTokens: before.usedTokens, reservedTokens: before.reservedTokens });
+    expect(await root(setup.run.messageId)).toMatchObject({ userId: 'owner', policy, usedTokens: before.usedTokens, reservedTokens: before.reservedTokens, usedCostMicros: before.usedCostMicros, reservedCostMicros: before.reservedCostMicros, exhausted: before.exhausted });
   }, 60000);
 });
