@@ -103,6 +103,7 @@ export async function saveApp(raw: AppInput) {
       systemPrompt: input.systemPrompt,
       temperature: personal || hermes ? null : input.temperature,
       maxTokens: personal || hermes ? null : input.maxTokens,
+      contextWindowTokens: hermes ? null : input.contextWindowTokens,
       supportsVision: hermes ? false : input.supportsVision,
       supportsTools: hermes ? true : input.supportsTools,
       embeddingModel: personal || hermes ? null : input.embeddingModel?.trim() || null,
