@@ -189,6 +189,18 @@ final class ChatLifecycleTests: XCTestCase {
         XCTAssertTrue(client.usedExpectedRunLoop)
     }
 
+    func testDismissingCommandResultDoesNotStopAnExecutingCommand() throws {
+        prepare(.normal)
+        let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
+        chat.commandResult = try JSONDecoder().decode(ChatCommandResult.self, from: Data(#"{"title":"Usage","lines":["Synthetic usage result"]}"#.utf8))
+        chat.isExecutingCommand = true
+
+        chat.dismissCommandResult()
+
+        XCTAssertNil(chat.commandResult)
+        XCTAssertTrue(chat.isExecutingCommand)
+    }
+
     func testSuccessfulSendClearsSharedDraftAndNormalStopFinishDoesNotShowStopped() async {
         prepare(.normal)
         let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
