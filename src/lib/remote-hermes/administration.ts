@@ -6,6 +6,7 @@ import { newId } from '@/lib/ids';
 import { hmacSha256Hex, toolApprovalSecret } from '@/lib/crypto';
 import { getSetting } from '@/lib/settings';
 import { nativeHub } from './hub';
+import { record } from './socket';
 import { assertRemoteHermesAdmission } from './policy';
 import { remoteAccess } from './store';
 import { ownedNativeSession } from './sessions';
@@ -60,6 +61,11 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     if (input.operation === 'credential' && !inventory.servers.some(s => s.name === input.name && s.source === 'config' && s.envKeys.includes(input.envVar)))
       throw new HttpError(400, 'Choose an existing credential key for a configured MCP server.');
   }
+  if (input.operation === 'customServer') {
+    const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});
+    if (inventory.servers.some(s => s.name.toLowerCase() === input.name.toLowerCase()))
+      throw new HttpError(409, 'A server with this name already exists in the selected profile.');
+  }
   if (input.operation === 'remove') {
     const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});
     const server = inventory.servers.find(s => s.name === input.name);
@@ -112,6 +118,9 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     }
     if (input.operation === 'setting') return hub.socket.dispatchConnected('config.set', { profile: row.profile, ...(input.scope === 'session' ? { session_id: params.session_id, scope: 'session' } : { scope: 'global' }), key: input.key, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'install') return hub.socket.dispatchConnected('mcp.servers.add', { profile: row.profile, name: input.preset, preset: input.preset }, epoch, 30_000, tx);
+    if (input.operation === 'customServer') return hub.socket.dispatchConnected('mcp.servers.add', {
+      profile: row.profile, name: input.name, config: { url: input.url }, ...(input.bearerToken ? { bearer_token: input.bearerToken } : {}),
+    }, epoch, 30_000, tx);
     if (input.operation === 'credential') return hub.socket.dispatchConnected('mcp.servers.set_api_key', { profile: row.profile, name: input.name, env_var: input.envVar, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'remove') return hub.socket.dispatchConnected('mcp.servers.remove', { profile: row.profile, name: input.name }, epoch, 30_000, tx);
     return hub.socket.dispatchConnected('reload.mcp', { session_id: runtimeId, confirm: true }, epoch, 60_000, tx);
@@ -134,6 +143,21 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     if (!server || server.source !== 'config' || server.enabled !== input.enabled)
       throw new HttpError(502, 'Hermes did not confirm the MCP server state. Refresh to check its outcome.');
     return { accepted: true, enabled: input.enabled };
+  }
+  if (input.operation === 'customServer') {
+    const created = record(result.server);
+    if (result.ok !== true || result.name !== input.name || created.name !== input.name || created.url !== input.url ||
+        created.source !== 'config' || created.transport !== 'http' ||
+        (input.bearerToken !== undefined && created.auth !== 'header'))
+      throw new HttpError(502, 'Hermes did not confirm the custom server configuration. Refresh to check its outcome.');
+    const current = await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000);
+    const nativeRows: unknown[] = Array.isArray(current.servers) ? current.servers : [];
+    const nativeServer = nativeRows.map(value => record(value)).find(server => server.name === input.name);
+    const server = mcpInventory(current, {}, {}).servers.find(s => s.name === input.name);
+    if (!nativeServer || nativeServer.url !== input.url || !server || server.source !== 'config' || server.transport !== 'http' ||
+        (input.bearerToken !== undefined && server.auth !== 'header'))
+      throw new HttpError(502, 'Hermes did not confirm the custom server in its profile inventory. Refresh to check its outcome.');
+    return { accepted: true, added: true, name: input.name, credentialConfigured: input.bearerToken !== undefined };
   }
   return { accepted: result.ok === true };
 }

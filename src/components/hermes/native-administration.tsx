@@ -18,6 +18,7 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
   const [scope, setScope] = useState<'session' | 'profile'>('session');
   const [key, setKey] = useState<'reasoning' | 'fast'>('reasoning'); const [value, setValue] = useState('');
   const [preset, setPreset] = useState(''); const [server, setServer] = useState(''); const [envVar, setEnvVar] = useState(''); const [secret, setSecret] = useState('');
+  const [customName, setCustomName] = useState(''); const [customUrl, setCustomUrl] = useState(''); const [customToken, setCustomToken] = useState('');
   const [probe, setProbe] = useState<{ name: string; result: Probe } | null>(null);
   const endpoint = `/api/hermes/${encodeURIComponent(connectionId)}/administration`;
   async function load() {
@@ -35,14 +36,14 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
       const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, input: { requestId: crypto.randomUUID(), ...input } }) });
       const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Hermes did not confirm this change.');
       if (input.operation === 'test') setProbe({ name: String(input.name), result });
-      else { setNotice(result.duplicate ? 'This operation was already submitted. Refresh to check its outcome.' : result.removed ? 'Hermes removed the server from this profile.' : result.reloaded ? 'Hermes reloaded MCP for its live sessions.' : typeof result.enabled === 'boolean' ? `Hermes ${result.enabled ? 'enabled' : 'disabled'} this server for new sessions.` : result.accepted ? 'Hermes confirmed the change.' : 'Hermes did not confirm the change. Refresh before trying again.'); await load(); }
+      else { setNotice(result.duplicate ? 'This operation was already submitted. Refresh to check its outcome.' : result.added ? `Hermes added “${result.name}” to this profile.` : result.removed ? 'Hermes removed the server from this profile.' : result.reloaded ? 'Hermes reloaded MCP for its live sessions.' : typeof result.enabled === 'boolean' ? `Hermes ${result.enabled ? 'enabled' : 'disabled'} this server for new sessions.` : result.accepted ? 'Hermes confirmed the change.' : 'Hermes did not confirm the change. Refresh before trying again.'); if (input.operation === 'customServer') { setCustomName(''); setCustomUrl(''); setCustomToken(''); } await load(); }
     } catch (e) { setNotice(e instanceof Error ? e.message : 'Hermes could not complete this operation.'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); if (input.operation === 'customServer') setCustomToken(''); }
   }
   const disabled = !allowed || running || busy;
   const serverInfo = data?.mcp?.servers.find(s => s.name === server);
   return <div className="space-y-3">
-    <Button size="sm" variant="outline" disabled={!allowed || busy} onClick={() => { if (open) { setSecret(''); setOpen(false); } else void inspect(); }}>{open ? 'Hide native settings' : 'Native settings & MCP'}</Button>
+      <Button size="sm" variant="outline" disabled={!allowed || busy} onClick={() => { if (open) { setSecret(''); setCustomToken(''); setOpen(false); } else void inspect(); }}>{open ? 'Hide native settings' : 'Native settings & MCP'}</Button>
     {notice && <p role="status" className="text-sm">{notice}</p>}
     {open && data && <section aria-label="Native Hermes settings and MCP" className="space-y-5 rounded-xl border border-border p-4">
       <header className="flex items-center justify-between"><h3 className="font-medium">Hermes profile: {data.profileName}</h3><Button size="sm" variant="outline" disabled={!allowed || busy} onClick={() => void inspect()}>Refresh settings</Button></header>
@@ -66,6 +67,18 @@ export function NativeAdministration({ connectionId, sessionId, allowed, running
             <label className="block text-sm">Install a Hermes preset<Select aria-label="Install a Hermes preset" value={preset} disabled={disabled} onChange={e => setPreset(e.target.value)}><option value="">Choose a preset</option>{data.mcp!.catalog.filter(p => !p.installed).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}</Select></label>
             {preset && <p className="text-xs text-muted">Required keys: {data.mcp.catalog.find(p => p.name === preset)?.requires.join(', ') || 'none'}. Installing changes this profile’s MCP configuration; reload MCP for live sessions to apply it.</p>}
             <Button type="submit" size="sm" disabled={disabled || !preset}>Install preset</Button>
+          </form>
+          <form className="space-y-2 rounded-lg border border-border p-3" onSubmit={e => {
+            e.preventDefault();
+            if (!confirm(`Add “${customName}” to Hermes profile “${data.profileName}”? This saves the server endpoint${customToken ? ' and its bearer credential' : ''} in that profile and can affect other clients using it.`)) return;
+            void act({ operation: 'customServer', name: customName, url: customUrl, ...(customToken ? { bearerToken: customToken } : {}), confirmed: true });
+          }}>
+            <h5 className="text-sm font-medium">Add a custom HTTPS server</h5>
+            <label className="block text-sm">Server name<Input aria-label="Custom MCP server name" value={customName} disabled={disabled} onChange={e => setCustomName(e.target.value)} autoComplete="off" maxLength={64} pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" required /></label>
+            <label className="block text-sm">HTTPS endpoint<Input aria-label="Custom MCP server HTTPS endpoint" type="url" value={customUrl} disabled={disabled} onChange={e => setCustomUrl(e.target.value)} autoComplete="url" maxLength={2048} placeholder="https://mcp.example.com/mcp" required /></label>
+            <label className="block text-sm">Optional bearer token<Input aria-label="Custom MCP bearer token" type="password" value={customToken} disabled={disabled} onChange={e => setCustomToken(e.target.value)} autoComplete="new-password" maxLength={16000} /></label>
+            <p className="text-xs text-muted">The endpoint cannot include embedded credentials, query parameters or fragments. Hermes stores any bearer token in the selected profile’s protected environment file. No command, arguments, headers, or general config are accepted.</p>
+            <Button type="submit" size="sm" disabled={disabled || !customName || !customUrl}>Add custom server</Button>
           </form>
           <div className="space-y-2">
             <p className="text-xs text-muted">Reload affects live sessions across this Hermes gateway and invalidates their prompt caches. Other clients may be affected.</p>

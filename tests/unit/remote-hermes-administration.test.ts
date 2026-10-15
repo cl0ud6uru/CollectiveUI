@@ -28,6 +28,11 @@ describe('native administration protocol and isolation', () => {
     expect(administrationInput.safeParse({ operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'once' }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'remove', requestId, name: 'example' }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'reload', requestId, confirmed: false }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'http://mcp.example.test/mcp', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://user:pass@mcp.example.test/mcp', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://mcp.example.test/mcp?token=secret', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://mcp.example.test/mcp', command: 'sh', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'bad name', url: 'https://mcp.example.test/mcp', confirmed: true }).success).toBe(false);
   });
   it('sends chat settings only with the bound runtime session and explicit session scope', async () => {
     await nativeAdministration('owner', 'connection', 'session', { operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'session' });
@@ -79,6 +84,50 @@ describe('native administration protocol and isolation', () => {
     f.status = 'idle'; f.call.mockResolvedValue({ servers: [] });
     await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'install', requestId, preset: 'arbitrary' })).rejects.toThrow('preset');
     expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+  });
+  it('creates only a typed HTTPS server, stores bearer material natively, and verifies redacted readback', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-secret', confirmed: true } as const;
+    const configured = { name: 'team-api', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: f.call.mock.calls.filter(([call]) => call === 'mcp.servers.add').length ? [configured] : [] };
+      if (method === 'mcp.servers.add') return { ok: true, name: 'team-api', server: configured };
+      return { ok: true };
+    });
+    const result = await nativeAdministration('owner', 'connection', 'session', input);
+    expect(result).toEqual({ accepted: true, added: true, name: 'team-api', credentialConfigured: true });
+    expect(f.call).toHaveBeenCalledWith('mcp.servers.add', {
+      profile: 'default', name: 'team-api', config: { url: 'https://mcp.example.test/mcp' }, bearer_token: 'synthetic-bearer-secret',
+    });
+    expect(f.call).toHaveBeenCalledWith('mcp.servers.list', { profile: 'default' });
+    expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-bearer-secret');
+    expect(f.receipt?.digest).not.toContain('synthetic-bearer-secret');
+  });
+  it('does not replay an uncertain custom-server write when the same receipt is retried', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-secret', confirmed: true } as const;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: [] };
+      if (method === 'mcp.servers.add') throw new Error('Synthetic lost acknowledgement');
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    expect(await nativeAdministration('owner', 'connection', 'session', input)).toEqual({ accepted: true, duplicate: true });
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1);
+    expect(JSON.stringify(f.receipt)).not.toContain('synthetic-bearer-secret');
+  });
+  it('blocks custom-server writes during active or uncertain native work before reserving a receipt', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', confirmed: true } as const;
+    f.runtimeRunning = true;
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('Finish');
+    expect(f.receipt).toBeNull(); expect(f.call).not.toHaveBeenCalled();
+  });
+  it('fails closed if native add or authoritative inventory readback does not confirm the custom server', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', confirmed: true } as const;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: f.call.mock.calls.filter(([call]) => call === 'mcp.servers.add').length ? [] : [] };
+      return { ok: true, name: 'team-api', server: { name: 'team-api', source: 'config', transport: 'http', url: input.url } };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('profile inventory');
+    expect(f.receipt).not.toBeNull();
   });
   it('blocks probes with a durable queue reservation even if the cached snapshot is idle', async () => {
     f.queueRequestId = 'uncertain-queue';

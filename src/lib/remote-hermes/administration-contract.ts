@@ -2,11 +2,20 @@ import { z } from 'zod';
 import type { RpcRecord } from './socket';
 const record = (value: unknown): RpcRecord => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as RpcRecord : {};
 
+const customServerName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+const customServerUrl = z.string().min(1).max(2048).url().refine(value => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+}, 'Use an HTTPS endpoint without embedded credentials or query parameters.');
+
 export const administrationInput = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('inspect') }).strict(),
   z.object({ operation: z.literal('setting'), requestId: z.string().uuid(), key: z.enum(['reasoning', 'fast']), value: z.string(), scope: z.enum(['session', 'profile']) }).strict(),
   z.object({ operation: z.literal('test'), name: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('install'), requestId: z.string().uuid(), preset: z.string().min(1).max(200) }).strict(),
+  z.object({ operation: z.literal('customServer'), requestId: z.string().uuid(), name: customServerName, url: customServerUrl, bearerToken: z.string().min(1).max(16000).optional(), confirmed: z.literal(true) }).strict(),
   z.object({ operation: z.literal('credential'), requestId: z.string().uuid(), name: z.string().min(1).max(200), envVar: z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/), value: z.string().min(1).max(16000) }).strict(),
   z.object({ operation: z.literal('remove'), requestId: z.string().uuid(), name: z.string().min(1).max(200), confirmed: z.literal(true) }).strict(),
   z.object({ operation: z.literal('enabled'), requestId: z.string().uuid(), name: z.string().min(1).max(200), enabled: z.boolean(), confirmed: z.literal(true) }).strict(),
@@ -28,6 +37,7 @@ export function mcpInventory(list: RpcRecord, status: RpcRecord, catalog: RpcRec
     servers: rows(list.servers).map(s => {
       const state = states.get(str(s.name)) ?? {};
       return { name: str(s.name), transport: ['stdio', 'http', 'sse', 'streamable-http'].includes(str(s.transport)) ? str(s.transport) : 'unknown', enabled: s.enabled === true,
+        auth: ['header', 'oauth'].includes(str(s.auth)) ? str(s.auth) : null,
         source: s.source === 'plugin' ? 'plugin' : s.source === 'config' ? 'config' : 'unknown', status: ['connected', 'disabled', 'connecting', 'failed', 'lazy', 'configured'].includes(str(state.status)) ? str(state.status) : 'unknown',
         tools: Number.isSafeInteger(state.tools) && Number(state.tools) >= 0 ? Number(state.tools) : null,
         envKeys: Array.isArray(s.env) ? s.env.filter(envKey).slice(0, 30) as string[] : [], hasOAuth: s.oauth_tokens_present === true };

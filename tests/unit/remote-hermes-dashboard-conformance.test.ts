@@ -68,6 +68,28 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
     expect(hashes).toContain(createHash('sha256').update(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zf7cAAAAASUVORK5CYII=', 'base64')).digest('hex'));
     await rpc('image.detach', { ...params(), path: image.path });
   });
+  it('adds a typed HTTPS MCP server through the exact native handler and reads back redacted inventory', async () => {
+    const token = 'synthetic-mcp-bearer-only';
+    const added = await rpc('mcp.servers.add', {
+      profile: 'default', name: 'fixture-custom-http',
+      config: { url: 'https://mcp.example.invalid/v1' }, bearer_token: token,
+    });
+    expect(added).toMatchObject({ ok: true, name: 'fixture-custom-http', server: {
+      name: 'fixture-custom-http', transport: 'http', source: 'config', auth: 'header', env: [],
+    } });
+    expect(JSON.stringify(added)).not.toContain(token);
+    const inventory = await rpc('mcp.servers.list', { profile: 'default' });
+    expect(inventory.servers).toEqual(expect.arrayContaining([expect.objectContaining({
+      name: 'fixture-custom-http', transport: 'http', source: 'config', auth: 'header', env: [],
+    })]));
+    expect(JSON.stringify(inventory)).not.toContain(token);
+    await expect(rpc('mcp.servers.add', {
+      profile: 'default', name: 'fixture-custom-http', config: { url: 'https://other.example.invalid/mcp' },
+    })).rejects.toMatchObject({ code: 4090 });
+    expect((await rpc('mcp.servers.list', { profile: 'default' })).servers).toEqual(expect.arrayContaining([expect.objectContaining({
+      name: 'fixture-custom-http', url: 'https://mcp.example.invalid/v1',
+    })]));
+  });
   it('runs a deterministic native turn, restores history and reconnects without resubmitting', async () => {
     const before = (await fixture('metrics')).agent_turns;
     expect(await rpc('prompt.submit', { ...params(), text: 'fixture-reply' })).toMatchObject({ status: 'streaming' });
