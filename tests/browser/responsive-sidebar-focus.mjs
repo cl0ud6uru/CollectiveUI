@@ -21,7 +21,9 @@ import { ShellProvider, useShell } from '${root}/src/components/chat/shell-conte
 import { ChatShell } from '${root}/src/components/chat/chat-shell';
 function Controls() { const shell=useShell(); return <><button id="open" onClick={()=>shell.setMobileOpen(true)}>Open sidebar</button><button id="start-side-chat">Start side chat</button></>; }
 const bots=[{kind:'bot',id:'bot-a',name:'Alpha',icon:null,description:'Fixture bot',label:null,pinned:true},{kind:'bot',id:'bot-b',name:'Beta',icon:null,description:'Fixture bot',label:null,pinned:true}];
-const initial={bots,conversations:[],apps:[],folders:[],inboxUnread:0,user:{id:'fixture',name:'Demo User',email:'demo@example.invalid',isAdmin:false,canCreateBots:true},branding:{appName:'CollectiveUI',welcomeText:'',logoEmoji:''}};
+const conversations=[{id:'chat-fixture',title:'Fixture chat',pinned:false,folderId:null,botId:null,appId:null,source:'chat',updatedAt:'2026-10-15T00:00:00.000Z'}];
+const folders=[{id:'folder-fixture',name:'Example project'}];
+const initial={bots,conversations,apps:[],folders,inboxUnread:0,user:{id:'fixture',name:'Demo User',email:'demo@example.invalid',isAdmin:false,canCreateBots:true},branding:{appName:'CollectiveUI',welcomeText:'',logoEmoji:''}};
 createRoot(document.getElementById('root')).render(<Tooltip.Provider><ShellProvider {...initial}><ChatShell><Controls/></ChatShell></ShellProvider></Tooltip.Provider>);
 `));
 const noAction = 'async()=>{}';
@@ -74,6 +76,22 @@ try {
   await expect(groupDialog).toHaveCount(0);
   await expect(dialog).toBeVisible();
   await expect(page.locator('main')).toHaveJSProperty('inert',true);
+  const chatOptions = dialog.getByRole('button',{name:'Chat options'}).first();
+  await chatOptions.click();
+  const menu = page.getByRole('menu').first();
+  await expect(menu).toBeVisible();
+  await menu.getByRole('menuitem',{name:'Move to project'}).focus();
+  await page.keyboard.press('ArrowRight');
+  const submenu = page.getByRole('menu').last();
+  await expect(submenu).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(submenu.locator(':focus')).toHaveCount(1);
+  await page.keyboard.press('Shift+Tab');
+  await expect(submenu.locator(':focus')).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('main')).toHaveJSProperty('inert',true);
   for (let i=0; i<24; i++) {
     await page.keyboard.press('Tab');
     await expect(dialog.locator(':focus')).toHaveCount(1);
@@ -108,7 +126,7 @@ try {
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
-  console.log('Responsive sidebar containment, nested Search/New Group dialogs, close/focus restoration, and desktop resize recovery passed.');
+  console.log('Responsive sidebar containment, nested dialogs/menus, close/focus restoration, and desktop resize recovery passed.');
 } finally {
   await browser.close();
   await new Promise(resolve=>server.close(resolve));
