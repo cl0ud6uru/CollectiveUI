@@ -36,34 +36,40 @@ export async function nativeMcpOAuth(ownerId: string, connectionId: string, sess
   const access = await remoteAccess(ownerId, connectionId, cleanup ? 'continuation' : 'admission');
   if (claim && claim.base !== access.client.base) throw new HttpError(409, 'The Hermes destination changed. Check the OAuth outcome in Hermes.');
   if (new URL(access.client.base).protocol !== 'https:') throw unsupportedMcpOAuth();
-  if (!cleanup && !(await access.client.profiles()).some(profile => profile.name === row.profile)) throw new HttpError(404, 'Hermes profile not found.');
   const hub = nativeHub(ownerId, connectionId);
-  if (!cleanup) await hub.refresh(row);
-  const epoch = hub.socket.connectionEpoch;
+  let epoch = hub.socket.connectionEpoch;
   type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-  async function lock(tx: Tx, idle: boolean) {
+  async function lock(tx: Tx, idle: boolean, requireRuntime = true) {
     const connection = await hub.lockBoundary(tx);
     const policy = await getSetting('remoteHermes', tx);
     if (!cleanup) assertRemoteHermesAdmission(policy);
     const [current] = await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, sessionId)).for('update');
     const cached = hub.sessions.get(sessionId);
-    if (!current || current.profile !== row.profile || current.storedId !== row.storedId || current.connectionId !== connectionId || !cleanup && (!cached?.row.runtimeId || !cached.view ||
+    if (!current || current.profile !== row.profile || current.storedId !== row.storedId || current.connectionId !== connectionId || !cleanup && requireRuntime && (!cached?.row.runtimeId || !cached.view ||
         cached.row.profile !== row.profile || cached.row.storedId !== row.storedId || current.runtimeId !== cached.row.runtimeId ||
         cached.view.profile !== row.profile || cached.view.nativeProfile !== row.profile || hub.socket.connectionEpoch !== epoch))
       throw new HttpError(409, 'The native conversation changed. Check the OAuth outcome in Hermes.');
-    if (idle && (current.status !== 'idle' || current.queueRequestId || cached!.view.running || cached!.view.uncertain || cached!.view.queuePending))
+    if (idle && (current.status !== 'idle' || current.queueRequestId || !cached?.view || cached.view.running || cached.view.uncertain || cached.view.queuePending))
       throw new HttpError(409, 'Finish the native turn and pending work before starting OAuth.');
     if (connection.baseUrl !== access.client.base) throw new HttpError(409, 'The Hermes destination changed.');
     return { connection, policy };
   }
-  async function dashboard<T>(request: (client: DashboardClient) => Promise<T>, idle = false) {
+  async function dashboard<T>(request: (client: DashboardClient) => Promise<T>, idle = false, requireRuntime = true) {
     const { reply } = await db.transaction(async tx => {
-      const { connection, policy } = await lock(tx, idle);
+      const { connection, policy } = await lock(tx, idle, requireRuntime);
       const address = await dashboardAddress(connection.baseUrl, policy);
-      if (!cleanup && hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed.');
+      if (!cleanup && requireRuntime && hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed.');
       return { reply: request(access.client.withTransport(dashboardFetchPinned(connection.baseUrl, address))) };
     });
     return reply;
+  }
+  if (!cleanup) {
+    // Inspect under fresh policy and the durable owner/chat binding before any
+    // runtime refresh; never reuse remoteAccess's earlier transport policy.
+    if (!(await dashboard(client => client.profiles(), false, false)).some(profile => profile.name === row.profile))
+      throw new HttpError(404, 'Hermes profile not found.');
+    await hub.refresh(row);
+    epoch = hub.socket.connectionEpoch;
   }
   async function server(name: string) {
     const payload = record(await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000));

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpError } from '@/lib/authz';
 
-const f = vi.hoisted(() => ({ enabled: true, privateAllowed: true, revokeAfterReceipt: false, epoch: 1, status: 'idle', profile: 'default', storedId: 'stored', base: 'https://native.example.invalid/hermes', receipt: null as null | { digest: string }, inventory: [] as Record<string, unknown>[], locks: 0, disableAt: 0, busyAt: 0, start: vi.fn(), poll: vi.fn(), cancel: vi.fn(), rpc: vi.fn(), transport: vi.fn() }));
+const f = vi.hoisted(() => ({ enabled: true, privateAllowed: true, revokeAfterReceipt: false, afterAccess: null as null | (() => Promise<void>), epoch: 1, status: 'idle', profile: 'default', storedId: 'stored', base: 'https://native.example.invalid/hermes', receipt: null as null | { digest: string }, inventory: [] as Record<string, unknown>[], locks: 0, disableAt: 0, busyAt: 0, start: vi.fn(), poll: vi.fn(), cancel: vi.fn(), profiles: vi.fn(), http: vi.fn(), refresh: vi.fn(), rpc: vi.fn(), transport: vi.fn() }));
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string, connection: string, session: string) => {
   if (owner !== 'owner' || connection !== 'connection' || session !== 'session') throw new HttpError(404, 'not found');
   return { id: session, connectionId: connection, profile: f.profile, storedId: f.storedId, runtimeId: 'runtime', status: f.status };
@@ -13,10 +13,11 @@ vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => 
 }, dashboardFetchPinned: vi.fn(() => fetch) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async (_owner: string, _connection: string, mode: string) => {
   if (!f.enabled && mode === 'admission') throw new HttpError(403, 'disabled');
-  return { client: { base: f.base, profiles: async () => [{ name: f.profile }], withTransport: f.transport } };
+  await f.afterAccess?.();
+  return { client: { base: f.base, profiles: f.profiles, withTransport: f.transport } };
 } }));
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
-  refresh: async () => {},
+  refresh: f.refresh,
   lockBoundary: async () => { if (++f.locks === f.disableAt) f.enabled = false; if (f.locks === f.busyAt) f.status = 'running'; return { baseUrl: f.base }; },
   socket: { get connectionEpoch() { return f.epoch; }, callConnected: f.rpc },
   sessions: new Map([['session', { row: { runtimeId: 'runtime', storedId: f.storedId, profile: f.profile }, view: { profile: f.profile, nativeProfile: f.profile, running: f.status === 'running' } }]]),
@@ -41,13 +42,15 @@ async function pending() { return await start() as { flow: string; authorization
 
 describe('owner-bound native-dashboard MCP OAuth', () => {
   beforeEach(() => {
-    vi.resetAllMocks(); f.enabled = f.privateAllowed = true; f.revokeAfterReceipt = false; f.epoch = 1; f.status = 'idle'; f.profile = 'default'; f.storedId = 'stored'; f.base = 'https://native.example.invalid/hermes'; f.receipt = null; f.locks = f.disableAt = f.busyAt = 0;
+    vi.resetAllMocks(); f.enabled = f.privateAllowed = true; f.revokeAfterReceipt = false; f.afterAccess = null; f.epoch = 1; f.status = 'idle'; f.profile = 'default'; f.storedId = 'stored'; f.base = 'https://native.example.invalid/hermes'; f.receipt = null; f.locks = f.disableAt = f.busyAt = 0;
     f.inventory = [{ name: 'team-api', source: 'config', transport: 'http', url: 'https://mcp.example.invalid/mcp', auth: 'oauth', oauth_tokens_present: false }];
     f.rpc.mockImplementation(async () => ({ servers: f.inventory }));
+    f.refresh.mockResolvedValue(undefined);
     f.start.mockResolvedValue({ flow_id: nativeId, server_name: 'team-api', status: 'authorization_required', authorization_url: authorization() });
     f.poll.mockResolvedValue({ flow_id: nativeId, server_name: 'team-api', status: 'authorization_required', authorization_url: authorization() });
     f.cancel.mockResolvedValue({ ok: true, status: 'error' });
-    f.transport.mockImplementation(() => ({ startMcpOAuth: f.start, mcpOAuthFlow: f.poll, cancelMcpOAuth: f.cancel }));
+    f.profiles.mockImplementation(async () => { f.http('GET', '/api/profiles'); return [{ name: f.profile }]; });
+    f.transport.mockImplementation(() => ({ profiles: f.profiles, startMcpOAuth: f.start, mcpOAuthFlow: f.poll, cancelMcpOAuth: f.cancel }));
   });
   it('requires explicit consent and server-owned identity/profile inputs', async () => {
     await expect(nativeMcpOAuth('owner', 'connection', 'session', { ...input, confirmed: false })).rejects.toThrow();
@@ -83,8 +86,24 @@ describe('owner-bound native-dashboard MCP OAuth', () => {
     await expect(start()).rejects.toThrow('destination revoked');
     expect(f.receipt).not.toBeNull(); expect(f.start).not.toHaveBeenCalled();
   });
+  it.each(['privateAllowed', 'enabled'] as const)('sends zero HTTP requests if %s is revoked after access policy capture', async flag => {
+    let reached!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { reached = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    f.afterAccess = async () => { reached(); await barrier; };
+    const operation = start();
+    const rejected = expect(operation).rejects.toThrow(/revoked|disabled/);
+    await ready;
+    f[flag] = false;
+    release();
+    await rejected;
+    expect(f.http).not.toHaveBeenCalled(); expect(f.profiles).not.toHaveBeenCalled();
+    expect(f.refresh).not.toHaveBeenCalled();
+    expect(f.start).not.toHaveBeenCalled(); expect(f.poll).not.toHaveBeenCalled(); expect(f.cancel).not.toHaveBeenCalled();
+    expect(f.receipt).toBeNull();
+  });
   it('rechecks native activity at final start dispatch', async () => {
-    f.busyAt = 3;
+    f.busyAt = 4;
     await expect(start()).rejects.toThrow('Finish');
     expect(f.receipt).not.toBeNull(); expect(f.start).not.toHaveBeenCalled();
   });

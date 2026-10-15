@@ -29,16 +29,18 @@ export function NativeMcpOAuth({ connectionId, sessionId, profile, name, disable
       if (flow) void request({ operation: 'cancel', flow: flow.flow }, true).catch(() => {});
     };
   }, [request]);
-  const cancel = useCallback(async () => {
+  const cancel = useCallback(async (failure?: string) => {
     const flow = held.current;
     if (!flow) return;
     held.current = null;
     setPending(null);
     setBusy(true);
+    if (failure) setMessage(failure);
+    const reportCleanup = (outcome: string) => { if (active.current) setMessage(failure ? `${failure} ${outcome}` : outcome); };
     try {
       const result = await request({ operation: 'cancel', flow: flow.flow });
-      if (active.current) setMessage(result.message || 'Stopped waiting. Cancellation does not revoke a grant already issued.');
-    } catch { if (active.current) setMessage('Could not confirm cancellation. Authorization may still complete; check Hermes or the provider.'); }
+      reportCleanup(result.message || 'Stopped waiting. Cancellation does not revoke a grant already issued.');
+    } catch { reportCleanup('Could not confirm cancellation. Authorization may still complete; check Hermes or the provider.'); }
     finally { if (active.current) setBusy(false); }
   }, [request]);
   useEffect(() => {
@@ -56,10 +58,10 @@ export function NativeMcpOAuth({ connectionId, sessionId, profile, name, disable
         if (stopped || !active.current) return;
         setMessage(result.message || 'Waiting for authorization.');
         if (result.status === 'approved') { held.current = null; setPending(null); return; }
-        if (result.status === 'error') { await cancel(); return; }
+        if (result.status === 'error') { await cancel(result.message || 'Hermes could not complete authorization. Check its outcome in Hermes before starting again.'); return; }
         timer = setTimeout(poll, 1500);
       } catch {
-        if (!stopped && active.current) { setMessage('Could not verify authorization. Check Hermes before starting again.'); await cancel(); }
+        if (!stopped && active.current) await cancel('Could not verify authorization. Check Hermes before starting again.');
       }
     }
     timer = setTimeout(poll, 1000);

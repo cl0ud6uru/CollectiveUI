@@ -13,7 +13,7 @@ const entry = path.join(dir, 'entry.tsx');
 await writeFile(entry, `import React from 'react'; import {createRoot} from '${root}/node_modules/react-dom/client'; import {NativeMcpOAuth} from '${root}/src/components/hermes/native-mcp-oauth'; const root = createRoot(document.getElementById('root')); window.fixtureRender = (options = {}) => { const connectionId = options.connectionId || 'fixture'; const sessionId = options.sessionId || 'session'; root.render(options.unmount ? <p>Closed</p> : <NativeMcpOAuth key={connectionId + ':' + sessionId} connectionId={connectionId} sessionId={sessionId} profile="default" name="fixture-oauth" disabled={Boolean(options.disabled)}/>); }; window.fixtureRender();`);
 const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src') } });
 const requests = [];
-let pollStatus = 'pending', holdStart = false, delayed, cancelStatus = 'cancelled';
+let pollStatus = 'pending', pollHTTPError = false, holdStart = false, delayed, cancelStatus = 'cancelled';
 const pending = () => ({ status: 'pending', flow: 'synthetic-protected-flow', authorizationUrl: 'https://auth.example.invalid/authorize?state=synthetic-state', expiresAt: Date.now() + 60_000 });
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -26,7 +26,10 @@ const server = createServer(async (req, res) => {
     if (holdStart) { delayed = () => res.end(JSON.stringify(pending())); return; }
     res.end(JSON.stringify(pending())); return;
   }
-  if (body.input.operation === 'poll') { res.end(JSON.stringify({ status: pollStatus, message: pollStatus === 'approved' ? 'Hermes confirmed the saved authorization.' : 'Waiting for authorization in Hermes.' })); return; }
+  if (body.input.operation === 'poll') {
+    if (pollHTTPError) { res.statusCode = 503; res.end(JSON.stringify({ error: 'Synthetic status unavailable' })); return; }
+    res.end(JSON.stringify({ status: pollStatus, message: pollStatus === 'approved' ? 'Hermes confirmed the saved authorization.' : pollStatus === 'error' ? 'Hermes could not complete authorization. Check its outcome in Hermes before starting again.' : 'Waiting for authorization in Hermes.' })); return;
+  }
   res.end(JSON.stringify({ status: cancelStatus, message: cancelStatus === 'uncertain' ? 'Hermes already approved authorization. Cancellation does not revoke the grant.' : 'Pending authorization cancelled; this does not revoke an existing grant.' }));
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -91,6 +94,23 @@ try {
   await page.getByRole('button', { name: 'Cancel authorization' }).click();
   await expect(page.getByRole('status')).toContainText('does not revoke');
   expect(requests.map(item => item.input.operation)).toEqual(['start', 'cancel']);
+
+  // Cleanup must preserve the authorization failure or uncertainty that caused it.
+  cancelStatus = 'cancelled';
+  for (const scenario of [
+    { status: 'error', httpError: false, expected: 'Hermes could not complete authorization.' },
+    { status: 'pending', httpError: true, expected: 'Could not verify authorization. Check Hermes before starting again.' },
+  ]) {
+    requests.length = 0; pollStatus = scenario.status; pollHTTPError = scenario.httpError;
+    await open();
+    await page.getByRole('button', { name: 'Authorize MCP OAuth' }).click();
+    await expect.poll(() => requests.filter(item => item.input.operation === 'cancel').length).toBe(1);
+    await expect(page.getByRole('button', { name: 'Authorize MCP OAuth' })).toBeEnabled();
+    await expect(page.getByRole('status')).toContainText(scenario.expected);
+    await expect(page.getByRole('status')).toContainText('Pending authorization cancelled');
+    expect(requests.map(item => item.input.operation)).toEqual(['start', 'poll', 'cancel']);
+    await expect(page.getByRole('link')).toHaveCount(0);
+  }
   expect(errors).toEqual([]);
-  console.log('PASS: explicit OAuth consent/link, approved polling, closure and scope cleanup, delayed-start cancellation, busy-start interruption, no start replay, and honest already-approved cancellation; synthetic accounts, no provider navigation.');
+  console.log('PASS: explicit OAuth consent/link, approved polling, closure and scope cleanup, delayed-start and busy-start cancellation, no start replay, honest already-approved cancellation, and preserved native/poll-HTTP failures after cleanup; synthetic accounts, no provider navigation.');
 } finally { await browser.close(); server.close(); await rm(dir, { recursive: true, force: true }); }
