@@ -138,6 +138,10 @@ You can enable both options at once. Hybrid users are matched by UPN, so either 
 
 ## Workspaces (sandboxed commands)
 
+Admin → Workspaces reports `status unavailable` when configuration is incomplete or no successful workspace list response exists. Run the setup check and reload to retry the list. Only a successful list can establish that a registered workspace is `not present`; readiness checks alone do not establish presence or absence.
+
+Retention badges use the page's server snapshot time and explicit UTC timestamps. A future deadline is **Scheduled for deletion on …**; a deadline that has arrived is **Pending cleanup since …**, until cleanup succeeds. A deadline never proves deletion. Completed cleanup removes the registered workspace from the list. Reload the page for a current list and retention snapshot.
+
 A workspace is a Docker container per person, run by **sandboxd** (`src/sandboxd/`), the only component of the stock workspace add-on with Docker-socket access. Optional Docker Hermes uses its own separately configured broker. The web app and worker ask it for things over HTTP, signed with `SANDBOXD_SECRET`; it has no database access or model-provider keys, and creates containers from one fixed spec:
 
 - no network (`none`), all capabilities dropped, `no-new-privileges`, read-only root filesystem, uid 1000;
