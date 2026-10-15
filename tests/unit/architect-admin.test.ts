@@ -19,6 +19,7 @@ vi.mock("@/db", async () => {
   return { db: drizzle(fixture.client, { schema }), schema };
 });
 import { db, schema as s } from "@/db";
+import type { DB } from "@/db";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { getSetting } from "@/lib/settings";
 import { installArchitectBot } from "@/lib/bots/architect-store";
@@ -28,6 +29,7 @@ import { authorizeArchitectCall, runArchitectCall } from "@/lib/agent/tools/admi
 import { changeBotStatus } from "@/lib/admin/bot-status";
 import { adminGetBot, adminListConnections } from "@/lib/admin/inventory";
 import { adminRecentErrors } from "@/lib/admin/operations";
+import { setArchitectUserDisabled } from "@/lib/admin/architect-people";
 import { getAccessibleBot, listAccessibleBots } from "@/lib/authz";
 import { resolveApproval } from "@/lib/agent/approvals";
 import { isGrantable } from "@/lib/agent/tool-names";
@@ -128,7 +130,7 @@ describe("The Architect using real migrated PostgreSQL state", () => {
   it("offers read tools and approval-gated writes only to a fresh admin", async () => {
     const set = await buildToolset(ctx);
     try {
-      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(18);
+      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(23);
       expect(set.approval({ toolCall: { toolName: "admin_set_bot_enabled", input: { botId: "target", enabled: false, expectedRevision: 1 } } })).toBe("user-approval");
       expect(set.approval({ toolCall: { toolName: "admin_get_bot", input: { botId: "target" } } })).toBeUndefined();
     } finally { await set.close(); }
@@ -137,10 +139,17 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     try { expect(denied.entries.filter(e => e.key === "admin")).toHaveLength(0); }
     finally { await denied.close(); }
   });
-  it.each(["admin_list_bots", "admin_list_users", "admin_status", "admin_health", "admin_runs", "admin_jobs", "admin_spending", "admin_workspaces_status"])("executes %s against synthetic services without exposing diagnostic bodies", async name => {
+  it.each(["admin_list_bots", "admin_list_users", "admin_status", "admin_health", "admin_runs", "admin_jobs", "admin_spending", "admin_workspaces_status", "admin_get_settings", "admin_diagnostic_bundle"])("executes %s against synthetic services without exposing diagnostic bodies", async name => {
     const result = await execute(name);
     expect(result).toBeTypeOf("object");
     expect(JSON.stringify(result)).not.toContain(secret);
+  });
+  it("keeps diagnostic bundle to aggregate values and classifications", async () => {
+    const result = await execute("admin_diagnostic_bundle") as { totals: { users: number; bots: number }; health: { checks: { id: string; state: string }[] }; failureCounts: Record<string, number> };
+    expect(result.totals.users).toBe(2);
+    expect(result.totals.bots).toBeGreaterThanOrEqual(1);
+    expect(result.health.checks.every(check => !!check.id && !!check.state)).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(/Admin|Member|fixture.invalid|KEEP-PRIVATE/);
   });
   it("includes current workspace instances and legacy rows without leaking broker references", async () => {
     await db.insert(s.sandboxes).values({ userId: "member", ref: "aaaaaaaaaaaaaaaaaaaa" });
@@ -168,8 +177,8 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
   it("always asks for exact write approval, ignoring grants and auto modes", () => {
-    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills", "admin_update_provider_connection", "admin_test_provider_connection"].includes(e.name));
-    expect(writes).toHaveLength(7);
+    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills", "admin_update_provider_connection", "admin_test_provider_connection", "admin_set_user_disabled", "admin_update_group_profile", "admin_update_settings"].includes(e.name));
+    expect(writes).toHaveLength(10);
     for (const write of writes) {
       expect(write).toMatchObject({ sensitive: true, grantable: false });
       expect(isGrantable(write.name)).toBe(false);
@@ -295,6 +304,46 @@ describe("The Architect using real migrated PostgreSQL state", () => {
       await expect(execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: updatedAt }, controller.signal)).rejects.toThrow("could not be verified");
       expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.test")).toBe(false);
     } finally { vi.unstubAllGlobals(); }
+  });
+  it("disables users through the shared session-revocation flow with a fresh CAS and audit", async () => {
+    const ownerLock = async <T>(_userId: string, run: (database: DB) => Promise<T>) => run(db as unknown as DB);
+    const result = await setArchitectUserDisabled(ctx, admin, { userId: "member", expectedSessionVersion: 0, disabled: true }, undefined, ownerLock);
+    expect(result).toMatchObject({ status: "verified", user: { id: "member", disabled: true, sessionVersion: 1 } });
+    expect((await db.select().from(s.auditLog)).some(row => row.action === "architect.user.disable" && row.actorId === "admin" && row.target === "member")).toBe(true);
+    await expect(setArchitectUserDisabled(ctx, admin, { userId: "member", expectedSessionVersion: 0, disabled: false }, undefined, ownerLock)).rejects.toMatchObject({ status: 409 });
+    await expect(setArchitectUserDisabled(ctx, admin, { userId: "admin", expectedSessionVersion: admin.user.sessionVersion, disabled: true }, undefined, ownerLock)).rejects.toThrow("remove your own access");
+    expect((await db.select().from(s.users).where(eq(s.users.id, "admin")))[0].disabled).toBe(false);
+  });
+  it("rolls back a cancelled user access mutation and audit", async () => {
+    const ownerLock = async <T>(_userId: string, run: (database: DB) => Promise<T>) => run(db as unknown as DB);
+    let checks = 0;
+    const signal = { throwIfAborted: () => { if (++checks === 4) throw new Error(secret); } } as unknown as AbortSignal;
+    await expect(setArchitectUserDisabled(ctx, admin, { userId: "member", expectedSessionVersion: 0, disabled: true }, signal, ownerLock)).rejects.toThrow(secret);
+    expect((await db.select().from(s.users).where(eq(s.users.id, "member")))[0]).toMatchObject({ disabled: false, sessionVersion: 0 });
+    expect((await db.select().from(s.auditLog)).some(row => row.action === "architect.user.disable")).toBe(false);
+  });
+  it("updates only group display fields and verifies the content revision", async () => {
+    await db.insert(s.groups).values({ id: "support", name: "Support", description: "Old description", isAdmin: true, canCreateBots: false });
+    await db.insert(s.groupMembers).values({ groupId: "support", userId: "member" });
+    await db.insert(s.groupMappings).values({ groupId: "support", source: "ldap", externalId: "cn=support", displayName: "Support group" });
+    const inventory = await execute("admin_list_users") as { groups: { id: string; name: string; revision: string }[] };
+    const revision = inventory.groups.find(group => group.id === "support")!.revision;
+    const updated = await execute("admin_update_group_profile", { groupId: "support", expectedRevision: revision, name: "Help desk", description: "Contact for assistance" });
+    expect(updated).toMatchObject({ status: "verified", group: { id: "support", name: "Help desk", isAdmin: true, canCreateBots: false } });
+    expect(await db.select().from(s.groupMembers).where(eq(s.groupMembers.groupId, "support"))).toMatchObject([{ userId: "member" }]);
+    expect(await db.select().from(s.groupMappings).where(eq(s.groupMappings.groupId, "support"))).toMatchObject([{ externalId: "cn=support" }]);
+    await expect(execute("admin_update_group_profile", { groupId: "support", expectedRevision: revision, name: "Stale" })).rejects.toThrow("could not be verified");
+  });
+  it("limits settings writes to existing safe schemas and preserves excluded branding routes", async () => {
+    await db.insert(s.settings).values({ key: "branding", value: { appName: "Portal", welcomeText: "Hello", logoEmoji: "", defaultAppId: "model" } });
+    const current = await execute("admin_get_settings") as { brandingUpdatedAt: string; limitsUpdatedAt: string | null };
+    const changed = await execute("admin_update_settings", { setting: "branding", expectedUpdatedAt: current.brandingUpdatedAt, appName: "New Portal" });
+    expect(changed).toMatchObject({ status: "verified", setting: "branding" });
+    expect((await db.select().from(s.settings).where(eq(s.settings.key, "branding")))[0].value).toMatchObject({ appName: "New Portal", defaultAppId: "model" });
+    const limits = await execute("admin_update_settings", { setting: "limits", expectedUpdatedAt: current.limitsUpdatedAt, uploadMaxMb: 40, maxAttachmentsPerMessage: 12 });
+    expect(limits).toMatchObject({ status: "verified", setting: "limits", value: { uploadMaxMb: 40, maxAttachmentsPerMessage: 12 } });
+    await expect(execute("admin_update_settings", { setting: "tools", expectedUpdatedAt: null, value: { disabledTools: ["admin"] } })).rejects.toThrow();
+    await expect(execute("admin_update_settings", { setting: "branding", expectedUpdatedAt: current.brandingUpdatedAt, appName: "Stale" })).rejects.toThrow("could not be verified");
   });
   it("refuses stale approval, missing targets and missing revisions without mutation", async () => {
     await expect(execute("admin_set_bot_enabled", { botId: "target", enabled: false, expectedRevision: 9 })).rejects.toMatchObject({ status: 409 });

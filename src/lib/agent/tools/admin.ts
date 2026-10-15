@@ -8,6 +8,9 @@ import { changeBotStatus } from "@/lib/admin/bot-status";
 import { authorizeArchitectCall, lockArchitectActor, runArchitectCall } from "./admin-guard";
 import { architectBotCreateInput, architectBotSkillsInput, architectBotToolsInput, architectBotUpdateInput, assignArchitectBotSkills, assignArchitectBotTools, createArchitectBot, updateArchitectBot } from "@/lib/admin/bot-config";
 import { architectProviderConnectionTestInput, architectProviderConnectionUpdateInput, testArchitectProviderConnection, updateArchitectProviderConnection } from "@/lib/admin/architect-connections";
+import { architectGroupProfileInput, architectUserDisabledInput, setArchitectUserDisabled, updateArchitectGroupProfile } from "@/lib/admin/architect-people";
+import { adminDiagnosticBundle } from "@/lib/admin/architect-diagnostics";
+import { adminGetArchitectSettings, architectSettingsUpdateInput, updateArchitectSettings } from "@/lib/admin/architect-settings";
 
 /** The Architect's tool group key (never stored in bot_tools: the tools follow the installation receipt). */
 export const ADMIN_TOOL_KEY = "admin";
@@ -22,6 +25,10 @@ const window = z.object({
   limit: z.number().int().min(1).max(200).optional().describe("Maximum rows per section (default 50)"),
 });
 const period = z.object({ days: z.number().int().min(1).max(365).optional().describe("Usage period in days (default 30)") });
+const diagnosticWindow = z.object({
+  days: z.number().int().min(1).max(30).optional().describe("Usage rollup period in days (default 7)"),
+  hours: z.number().int().min(1).max(168).optional().describe("Failure summary period in hours (default 24)"),
+}).strict();
 /** Loaded on first use: these read server-only services (sandboxd, billing, job queue). */
 const ops = () => import("@/lib/admin/operations");
 
@@ -74,6 +81,31 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
       inputSchema: architectProviderConnectionTestInput,
       execute: guarded("admin_test_provider_connection", (p, i: z.output<typeof architectProviderConnectionTestInput>, signal) => testArchitectProviderConnection(ctx, p, i, signal)),
     }) },
+    { name: "admin_set_user_disabled", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Disable or re-enable one user account. Read admin_list_users first and pass its exact sessionVersion. This revokes sessions and follows existing workspace, ChatGPT and Team lifecycle handling; self-disable and removal of the last enabled local admin are refused. Always requires exact per-call approval.",
+      inputSchema: architectUserDisabledInput,
+      execute: guarded("admin_set_user_disabled", (p, i: z.output<typeof architectUserDisabledInput>, signal) => setArchitectUserDisabled(ctx, p, i, signal)),
+    }) },
+    { name: "admin_update_group_profile", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Change only a group's name or description. Read admin_list_users and pass the group's exact revision. Memberships, directory mappings, administrator status and bot-creation permission remain unchanged. Always requires exact per-call approval.",
+      inputSchema: architectGroupProfileInput,
+      execute: guarded("admin_update_group_profile", (p, i: z.output<typeof architectGroupProfileInput>, signal) => updateArchitectGroupProfile(ctx, p, i, signal)),
+    }) },
+    { name: "admin_update_settings", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Update only the existing public branding text fields or upload/attachment limits. Read admin_get_settings first and pass the exact updatedAt revision. Default model/bot routing and all access/policy settings are excluded. Always requires exact per-call approval.",
+      inputSchema: architectSettingsUpdateInput,
+      execute: guarded("admin_update_settings", (p, i: z.output<typeof architectSettingsUpdateInput>, signal) => updateArchitectSettings(ctx, p, i, signal)),
+    }) },
+    entry("admin_get_settings", tool({
+      description: "Read public portal branding fields and upload/attachment limits with exact update revisions. Default model/bot routing is omitted.",
+      inputSchema: none,
+      execute: guarded("admin_get_settings", p => adminGetArchitectSettings(p)),
+    })),
+    entry("admin_diagnostic_bundle", tool({
+      description: "Build a bounded diagnostic summary from existing read-only Admin checks. Returns aggregate counts and health/failure classifications only; no names, raw logs, environment values, URLs or credentials.",
+      inputSchema: diagnosticWindow,
+      execute: guarded("admin_diagnostic_bundle", async (p, i: z.output<typeof diagnosticWindow>) => adminDiagnosticBundle(p, i)),
+    })),
     entry("admin_list_bots", tool({
       description: "List bots: owner, model, visibility, tool groups, routines, and whether each is built in (The Architect, Office Bot) or the default coordinator.",
       inputSchema: search,

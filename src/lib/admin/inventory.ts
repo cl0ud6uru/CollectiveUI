@@ -9,6 +9,7 @@ import { assertAdmin, notFound } from "@/lib/authz";
 import { getSetting } from "@/lib/settings";
 import { safeUrl } from "./secret-safe";
 import { providerConnectionUpdatedAtToken } from "./provider-connection-write";
+import { groupRevision } from "./architect-people";
 
 /*
  * Read-only admin inventory for The Architect (and any other admin surface). Every function checks assertAdmin itself
@@ -136,7 +137,7 @@ export async function adminListUsers(p: Principal, opts: { query?: string; limit
     db.select({ user: users, chats: sql<number>`(select count(*)::int from conversations c where c.user_id = ${users.id})` })
       .from(users).where(where).orderBy(desc(users.lastLoginAt)).limit(limit),
     db.select({ total: sql<number>`count(*)::int` }).from(users).where(where),
-    db.select({ id: groups.id, name: groups.name, description: groups.description, isAdmin: groups.isAdmin, canCreateBots: groups.canCreateBots }).from(groups).orderBy(asc(groups.name)),
+    db.select({ id: groups.id, name: groups.name, description: groups.description, isAdmin: groups.isAdmin, canCreateBots: groups.canCreateBots, createdAt: groups.createdAt }).from(groups).orderBy(asc(groups.name)),
     db.select({ groupId: groupMembers.groupId }).from(groupMembers),
     db.select({ groupId: groupMappings.groupId, source: groupMappings.source }).from(groupMappings),
   ]);
@@ -146,13 +147,13 @@ export async function adminListUsers(p: Principal, opts: { query?: string; limit
   return {
     total, shown: rows.length,
     users: rows.map(({ user: u, chats }, i) => ({
-      id: u.id, name: u.name, upn: u.upn, email: u.email, authSource: u.authSource, identityRealm: u.identityRealm, disabled: u.disabled,
+      id: u.id, name: u.name, upn: u.upn, email: u.email, authSource: u.authSource, identityRealm: u.identityRealm, disabled: u.disabled, sessionVersion: u.sessionVersion,
       isAdmin: principals[i].isAdmin, adminVia: u.isAdmin ? "account" : principals[i].isAdmin ? "group or directory" : null,
       canCreateBots: principals[i].canCreateBots, groups: principals[i].groupIds.map(id => groupName.get(id) ?? id),
       chats, lastLoginAt: u.lastLoginAt, createdAt: u.createdAt,
     })),
-    groups: groupRows.map(g => ({
-      ...g, directMembers: members.filter(m => m.groupId === g.id).length,
+    groups: groupRows.map(({ createdAt: _createdAt, ...g }) => ({
+      ...g, revision: groupRevision({ ...g, createdAt: _createdAt }), directMembers: members.filter(m => m.groupId === g.id).length,
       directoryMappings: mappings.filter(m => m.groupId === g.id).map(m => m.source),
     })),
   };
