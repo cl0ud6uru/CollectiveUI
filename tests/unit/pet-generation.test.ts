@@ -73,10 +73,11 @@ describe("durable admin pet generation", () => {
     expect(receipt.slots).toHaveLength(11);
     expect(receipt.slots.every(slot => slot.status === "succeeded" && slot.inputTokens === 10 && slot.outputTokens === 20 && slot.costMicros === null)).toBe(true);
     expect(receipt.slots.every(slot => slot.consentVersion === 1 && slot.consentSummary.length > 20)).toBe(true);
-    await expect(savePetGenerationPreview(admin, job.id, "unconfirmed")).rejects.toMatchObject({ status: 400 });
-    expect((await savePetGenerationPreview(admin, job.id, "confirmed")).status).toBe("draft");
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: false })).rejects.toMatchObject({ status: 400 });
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "unconfirmed", visualReview: true })).rejects.toMatchObject({ status: 400 });
+    expect((await savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true })).status).toBe("draft");
     expect(generator).toHaveBeenCalledTimes(11);
-    await expect(savePetGenerationPreview(admin, job.id, "confirmed")).rejects.toMatchObject({ status: 409 });
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true })).rejects.toMatchObject({ status: 409 });
   });
 
   it("records an ambiguous lost reply as uncertain and only retries with a new consent receipt", async () => {

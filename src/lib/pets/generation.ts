@@ -255,7 +255,7 @@ export async function getPetGenerationJob(p: Principal, id: string) {
   }).from(petGenerationSlots).where(eq(petGenerationSlots.jobId, id)).orderBy(petGenerationSlots.slotKey, desc(petGenerationSlots.attempt));
   const latest = new Map<string, number>();
   for (const slot of slots) latest.set(slot.slotKey, Math.max(latest.get(slot.slotKey) ?? 0, slot.attempt));
-  return { id: currentJob.id, displayName: currentJob.displayName, description: currentJob.description, appearanceState: currentJob.appearanceState,
+  return { id: currentJob.id, displayName: currentJob.displayName, description: currentJob.description, credit: currentJob.credit, appearanceState: currentJob.appearanceState,
     appearanceConsentAt: currentJob.appearanceConsentAt, appearanceApprovedAt: currentJob.appearanceApprovedAt, buildConsentAt: currentJob.buildConsentAt,
     hasAppearance: !!currentJob.appearance, hasPreview: !!currentJob.preview, catalogPetId: currentJob.catalogPetId,
     slots: slots.map(slot => ({ ...slot, isLatest: latest.get(slot.slotKey) === slot.attempt })) };
@@ -318,8 +318,9 @@ async function atlasCell(source: Buffer, index: number, columns: number, rows: n
   return { input: cell, left, top };
 }
 
-export async function savePetGenerationPreview(p: Principal, id: string, rights: unknown) {
-  if (rights !== "confirmed") throw new HttpError(400, "Confirm permission to share this generated artwork with signed-in users before saving a catalog draft.");
+export async function savePetGenerationPreview(p: Principal, id: string, consent: { rights: unknown; visualReview: unknown }) {
+  if (consent.visualReview !== true) throw new HttpError(400, "Review all animation states, directions, and avatar previews before saving.");
+  if (consent.rights !== "confirmed") throw new HttpError(400, "Confirm permission to share this generated artwork with signed-in users before saving a catalog draft.");
   const job = await ownedJob(p, id);
   if (!job.preview || job.catalogPetId) throw new HttpError(409, "A complete validated preview is required; refresh to check for an existing draft.");
   await validateV2Cells(job.preview);
@@ -330,7 +331,8 @@ export async function savePetGenerationPreview(p: Principal, id: string, rights:
     const manifest: PetManifest = { displayName: locked.displayName, description: locked.description, spriteVersionNumber: 2, credit: locked.credit };
     const [pet] = await tx.insert(petCatalog).values({ createdBy: p.user.id, manifest, sprite: locked.preview }).returning({ id: petCatalog.id, revision: petCatalog.revision, status: petCatalog.status });
     await tx.insert(auditLog).values({ actorId: p.user.id, action: "pet.catalog_draft", target: pet.id,
-      details: { rights: "confirmed", affirmationVersion: 1, audience: "signed-in users", revision: pet.revision, generatedFrom: id } });
+      details: { rights: "confirmed", affirmationVersion: 1, visualReview: "confirmed", visualReviewVersion: 1,
+        audience: "signed-in users", revision: pet.revision, generatedFrom: id } });
     await tx.update(petGenerationJobs).set({ catalogPetId: pet.id, updatedAt: new Date() }).where(eq(petGenerationJobs.id, id));
     return pet;
   });
