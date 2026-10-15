@@ -2,7 +2,7 @@
 
 The Architect is a built-in, admin-only bot that explains, inspects and troubleshoots this installation. It reads bots, connections, users, health, failure counts, runs, jobs, spending and workspaces. Every write requires approval for that exact call. It can create ordinary private caller bots, edit their basic configuration, change their enabled state, and assign built-in tool groups (including Skills).
 
-This bounded slice of [#147](https://github.com/cl0ud6uru/CollectiveUI/issues/147) excludes Team/service publication, grants, delegators, routines and personal runtimes. Connection metadata and tests, user/group/settings administration and diagnostic bundles are separate follow-up work. Scheduled read-only sweeps and the operator CLI are Phase 4 follow-ups and are not required to complete #147.
+This bounded slice of [#147](https://github.com/cl0ud6uru/CollectiveUI/issues/147) excludes Team/service publication, grants, delegators, routines and personal runtimes. Saved provider connection display-name/enabled updates and metadata-only tests are supported. Credential creation, rotation or migration; MCP connection changes/tests; user/group/settings administration; and diagnostic bundles are separate follow-up work. Scheduled read-only sweeps and the operator CLI are Phase 4 follow-ups and are not required to complete #147.
 
 ## Install
 
@@ -28,7 +28,11 @@ The installing admin owns the bot, but every current admin sees it in their bot 
 
 ## Approved bot configuration changes
 
-`admin_create_bot` creates an enabled, private caller bot using an enabled shared tool-capable model. It starts with no tools. `admin_update_bot` changes only its name, label, description, instructions, boundaries or model. `admin_assign_bot_tools` replaces its built-in tool groups and per-group approval modes while preserving existing MCP assignments; MCP grants and custom MCP assignment are managed in Admin. All three require a fresh per-call approval, carry an expected revision for edits, and refuse protected or unsupported bot types. They verify the saved bot and write an actor-attributed audit entry in the same transaction. A stale revision or failed readback/audit rolls back the write.
+`admin_create_bot` creates an enabled, private caller bot using an enabled shared tool-capable model. It starts with no tools. `admin_update_bot` changes only its name, label, description, instructions, boundaries or model. `admin_assign_bot_tools` replaces its built-in tool groups and per-group approval modes while preserving existing MCP assignments; MCP grants and custom MCP assignment are managed in Admin. `admin_assign_bot_skills` moves only skills owned by the current admin between that admin's shared library and a bot they own. This changes whether each skill is available across all their bots or only the selected bot; it preserves audiences, tools and MCP assignments. The Skills tool group must already be enabled.
+
+`admin_update_provider_connection` changes only the saved provider connection's display name or enabled state; its provider, endpoint, billing target and encrypted credential remain fixed. `admin_test_provider_connection` uses the stored credential for a metadata endpoint check (`/models`, or OpenRouter's credential check) and does not send a model prompt. Both require fresh per-call approval and the exact `updatedAt` shown by `admin_list_connections`. Every write or test is audited and re-authorized in the transaction before a verified result returns. Cancellation before the transaction commits rolls back its mutation/audit.
+
+All write tools require a fresh per-call approval, carry the bot revision or connection timestamp read back from the corresponding inventory tool, and refuse protected or unsupported targets. They verify saved state and write an actor-attributed audit entry in the same transaction. A stale revision or failed readback/audit rolls back the write.
 
 Use `admin_get_bot` to inspect the current bot and revision before proposing an edit. The tool assignment result uses the displayed group names and approval modes. Every call is checked against the live admin/session, Architect installation, and direct conversation before the transaction writes.
 

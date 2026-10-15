@@ -2,12 +2,13 @@ import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm
 import { db } from "@/db";
 import {
   aiApps, appAccess, botAccess, botDelegates, botMcpGrants, bots, botTools, botUserAccess, groupMappings, groupMembers, groups,
-  mcpServers, providerConnections, routines, users,
+  mcpServers, providerConnections, routines, skills, users,
 } from "@/db/schema";
 import { resolvePrincipal, type Principal } from "@/lib/auth/groups";
 import { assertAdmin, notFound } from "@/lib/authz";
 import { getSetting } from "@/lib/settings";
 import { safeUrl } from "./secret-safe";
+import { providerConnectionUpdatedAtToken } from "./provider-connection-write";
 
 /*
  * Read-only admin inventory for The Architect (and any other admin surface). Every function checks assertAdmin itself
@@ -24,14 +25,14 @@ async function builtinIds() {
 const botSummary = {
   id: bots.id, revision: bots.revision, name: bots.name, label: bots.label, enabled: bots.enabled, visibility: bots.visibility, executionMode: bots.executionMode,
   hermesTeam: bots.hermesTeam, coordinatorEligible: bots.coordinatorEligible, maxSteps: bots.maxSteps, updatedAt: bots.updatedAt,
-  ownerName: users.name, modelId: aiApps.id, modelName: aiApps.name, modelProvider: aiApps.provider, modelEnabled: aiApps.enabled,
+  ownerId: bots.ownerId, ownerName: users.name, modelId: aiApps.id, modelName: aiApps.name, modelProvider: aiApps.provider, modelEnabled: aiApps.enabled,
   tools: sql<string[]>`coalesce((select array_agg(tool_key order by tool_key) from bot_tools t where t.bot_id = ${bots.id}), '{}')`,
   routines: sql<number>`(select count(*)::int from routines r where r.bot_id = ${bots.id})`,
 };
 
 type BotRow = { id: string; revision: number; name: string; label: string | null; enabled: boolean; visibility: string; executionMode: string; hermesTeam: boolean;
   coordinatorEligible: boolean; maxSteps: number; updatedAt: Date; ownerName: string; modelId: string | null; modelName: string | null;
-  modelProvider: string | null; modelEnabled: boolean | null; tools: string[]; routines: number };
+  modelProvider: string | null; modelEnabled: boolean | null; tools: string[]; routines: number; ownerId: string };
 
 function botView(r: BotRow, ids: Awaited<ReturnType<typeof builtinIds>>) {
   return {
@@ -64,7 +65,7 @@ export async function adminGetBot(p: Principal, botId: string) {
     .from(bots).innerJoin(users, eq(users.id, bots.ownerId)).leftJoin(aiApps, eq(aiApps.id, bots.appId))
     .where(and(eq(bots.id, botId), personalRuntimeHidden(p)));
   if (!row) throw notFound("Bot not found");
-  const [ids, tools, delegates, groupAccess, userAccess, grants, botRoutines] = await Promise.all([
+  const [ids, tools, delegates, groupAccess, userAccess, grants, botRoutines, botSkills] = await Promise.all([
     builtinIds(),
     db.select({ key: botTools.toolKey, approval: botTools.approval, config: botTools.config }).from(botTools).where(eq(botTools.botId, botId)),
     db.select({ id: bots.id, name: bots.name }).from(botDelegates).innerJoin(bots, eq(bots.id, botDelegates.delegateBotId)).where(eq(botDelegates.botId, botId)),
@@ -75,6 +76,8 @@ export async function adminGetBot(p: Principal, botId: string) {
       .from(botMcpGrants).innerJoin(mcpServers, eq(mcpServers.id, botMcpGrants.serverId)).where(and(eq(botMcpGrants.botId, botId), isNull(botMcpGrants.revokedAt))),
     db.select({ id: routines.id, name: routines.name, enabled: routines.enabled, triggerType: routines.triggerType, cron: routines.cron,
       timezone: routines.timezone, nextRunAt: routines.nextRunAt, lastRunAt: routines.lastRunAt }).from(routines).where(eq(routines.botId, botId)),
+    db.select({ id: skills.id, name: skills.name, description: skills.description, version: skills.version, botId: skills.botId })
+      .from(skills).where(and(eq(skills.ownerId, row.ownerId), or(eq(skills.botId, botId), isNull(skills.botId)))).orderBy(asc(skills.name)),
   ]);
   const serverIds = tools.flatMap(t => t.key.startsWith("mcp:") ? [t.key.slice(4)] : []);
   const servers = serverIds.length ? await db.select({ id: mcpServers.id, name: mcpServers.name }).from(mcpServers).where(inArray(mcpServers.id, serverIds)) : [];
@@ -87,6 +90,7 @@ export async function adminGetBot(p: Principal, botId: string) {
       ...(t.config?.tools ? { selectedTools: t.config.tools } : {}),
     })),
     delegates, access: { groups: groupAccess, users: userAccess }, mcpGrants: grants, routines: botRoutines,
+    skills: botSkills.map(skill => ({ ...skill, scope: skill.botId === botId ? "bot" as const : "shared" as const })),
   };
 }
 
@@ -100,7 +104,7 @@ export async function adminListConnections(p: Principal) {
       .from(aiApps).orderBy(asc(aiApps.sortOrder), asc(aiApps.name)),
     db.select({ id: providerConnections.id, name: providerConnections.name, provider: providerConnections.provider, baseUrl: providerConnections.baseUrl,
       organization: providerConnections.organization, project: providerConnections.project, enabled: providerConnections.enabled,
-      hasKey: sql<boolean>`${providerConnections.credentialEnc} is not null`, updatedAt: providerConnections.updatedAt })
+      hasKey: sql<boolean>`${providerConnections.credentialEnc} is not null`, updatedAt: providerConnectionUpdatedAtToken })
       .from(providerConnections).orderBy(asc(providerConnections.name)),
     db.select({ appId: appAccess.appId, groupId: appAccess.groupId }).from(appAccess),
     db.select({ id: mcpServers.id, name: mcpServers.name, url: mcpServers.url, transport: mcpServers.transport, status: mcpServers.status,
