@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NativeConnectionChanged, NativeRpcError } from '@/lib/remote-hermes/socket';
 
-const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], schedules: [] as Record<string, unknown>[], activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
+const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], readbackFolders: null as Record<string, unknown>[] | null, schedules: [] as Record<string, unknown>[], activeId: '', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
   row: {} as Record<string, unknown>, receipt: null as null | { requestId: string; digest: string }, cached: {} as { row: Record<string, unknown>; view: Record<string, unknown>; pending: Map<string, unknown>; socketEpoch: number } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled }) }));
 vi.mock('@/lib/remote-hermes/policy', () => ({ assertRemoteHermesAdmission: (value: { enabled: boolean }) => { if (!value.enabled) throw new Error('Personal remote Hermes is disabled'); } }));
@@ -13,8 +13,13 @@ vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ clien
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
   lockBoundary: async () => { ++f.locks; if (f.concurrentReceipt) { f.receipt = { requestId: f.concurrentReceipt.requestId, digest: f.concurrentReceipt.digest }; f.list.push(f.concurrentReceipt.project); f.concurrentReceipt = null; } if (f.locks === f.runAt) f.cached.view.running = true; }, refresh: async () => f.cached.view, sessions: new Map([['session', f.cached]]),
   socket: { state: 'connected', get connectionEpoch() { return f.cached.socketEpoch; },
-    callConnected: async (method: string) => {
+    callConnected: async (method: string, params: Record<string, unknown>) => {
       if (method === 'projects.list') return { active_id: f.activeId || null, projects: f.list };
+      if (method === 'projects.get') {
+        const project = f.list.find(value => value.id === params.id || value.slug === params.id);
+        if (!project) throw new NativeRpcError(5062);
+        return { project };
+      }
       expect(method).toBe('cron.manage'); return { scoped: f.unscoped ? 'other' : 'default', jobs: f.schedules };
     },
     dispatchConnected: async (method: string, params: Record<string, unknown>, epoch: number) => {
@@ -60,14 +65,14 @@ const confirm = (confirmation: string) => nativeProjectOperation('owner', 'conne
 
 describe('confirmed native Hermes project operations', () => {
   beforeEach(() => {
-    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.schedules = []; f.activeId = ''; f.receipt = null;
+    vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.readbackFolders = null; f.schedules = []; f.activeId = ''; f.receipt = null;
     f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: 'idle', revision: 1, queueRequestId: null };
     f.cached = { row: f.row, view: { title: 'Synthetic chat', profile: 'default', nativeProfile: 'default', running: false, uncertain: false, queuePending: false, queued: '', prompts: [] }, pending: new Map(), socketEpoch: 1 };
     f.profiles.mockResolvedValue([{ name: 'default' }]);
     f.calls.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'projects.create') {
         const project = { id: 'native-project-id', slug: params.slug, name: params.name, folders: [], archived: false };
-        f.list.push(project); return { project };
+        f.list.push({ ...project, folders: f.readbackFolders ?? [] }); return { project };
       }
       if (method === 'projects.set_active') { f.activeId = String(params.id); return { active_id: f.activeId }; }
       expect(method).toBe('cron.manage');
@@ -102,6 +107,45 @@ describe('confirmed native Hermes project operations', () => {
     const result = await confirm(prepared.confirmation!);
     expect(result).toMatchObject({ accepted: false, duplicate: true });
     expect(f.calls).not.toHaveBeenCalled();
+  });
+
+  it('does not report empty-project success if a hidden folder appears before authoritative readback', async () => {
+    f.readbackFolders = [{ path: '/workspace/.private' }];
+    const prepared = await prepareCreate();
+    await expect(confirm(prepared.confirmation!)).rejects.toThrow('readback did not match');
+    expect(f.calls).toHaveBeenCalledExactlyOnceWith('projects.create', expect.anything());
+    expect(f.row.status).toBe('uncertain');
+  });
+
+  it('rejects duplicate reconciliation when projects.get returns a privacy-filtered folder', async () => {
+    const prepared = await prepareCreate();
+    const claim = JSON.parse(decrypt(prepared.confirmation!, JSON.stringify(['remote-hermes-project:v1', 'owner', 'connection', 'session'])));
+    f.receipt = { requestId: claim.requestId, digest: hmacSha256Hex('synthetic-receipt-key', JSON.stringify(claim)) };
+    f.list = [{ id: 'native-project-id', slug: claim.slug, name: claim.name, folders: [{ path: '/workspace/.private' }], archived: false }];
+    const result = await confirm(prepared.confirmation!);
+    expect(result).toMatchObject({ accepted: false, duplicate: true, projects: [{ id: 'native-project-id', folders: [] }] });
+    expect(JSON.stringify(result)).not.toContain('/workspace/.private');
+    expect(f.calls).not.toHaveBeenCalled();
+  });
+
+  it('rejects concurrent duplicate reconciliation when projects.get returns a privacy-filtered folder', async () => {
+    const prepared = await prepareCreate();
+    const claim = JSON.parse(decrypt(prepared.confirmation!, JSON.stringify(['remote-hermes-project:v1', 'owner', 'connection', 'session'])));
+    f.concurrentReceipt = { requestId: claim.requestId, digest: hmacSha256Hex('synthetic-receipt-key', JSON.stringify(claim)),
+      project: { id: 'native-project-id', slug: claim.slug, name: claim.name, folders: [{ path: '/workspace/.private' }], archived: false } };
+    const result = await confirm(prepared.confirmation!);
+    expect(result).toMatchObject({ accepted: false, duplicate: true, projects: [{ id: 'native-project-id', folders: [] }] });
+    expect(JSON.stringify(result)).not.toContain('/workspace/.private');
+    expect(f.calls).not.toHaveBeenCalled();
+  });
+
+  it('verifies project 501 with projects.get even when the bounded display list omits it', async () => {
+    f.list = Array.from({ length: 500 }, (_, index) => ({ id: `existing-${index}`, slug: `existing-${index}`, name: `Existing ${index}`, folders: [], archived: false }));
+    const prepared = await prepareCreate();
+    const result = await confirm(prepared.confirmation!);
+    expect(result).toMatchObject({ accepted: true, activeId: '' });
+    expect(f.list).toHaveLength(501);
+    expect(f.calls).toHaveBeenCalledExactlyOnceWith('projects.create', expect.anything());
   });
 
   it('selects only a refreshed, active, server-listed id after a separate profile-wide confirmation', async () => {

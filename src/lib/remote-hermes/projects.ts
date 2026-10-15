@@ -93,6 +93,16 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   async function projects(epoch: number) {
     return projectProjection(await hub.socket.callConnected('projects.list', { profile: row.profile }, epoch, 30_000));
   }
+  async function projectByIdentity(epoch: number, idOrSlug: string) {
+    try {
+      return record(record(await hub.socket.callConnected('projects.get', { profile: row.profile, id: idOrSlug }, epoch, 30_000)).project);
+    } catch (error) {
+      // Pinned Hermes resolves the project id first and the slug second; 5062
+      // is its exact not-found response. Unsupported or transport errors fail closed.
+      if (error instanceof NativeRpcError && error.code === 5062) return null;
+      throw error;
+    }
+  }
   async function schedules(epoch: number) {
     const value = record(await hub.socket.callConnected('cron.manage', { profile: row.profile, action: 'list', include_disabled: true }, epoch, 30_000));
     if (value.scoped !== row.profile) throw new HttpError(501, 'This Hermes version cannot confirm profile-scoped schedules.');
@@ -104,10 +114,11 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     if (snapshot.socketEpoch !== hub.socket.connectionEpoch) throw new NativeConnectionChanged();
     let claim: Claim;
     if (input.action === 'create') {
-      await projects(snapshot.socketEpoch);
       const requestId = randomUUID();
+      const slug = `cu-${requestId.replaceAll('-', '')}`;
+      if (await projectByIdentity(snapshot.socketEpoch, slug)) throw new HttpError(409, 'This project request already appears in Hermes. Refresh the list instead of creating it again.');
       claim = { requestId, runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
-        action: 'create', name: input.name, slug: `cu-${requestId.replaceAll('-', '')}`, expiresAt: Date.now() + 60_000 };
+        action: 'create', name: input.name, slug, expiresAt: Date.now() + 60_000 };
     } else if (input.action === 'select') {
       const listed = await projects(snapshot.socketEpoch);
       const project = listed.projects.find(value => value.id === input.projectId);
@@ -144,7 +155,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     }
     const current = await projects(claim.socketEpoch);
     const complete = claim.action === 'create'
-      ? current.projects.some(project => project.slug === claim.slug && project.name === claim.name && project.folders.length === 0)
+      ? await projectByIdentity(claim.socketEpoch, claim.slug).then(project => !!project && project.slug === claim.slug && project.name === claim.name && Array.isArray(project.folders) && project.folders.length === 0)
       : current.activeId === claim.projectId && current.projects.some(project => project.id === claim.projectId && !project.archived);
     return { accepted: complete, duplicate: true, projects: current.projects, activeId: current.activeId,
       output: complete ? 'This project request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
@@ -157,7 +168,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     const listed = await projects(claim.socketEpoch);
     if (claim.action === 'select' && !listed.projects.some(project => project.id === claim.projectId && !project.archived))
       throw new HttpError(409, 'The chosen project changed after confirmation. Refresh the list and choose it again.');
-    if (claim.action === 'create' && listed.projects.some(project => project.slug === claim.slug))
+    if (claim.action === 'create' && await projectByIdentity(claim.socketEpoch, claim.slug))
       throw new HttpError(409, 'This project request already appears in Hermes. Refresh the list instead of creating it again.');
   }
   const preflight = idle(row);
@@ -185,7 +196,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     }
     const current = await projects(claim.socketEpoch);
     const complete = claim.action === 'create'
-      ? current.projects.some(project => project.slug === claim.slug && project.name === claim.name && project.folders.length === 0)
+      ? await projectByIdentity(claim.socketEpoch, claim.slug).then(project => !!project && project.slug === claim.slug && project.name === claim.name && Array.isArray(project.folders) && project.folders.length === 0)
       : current.activeId === claim.projectId && current.projects.some(project => project.id === claim.projectId && !project.archived);
     return { accepted: complete, duplicate: true, projects: current.projects, activeId: current.activeId,
       output: complete ? 'This request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
@@ -232,8 +243,9 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       return { accepted: true, duplicate: false, schedules: latest.schedules, output: claim.enabled ? 'Schedule resumed; it may run soon and use model usage.' : 'Schedule paused.' };
     }
     const latest = await projects(claim.socketEpoch);
+    const target = claim.action === 'create' ? await projectByIdentity(claim.socketEpoch, createdId!) : null;
     const matched = claim.action === 'create'
-      ? latest.projects.some(project => project.id === createdId && project.slug === claim.slug && project.name === claim.name && project.folders.length === 0)
+      ? !!target && target.id === createdId && target.slug === claim.slug && target.name === claim.name && Array.isArray(target.folders) && target.folders.length === 0
       : latest.activeId === claim.projectId && latest.projects.some(project => project.id === claim.projectId);
     if (!matched) throw new HttpError(502, 'Hermes project readback did not match the requested change. The result is uncertain; refresh before taking action.');
     await settle('idle');

@@ -206,6 +206,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   return <div className="grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
     <aside className="space-y-3">
       <Link href="/hermes" className="text-sm text-muted underline">All Hermes connections</Link>
+      <Link href={`/hermes/${encodeURIComponent(connectionId)}/operations${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''}`} className="block text-sm text-muted underline">Workspace panels</Link>
       <Select aria-label="Hermes profile" value={profile} disabled={busy || !enabled} onChange={e => select(null, e.target.value)}>
         {(profiles.length ? profiles : [...new Set(saved.map(s => s.profile))].map(name => ({ name, botTitle: '' }))).map(p => <option key={p.name} value={p.name}>{p.botTitle || p.name}</option>)}
       </Select>
