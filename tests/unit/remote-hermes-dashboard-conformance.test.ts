@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DashboardClient, type DashboardSecrets } from '@/lib/remote-hermes/client';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
 import { DashboardSocket, NativeRpcError, type NativeFrame, type RpcRecord } from '@/lib/remote-hermes/socket';
@@ -30,7 +30,7 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
   beforeAll(async () => {
     processFixture = await startPinnedDashboard(); base = processFixture.base;
     const bootstrap = new DashboardClient(base, fetch);
-    await vi.waitFor(async () => expect((await bootstrap.status()).version).toBe('0.21.5'), { timeout: 5000 });
+    expect((await bootstrap.status()).version).toBe('0.21.5');
     secrets = await bootstrap.passwordLogin('synthetic', 'synthetic-password');
     auth = new DashboardClient(base, fetch, secrets);
     socket = new DashboardSocket(async () => ({ url: new URL(`${base.replace('http:', 'ws:')}/api/ws?ticket=${encodeURIComponent(await auth.websocketTicket())}`), options: {} }), frame => frames.push(frame));

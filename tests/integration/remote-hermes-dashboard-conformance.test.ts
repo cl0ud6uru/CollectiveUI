@@ -38,7 +38,7 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     ({ nativeControl, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
     processFixture = await startPinnedDashboard(); f.base = processFixture.base;
     const bootstrap = new DashboardClient(f.base, fetch);
-    await vi.waitFor(async () => expect((await bootstrap.status()).version).toBe('0.21.5'));
+    expect((await bootstrap.status()).version).toBe('0.21.5');
     secrets = await bootstrap.passwordLogin('synthetic', 'synthetic-password'); auth = new DashboardClient(f.base, fetch, secrets);
     await db.insert(users).values({ id: owner, upn: `native-conformance-${owner}`, name: 'Synthetic fixture', identityRealm: 'local', authSource: 'local' });
     await db.insert(remoteHermesConnections).values({ id: connection, userId: owner, name: 'Synthetic pinned dashboard', baseUrl: f.base, authMode: 'password', secretEnc: encrypt(JSON.stringify(secrets), remoteConnectionAAD(connection, owner)) });
@@ -61,7 +61,7 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     expect((await row(id)).queueStatus).toBe('queued');
     expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(2);
     await nativeControl(owner, connection, id, 'stop');
-    await vi.waitFor(async () => expect((await hub.refresh(await row(id))).running).toBe(false));
+    await vi.waitFor(async () => expect((await hub.refresh(await row(id))).running).toBe(false), { timeout: 10_000 });
     expect((await row(id)).queueRequestId).toBeNull();
   }, 20000);
   it('retains a durable no-replay receipt after real native acceptance loses its acknowledgement', async () => {
@@ -70,7 +70,7 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     await expect(submitNativePrompt(owner, connection, id, requestId, 'fixture-lost-ack')).rejects.toThrow('may have been accepted');
     expect(await submitNativePrompt(owner, connection, id, requestId, 'fixture-lost-ack')).toEqual({ accepted: true, duplicate: true });
     expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(1);
-    await vi.waitFor(async () => expect((await metrics()).agent_turns).toBe(before + 1));
+    await vi.waitFor(async () => expect((await metrics()).agent_turns).toBe(before + 1), { timeout: 10_000 });
     expect((await metrics()).external_attempts).toBe(0);
   }, 20000);
 });

@@ -36,6 +36,18 @@ export async function startPinnedDashboard() {
         } catch { reject(new Error('Invalid pinned dashboard identity/readiness')); }
       });
     });
-    return { base: `http://127.0.0.1:${port}`, stop };
+    const base = `http://127.0.0.1:${port}`;
+    // The native fixture announces the bound listener before Uvicorn accepts HTTP.
+    // Require actual HTTP readiness here; callers must not race a one-second waitFor.
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(base + '/api/status', { signal: AbortSignal.timeout(1000) });
+        if (response.ok && (await response.json()).version === '0.21.5') return { base, stop };
+        await response.body?.cancel();
+      } catch { /* Retry only this owned disposable loopback endpoint. */ }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Pinned dashboard HTTP startup timed out');
   } catch (error) { await stop(); throw error; }
 }
