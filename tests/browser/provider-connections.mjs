@@ -23,8 +23,16 @@ try {
       {id:'compatible',name:'Saved Chat Completions',provider:'openai-compatible',baseUrl:'https://provider.example/api/v1',organization:null,project:null,enabled:true},
       {id:'openrouter',name:'Saved OpenRouter',provider:'openrouter',baseUrl:'https://openrouter.ai/api/v1',organization:null,project:null,enabled:true},
       {id:'disabled',name:'Disabled credential',provider:'openai-compatible',baseUrl:'https://disabled.example/v1',organization:null,project:null,enabled:false},
+      {id:'disabled-other',name:'Other disabled credential',provider:'openai-compatible',baseUrl:'https://other-disabled.example/v1',organization:null,project:null,enabled:false},
+      {id:'disabled-router',name:'Disabled OpenRouter credential',provider:'openrouter',baseUrl:'https://openrouter.ai/api/v1',organization:null,project:null,enabled:false},
       {id:'legacy-bad',name:'Legacy operation endpoint',provider:'openai',baseUrl:'https://openrouter.ai/api/v1/chat/completions',organization:null,project:null,enabled:true}
-    ];createRoot(document.getElementById('root')).render(<><ProviderConnectionsAdmin connections={connections.map(c=>({...c,createdBy:'fixture',updatedAt:'2026-01-01',creatorName:'Synthetic admin',models:[]}))}/><AppsAdmin apps={[]} groups={[]} connections={connections} chatgptEnabled={false}/></>);`);
+    ];
+    const defaults={description:null,icon:null,config:{},hasKey:false,systemPrompt:null,temperature:null,maxTokens:null,supportsVision:false,supportsTools:true,embeddingModel:null,isPublic:true,enabled:true,sortOrder:0,groupIds:[]};
+    const apps=[
+      {...defaults,id:'retained-compatible',name:'Retained compatible model',provider:'openai-compatible',providerConnectionId:'disabled',baseUrl:'https://disabled.example/v1',model:'fixture/model'},
+      {...defaults,id:'retained-router',name:'Retained OpenRouter model',provider:'openrouter',providerConnectionId:'disabled-router',baseUrl:'https://openrouter.ai/api/v1',model:'vendor/vision'},
+      {...defaults,id:'enabled-model',name:'Enabled connection model',provider:'openai-compatible',providerConnectionId:'compatible',baseUrl:'https://provider.example/api/v1',model:'fixture/model'},
+    ];createRoot(document.getElementById('root')).render(<><ProviderConnectionsAdmin connections={connections.map(c=>({...c,createdBy:'fixture',updatedAt:'2026-01-01',creatorName:'Synthetic admin',models:[]}))}/><AppsAdmin apps={apps} groups={[{id:'audience',name:'Engineering'}]} connections={connections} chatgptEnabled={false}/></>);`);
   const fixtures = {
     'next/navigation': `export const useRouter=()=>({refresh(){}});`,
     'next/link': `import React from 'react';export default function Link(p){return React.createElement('a',p);}`,
@@ -193,10 +201,41 @@ try {
   await dialog.getByRole('button',{name:'Save provider connection',exact:true}).click();
   await expect(dialog).toHaveCount(0);
   expect(saves.at(-1)).toMatchObject({route:'/fixture/provider',input:{provider:'openrouter',baseUrl:'https://openrouter.ai/api/v1',organization:null,project:null}});
+  for (const retained of [
+    {id:'retained-compatible',name:'Retained compatible model',connectionId:'disabled'},
+    {id:'retained-router',name:'Retained OpenRouter model',connectionId:'disabled-router'},
+  ]) {
+    await page.goto(base);
+    await page.getByRole('button',{name:`Edit ${retained.name}`,exact:true}).click();
+    dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('button',{name:'Test saved connection',exact:true})).toBeDisabled();
+    await expect(dialog.getByRole('button',{name:'Save',exact:true})).toBeEnabled();
+    await expect(dialog).toContainText('You can still save changes');
+    await choose('Saved provider connection','compatible');
+    await choose('Saved provider connection',retained.connectionId);
+    await expect(dialog.getByRole('button',{name:'Test saved connection',exact:true})).toBeDisabled();
+    await dialog.getByLabel('Name',{exact:true}).fill(`${retained.name} edited`);
+    await dialog.getByRole('switch',{name:'Enabled',exact:true}).click();
+    await dialog.getByRole('switch',{name:'Available to everyone',exact:true}).click();
+    await dialog.getByRole('button',{name:'Engineering',exact:true}).click();
+    await expect(dialog.getByRole('button',{name:'Save',exact:true})).toBeEnabled();
+    await dialog.getByRole('button',{name:'Save',exact:true}).click();
+    await expect(dialog).toHaveCount(0);
+    expect(saves.at(-1)).toMatchObject({route:'/fixture/model',input:{id:retained.id,name:`${retained.name} edited`,providerConnectionId:retained.connectionId,enabled:false,isPublic:false,groupIds:['audience'],credentials:{}}});
+  }
+  for (const existing of [false,true]) {
+    await page.goto(base);
+    await page.getByRole('button',{name:existing?'Edit Enabled connection model':'Add model connection',exact:true}).click();
+    dialog = page.getByRole('dialog');
+    await dialog.getByRole('combobox',{name:'Saved provider connection',exact:true}).click();
+    for (const id of ['disabled','disabled-other','disabled-router']) await expect(page.locator(`[role=option][data-value="${id}"]`)).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+  }
   expect(catalogRequests).toBeGreaterThan(0);
   expect(errors).toEqual([]);
   expect(externalRequests).toEqual([]);
-  console.log('Saved provider UI: OpenRouter catalog search/selection, read-only test feedback, loading/retry/empty/manual fallback, all API types, destination locks, manual credentials, invalid endpoint rejection and 320/390/768/1280 layouts passed; all actions synthetic, zero provider requests.');
+  console.log('Saved provider UI: OpenRouter catalog search/selection, read-only test feedback, loading/retry/empty/manual fallback, retained disabled-connection edits and new/different attachment guards, all API types, destination locks, manual credentials, invalid endpoint rejection and 320/390/768/1280 layouts passed; all actions synthetic, zero provider requests.');
 } finally {
   await browser?.close();
   if (server) await new Promise(resolve => server.close(resolve));

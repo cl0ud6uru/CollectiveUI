@@ -48,6 +48,26 @@ beforeEach(async () => {
 });
 afterAll(async () => { await fixture.client!.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
+it.each(["openai", "openai-compatible", "openrouter"] as const)("retains a disabled %s connection for model edits while rejecting new or different attachments", async provider => {
+  const target = provider === "openrouter" ? "https://openrouter.ai/api/v1" : baseUrl;
+  const c = await saveProviderConnection({ provider, name: "Retained provider", baseUrl: target, apiKey: "synthetic-retained-disabled", enabled: true });
+  const other = await saveProviderConnection({ provider, name: "Other provider", baseUrl: target, apiKey: "synthetic-other-disabled", enabled: true });
+  const input = { ...modelInput(provider), baseUrl: target, providerConnectionId: c.id };
+  const app = await row((await saveApp(input)).id);
+  await saveProviderConnection({ ...c, enabled: false });
+  await saveProviderConnection({ ...other, enabled: false });
+  const edited = { ...input, id: app.id, name: "Edited retained model", isPublic: false, groupIds: ["audience"], enabled: false };
+  await saveApp(edited);
+  expect(await row(app.id)).toMatchObject({ name: edited.name, enabled: false, isPublic: false, providerConnectionId: c.id, apiKeyEnc: null });
+  expect(await db.select().from(schema.appAccess).where(eq(schema.appAccess.appId, app.id))).toMatchObject([{ groupId: "audience" }]);
+  expect(await testAppConnection({ provider, providerConnectionId: c.id, baseUrl: target })).toMatchObject({ ok: false });
+  await expect(saveApp(input)).rejects.toThrow(/disabled/);
+  await expect(saveApp({ ...edited, providerConnectionId: other.id })).rejects.toThrow(/disabled/);
+  expect(await row(app.id)).toMatchObject({ providerConnectionId: c.id, name: edited.name });
+  expect((await db.select().from(schema.providerConnections).where(eq(schema.providerConnections.id, c.id)))[0].enabled).toBe(false);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 describe.each(["openai", "openai-compatible"] as const)("saved %s credentials through production actions and runtime", provider => {
   it("requires administrator authorization for all credential and model actions", async () => {
     fixture.allowed = false;

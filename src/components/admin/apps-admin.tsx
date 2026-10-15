@@ -132,10 +132,14 @@ function AppDialog({
   const baseUrlOk = entry.baseUrl.mode !== "required" || (!!f.baseUrl && f.baseUrl !== "https://");
   const openrouter = f.provider === "openrouter" || (f.provider === "openai-compatible" && isOpenRouterBaseUrl(f.baseUrl));
   const missingKey = f.provider === "openrouter" && !linked && !(f.hasKey && app?.provider === "openrouter") && !credentials.apiKey?.trim();
-  const disabledConnection = linked && !connections.find(c => c.id === f.providerConnectionId)?.enabled;
-  const testBlocked = urlError || (!baseUrlOk ? "Enter an API base URL first." : disabledConnection ? "Enable the saved provider connection or choose another one." : missingKey ? "Enter your OpenRouter API key to test the connection." : entry.test === "probe" && !f.model.trim() ? `Enter the ${entry.modelLabel.toLowerCase()} first.` : null);
+  const selectedConnection = connections.find(c => c.id === f.providerConnectionId);
+  const disabledConnection = linked && !selectedConnection?.enabled;
+  const retainingConnection = !!f.id && !!selectedConnection && app?.providerConnectionId === selectedConnection.id;
+  const fieldsBlocked = urlError || (!baseUrlOk ? "Enter an API base URL first." : missingKey ? "Enter your OpenRouter API key." : null);
+  const testBlocked = fieldsBlocked || (disabledConnection ? "Enable the saved provider connection or choose another one to test." : entry.test === "probe" && !f.model.trim() ? `Enter the ${entry.modelLabel.toLowerCase()} first.` : null);
   const canTest = !testBlocked;
-  const saveBlocked = testBlocked || (!f.name.trim() ? "Enter a connection name to save." : !f.model.trim() ? "Choose a model or enter its ID to save. Placeholder text is only an example." : null);
+  // Like saveApp, allow edits that retain an existing disabled connection, but never attach a different one.
+  const saveBlocked = fieldsBlocked || (disabledConnection && !retainingConnection ? "Choose an enabled saved provider connection before saving." : !f.name.trim() ? "Enter a connection name to save." : !f.model.trim() ? "Choose a model or enter its ID to save. Placeholder text is only an example." : null);
 
   const payload = (): AppInput =>
     ({
@@ -223,11 +227,11 @@ function AppDialog({
               setCredentials({}); setModels([]); clearTestResult();
             }}>
               <option value="">Enter credentials on this model</option>
-              {connections.map(c => <option key={c.id} value={c.id} disabled={!c.enabled && c.id !== f.providerConnectionId}>{c.name} · {SAVED_PROVIDER_LABELS[c.provider]}{!c.enabled ? " (disabled)" : ""}</option>)}
+              {connections.map(c => <option key={c.id} value={c.id} disabled={!c.enabled && (!app?.id || c.id !== app.providerConnectionId)}>{c.name} · {SAVED_PROVIDER_LABELS[c.provider]}{!c.enabled ? " (disabled)" : ""}</option>)}
             </Select>
             {linked && <Button variant="outline" onClick={test} disabled={testing || !canTest}>Test saved connection</Button>}
             {linked && urlError && <p role="alert" className="text-sm text-danger">{urlError} This saved destination is locked. Create a separate provider connection with the correct API type and base URL, then select it here. For OpenRouter, choose OpenRouter and use {OPENROUTER_BASE_URL}.</p>}
-            {linked && disabledConnection && <p role="alert" className="text-sm text-danger">Enable the saved provider connection or choose another one.</p>}
+            {linked && disabledConnection && <p role="status" className="text-sm text-muted">{retainingConnection ? "This saved provider connection is disabled, so testing and model use are unavailable. You can still save changes while retaining this connection." : "This saved provider connection is disabled. Choose an enabled connection before saving or testing."}</p>}
             {!linked && isSavedProviderKind(f.provider) && f.id && f.hasKey && <Button variant="outline" disabled={pending || !!urlError} onClick={() => {
               const name = prompt("Name for this model's new reusable connection. Only this model will be migrated; its API type, endpoint, project and audience are preserved. Service bots whose publication is current stay published; bots that already need review still do.", `${f.name} provider`);
               if (!name?.trim()) return;
@@ -334,7 +338,7 @@ function AppDialog({
 
           {testResult && <p role={testResult.ok ? "status" : "alert"} className={`text-sm ${testResult.ok ? "text-muted" : "text-danger"}`}>{testResult.message}</p>}
           {f.provider === "openrouter" && <p className="text-xs text-muted">Test checks the API key without generating text. Selecting a model and saving do not make a generation request.</p>}
-          {testBlocked && !urlError && <p className="text-sm text-danger">{testBlocked}</p>}
+          {testBlocked && !urlError && !disabledConnection && <p className="text-sm text-danger">{testBlocked}</p>}
           <div className="grid gap-4 sm:grid-cols-2">
             {openrouter ? <ModelCatalogPicker value={f.model} onChange={(id, model) => setF(x => ({ ...x, model: id, ...(model ? { supportsTools: model.supportsTools, supportsVision: model.supportsVision } : {}) }))} /> : <Field label={agent ? "Profile model route" : entry.modelLabel} hint={agent ? "The route served by this Hermes profile, not an ordinary New Chat model." : "A provider may offer many models. This connection uses the model or deployment selected here."}>
               <Input aria-label={agent ? "Profile model route" : entry.modelLabel} list="model-list" value={f.model} onChange={(e) => set("model", e.target.value)} placeholder={entry.modelPlaceholder} />
