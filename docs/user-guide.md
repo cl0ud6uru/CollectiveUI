@@ -20,6 +20,10 @@ The bot features below describe ordinary **native caller bots** unless stated ot
 - Share an eligible chat as a snapshot link. Only signed-in people in your organization can open it. **Continue this conversation** creates the viewer's own copy when its bot/model is still accessible and supports continuation; it never grants access to the original owner's private task records or credentials.
 - Settings: theme, custom instructions, memory and learning, standing approvals, connected accounts, security and archived chats. Local accounts support passkeys and TOTP; LDAP accounts support company passkeys. Works in light and dark mode and on mobile.
 
+![The deployed new-chat composer with attachment, Tools and command controls.](images/live-app/new-chat.png)
+
+*The empty model-chat screen, captured from the deployed app on 2026-10-15. [Capture notes](images/README.md).*
+
 **Bots**
 
 | Feature | How it works here |
