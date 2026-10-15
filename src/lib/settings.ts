@@ -109,6 +109,16 @@ export type SandboxSettings = {
   deleteAfterDays: number;
 };
 
+/** OpenAI image generation is unavailable until an admin opts in and selects a saved official connection. */
+export type PetGenerationSettings = {
+  enabled: boolean;
+  providerConnectionId: string | null;
+  modelId: "gpt-image-2.5-sunburst";
+  access: "everyone" | "selected";
+  allowedGroupIds: string[];
+  allowedUpns: string[];
+};
+
 const defaults = {
   voice: { providerAppId: null, reactions: true, avatarUrl: null } as import("./voice/policy").VoiceSettings,
   officeBot: { botId: null } as { botId: string | null },
@@ -119,6 +129,7 @@ const defaults = {
   // Separate from editable text so stale admin forms cannot resurrect a removed logo.
   brandingLogo: { id: null } as { id: string | null },
   loginPet: { appearance: "off", catalogId: null, revision: null } as LoginPetSettings,
+  petGeneration: { enabled: false, providerConnectionId: null, modelId: "gpt-image-2.5-sunburst", access: "selected", allowedGroupIds: [], allowedUpns: [] } as PetGenerationSettings,
   limits: { uploadMaxMb: 20, maxAttachmentsPerMessage: 10 } as LimitsSettings,
   tools: {
     disabledTools: [],
