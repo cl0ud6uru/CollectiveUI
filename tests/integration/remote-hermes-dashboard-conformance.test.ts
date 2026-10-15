@@ -6,18 +6,20 @@ vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, pri
 import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
-import { DashboardClient, type DashboardSecrets } from '@/lib/remote-hermes/client';
-import { DashboardSocket } from '@/lib/remote-hermes/socket';
+import type { DashboardSecrets } from '@/lib/remote-hermes/client';
+import type { DashboardSocket as Socket } from '@/lib/remote-hermes/socket';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
 import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
 let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
+let DashboardClient: typeof import('@/lib/remote-hermes/client').DashboardClient;
+let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket;
 let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
 let nativeControl: typeof import('@/lib/remote-hermes/sessions').nativeControl, submitNativePrompt: typeof import('@/lib/remote-hermes/sessions').submitNativePrompt;
 const enabled = process.env.REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE === '1';
 const owner = newId(), connection = newId();
-let processFixture: Awaited<ReturnType<typeof startPinnedDashboard>>, bootstrapSocket: DashboardSocket;
-let secrets: DashboardSecrets, auth: DashboardClient;
+let processFixture: Awaited<ReturnType<typeof startPinnedDashboard>>, bootstrapSocket: Socket;
+let secrets: DashboardSecrets, auth: import('@/lib/remote-hermes/client').DashboardClient;
 const row = async (id: string) => (await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, id)))[0];
 async function control(body: unknown) {
   const response = await fetch(f.base + '/api/__fixture/control', { method: 'POST', headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -34,6 +36,8 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
   beforeAll(async () => {
     assertDisposableHermesDatabase(process.env.DATABASE_URL);
     ({ db, pool } = await import('@/db'));
+    ({ DashboardClient } = await import('@/lib/remote-hermes/client'));
+    ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
     ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
     ({ nativeControl, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
     processFixture = await startPinnedDashboard(); f.base = processFixture.base;
