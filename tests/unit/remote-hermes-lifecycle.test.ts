@@ -87,7 +87,7 @@ async function fixture() {
   f.owners = [{ connectionId: 'connection', ownerInstanceId: hub.instanceId, generation: 1, leaseExpiresAt: new Date(Date.now() + 60_000), socketEpoch: 0, nativeProtocol: null, nativeGeneration: null, nativeSocketEpoch: null }];
   const row = { id: 'local-a', connectionId: 'connection', profile: 'default', storedId: 'stored-a', runtimeId: 'runtime-a', status: 'running', queueRequestId: null } as typeof remoteHermesSessions.$inferSelect;
   f.rows = [row];
-  hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: row.runtimeId, running: true }, 'connected'), pending: new Map([['native-ask-a', { nativeId: 'native-ask-a', prompt: promptView('native-ask-a', 'approval', { command: 'synthetic' })!, params: { session_id: row.runtimeId } }]]), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1, ownerInstanceId: hub.instanceId, leaseGeneration: 1, ownerSocketEpoch: 1 });
+  hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: row.runtimeId, running: true }, 'connected'), pending: new Map([['native-ask-a', { nativeId: 'native-ask-a', prompt: promptView('native-ask-a', 'approval', { command: 'synthetic' })!, params: { session_id: row.runtimeId }, socketEpoch: 1 }]]), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1, ownerInstanceId: hub.instanceId, leaseGeneration: 1, ownerSocketEpoch: 1 });
   await hub.socket.call('session.resume', { session_id: row.storedId, profile: row.profile });
   return { hub, row, received, server };
 }

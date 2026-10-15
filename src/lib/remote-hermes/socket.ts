@@ -33,6 +33,7 @@ export class DashboardSocket {
   private retry?: NodeJS.Timeout;
   private heartbeat?: NodeJS.Timeout;
   private pending = new Map<number, { resolve: (v: RpcRecord) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private answerWrites = new Set<(error: Error) => void>();
   state: SocketState = 'disconnected';
   serverRequests: string[] = [];
   private epoch = 0;
@@ -163,18 +164,32 @@ export class DashboardSocket {
     return { reply };
   }
   /** Only server-verified pending requests are answered; values are never logged or retained. */
-  async answer(id: string | number, result?: RpcRecord) {
+  async answer(id: string | number, result?: RpcRecord, expectedEpoch = this.epoch) {
     if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) throw new HttpError(409, 'Reconnect and reload the pending prompt before answering.');
     const ws = this.ws;
     await this.prepare('$answer', { id });
-    await this.boundary('$answer', { id }, () => {
-      if (this.ws !== ws || !this.ready || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
-      ws.send(JSON.stringify(result ? { jsonrpc: '2.0', id, result } : { jsonrpc: '2.0', id, error: { code: -32601, message: 'Unsupported interaction' } }));
+    const { value: written } = await this.boundary('$answer', { id }, () => {
+      if (this.ws !== ws || !this.ready || ws.readyState !== WebSocket.OPEN || this.epoch !== expectedEpoch) throw new NativeConnectionChanged();
+      const write = new Promise<void>((resolve, reject) => {
+        const fail = (error: Error) => { clearTimeout(timer); this.answerWrites.delete(fail); reject(error); };
+        const timer = setTimeout(() => fail(new HttpError(504, 'Hermes prompt delivery is uncertain. Refresh instead of resending the answer.')), 30_000);
+        this.answerWrites.add(fail);
+        try {
+          ws.send(JSON.stringify(result ? { jsonrpc: '2.0', id, result } : { jsonrpc: '2.0', id, error: { code: -32601, message: 'Unsupported interaction' } }), error => {
+            if (error) { fail(new HttpError(502, 'Hermes prompt delivery is uncertain. Refresh instead of resending the answer.')); return; }
+            clearTimeout(timer); this.answerWrites.delete(fail); resolve();
+          });
+        } catch { fail(new HttpError(502, 'Hermes prompt delivery is uncertain. Refresh instead of resending the answer.')); }
+      });
+      void write.catch(() => {});
+      return write;
     });
+    await written;
   }
   private rejectPending() {
+    for (const fail of this.answerWrites) fail(new HttpError(502, 'Hermes disconnected before confirming prompt delivery. Refresh instead of resending the answer.'));
     for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new HttpError(502, 'Hermes disconnected. The operation may have been accepted; refresh instead of resending it.')); }
     this.pending.clear();
   }
-  close() { this.closed = true; this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; this.ws?.terminate(); this.setState('disconnected'); }
+  close() { this.closed = true; this.wanted = false; clearTimeout(this.retry); this.retry = undefined; clearInterval(this.heartbeat); this.rejectPending(); this.ready = false; this.transportReady = false; const ws = this.ws; this.ws = undefined; this.serverRequests = []; ws?.terminate(); this.setState('disconnected'); }
 }
