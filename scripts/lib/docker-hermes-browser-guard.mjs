@@ -1,5 +1,5 @@
 /** CI-only browser acceptance boundary. No application or PostgreSQL imports belong in this module. */
-export const ACCEPTED_APP_SHA = '9f6105dff666eff3bcb15c6ea36856c7ef9d6012';
+export const ACCEPTED_APP_SHA = '4a3de1167ed0564ed3cbe961dfcdf3be6c067e36';
 export const EXPECTED_BROWSER_CASES = 10;
 const REASONS = new Set([
   'platform_not_linux', 'ci_required', 'github_actions_required', 'explicit_optin_required', 'app_sha_not_accepted',
