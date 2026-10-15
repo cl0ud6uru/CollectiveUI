@@ -214,7 +214,7 @@ In this offline resource-helper fixture, test owner containers use a fixed Node 
 
 ## Accepted-SHA disposable browser acceptance
 
-The narrowly scoped `Disposable Docker Hermes browser acceptance` workflow runs all ten cases in `tests/e2e/docker-hermes.spec.ts`, including starter setup, readiness, provider reset and runtime navigation. It checks out application **and browser-spec source** at accepted commit `a6af9a5eb456f588929fdb7fef00d4a57fb4b70b`, separately from the workflow/harness candidate SHA. It uses a real development-mode Next app and worker, fresh named PostgreSQL and synthetic broker/native RPC; it does not establish production-build, Docker image or live provider evidence.
+The narrowly scoped `Disposable Docker Hermes browser acceptance` workflow runs all ten cases in `tests/e2e/docker-hermes.spec.ts`, including starter setup, readiness, provider reset and runtime navigation. It checks out application **and browser-spec source** at candidate commit `78518aa6b5c35fe37485d8741893fbf361202f9d`, separately from the workflow/harness candidate SHA. It uses a real development-mode Next app and worker, fresh named PostgreSQL and synthetic broker/native RPC; it does not establish production-build, Docker image or live provider evidence.
 
 The workflow invokes Node with an explicit minimal environment, dropping ambient runner provider/configuration values before the guard starts; the standalone guard still rejects those values if supplied directly. Before importing PostgreSQL or application code, the harness refuses non-Linux/non-CI execution, ambient `PG*` overrides, non-loopback or non-named databases, URL query/fragment overrides, reused credentials, ambient provider/broker/auth configuration and a changed source checkout. Only the CI run's disposable database is permitted. The database must have no user tables before migrations. Chromium has an isolated install/home; existing owner browsers and profiles are never used.
 
@@ -232,8 +232,15 @@ remain unproven.
 The original `a3d689253aa7a68ed30dbf21acfbe8f244120531` run reached four
 passes and failed case five at its obsolete offline-badge text assertion. The
 corrected candidate `a6af9a5eb456f588929fdb7fef00d4a57fb4b70b` changes that
-single assertion to the existing accessible offline status. Both application and
-revised spec are pinned to that candidate, and its SHA is recorded separately
-from the harness SHA. The original a3 spec is not reported as corrected or
-passed. Offline sign-in blocking, zero mutations and runtime navigation remain
-required, and full ten-case proof is pending the corrected run.
+single assertion to the existing accessible offline status and passed the first
+six cases. Case seven then stopped at a disabled Save button because the prior
+case deliberately cleared the profile key, and the keyless provider correctly
+defaults to requiring a replacement key.
+
+Candidate `78518aa6b5c35fe37485d8741893fbf361202f9d` includes accepted UI main
+`9bb0160c3587660ec9f2b66202a26d85cadef6d6` and explicitly chooses Keep current
+state for that model-only save. It verifies the empty replacement is initially
+blocked, the new-key input disappears, and Save becomes enabled. The committed
+response barrier, exactly one save, zero tests and reload readback remain intact.
+Application and spec are both pinned to this new candidate. Neither earlier spec
+is reported as fully passed; all ten cases remain required in the fresh run.
