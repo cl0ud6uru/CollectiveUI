@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
+import { HttpError } from '@/lib/http-error';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { remoteHermesSessions } from '@/db/schema';
 
@@ -7,7 +8,7 @@ const f = vi.hoisted(() => ({ base: '', exists: true, enabled: true, approved: t
 vi.mock('@/lib/settings', () => ({ getSetting: async () => { await f.policyWait?.(); return { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }; } }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ baseUrl: f.base, policy: { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }, secrets: { mode: 'sessionToken', sessionToken: 'synthetic' } }) }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => {
-  if (!f.approved) throw new Error('Private destination revoked');
+  if (!f.approved) throw new HttpError(403, 'Private destination revoked');
   return { address: '127.0.0.1', family: 4 };
 } }));
 vi.mock('@/db', () => {

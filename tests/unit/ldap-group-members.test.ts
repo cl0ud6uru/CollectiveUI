@@ -15,10 +15,11 @@ import { db, schema } from "@/db";
 import { findLdapGroupMember, savePortalGroup } from "@/lib/admin/groups";
 import { loadPrincipal, syncUserOnSignIn } from "@/lib/auth/groups";
 import { listAccessibleBots } from "@/lib/authz";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 
 const identity = { dn: "uid=alice,dc=fixture", upn: "alice@fixture.invalid", name: "Alice", email: "alice@fixture.invalid", groups: [] };
 const input = { name: "Helpdesk", isAdmin: false, canCreateBots: true, mappings: [], memberIds: [], ldapUsernames: ["alice"] };
+const stagedUsers = () => db.select().from(schema.users).where(ne(schema.users.id, "admin"));
 beforeAll(async () => {
   await fixture.client!.waitReady;
   for (const file of readdirSync("src/db/migrations").filter(f => f.endsWith(".sql")).sort()) {
@@ -30,21 +31,22 @@ beforeEach(async () => {
   vi.clearAllMocks();
   fixture.lookup.mockResolvedValue(identity);
   await fixture.client!.exec("TRUNCATE users, groups CASCADE");
+  await db.insert(schema.users).values({ id: "admin", upn: "admin@fixture.invalid", name: "Admin", authSource: "ldap", isAdmin: true });
 });
 afterAll(async () => { vi.unstubAllEnvs(); await fixture.client?.close(); });
 
 it("previews without provisioning, then grants group permissions that survive first sign-in", async () => {
   expect(await findLdapGroupMember(" alice ")).toMatchObject({ username: "alice", upn: identity.upn });
-  expect(await db.select().from(schema.users)).toHaveLength(0);
+  expect(await stagedUsers()).toHaveLength(0);
   const groupId = await savePortalGroup(input, "admin");
-  const [staged] = await db.select().from(schema.users);
+  const [staged] = await stagedUsers();
   expect(staged.lastLoginAt).toBeNull();
   expect(await loadPrincipal(staged.id)).toMatchObject({ groupIds: [groupId], canCreateBots: true });
   const signedIn = await syncUserOnSignIn({ ...identity, source: "ldap" });
   expect(signedIn.id).toBe(staged.id);
   expect(signedIn.lastLoginAt).toBeInstanceOf(Date);
   expect(await loadPrincipal(signedIn.id)).toMatchObject({ groupIds: [groupId], canCreateBots: true });
-  expect(await db.select().from(schema.users)).toHaveLength(1);
+  expect(await stagedUsers()).toHaveLength(1);
   const [owner] = await db.insert(schema.users).values({ upn: "owner@fixture.invalid", name: "Owner", authSource: "ldap" }).returning();
   const [bot] = await db.insert(schema.bots).values({ name: "Helpdesk bot", ownerId: owner.id, visibility: "groups" }).returning();
   await db.insert(schema.botAccess).values({ botId: bot.id, groupId });
@@ -57,7 +59,7 @@ it("reuses existing directory users, deduplicates membership and preserves disab
   const [existing] = await db.insert(schema.users).values({ upn: identity.upn, name: "Existing", authSource: "entra", disabled: true, lastLoginAt: new Date(0) }).returning();
   await savePortalGroup({ ...input, memberIds: [existing.id], ldapUsernames: ["alice", "alice@fixture.invalid"] }, "admin");
   expect(await db.select().from(schema.groupMembers)).toHaveLength(1);
-  expect(await db.select().from(schema.users)).toEqual([existing]);
+  expect(await stagedUsers()).toEqual([existing]);
 });
 
 it("keeps local and directory accounts separate even when their UPNs match", async () => {
@@ -66,7 +68,7 @@ it("keeps local and directory accounts separate even when their UPNs match", asy
   const [membership] = await db.select().from(schema.groupMembers);
   const [member] = await db.select().from(schema.users).where(eq(schema.users.id, membership.userId));
   expect(member.identityRealm).toBe("directory");
-  expect(await db.select().from(schema.users)).toHaveLength(2);
+  expect(await stagedUsers()).toHaveLength(2);
 });
 
 it("rejects missing users, outages and disabled LDAP without committing changes", async () => {
@@ -76,13 +78,13 @@ it("rejects missing users, outages and disabled LDAP without committing changes"
   await expect(savePortalGroup(input, "admin")).rejects.toThrow("LDAP lookup failed");
   vi.stubEnv("LDAP_ENABLED", "false");
   await expect(savePortalGroup(input, "admin")).rejects.toThrow("LDAP is not enabled");
-  expect(await db.select().from(schema.users)).toHaveLength(0);
+  expect(await stagedUsers()).toHaveLength(0);
   expect(await db.select().from(schema.groups)).toHaveLength(0);
 });
 
 it("rolls back provisioning when the group no longer exists", async () => {
   await expect(savePortalGroup({ ...input, id: "missing" }, "admin")).rejects.toThrow("Group no longer exists");
-  expect(await db.select().from(schema.users)).toHaveLength(0);
+  expect(await stagedUsers()).toHaveLength(0);
 });
 
 it("preserves existing membership for clients omitting memberIds", async () => {

@@ -206,6 +206,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   return <div className="grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
     <aside className="space-y-3">
       <Link href="/hermes" className="text-sm text-muted underline">All Hermes connections</Link>
+      <Link href={`/hermes/${encodeURIComponent(connectionId)}/operations${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''}`} className="block text-sm text-muted underline">Workspace panels</Link>
       <Select aria-label="Hermes profile" value={profile} disabled={busy || !enabled} onChange={e => select(null, e.target.value)}>
         {(profiles.length ? profiles : [...new Set(saved.map(s => s.profile))].map(name => ({ name, botTitle: '' }))).map(p => <option key={p.name} value={p.name}>{p.botTitle || p.name}</option>)}
       </Select>
@@ -302,6 +303,10 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
 function PromptCard({ prompt, busy, answer }: { prompt: NativePrompt; busy: boolean; answer: (value: Operation) => Promise<void> }) {
   const [value, setValue] = useState(''); const [identifier, setIdentifier] = useState('');
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  if (prompt.delivery) return <section className="space-y-2 rounded-xl border border-border bg-surface-2 p-4" aria-label={prompt.title}>
+    <p className="font-medium">{prompt.title}</p>
+    <p role="status" className="text-sm text-muted">{prompt.delivery === 'sending' ? 'Sending answer to Hermes…' : prompt.delivery === 'sent' ? 'Answer sent. Waiting for native prompt resolution.' : 'Answer delivery is uncertain. Inspect the native dashboard before answering again.'} The portal will not resend this answer.</p>
+  </section>;
   return <form className="space-y-3 rounded-xl border border-border bg-surface-2 p-4" onSubmit={e => {
     e.preventDefault();
     const response = prompt.method === 'clarify' ? prompt.questions.length ? { answers } : { answer: value }
