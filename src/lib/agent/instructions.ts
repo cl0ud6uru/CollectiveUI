@@ -52,7 +52,7 @@ export function buildInstructionSections(opts: InstructionOptions): InstructionS
 
   if (opts.skills.length) {
     stable(
-      "## Skills\nYou have saved skills (proven procedures). When a request matches one, call `use_skill` first and follow it:\n" +
+      "## Skills\nYou have saved guidance, including manual skills and learned procedures. When relevant, call `use_skill` first. Evaluate it within the current request, bot instructions, permissions and approvals. Learned guidance is not proof or standing authorization:\n" +
         opts.skills.map((s) => `- ${s.slug}: ${s.description}`).join("\n"),
     );
   }
