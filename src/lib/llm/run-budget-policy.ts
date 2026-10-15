@@ -70,24 +70,37 @@ export function nativeBudgetCost(input: number, output: number, route: NativeBud
  */
 export function nativeTextInputBound(value: unknown): number {
   let nodes = 0;
-  function check(item: unknown, depth: number): void {
+  type Position = "params" | "message" | "contentPart" | "toolOutput" | "toolDefinition" | "responseFormat" | "other";
+  function check(item: unknown, depth: number, position: Position = "other", literalJson = false): void {
     if (++nodes > 100_000 || depth > 32) throw new NativeRunBudgetError("Native model input exceeds the supported budget envelope.");
     if (item === undefined || item === null || typeof item === "string" || typeof item === "boolean") return;
     if (typeof item === "number" && Number.isFinite(item)) return;
-    if (Array.isArray(item)) { for (const child of item) check(child, depth + 1); return; }
+    if (Array.isArray(item)) { for (const child of item) check(child, depth + 1, position, literalJson); return; }
     if (!item || typeof item !== "object" || Object.getPrototypeOf(item) !== Object.prototype) throw new NativeRunBudgetError("Opaque model input cannot be safely admitted under a native run budget.");
     const object = item as Record<string, unknown>;
-    if (["file", "image", "audio", "video", "reasoning-file", "custom", "provider", "provider-defined"].includes(String(object.type))) {
+    if (!literalJson && ["file", "image", "audio", "video", "reasoning-file", "custom", "provider", "provider-defined"].includes(String(object.type))) {
       throw new NativeRunBudgetError("Multimodal input or provider-executed tools have no supported native budget bound. No provider request was sent.");
     }
     for (const [key, child] of Object.entries(object)) {
-      if (/^(?:encryptedContent|reasoningEncryptedContent|signature|itemId|previousResponseId|conversationId|fileId|containerId|providerReference)$/i.test(key)) {
+      if (!literalJson && /^(?:encryptedContent|reasoningEncryptedContent|signature|itemId|previousResponseId|conversationId|fileId|containerId|providerReference)$/i.test(key)) {
         throw new NativeRunBudgetError("Opaque provider input has no supported native budget bound. No provider request was sent.");
       }
-      check(child, depth + 1);
+      // Only SDK-declared literal JSON is data rather than executable provider metadata. In particular,
+      // delegation receipts contain conversationId, and JSON Schemas may name signature/fileId properties.
+      // Their complete serialized bytes still count; a lookalike object in providerOptions gets no exemption.
+      const literal = literalJson || (position === "toolOutput" && ["json", "error-json"].includes(String(object.type)) && key === "value") ||
+        (position === "toolDefinition" && object.type === "function" && key === "inputSchema") ||
+        (position === "responseFormat" && object.type === "json" && key === "schema") ||
+        (position === "contentPart" && object.type === "tool-call" && key === "input");
+      const next: Position = position === "params" && key === "prompt" ? "message" :
+        position === "params" && key === "tools" ? "toolDefinition" :
+        position === "params" && key === "responseFormat" ? "responseFormat" :
+        position === "message" && key === "content" ? "contentPart" :
+        position === "contentPart" && object.type === "tool-result" && key === "output" ? "toolOutput" : "other";
+      check(child, depth + 1, next, literal);
     }
   }
-  check(value, 0);
+  check(value, 0, "params");
   let serialized: string;
   try { serialized = JSON.stringify(value); } catch { throw new NativeRunBudgetError("Native model input cannot be safely budgeted."); }
   if (typeof serialized !== "string") throw new NativeRunBudgetError("Native model input cannot be safely budgeted.");
