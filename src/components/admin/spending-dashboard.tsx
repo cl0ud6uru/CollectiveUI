@@ -14,7 +14,8 @@ export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }
   const [accounts, setAccounts] = useState(initial);
   const [selected, setSelected] = useState(initial[0]?.id ?? '');
   const [project, setProject] = useState('');
-  const [error, setError] = useState('');
+  const [refreshErrors, setRefreshErrors] = useState<Record<string, string>>({});
+  const error = refreshErrors[selected] ?? '';
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [localAttempts, setLocalAttempts] = useState<Record<string, number>>({});
@@ -37,18 +38,27 @@ export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }
     refreshing.current = true;
     setBusy(true);
     setLocalAttempts(prior => ({ ...prior, [id]: Date.now() }));
-    setError(''); setNotice('');
+    // Switching accounts, starting a retry, and another account's cache response must
+    // not restore allowance after an uncertain read. Only this account's verified success can.
+    const fail = (message: string) => setRefreshErrors(prior => ({ ...prior, [id]: message }));
+    setNotice('');
     try {
       const response = await fetch('/api/admin/spending/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
       const data = await response.json(); if (!response.ok) throw new Error(data.error ?? 'Refresh failed.');
       if (!Array.isArray(data)) throw new Error('Refresh returned an invalid response. Cached data is still shown.');
       const updated = (data as BillingAccountView[]).find(a => a.id === id);
       setAccounts(data);
-      if (!updated?.enabled) setNotice('The billing account changed. Provider data was not updated.');
-      else if (updated.lastError || !updated.snapshot) setNotice('Refresh did not update provider costs. Any previous snapshot is retained below.');
-      else if (updated.snapshot.refreshedAt === previousRefreshedAt) setError('Provider costs were not updated. The billing account may have changed during refresh. Reload before retrying.');
-      else setNotice('Provider costs updated. Limit availability is reported separately below.');
-    } catch (error) { setError(error instanceof Error ? error.message : 'Refresh failed.'); }
+      if (!updated?.enabled) fail('The billing account changed. Provider data was not updated.');
+      else if (updated.lastError || !updated.snapshot) {
+        fail(updated.lastError ?? 'No successful provider snapshot was returned.');
+        setNotice('Refresh did not update provider costs. Any previous snapshot is retained below.');
+      }
+      else if (updated.snapshot.refreshedAt === previousRefreshedAt || updated.snapshot.costsStatus !== 'known' || snapshotStale(updated.snapshot)) fail('Provider costs were not updated. The billing account may have changed during refresh. Reload before retrying.');
+      else {
+        setRefreshErrors(prior => { const next = { ...prior }; delete next[id]; return next; });
+        setNotice('Provider costs updated. Limit availability is reported separately below.');
+      }
+    } catch (error) { fail(error instanceof Error ? error.message : 'Refresh failed.'); }
     finally { refreshing.current = false; setBusy(false); setClock(Date.now()); }
   }, []);
   useEffect(() => {
@@ -72,7 +82,7 @@ export function SpendingDashboard({ initial }: { initial: BillingAccountView[] }
     <AdminHeader title="Provider spending" description="OpenAI API Platform · provider-reported monthly spending" />
     <p className="text-sm text-muted">Read-only. Costs may arrive late from OpenAI. Monthly spending allowance is separate from prepaid credit and ChatGPT / Codex subscription allowance.</p>
     <div className="flex flex-wrap items-end gap-3">
-      <label className="min-w-0 text-sm">Billing account<select aria-label="Billing account" disabled={busy} className="mt-1 block w-full max-w-80 rounded-lg border border-border bg-surface px-3 py-2" value={selected} onChange={e => { setSelected(e.target.value); setProject(''); setError(''); setNotice(''); }}>
+      <label className="min-w-0 text-sm">Billing account<select aria-label="Billing account" disabled={busy} className="mt-1 block w-full max-w-80 rounded-lg border border-border bg-surface px-3 py-2" value={selected} onChange={e => { setSelected(e.target.value); setProject(''); setNotice(''); }}>
         {!accounts.length && <option value="">No billing accounts configured</option>}{accounts.map(a => <option key={a.id} value={a.id}>{a.name} · {a.organization}</option>)}
       </select></label>
       {snapshot && <label className="min-w-0 text-sm">Scope<select aria-label="Spending scope" className="mt-1 block w-full max-w-80 rounded-lg border border-border bg-surface px-3 py-2" value={project} onChange={e => setProject(e.target.value)}>

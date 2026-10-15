@@ -26,7 +26,8 @@ const fixtureAccounts = () => {
     organizationLimit: limit, projectLimits: { 'proj-fixture-one': { ...limit, amount: 50 }, 'proj-fixture-two': { ...limit, amount: 200 } },
   };
   return [{ id: 'one', name: 'Fixture billing', organization: 'org-fixture', enabled: true, showHealthBar: false, snapshot, lastAttemptAt: null, lastError: null },
-    { id: 'two', name: 'Disabled fixture', organization: 'org-disabled', enabled: false, showHealthBar: false, snapshot: null, lastAttemptAt: null, lastError: null }];
+    { id: 'two', name: 'Disabled fixture', organization: 'org-disabled', enabled: false, showHealthBar: false, snapshot: null, lastAttemptAt: null, lastError: null },
+    { id: 'three', name: 'Second enabled fixture', organization: 'org-fixture-other', enabled: true, showHealthBar: false, snapshot: { ...snapshot, organization: 'org-fixture-other', amounts: [{ currency: 'USD', value: 25 }] }, lastAttemptAt: null, lastError: null }];
 };
 let refreshMode = 'http-error';
 const refreshes = [], saves = [];
@@ -49,13 +50,15 @@ try {
     if (req.url === '/style.css') { res.setHeader('Content-Type', 'text/css'); res.end(css.css); return; }
     if (req.url === '/save') { const chunks = []; for await (const c of req) chunks.push(c); saves.push(JSON.parse(Buffer.concat(chunks))); res.end('{}'); return; }
     if (req.url === '/api/admin/spending/refresh') {
-      const chunks = []; for await (const c of req) chunks.push(c); refreshes.push(JSON.parse(Buffer.concat(chunks)));
-      if (refreshMode === 'slow-success') await new Promise(resolve => { releaseRefresh = resolve; });
+      const chunks = []; for await (const c of req) chunks.push(c); const request = JSON.parse(Buffer.concat(chunks)); refreshes.push(request);
+      const mode = refreshMode;
+      if (mode.startsWith('slow-')) await new Promise(resolve => { releaseRefresh = resolve; });
       res.setHeader('Content-Type', 'application/json');
-      if (refreshMode === 'http-error') { res.statusCode = 500; res.end(JSON.stringify({ error: 'Fixture refresh failed' })); return; }
-      const accounts = fixtureAccounts(); accounts[0].lastAttemptAt = new Date().toISOString();
-      if (refreshMode === 'provider-error') { accounts[0].snapshot.refreshedAt = '2020-01-01'; accounts[0].lastError = 'Costs permission denied. Last successful data is retained.'; }
-      else { accounts[0].snapshot.amounts = [{ currency: 'USD', value: 1.6 }]; accounts[0].snapshot.organizationLimit = { status: 'unavailable', amount: null, currency: null, enforcement: null, httpStatus: 404 }; }
+      if (mode.endsWith('http-error')) { res.statusCode = 500; res.end(JSON.stringify({ error: 'Fixture refresh failed' })); return; }
+      const accounts = fixtureAccounts(); const account = accounts.find(a => a.id === request.id); account.lastAttemptAt = new Date().toISOString();
+      if (mode === 'provider-error') { account.snapshot.refreshedAt = '2020-01-01'; account.lastError = 'Costs permission denied. Last successful data is retained.'; }
+      else if (mode.endsWith('known-success')) account.snapshot.amounts = [{ currency: 'USD', value: 96 }];
+      else { account.snapshot.amounts = [{ currency: 'USD', value: 1.6 }]; account.snapshot.organizationLimit = { status: 'unavailable', amount: null, currency: null, enforcement: null, httpStatus: 404 }; }
       res.end(JSON.stringify(accounts)); return;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -122,6 +125,49 @@ try {
     refreshMode = 'http-error'; await page.getByRole('button', { name: 'Refresh provider data' }).click();
     await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
     await expect(page.getByText('USD 5.00', { exact: true })).not.toBeVisible();
+    // A failed read makes only its account uncertain, including after switching away and back.
+    await page.goto(base);
+    await expect(page.getByText('USD 5.00', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Refresh provider data' }).click();
+    await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
+    await page.getByRole('combobox', { name: 'Billing account' }).selectOption('three');
+    await expect(page.getByText('USD 75.00', { exact: true })).toBeVisible();
+    await expect(page.getByRole('alert')).not.toBeVisible();
+    await page.getByRole('combobox', { name: 'Billing account' }).selectOption('one');
+    await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
+    await expect(page.getByText('USD 5.00', { exact: true })).not.toBeVisible();
+    // A successful B refresh returns all cached accounts, but cannot clear A's uncertainty.
+    refreshMode = 'known-success';
+    await page.getByRole('combobox', { name: 'Billing account' }).selectOption('three');
+    await page.getByRole('button', { name: 'Refresh provider data' }).click();
+    await expect(page.getByText('USD 4.00', { exact: true })).toBeVisible();
+    await page.getByRole('combobox', { name: 'Billing account' }).selectOption('one');
+    await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
+    await page.getByRole('combobox', { name: 'Spending scope' }).selectOption('proj-fixture-one');
+    await expect(page.getByText('Remaining: Unknown', { exact: false })).toBeVisible();
+    // Retrying cannot restore current allowance while pending, or after another failed request.
+    const advanceCooldown = () => page.evaluate(() => { const observed = Date.now(); Date.now = () => observed + 61_000; });
+    await advanceCooldown(); refreshMode = 'slow-http-error'; releaseRefresh = undefined;
+    await page.getByRole('button', { name: 'Refresh provider data' }).click();
+    await expect(page.getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+    await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
+    await expect(page.getByText('USD 5.00', { exact: true })).not.toBeVisible();
+    await expect(page.getByText('Remaining: Unknown', { exact: false })).toBeVisible();
+    await expect.poll(() => typeof releaseRefresh).toBe('function'); releaseRefresh();
+    await expect(page.getByRole('status')).not.toBeVisible();
+    await expect(page.getByRole('alert')).toHaveText('Fixture refresh failed');
+    await expect(page.getByText('USD 5.00', { exact: true })).not.toBeVisible();
+    // Only A's own verified successful refresh clears the failure and restores allowance.
+    await advanceCooldown(); refreshMode = 'slow-known-success'; releaseRefresh = undefined;
+    await page.getByRole('button', { name: 'Refresh provider data' }).click();
+    await expect(page.getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+    await expect(page.getByText('USD 5.00', { exact: true })).not.toBeVisible();
+    await expect(page.getByText('Remaining: Unknown', { exact: false })).toBeVisible();
+    await expect.poll(() => typeof releaseRefresh).toBe('function'); releaseRefresh();
+    await expect(page.getByRole('status')).toHaveText('Provider costs updated. Limit availability is reported separately below.');
+    await expect(page.getByRole('alert')).not.toBeVisible();
+    await expect(page.getByText('USD 4.00', { exact: true })).toBeVisible();
+    await expect(page.getByText('Remaining: USD 4.00', { exact: false })).toBeVisible();
     await page.goto(`${base}/empty`); await page.getByText('Billing configuration', { exact: true }).click();
     await expect(page.getByRole('checkbox', { name: 'Enable provider spending reads' })).not.toBeChecked();
     await expect(page.getByRole('checkbox', { name: 'Show admin spending bar beside model selection' })).not.toBeChecked();
@@ -129,8 +175,8 @@ try {
     await page.getByLabel('Separate API Platform Admin billing key', { exact: true }).fill('sk-admin-synthetic'); await page.getByRole('button', { name: 'Save billing configuration' }).click();
     await expect(page.getByText('Billing configuration saved.', { exact: true })).toBeVisible(); expect(saves.at(-1)).toMatchObject({ enabled: false, showHealthBar: false });
     await expect(page.getByLabel('Separate API Platform Admin billing key', { exact: true }).first()).toHaveValue('');
-    expect(refreshes.every(r => r.id === 'one')).toBe(true); expect(errors).toEqual([]);
-    console.log('Provider dashboard passed: 320/390/768/1280 layouts; relative cent-scale bars; automatic/focus/visible refresh; loading and cooldown; retained failure vs success; independent unavailable/unsupported limits; disabled accounts and synthetic key form.');
+    expect(refreshes.every(r => r.id === 'one' || r.id === 'three')).toBe(true); expect(errors).toEqual([]);
+    console.log('Provider dashboard passed: 320/390/768/1280 layouts; relative cent-scale bars; automatic/focus/visible refresh; loading and cooldown; retained failure vs success; per-account switch/retry uncertainty and successful recovery; independent unavailable/unsupported limits; disabled accounts and synthetic key form.');
   }
 } finally {
   releaseRefresh?.(); await browser?.close(); if (server) await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true });
