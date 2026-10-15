@@ -407,6 +407,13 @@
       "when": 1791946738243,
       "tag": "0057_chatgpt_companion",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1792030249732,
+      "tag": "0058_openrouter_models",
+      "breakpoints": true
     }
   ]
 }

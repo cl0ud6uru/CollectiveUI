@@ -2,7 +2,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  refresh: vi.fn(), deleteApp: vi.fn(), deleteGroup: vi.fn(), testAppConnection: vi.fn(),
+  refresh: vi.fn(), deleteApp: vi.fn(), deleteGroup: vi.fn(), testAppConnection: vi.fn(), listOpenRouterModels: vi.fn(),
   error: vi.fn(), success: vi.fn(), slots: [] as unknown[], cursor: 0,
 }));
 vi.mock("react", async importOriginal => ({
@@ -23,6 +23,8 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }
 vi.mock("sonner", () => ({ toast: { error: mocks.error, success: mocks.success } }));
 vi.mock("@/app/admin/actions", () => ({ deleteApp: mocks.deleteApp, deleteGroup: mocks.deleteGroup, testAppConnection: mocks.testAppConnection, saveApp: vi.fn() }));
 vi.mock("@/app/admin/provider-actions", () => ({ migrateAppProviderConnection: vi.fn() }));
+// Next replaces this Server Action import with a client reference. Vitest needs the same boundary mocked.
+vi.mock("@/app/admin/model-catalog-actions", () => ({ listOpenRouterModels: mocks.listOpenRouterModels }));
 vi.mock("@/app/admin/groups/ldap-actions", () => ({ findLdapUserForGroup: vi.fn(), saveGroupWithFeedback: vi.fn() }));
 
 import { AppsAdmin, type AppRow } from "@/components/admin/apps-admin";
@@ -52,7 +54,10 @@ const button = (tree: ReactNode, label: string) => {
 };
 
 beforeEach(() => { vi.clearAllMocks(); mocks.slots = []; mocks.cursor = 0; vi.stubGlobal("confirm", vi.fn(() => true)); });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  expect(mocks.listOpenRouterModels).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
+});
 
 describe("admin delete feedback", () => {
   for (const [name, component, label, action] of [

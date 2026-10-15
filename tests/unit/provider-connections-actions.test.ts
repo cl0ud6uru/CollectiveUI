@@ -48,6 +48,26 @@ beforeEach(async () => {
 });
 afterAll(async () => { await fixture.client!.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
+it.each(["openai", "openai-compatible", "openrouter"] as const)("retains a disabled %s connection for model edits while rejecting new or different attachments", async provider => {
+  const target = provider === "openrouter" ? "https://openrouter.ai/api/v1" : baseUrl;
+  const c = await saveProviderConnection({ provider, name: "Retained provider", baseUrl: target, apiKey: "synthetic-retained-disabled", enabled: true });
+  const other = await saveProviderConnection({ provider, name: "Other provider", baseUrl: target, apiKey: "synthetic-other-disabled", enabled: true });
+  const input = { ...modelInput(provider), baseUrl: target, providerConnectionId: c.id };
+  const app = await row((await saveApp(input)).id);
+  await saveProviderConnection({ ...c, enabled: false });
+  await saveProviderConnection({ ...other, enabled: false });
+  const edited = { ...input, id: app.id, name: "Edited retained model", isPublic: false, groupIds: ["audience"], enabled: false };
+  await saveApp(edited);
+  expect(await row(app.id)).toMatchObject({ name: edited.name, enabled: false, isPublic: false, providerConnectionId: c.id, apiKeyEnc: null });
+  expect(await db.select().from(schema.appAccess).where(eq(schema.appAccess.appId, app.id))).toMatchObject([{ groupId: "audience" }]);
+  expect(await testAppConnection({ provider, providerConnectionId: c.id, baseUrl: target })).toMatchObject({ ok: false });
+  await expect(saveApp(input)).rejects.toThrow(/disabled/);
+  await expect(saveApp({ ...edited, providerConnectionId: other.id })).rejects.toThrow(/disabled/);
+  expect(await row(app.id)).toMatchObject({ providerConnectionId: c.id, name: edited.name });
+  expect((await db.select().from(schema.providerConnections).where(eq(schema.providerConnections.id, c.id)))[0].enabled).toBe(false);
+  expect(fetch).not.toHaveBeenCalled();
+});
+
 describe.each(["openai", "openai-compatible"] as const)("saved %s credentials through production actions and runtime", provider => {
   it("requires administrator authorization for all credential and model actions", async () => {
     fixture.allowed = false;
@@ -162,4 +182,36 @@ it("retains a malformed legacy destination while permitting administrative disab
   await expect(saveProviderConnection({ ...view, baseUrl: baseUrl })).rejects.toThrow(/cannot be changed/);
   await expect(saveApp({ ...modelInput("openai"), providerConnectionId: stored.id, baseUrl: stored.baseUrl })).rejects.toThrow(/must match/);
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it("saves OpenRouter models with reusable credentials and tests the key without inference or public-catalog false positives", async () => {
+  const provider = "openrouter" as const;
+  const baseUrl = "https://openrouter.ai/api/v1";
+  const c = await saveProviderConnection({ provider, name: "Synthetic OpenRouter", apiKey: "synthetic-openrouter", enabled: true });
+  expect(c).toMatchObject({ provider, baseUrl, organization: null, project: null });
+  expect(c).not.toHaveProperty("credentialEnc");
+  const input = { ...modelInput(provider), baseUrl, providerConnectionId: c.id, model: "vendor/catalog-model" };
+  const app = await row((await saveApp(input)).id);
+  expect(app).toMatchObject({ provider, model: input.model, baseUrl, apiKeyEnc: null, providerConnectionId: c.id });
+  const resolved = await resolveModel(app, { purpose: "chat" });
+  expect(resolved.model.provider).toContain(`app-${app.id}`);
+  expect(fetch).not.toHaveBeenCalled();
+  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ data: { label: "Synthetic key" } }));
+  vi.stubGlobal("fetch", fetcher);
+  expect(await testAppConnection({ provider, providerConnectionId: c.id, baseUrl })).toMatchObject({ ok: true, models: [], note: expect.stringContaining("generation have not been tested") });
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith(`${baseUrl}/key`, expect.objectContaining({ headers: { Authorization: "Bearer synthetic-openrouter" }, redirect: "error" }));
+  fetcher.mockClear();
+  fetcher.mockResolvedValue(new Response(null, { status: 401 }));
+  expect(await testAppConnection({ provider, providerConnectionId: c.id, baseUrl })).toMatchObject({ ok: false });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  fetcher.mockClear();
+  await expect(saveApp({ ...input, model: " " })).rejects.toThrow();
+  await expect(saveApp({ ...input, baseUrl: `${baseUrl}/chat/completions` })).rejects.toThrow();
+  await expect(saveProviderConnection({ ...c, provider: "openai-compatible", apiKey: "synthetic-unused" })).rejects.toThrow(/cannot be changed/);
+  await expect(saveProviderConnection({ provider, name: "Wrong billing", organization: "org-unused", apiKey: "synthetic-unused", enabled: true })).rejects.toThrow(/billing selectors/);
+  expect(fetcher).not.toHaveBeenCalled();
+  await saveProviderConnection({ ...c, enabled: false });
+  await expect(resolveModel(app, { purpose: "chat" })).rejects.toThrow(/disabled/);
+  expect(await testAppConnection({ provider, providerConnectionId: c.id, baseUrl })).toMatchObject({ ok: false });
+  expect(fetcher).not.toHaveBeenCalled();
 });

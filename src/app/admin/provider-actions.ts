@@ -22,7 +22,7 @@ const Input = z.object({
   organization: z.string().trim().max(100).nullable().optional(), project: z.string().trim().max(100).nullable().optional(),
   apiKey: z.string().max(10000).optional(), enabled: z.boolean(),
 }).superRefine((input, ctx) => {
-  if (input.provider === "openai-compatible" && (input.organization || input.project)) {
+  if (input.provider !== "openai" && (input.organization || input.project)) {
     ctx.addIssue({ code: "custom", path: ["provider"], message: "Organization and project billing selectors are only supported by the OpenAI Responses API type." });
   }
 });
@@ -78,7 +78,7 @@ export async function migrateAppProviderConnection(appId: string, name: string) 
     if (!app) throw new HttpError(404, "Model not found");
     if (app.providerConnectionId) return { id: app.providerConnectionId }; // retry is idempotent
     if (!isSavedProviderKind(app.provider) || app.credentialMode !== "org" || !app.apiKeyEnc)
-      throw new HttpError(400, "Only an OpenAI or OpenAI-compatible API model with its own stored credential can be migrated.");
+      throw new HttpError(400, "Only an OpenAI, OpenRouter or OpenAI-compatible API model with its own stored credential can be migrated.");
     const normalized = normalizeBaseUrl(app.provider, app.baseUrl);
     if (!normalized.ok) throw new HttpError(400, normalized.error);
     const config: { organization?: string; project?: string } = app.provider === "openai" ? CONFIG_SCHEMAS.openai.parse(app.providerConfig) : {};

@@ -373,8 +373,9 @@ export const providerConnections = pgTable("provider_connections", {
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, (t) => [
-  check("provider_connections_provider_check", sql`${t.provider} in ('openai', 'openai-compatible')`),
-  check("provider_connections_compatible_target_check", sql`${t.provider} <> 'openai-compatible' or (${t.baseUrl} is not null and ${t.organization} is null and ${t.project} is null)`),
+  check("provider_connections_provider_check", sql`${t.provider} in ('openai', 'openai-compatible', 'openrouter')`),
+  check("provider_connections_openrouter_target_check", sql`${t.provider} <> 'openrouter' or ${t.baseUrl} = 'https://openrouter.ai/api/v1'`),
+  check("provider_connections_compatible_target_check", sql`${t.provider} not in ('openai-compatible', 'openrouter') or (${t.baseUrl} is not null and ${t.organization} is null and ${t.project} is null)`),
 ]);
 
 /** Dedicated read-only billing credentials; never an inference connection or bot credential. */
@@ -436,11 +437,11 @@ export const aiApps = pgTable(
   },
   (t) => [
     index("ai_apps_provider_connection_idx").on(t.providerConnectionId),
-    check("ai_apps_provider_connection_check", sql`${t.providerConnectionId} is null or (${t.provider} in ('openai', 'openai-compatible') and ${t.credentialMode} = 'org' and ${t.apiKeyEnc} is null)`),
+    check("ai_apps_provider_connection_check", sql`${t.providerConnectionId} is null or (${t.provider} in ('openai', 'openai-compatible', 'openrouter') and ${t.credentialMode} = 'org' and ${t.apiKeyEnc} is null)`),
     check("ai_apps_kind_check", sql`${t.kind} in ('model', 'runtime')`),
     check(
       "ai_apps_provider_check",
-      sql`${t.provider} in ('openai-compatible', 'openai', 'azure', 'anthropic', 'bedrock', 'vertex-anthropic', 'chatgpt', 'hermes')`,
+      sql`${t.provider} in ('openai-compatible', 'openrouter', 'openai', 'azure', 'anthropic', 'bedrock', 'vertex-anthropic', 'chatgpt', 'hermes')`,
     ),
     check(
       "ai_apps_credential_mode_check",

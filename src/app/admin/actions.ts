@@ -181,7 +181,7 @@ export type ConnectionTestInput = z.input<typeof ConnectionTestInput>;
 export async function testAppConnection(raw: ConnectionTestInput) {
   const p = await requireAdmin();
   const input = ConnectionTestInput.parse(raw);
-  if (input.providerConnectionId && !isSavedProviderKind(input.provider)) return { ok: false as const, error: "Saved provider connections support OpenAI and OpenAI-compatible API models only." };
+  if (input.providerConnectionId && !isSavedProviderKind(input.provider)) return { ok: false as const, error: "Saved provider connections support OpenAI, OpenRouter and OpenAI-compatible API models only." };
   // ChatGPT apps: list what the admin's own connected plan offers (there are no app credentials to test).
   if (input.provider === "chatgpt") return testChatGPTConnection(p.user.id, await getSetting("chatgpt"));
   if (!isEnabledKind(input.provider)) return { ok: false as const, error: "Unknown provider" };
