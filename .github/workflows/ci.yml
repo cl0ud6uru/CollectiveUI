@@ -172,6 +172,7 @@ jobs:
           python tests/fixtures/docker-hermes-network.py
           python tests/fixtures/hermes-team-native-contract.py
           python tests/fixtures/hermes-team-pinned-bridge.py
+          python tests/fixtures/hermes-native-plugin-toggle.py
       - name: Verify Remote Hermes commands and session YOLO against the actual pinned protocol
         env:
           HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source
