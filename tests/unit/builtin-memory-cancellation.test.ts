@@ -51,7 +51,7 @@ describe("native memory cancellation", () => {
   it("keeps an acknowledged insert successful when Stop arrives afterward", async () => {
     const controller = new AbortController();
     h.insert.mockImplementation(() => controller.abort());
-    await expect(invoke("remember", { fact: "Synthetic preference" }, controller.signal)).resolves.toEqual({ saved: true, id: "fixture-memory" });
+    await expect(invoke("remember", { fact: "Synthetic preference" }, controller.signal)).resolves.toEqual({ saved: true, recordType: "ordinary_memory", id: "fixture-memory" });
     expect(h.insert).toHaveBeenCalledTimes(1);
   });
 });
