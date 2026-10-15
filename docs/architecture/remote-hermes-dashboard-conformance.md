@@ -73,6 +73,12 @@ Queue contention waits for the synthetic held turn's agent-entry metric and acti
 native snapshot; an RPC admission acknowledgement alone does not prove execution
 has started. The held turn is stopped and reconciled in `finally`, including after
 a failed contention assertion, before the lost-acknowledgement case begins.
+Contention failure messages contain only agent-entry/active phase booleans, fixed
+contender ordinals, accepted/rejected outcomes, valid local HTTP error statuses and
+fixed reason categories. Unknown rejections never expose their message or payload.
+The cleanup poll requires both native inactivity and the reconciled empty queue
+receipt before proceeding. These fixture checks do not establish a production
+queue defect; native execution timing and PostgreSQL contention need actual evidence.
 
 This exposed an actual contract mismatch: `session.resume` rejects the REST-only
 `inline_images` field. The hub now omits that RPC argument; the REST history path

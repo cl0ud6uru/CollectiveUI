@@ -11,6 +11,7 @@ import type { DashboardSocket as Socket } from '@/lib/remote-hermes/socket';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
 import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
+import { queueRejectionDiagnostic } from '../fixtures/remote-hermes-queue-diagnostics';
 let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
 let DashboardClient: typeof import('@/lib/remote-hermes/client').DashboardClient;
 let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket;
@@ -58,27 +59,38 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
   it('dispatches only one contending queued receipt through actual native transport', async () => {
     const id = await session(), hub = nativeHub(owner, connection);
     const before = (await metrics()).agent_turns;
+    const phase = { agentEntered: false, nativeActive: false };
+    let contenders: Array<{ contender: number; outcome: 'accepted' } | ({ contender: number } & ReturnType<typeof queueRejectionDiagnostic>)> = [];
+    const diagnostic = () => JSON.stringify({ phase, contenders });
     await submitNativePrompt(owner, connection, id, randomUUID(), 'fixture-hold');
     try {
       // Native admission acknowledgement can precede worker entry. Contend only
       // after this synthetic hold is executing, rather than racing its startup.
       await vi.waitFor(async () => {
-        expect((await metrics()).agent_turns).toBe(before + 1);
-        expect((await hub.refresh(await row(id))).running).toBe(true);
+        phase.agentEntered = (await metrics()).agent_turns === before + 1;
+        phase.nativeActive = (await hub.refresh(await row(id))).running === true;
+        expect(phase.agentEntered, diagnostic()).toBe(true);
+        expect(phase.nativeActive, diagnostic()).toBe(true);
       }, { timeout: 5000 });
       const queue = (text: string) => nativeControl(owner, connection, id, 'queue', { requestId: randomUUID(), text }).then(value => ({ value, error: null }), error => ({ value: null, error }));
       const outcomes = await Promise.all([queue('fixture-next-one'), queue('fixture-next-two')]);
-      expect(outcomes.filter(outcome => outcome.error === null)).toHaveLength(1);
-      expect(outcomes.filter(outcome => outcome.error?.status === 409)).toHaveLength(1);
-      expect((await row(id)).queueStatus).toBe('queued');
-      expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(2);
+      contenders = outcomes.map((outcome, index) => ({ contender: index + 1, ...(outcome.error === null ? { outcome: 'accepted' as const } : queueRejectionDiagnostic(outcome.error)) }));
+      // Assertions retain only counts/booleans as actual values. Neither Vitest's
+      // failure rendering nor the message can dump native results or row data.
+      expect(outcomes.filter(outcome => outcome.error === null).length, diagnostic()).toBe(1);
+      expect(outcomes.filter(outcome => outcome.error?.status === 409).length, diagnostic()).toBe(1);
+      expect((await row(id)).queueStatus === 'queued', diagnostic()).toBe(true);
+      expect((await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).length, diagnostic()).toBe(2);
     } finally {
       // A failed contention assertion must not leave this hold contaminating the
       // next case's native turn count or acknowledgement-loss control.
       await nativeControl(owner, connection, id, 'stop');
-      await vi.waitFor(async () => expect((await hub.refresh(await row(id))).running).toBe(false), { timeout: 10_000 });
+      await vi.waitFor(async () => {
+        expect((await hub.refresh(await row(id))).running === false, diagnostic()).toBe(true);
+        expect((await row(id)).queueRequestId === null, diagnostic()).toBe(true);
+      }, { timeout: 10_000 });
     }
-    expect((await row(id)).queueRequestId).toBeNull();
+    expect((await row(id)).queueRequestId === null, diagnostic()).toBe(true);
   }, 20000);
   it('retains a durable no-replay receipt after real native acceptance loses its acknowledgement', async () => {
     const id = await session(), requestId = randomUUID(), before = (await metrics()).agent_turns;
