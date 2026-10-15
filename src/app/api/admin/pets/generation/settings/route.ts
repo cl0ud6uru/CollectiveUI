@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLog, providerConnections } from "@/db/schema";
+import { auditLog, providerConnections, settings as settingsTable } from "@/db/schema";
 import { requireAdmin } from "@/lib/session";
 import { OPENAI_DEFAULT_BASE_URL } from "@/lib/llm/providers/openai";
-import { getSetting, setSetting } from "@/lib/settings";
+import { getSetting } from "@/lib/settings";
 import { PET_IMAGE_MODEL } from "@/lib/pets/generation";
+import { assertFreshPetAdmin } from "@/lib/pets/authorization";
 import { assertPetOrigin } from "@/lib/pets/import";
 import { HttpError } from "@/lib/authz";
 import { petError, petJson } from "@/lib/pets/response";
@@ -43,9 +44,13 @@ export async function PATCH(request: Request) {
     const current = await getSetting("petGeneration");
     const settings = { ...current, enabled: body.enabled, providerConnectionId: body.providerConnectionId as string | null,
       modelId: PET_IMAGE_MODEL, access: body.access as "everyone" | "selected", allowedGroupIds: body.allowedGroupIds as string[], allowedUpns: body.allowedUpns as string[] };
-    await setSetting("petGeneration", settings);
-    await db.insert(auditLog).values({ actorId: p.user.id, action: "pet.generation.settings", target: settings.providerConnectionId,
-      details: { enabled: settings.enabled, modelId: settings.modelId, access: settings.access, allowedGroupCount: settings.allowedGroupIds.length, allowedUpnCount: settings.allowedUpns.length } });
+    await db.transaction(async tx => {
+      await assertFreshPetAdmin(p, tx);
+      await tx.insert(settingsTable).values({ key: "petGeneration", value: settings })
+        .onConflictDoUpdate({ target: settingsTable.key, set: { value: settings, updatedAt: new Date() } });
+      await tx.insert(auditLog).values({ actorId: p.user.id, action: "pet.generation.settings", target: settings.providerConnectionId,
+        details: { enabled: settings.enabled, modelId: settings.modelId, access: settings.access, allowedGroupCount: settings.allowedGroupIds.length, allowedUpnCount: settings.allowedUpns.length } });
+    });
     return petJson({ ...settings, updatedBy: p.user.id });
   } catch (error) { return petError(error); }
 }
