@@ -5,11 +5,11 @@ import {
 } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { assertAdmin } from "@/lib/authz";
-import { listBillingAccounts } from "@/lib/billing/store";
+import { readBillingAccounts } from "@/lib/billing/read";
 import { QUEUES } from "@/lib/jobs";
 import { sandboxd } from "@/lib/sandbox/client";
 import { workspaceConfigState } from "@/lib/sandbox/setup";
-import { readWorkspaceSetup } from "@/lib/sandbox/setup-server";
+import { readWorkspaceSetup } from "@/lib/sandbox/setup-check";
 import { listSandboxRows, listWorkspaceInstances } from "@/lib/sandbox/store";
 import { getSetting } from "@/lib/settings";
 import { usageSummary } from "@/lib/usage";
@@ -228,7 +228,7 @@ export async function adminJobs(p: Principal) {
 export async function adminSpending(p: Principal, opts: { days?: number } = {}) {
   assertAdmin(p);
   const days = clamp(opts.days, 30, 365);
-  const [accounts, usage] = await Promise.all([listBillingAccounts(p), usageSummary(days)]);
+  const [accounts, usage] = await Promise.all([readBillingAccounts(p), usageSummary(days)]);
   return {
     accounts: accounts.map(a => ({ name: a.name, organization: a.organization, enabled: a.enabled, snapshot: a.snapshot, lastAttemptAt: a.lastAttemptAt, hasError: !!a.lastError })),
     usage: { days, byTarget: usage.byApp.map(a => ({ name: a.name, messages: num(a.messages), tokenCount: num(a.tokens) })),
