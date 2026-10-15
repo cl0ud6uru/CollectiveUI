@@ -152,6 +152,16 @@ describe("native budget admission around the actual AI SDK dispatch", () => {
     expect(await db.select().from(schema.nativeRunBudgetAttempts)).toHaveLength(2);
     expect((await db.select().from(schema.nativeRunBudgets))[0].reservedTokens).toBeGreaterThan(0);
   });
+  it.each([undefined, 2])("retains valid decision usage independently of malformed classifier answers (output=%s)", async output => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ model: "gpt-6-luna", usage: { input_tokens: 3, ...(output === undefined ? {} : { output_tokens: output }) }, answers: [{ type: "predicate", name: "fixture", probability: 4 }] }));
+    const provider: ProviderContext = { kind: "openai", appId: "decision-app", appName: "Fixture API", baseUrl: null, config: { store: false, reasoning: false }, secret: { type: "api-key", apiKey: "fixture-key" }, fetch: fetcher };
+    expect(await requestDecision(provider, "Fixture", [{ type: "predicate", name: "fixture", instructions: "Classify fixture" }], { usage: context("decision"), maxOutputTokens: 64 })).toMatchObject({ status: "invalid", inputTokens: 3 });
+    expect((await db.select().from(schema.nativeRunBudgetAttempts))[0]).toMatchObject({ state: output === undefined ? "uncertain" : "settled", inputTokens: 3, outputTokens: output ?? null });
+    expect((await db.select().from(schema.usageEvents))[0]).toMatchObject({ purpose: "decision", inputTokens: 3, outputTokens: output ?? null });
+    const root = (await db.select().from(schema.nativeRunBudgets))[0];
+    if (output === undefined) expect(root.reservedTokens).toBeGreaterThan(0);
+    else expect(root).toMatchObject({ usedTokens: 5, usedCostMicros: 7, reservedTokens: 0 });
+  });
   it("shares direct decision exhaustion with root/delegate calls and releases complete reported usage", async () => {
     const questions = [{ type: "predicate" as const, name: "fixture", instructions: "Classify fixture" }];
     const body = { model: "gpt-6-luna", input: "Fixture", questions, max_output_tokens: 64 };

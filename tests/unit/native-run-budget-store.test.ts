@@ -132,7 +132,7 @@ describe("durable shared native budget admission", () => {
     expect((await nativeBudgetHandle(context("another", "another-root")))?.policy.maxTokens).toBe(1);
   });
   it("rejects unknown prices and unverified billing routes without creating an attempt", async () => {
-    vi.stubEnv("NATIVE_RUN_BUDGET", JSON.stringify({ ...policy, routes: [{ ...policy.routes[0], inputMicrosPerMillion: undefined }] }));
+    vi.stubEnv("NATIVE_RUN_BUDGET", JSON.stringify({ ...policy, routes: [{ ...policy.routes[0], inputMicrosPerMillion: undefined, outputMicrosPerMillion: undefined }] }));
     const ctx = context(); const handle = (await nativeBudgetHandle(ctx))!;
     await expect(reserveNativeBudget(handle, ctx, input, 100)).rejects.toThrow("price is unknown");
     await expect(nativeBudgetHandle({ ...context("remote", "remote-root"), billingRoute: "unknown:hermes", billingSource: "hermes", providerKind: "hermes" })).rejects.toThrow("no supported company");

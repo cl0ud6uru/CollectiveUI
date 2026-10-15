@@ -10,7 +10,10 @@ const route = z.object({
   inputContract: z.literal("conservative-text-v1"),
   inputMicrosPerMillion: rate.optional(),
   outputMicrosPerMillion: rate.optional(),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if ((value.inputMicrosPerMillion === undefined) !== (value.outputMicrosPerMillion === undefined))
+    ctx.addIssue({ code: "custom", message: "Input and output rates must both be configured or both be omitted." });
+});
 export const NativeRunBudgetPolicySchema = z.object({
   enabled: z.literal(true),
   maxTokens: positive.nullable(),

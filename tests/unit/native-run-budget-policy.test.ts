@@ -16,10 +16,18 @@ describe("disabled native run-budget policy and input envelopes", () => {
   });
   it("requires an exact model contract and explicit monetary rates; token-only policies permit unknown prices", () => {
     expect(() => nativeBudgetRoute(policy, "openai", "different")).toThrow("no approved");
-    const unknown = { ...policy, routes: [{ ...policy.routes[0], inputMicrosPerMillion: undefined }] };
+    const unknown = { ...policy, routes: [{ ...policy.routes[0], inputMicrosPerMillion: undefined, outputMicrosPerMillion: undefined }] };
     expect(() => nativeBudgetRoute(unknown, "openai", "fixture")).toThrow("price is unknown");
     expect(nativeBudgetRoute({ ...unknown, maxCostMicros: null }, "openai", "fixture").model).toBe("fixture");
     expect(nativeBudgetCost(1, 1, { ...policy.routes[0], inputMicrosPerMillion: 1, outputMicrosPerMillion: 1 })).toBe(1);
+  });
+  it("rejects a partial price pair even for token-only policies", () => {
+    for (const missing of ["inputMicrosPerMillion", "outputMicrosPerMillion"] as const) {
+      const partial = { ...policy, maxCostMicros: null, routes: [{ ...policy.routes[0], [missing]: undefined }] };
+      expect(() => nativeRunBudgetPolicy(JSON.stringify(partial))).toThrow("configuration is invalid");
+    }
+    const unknown = { ...policy, maxCostMicros: null, routes: [{ ...policy.routes[0], inputMicrosPerMillion: undefined, outputMicrosPerMillion: undefined }] };
+    expect(nativeRunBudgetPolicy(JSON.stringify(unknown))).toEqual(unknown);
   });
   it("counts system instructions, tool schemas, tool choice, output schema, metadata and Unicode bytes", () => {
     const prompt = { prompt: [{ role: "system", content: "system instructions" }, { role: "user", content: [{ type: "text", text: "🌙" }] }] };

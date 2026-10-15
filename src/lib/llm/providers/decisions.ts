@@ -15,8 +15,9 @@ const answer = z.discriminatedUnion("type", [
     probabilities: z.array(z.object({ value: z.string(), probability })) }),
   z.object({ type: z.literal("refusal"), name: z.string().nullable() }),
 ]);
-const response = z.object({ model: z.literal(DECISIONS_MODEL), answers: z.array(answer),
-  usage: z.object({ input_tokens: z.number().int().nonnegative().safe(), output_tokens: z.number().int().nonnegative().safe().optional() }).optional() });
+const usageReport = z.object({ input_tokens: z.number().int().nonnegative().safe(), output_tokens: z.number().int().nonnegative().safe().optional() });
+const accounting = z.object({ model: z.literal(DECISIONS_MODEL), usage: usageReport.optional() });
+const response = accounting.extend({ answers: z.array(answer) });
 export type DecisionResult = { status: "ok"; answers: z.infer<typeof answer>[]; inputTokens: number | null } |
   { status: "unavailable" | "timeout" | "invalid" | "refusal"; inputTokens?: number | null };
 
@@ -80,10 +81,14 @@ export async function requestDecision(ctx: ProviderContext, input: string, quest
           chunks.push(part.value);
         }
       } finally { reader.releaseLock(); }
-      const parsed = response.safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      if (!parsed.success) return { status: "invalid" };
-      const data = parsed.data; const inputTokens = data.usage?.input_tokens ?? null;
-      reportedInput = inputTokens; reportedOutput = data.usage?.output_tokens ?? null;
+      const wire: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      // Accounting is independent of whether the classifier produced an admissible answer. A malformed
+      // answer must not erase valid reported usage or turn a known charge into an unknown one.
+      const counts = accounting.safeParse(wire);
+      if (counts.success) { reportedInput = counts.data.usage?.input_tokens ?? null; reportedOutput = counts.data.usage?.output_tokens ?? null; }
+      const parsed = response.safeParse(wire);
+      if (!parsed.success) return { status: "invalid", inputTokens: reportedInput };
+      const data = parsed.data; const inputTokens = reportedInput;
       if (data.answers.length !== questions.length) return { status: "invalid", inputTokens };
       if (data.answers.some(a => a.type === "refusal")) return { status: "refusal", inputTokens };
       for (let i = 0; i < questions.length; i++) {

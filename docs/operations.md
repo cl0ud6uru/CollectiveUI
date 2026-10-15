@@ -1,6 +1,6 @@
 # Operating CollectiveUI
 
-[Back to the overview](../README.md) · [Connections](connections.md) · [Local setup](getting-started.md)
+[Back to the overview](../README.md) · [Connections](connections.md) · [Local setup](getting-started.md) · [Native model budgets](native-run-budgets.md)
 
 This pre-release serves one installation/organization. Validate integrations and your complete deployment before relying on it. Never use the development database seed or demo passwords in production.
 
