@@ -38,7 +38,7 @@ export class DashboardSocket {
   private epoch = 0;
   private closed = false;
   get connectionEpoch() { return this.epoch; }
-  constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame) => void,
+  constructor(private target: () => Promise<{ url: URL; options: ClientOptions; protocols?: string[] }>, private frame: (f: NativeFrame) => void,
     private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {},
     private authorize: (method: string, params: RpcRecord) => Promise<void> = async () => {},
     private boundary: DispatchBoundary = async (method, params, dispatch) => { await this.authorize(method, params); return { value: dispatch() }; }) {}
@@ -58,7 +58,8 @@ export class DashboardSocket {
     try {
       const target = await this.target();
       if (!this.wanted) throw new HttpError(409, 'Hermes connection was closed.');
-      const ws = new WebSocket(target.url, { ...target.options, followRedirects: false, perMessageDeflate: false, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 15_000 });
+      const options = { ...target.options, followRedirects: false, perMessageDeflate: false, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 15_000 };
+      const ws = target.protocols ? new WebSocket(target.url, target.protocols, options) : new WebSocket(target.url, options);
       this.ws = ws;
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => { reject(new HttpError(504, 'Hermes did not announce socket readiness.')); ws.terminate(); }, 15_000);

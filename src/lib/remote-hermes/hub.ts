@@ -9,7 +9,8 @@ import { getSetting, type RemoteHermesSettings } from '@/lib/settings';
 import { isPrivateAddress } from '@/lib/agent/tools/web';
 import { registerNativeConnection } from './lifecycle';
 import { remoteAccess } from './store';
-import { dashboardAddress } from './transport';
+import { dashboardAddress, privateHttpTransportTrusted } from './transport';
+import { websocketAuthentication } from './websocket-auth';
 import { DashboardSocket, record, type NativeFrame, type RpcRecord } from './socket';
 import { promptView, sessionView, answerFor, type NativeSessionView, type NativePrompt } from './view';
 
@@ -32,10 +33,10 @@ export class NativeHub {
       this.pinned = { baseUrl: target.baseUrl, address: address.address };
       const url = new URL(target.baseUrl + '/api/ws');
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      if (target.secrets.mode === 'sessionToken') url.searchParams.set('token', target.secrets.sessionToken!);
-      else url.searchParams.set('ticket', await target.client.websocketTicket());
+      const auth = websocketAuthentication(url, target.secrets,
+        target.secrets.mode === 'password' ? await target.client.websocketTicket() : undefined);
       const options: ClientOptions & Pick<RequestOptions, 'lookup'> = { family: address.family, lookup: (_host, _opts, callback) => callback(null, address.address, address.family) };
-      return { url, options };
+      return { ...auth, options };
     }, frame => this.onFrame(frame), state => {
       for (const cached of this.sessions.values()) { cached.view.connection = state; this.changes.emit(cached.row.id); }
     }, async () => {
@@ -79,7 +80,8 @@ export class NativeHub {
     // use dashboardAddress and cannot reconnect to a revoked private destination.
     const address = this.pinned?.baseUrl === connection.baseUrl ? this.pinned :
       { baseUrl: connection.baseUrl, ...(await dashboardAddress(connection.baseUrl, policy)) };
-    const revoked = isPrivateAddress(address.address) && !policy.privateGateways.includes(connection.baseUrl);
+    const revoked = isPrivateAddress(address.address) && (!policy.privateGateways.includes(connection.baseUrl) ||
+      !privateHttpTransportTrusted(connection.baseUrl, address.address, policy));
     if (policy.enabled && !revoked) return;
     // Only an already admitted, durable binding can recover on the old socket.
     // No steering, uploads, queues, commands, setters or inspection are exempt.
