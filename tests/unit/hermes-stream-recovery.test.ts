@@ -89,20 +89,33 @@ describe('Hermes Runs stream recovery', () => {
     expect(parts.filter(p => p.type === 'tool-approval-request')).toHaveLength(0);
     expect(f.calls.filter(c => c.path.endsWith('/approval'))).toHaveLength(1);
   });
-  it('preserves one durable admission key after a lost reply and gives distinct turns distinct keys', async () => {
-    const keys: string[] = []; let lost = true;
+  it('preserves one durable admission after acceptance loses its reply and gives distinct turns distinct keys', async () => {
+    const keys: string[] = []; const admissions = new Map<string, { run_id: string }>(); let lost = true;
     const f = fixture([() => events([frame({ event: 'run.completed', output: 'Done', usage: {} }, 0)]), () => events([frame({ event: 'run.completed', output: 'Done', usage: {} }, 0)])]);
     const fetcher = (async (url: string, init: RequestInit = {}) => {
       if (init.method === 'POST' && url.endsWith('/runs')) {
-        keys.push((init.headers as Record<string, string>)['Idempotency-Key']);
-        if (lost) { lost = false; throw new TypeError('Synthetic lost admission reply'); }
+        const key = (init.headers as Record<string, string>)['Idempotency-Key']; keys.push(key);
+        if (!admissions.has(key)) {
+          // The synthetic server accepts durably before the transport loses its response.
+          await f.fetcher(url, init);
+          admissions.set(key, { run_id: `run_synthetic_${admissions.size + 1}` });
+        }
+        if (lost) { lost = false; throw new TypeError('Synthetic lost reply after admission'); }
+        return json(admissions.get(key));
       }
       return f.fetcher(url, init);
     }) as typeof fetch;
     const options = { prompt: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'Synthetic fixture' }] }] };
     await expect(model(fetcher, 'portal-turn-one').doGenerate(options)).rejects.toThrow('reachable');
+    expect(admissions.size).toBe(1);
+    const originalRun = admissions.get('portal-portal-turn-one')!.run_id;
     expect((await model(fetcher, 'portal-turn-one').doGenerate(options)).content).toContainEqual({ type: 'text', text: 'Done' });
+    expect(admissions.size).toBe(1);
+    expect(f.calls.filter(c => c.path.endsWith('/events'))[0].path).toContain(originalRun);
     await model(fetcher, 'portal-turn-two').doGenerate(options);
+    expect(admissions.size).toBe(2);
+    expect(admissions.get('portal-portal-turn-two')!.run_id).not.toBe(originalRun);
+    expect(f.calls.filter(c => c.method === 'POST' && c.path.endsWith('/runs'))).toHaveLength(2);
     expect(keys).toEqual(['portal-portal-turn-one', 'portal-portal-turn-one', 'portal-portal-turn-two']);
   });
   it('routes Stop to the same remote run during cursor reconnection', async () => {
