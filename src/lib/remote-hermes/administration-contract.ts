@@ -8,6 +8,9 @@ export const administrationInput = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('test'), name: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('install'), requestId: z.string().uuid(), preset: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('credential'), requestId: z.string().uuid(), name: z.string().min(1).max(200), envVar: z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/), value: z.string().min(1).max(16000) }).strict(),
+  z.object({ operation: z.literal('remove'), requestId: z.string().uuid(), name: z.string().min(1).max(200), confirmed: z.literal(true) }).strict(),
+  z.object({ operation: z.literal('enabled'), requestId: z.string().uuid(), name: z.string().min(1).max(200), enabled: z.boolean(), confirmed: z.literal(true) }).strict(),
+  z.object({ operation: z.literal('reload'), requestId: z.string().uuid(), confirmed: z.literal(true) }).strict(),
 ]);
 export type AdministrationInput = z.infer<typeof administrationInput>;
 export const settingValues = { reasoning: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'], fast: ['normal', 'fast', 'auto', 'cold', 'ultrafast'] } as const;
@@ -25,7 +28,7 @@ export function mcpInventory(list: RpcRecord, status: RpcRecord, catalog: RpcRec
     servers: rows(list.servers).map(s => {
       const state = states.get(str(s.name)) ?? {};
       return { name: str(s.name), transport: ['stdio', 'http', 'sse', 'streamable-http'].includes(str(s.transport)) ? str(s.transport) : 'unknown', enabled: s.enabled === true,
-        source: s.source === 'plugin' ? 'plugin' : 'config', status: ['connected', 'disabled', 'connecting', 'failed', 'lazy', 'configured'].includes(str(state.status)) ? str(state.status) : 'unknown',
+        source: s.source === 'plugin' ? 'plugin' : s.source === 'config' ? 'config' : 'unknown', status: ['connected', 'disabled', 'connecting', 'failed', 'lazy', 'configured'].includes(str(state.status)) ? str(state.status) : 'unknown',
         tools: Number.isSafeInteger(state.tools) && Number(state.tools) >= 0 ? Number(state.tools) : null,
         envKeys: Array.isArray(s.env) ? s.env.filter(envKey).slice(0, 30) as string[] : [], hasOAuth: s.oauth_tokens_present === true };
     }),

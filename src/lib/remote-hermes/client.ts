@@ -65,15 +65,24 @@ function historyDisplayText(value: unknown): string {
 export class DashboardClient {
   readonly base: string;
   constructor(base: string, private transport: typeof fetch, private secrets?: DashboardSecrets) { this.base = dashboardBase(base); }
-  private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number) {
+  private async call(path: string, body?: unknown, headers: Record<string, string> = {}, maxBytes?: number, methodOverride?: 'PUT') {
     const auth: Record<string, string> = this.secrets?.mode === 'sessionToken'
       ? { 'X-Hermes-Session-Token': this.secrets.sessionToken! }
       : this.secrets ? { Authorization: `Bearer ${this.secrets.accessToken}` } : {};
     return json(await this.transport(this.base + path, {
-      method: body === undefined ? 'GET' : 'POST', redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(15_000),
+      method: methodOverride ?? (body === undefined ? 'GET' : 'POST'), redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(15_000),
       headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...auth, ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), maxBytes);
+  }
+  /** The pinned Hermes dashboard exposes MCP enablement as a specific authenticated PUT route. */
+  async setMcpServerEnabled(profile: string, name: string, enabled: boolean) {
+    if (!profile || profile.length > 200 || !name || name.length > 200 || name.includes('/') || name.includes('\\') || name === '.' || name === '..' || typeof enabled !== 'boolean')
+      throw new HttpError(400, 'Invalid MCP server enablement request.');
+    const result = z.object({ ok: z.literal(true), name: z.string().max(200), enabled: z.boolean() })
+      .parse(await this.call(`/api/mcp/servers/${encodeURIComponent(name)}/enabled`, { enabled, profile }, {}, undefined, 'PUT'));
+    if (result.name !== name || result.enabled !== enabled) throw new HttpError(502, 'Hermes did not confirm the requested MCP server state.');
+    return result;
   }
   async status() { return z.preprocess(nativeFields, z.object({ version: z.string().optional(), authRequired: z.boolean().optional() })).parse(await this.call('/api/status')); }
   async profiles(): Promise<RemoteHermesProfile[]> { return z.object({ profiles: z.array(profileSchema).max(2000) }).parse(await this.call('/api/profiles')).profiles; }
