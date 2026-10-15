@@ -7,7 +7,7 @@ import type { remoteHermesSessions } from '@/db/schema';
 const f = vi.hoisted(() => ({ base: '', exists: true, enabled: true, approved: true, status: 'running', rows: [] as Record<string, unknown>[], policyWait: undefined as (() => Promise<void>) | undefined, locks: 0, unlock: [] as (() => void)[], delayReply: false }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => { await f.policyWait?.(); return { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }; } }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ baseUrl: f.base, policy: { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }, secrets: { mode: 'sessionToken', sessionToken: 'synthetic' } }) }));
-vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => {
+vi.mock('@/lib/remote-hermes/transport', () => ({ privateHttpTransportTrusted: () => true, dashboardAddress: async () => {
   if (!f.approved) throw new HttpError(403, 'Private destination revoked');
   return { address: '127.0.0.1', family: 4 };
 } }));
