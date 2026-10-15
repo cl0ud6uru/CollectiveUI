@@ -6,7 +6,7 @@ import { prepareAccountRuntime } from '@/lib/llm/chatgpt/onboarding';
 import { beginCompanionSignIn, cancelCompanionSignIn } from '@/lib/llm/chatgpt/companion';
 
 const action = z.discriminatedUnion('action', [
-  z.object({ action: z.enum(['start', 'disconnect', 'sync-token']) }).strict(),
+  z.object({ action: z.enum(['start', 'disconnect', 'disconnect-native', 'sync-token']) }).strict(),
   z.object({ action: z.literal('prepare-runtime'), accepted: z.literal(true), consentVersion: z.literal(1) }).strict(),
   z.object({ action: z.literal('begin-sign-in'), accepted: z.literal(true), consentVersion: z.literal(1), enableCodex: z.boolean() }).strict(),
   z.object({ action: z.literal('cancel-sign-in') }).strict(),
@@ -18,7 +18,7 @@ export async function POST(request: Request) {
   try {
     const p = await requirePrincipal();
     if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
-    if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
+    if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw new HttpError(415, 'JSON required.');
     const reader = request.body?.getReader();
     if (!reader) throw new HttpError(400, 'JSON required.');
     const chunks: Uint8Array[] = []; let bytes = 0;

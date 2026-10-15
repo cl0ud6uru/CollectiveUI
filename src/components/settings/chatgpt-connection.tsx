@@ -16,6 +16,7 @@ export type ChatGPTAccountView = {
   onboarding: { state: "ready" | "blocked"; reason: string | null };
   setup?: BrowserSetupView;
   signIn?: SignInView | null;
+  deviceSetup?: { eligible: boolean; reason: string | null; runtime: AccountSetupView["runtime"]; canPrepareRuntime: boolean };
 };
 
 function messageFor(view: ChatGPTAccountView) {
@@ -40,9 +41,7 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
   const [view, setView] = useState<ChatGPTAccountView | null>(initialView ?? null);
   const [loading, setLoading] = useState(!initialView);
   const [busy, setBusy] = useState(false);
-  const [consent, setConsent] = useState(false);
   const [signInConsent, setSignInConsent] = useState(false);
-  const [runtimeConsent, setRuntimeConsent] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
   const launchUrlRef = useRef<string | null>(null);
   const [canReopenCompanion, setCanReopenCompanion] = useState(false);
@@ -71,7 +70,7 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
     return () => clearTimeout(timer);
   }, [refresh]);
 
-  async function mutate(body: { action: "prepare-runtime"; accepted: true; consentVersion: 1 } | { action: "disconnect" | "sync-token" }) {
+  async function mutate(body: { action: "disconnect-native" }) {
     setBusy(true); setError(null);
     try {
       const response = await fetch("/api/me/chatgpt", {
@@ -81,7 +80,6 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
       if (!response.ok) throw new Error(data.error || data.message || "The ChatGPT account action could not be completed.");
       const revocationUnconfirmed = data.revocationConfirmed === false;
       if (revocationUnconfirmed) setError("The account was disconnected here, but OpenAI did not confirm revocation. Review active ChatGPT sessions in your OpenAI account.");
-      if (body.action === "prepare-runtime") setConsent(false);
       await refresh(revocationUnconfirmed);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The ChatGPT account action could not be completed.");
@@ -102,7 +100,7 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
     try {
       const response = await fetch("/api/me/chatgpt", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "begin-sign-in", accepted: true, consentVersion: 1, enableCodex: runtimeConsent }),
+        body: JSON.stringify({ action: "begin-sign-in", accepted: true, consentVersion: 1, enableCodex: false }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || data.message || "The local sign-in app could not be opened.");
@@ -122,7 +120,7 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
       setCanReopenCompanion(true);
       launchWindow.location.href = launchUrl.href;
       setView(current => current ? { ...current, signIn: { state: "created", expiresAt: data.expiresAt } } : current);
-      setConsent(false); setSignInConsent(false); setRuntimeConsent(false);
+      setSignInConsent(false);
     } catch (cause) {
       launchWindow.close();
       setError(cause instanceof Error ? cause.message : "The local sign-in app could not be opened.");
@@ -151,8 +149,6 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
   }
 
   const setup = view?.setup;
-  const prepared = setup?.runtime.state === "ready" && setup.runtime.enrolled && setup.runtime.runtimeState === "running";
-  const canPrepare = setup?.canPrepareRuntime && !prepared;
   const signedIn = view?.backends.native.state === "connected" && !view.credential?.migrationRequired;
   const companionReady = setup?.authentication.state === "companion_ready";
   const waitingSignIn = !!view?.signIn && ["created", "paired", "receiving"].includes(view.signIn.state);
@@ -164,36 +160,20 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
   return <section id="chatgpt-account" aria-labelledby="chatgpt-account-title" className="space-y-4 rounded-2xl border border-border p-5">
     <div>
       <h2 id="chatgpt-account-title" className="font-semibold">ChatGPT account</h2>
-      <p className="mt-1 text-sm text-muted">Manage one ChatGPT sign-in for Native CollectiveUI and stock Codex.</p>
+      <p className="mt-1 text-sm text-muted">Connect your ChatGPT account to stock Codex or Native CollectiveUI. Each connection has its own sign-in and status.</p>
     </div>
+    <PersonalCodexConnection setup={view?.deviceSetup} />
+    <h3 className="font-medium">Native CollectiveUI</h3>
     <p role="status" className="text-sm">{loading ? "Checking your ChatGPT account…" : view ? messageFor(view) : "Your ChatGPT account status could not be loaded."}</p>
     {view?.credential && <p className="text-sm">{view.credential.email || "ChatGPT account"}{view.credential.planType ? ` · ${view.credential.planType}` : ""}</p>}
-    {view && <div className="grid gap-2 text-xs text-muted sm:grid-cols-2">
-      {(["native", "codex"] as const).map((name) => {
-        const reason = view.backends[name].reason;
-        const detail = reason && ![messageFor(view), view.reason, setup?.reason, setup?.runtime.reason].includes(reason)
-          && (name === "native" || reason !== view.backends.native.reason) ? ` · ${reason}` : "";
-        return <p key={name} className="rounded-lg bg-surface-2 p-3"><span className="font-medium text-foreground">{name === "native" ? "Native CollectiveUI" : "Stock Codex"}:</span> {view.backends[name].state}{detail}</p>;
-      })}
-    </div>}
     {view?.allowed && <div aria-label="ChatGPT setup status" className="space-y-3 rounded-xl border border-border p-4 text-sm">
-      <dl className="grid gap-2 sm:grid-cols-3">
+      <dl className="grid gap-2 sm:grid-cols-2">
         <div><dt className="text-muted">Account eligibility</dt><dd>{setup?.eligible ? "Ready" : "Attention required"}</dd></div>
-        <div><dt className="text-muted">Private Codex runtime</dt><dd>{runtimeSetupLabel(setup)}</dd></div>
         <div><dt className="text-muted">ChatGPT sign-in</dt><dd>{signedIn ? "Connected" : view.signIn?.state === "complete" ? "Sign-in completed" : view.signIn?.state === "needs_attention" ? "Needs attention" : view.signIn?.state === "expired" ? "Link expired" : view.signIn?.state === "cancelled" ? "Cancelled" : companionReady ? "Local sign-in app ready" : "Local sign-in app required"}</dd></div>
       </dl>
       {setup?.reason && view.credential && <p className="text-muted">{setup.reason}</p>}
-      {setup?.runtime.reason && <p className="text-muted">{setup.runtime.reason}</p>}
       {!signedIn && <p id="chatgpt-companion-status" className="text-muted">{view?.signIn?.reason || setup?.authentication.reason || "A supported local sign-in app is required to connect ChatGPT."}</p>}
-      {canPrepare && <div className="space-y-3">
-        <label className="flex items-start gap-2">
-          <input type="checkbox" checked={consent} disabled={busy || loading || signInBusy} onChange={event => setConsent(event.target.checked)} className="mt-1" />
-          <span>I authorize this installation to prepare my private Codex runtime. ChatGPT plan usage is authorized separately when I sign in.</span>
-        </label>
-        <Button disabled={!consent || busy || loading || signInBusy} onClick={() => void mutate({ action: "prepare-runtime", accepted: true, consentVersion: 1 })}>Prepare private runtime</Button>
-      </div>}
       {!signedIn && companionReady && !waitingSignIn && <div className="space-y-3">
-        {canPrepare && <label className="flex items-start gap-2"><input type="checkbox" checked={runtimeConsent} disabled={signInBusy || busy || loading} onChange={event => setRuntimeConsent(event.target.checked)} className="mt-1" /><span>Prepare and use my private stock Codex runtime</span></label>}
         <label className="flex items-start gap-2"><input type="checkbox" checked={signInConsent} disabled={signInBusy || busy || loading} onChange={event => setSignInConsent(event.target.checked)} className="mt-1" /><span>I authorize this installation to use my ChatGPT account for Native CollectiveUI.</span></label>
         <Button disabled={!signInConsent || signInBusy || busy || loading} aria-describedby="chatgpt-companion-status" onClick={() => void beginSignIn()}>{view.signIn && ["expired", "cancelled", "needs_attention"].includes(view.signIn.state) ? "Retry local sign-in" : view.credential ? "Reconnect ChatGPT" : "Connect ChatGPT"}</Button>
       </div>}
@@ -203,11 +183,9 @@ export function ChatGPTConnection({ initialView }: { initialView?: ChatGPTAccoun
     </div>}
     {error && <p role="alert" className="text-sm text-red-500">{error}</p>}
     <div className="flex flex-wrap gap-2">
-      {view?.allowed && ["not_connected", "stopped"].includes(view.backends.codex.state) && view.credential && !view.credential.migrationRequired && <Button variant="outline" disabled={busy || loading} onClick={() => void mutate({ action: "sync-token" })}>Enable stock Codex</Button>}
-      {view?.credential && <Button variant="outline" disabled={busy || loading} onClick={() => { if (window.confirm("Disconnect your ChatGPT account?")) void mutate({ action: "disconnect" }); }}>Disconnect ChatGPT</Button>}
+      {view?.credential && <Button variant="outline" disabled={busy || loading} onClick={() => { if (window.confirm("Disconnect your Native CollectiveUI ChatGPT account?")) void mutate({ action: "disconnect-native" }); }}>Disconnect Native ChatGPT</Button>}
       {(error || !view) && <Button variant="outline" disabled={loading || busy} onClick={() => void refresh()}>Retry</Button>}
       {view && !error && <Button variant="outline" disabled={loading || busy} onClick={() => void refresh()}>Refresh status</Button>}
     </div>
-    <PersonalCodexConnection />
   </section>;
 }

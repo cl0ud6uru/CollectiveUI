@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({ change: vi.fn(), begin: vi.fn(), cancel: vi.fn(), prepare: vi.fn(), legacy: vi.fn(), principal: { user: { id: 'alice' } } }));
 vi.mock('@/lib/session', () => ({ requirePrincipal: vi.fn(async () => fixture.principal) }));
 vi.mock('@/lib/llm/chatgpt/account', () => ({ changeUnifiedAccount: fixture.change, unifiedAccountView: vi.fn() }));
-vi.mock('@/lib/llm/chatgpt/onboarding', () => ({ prepareAccountRuntime: fixture.prepare }));
+vi.mock('@/lib/llm/chatgpt/onboarding', () => ({ prepareAccountRuntime: fixture.prepare, prepareDeviceAccountRuntime: fixture.prepare }));
 vi.mock('@/lib/llm/chatgpt/companion', () => ({ beginCompanionSignIn: fixture.begin, cancelCompanionSignIn: fixture.cancel }));
 vi.mock('@/personal-codex/accounts', () => ({ changeConnection: fixture.legacy, connectionView: vi.fn() }));
 import { POST as accountPost } from '@/app/api/me/chatgpt/route';
@@ -28,6 +28,11 @@ describe('unified account HTTP mutation boundary', () => {
   ])('rejects extra authority or missing sign-in consent', async body => {
     expect((await accountPost(request(body))).status).toBe(400);
     expect(fixture.begin).not.toHaveBeenCalled(); expect(fixture.cancel).not.toHaveBeenCalled();
+  });
+  it('disconnects only Native CollectiveUI through its distinct action', async () => {
+    expect((await accountPost(request({ action: 'disconnect-native' }))).status).toBe(200);
+    expect(fixture.change).toHaveBeenCalledWith(fixture.principal, 'disconnect-native');
+    expect(fixture.legacy).not.toHaveBeenCalled();
   });
   it('derives the owner from the signed-in principal and accepts setup without credential material', async () => {
     const response = await accountPost(request({ action: 'start' }));
@@ -61,8 +66,8 @@ describe('unified account HTTP mutation boundary', () => {
     expect((await accountPost(request({ action: 'prepare-runtime', accepted: true, consentVersion: 1 }, 'https://other.invalid'))).status).toBe(403);
     expect(fixture.prepare).not.toHaveBeenCalled();
   });
-  it.each(['connect', 'confirm'])('retires legacy %s while retaining the cleanup facade', async action => {
-    expect((await legacyPost(request({ action }))).status).toBe(409);
+  it.each(['connect', 'confirm'])('rejects %s without explicit consent', async action => {
+    expect((await legacyPost(request({ action }))).status).toBe(400);
     expect(fixture.legacy).not.toHaveBeenCalled();
   });
 });
