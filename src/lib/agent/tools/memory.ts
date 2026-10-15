@@ -20,7 +20,7 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
           shared: z.boolean().optional().describe("true if useful to all assistants, false if only to this bot"),
         }),
         execute: async ({ fact, shared }) => {
-          const id = await addMemory(userId, shared === false && ctx.bot ? ctx.bot.id : null, fact, ctx.conversationId);
+          const id = await addMemory(userId, shared === false && ctx.bot ? ctx.bot.id : null, fact, ctx.conversationId, db, undefined, ctx.usage);
           return { saved: true, id };
         },
       }),

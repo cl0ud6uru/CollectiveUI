@@ -1072,6 +1072,35 @@ export const usageEvents = pgTable(
   ],
 );
 
+/** Local native model admission only. Root reply identity survives every delegated turn and continuation. */
+export const nativeRunBudgets = pgTable("native_run_budgets", {
+  rootMessageId: text("root_message_id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  policy: jsonb("policy").$type<import("@/lib/llm/run-budget-policy").NativeRunBudgetPolicy>().notNull(),
+  usedTokens: bigint("used_tokens", { mode: "number" }).notNull().default(0),
+  reservedTokens: bigint("reserved_tokens", { mode: "number" }).notNull().default(0),
+  usedCostMicros: bigint("used_cost_micros", { mode: "number" }).notNull().default(0),
+  reservedCostMicros: bigint("reserved_cost_micros", { mode: "number" }).notNull().default(0),
+  exhausted: boolean("exhausted").notNull().default(false),
+  createdAt: createdAt(),
+}, t => [check("native_run_budget_nonnegative", sql`${t.usedTokens} >= 0 and ${t.reservedTokens} >= 0 and ${t.usedCostMicros} >= 0 and ${t.reservedCostMicros} >= 0`)]);
+
+/** Ambiguous dispatches retain their reservation; receipt settlement and release are idempotent. */
+export const nativeRunBudgetAttempts = pgTable("native_run_budget_attempts", {
+  id: text("id").primaryKey(),
+  rootMessageId: text("root_message_id").notNull().references(() => nativeRunBudgets.rootMessageId, { onDelete: "cascade" }),
+  runId: text("run_id"),
+  appId: text("app_id"),
+  provider: text("provider").notNull(), model: text("model").notNull(), purpose: text("purpose").notNull(),
+  state: text("state").$type<"reserved" | "dispatched" | "uncertain" | "settled" | "released">().notNull().default("reserved"),
+  inputReserved: bigint("input_reserved", { mode: "number" }).notNull(),
+  outputReserved: bigint("output_reserved", { mode: "number" }).notNull(),
+  costReservedMicros: bigint("cost_reserved_micros", { mode: "number" }).notNull(),
+  inputTokens: bigint("input_tokens", { mode: "number" }), outputTokens: bigint("output_tokens", { mode: "number" }),
+  costMicros: bigint("cost_micros", { mode: "number" }),
+  createdAt: createdAt(), settledAt: timestamp("settled_at", { withTimezone: true }),
+}, t => [index("native_budget_attempts_root_idx").on(t.rootMessageId), check("native_budget_attempt_nonnegative", sql`${t.inputReserved} >= 0 and ${t.outputReserved} >= 0 and ${t.costReservedMicros} >= 0 and (${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0)`), check("native_budget_attempt_state", sql`${t.state} in ('reserved', 'dispatched', 'uncertain', 'settled', 'released')`)]);
+
 export const mcpServers = pgTable(
   "mcp_servers",
   {

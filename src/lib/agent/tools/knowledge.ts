@@ -1,18 +1,19 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { and, eq, sql } from "drizzle-orm";
 import { tool } from "ai";
 import { z } from "zod";
 import { db } from "@/db";
 import { attachments, knowledgeChunks } from "@/db/schema";
-import { embedTexts, type EmbedContext } from "@/lib/llm";
+import { embedTexts, type EmbedContext, type UsageScope } from "@/lib/llm";
 import type { AgentCtx, ToolEntry } from "../types";
 
-export async function searchKnowledge(botId: string, query: string, k = 6, usage: EmbedContext = {}) {
+export async function searchKnowledge(botId: string, query: string, k = 6, usage: EmbedContext = {}, scope?: UsageScope) {
   const cols = {
     content: knowledgeChunks.content,
     filename: attachments.filename,
     chunkIndex: knowledgeChunks.chunkIndex,
   };
-  const vec = await embedTexts([query], { botId, ...usage }).catch(() => null);
+  const vec = await embedTexts([query], { botId, ...usage }, { usage: scope }).catch(error => { if (error instanceof NativeRunBudgetError) throw error; return null; });
   if (vec) {
     const rows = await db
       .select(cols)
@@ -44,7 +45,7 @@ export function knowledgeTool(ctx: AgentCtx): ToolEntry | null {
       description: "Search this bot's knowledge files (uploaded documents). Cite the filename when you use a result.",
       inputSchema: z.object({ query: z.string() }),
       execute: async ({ query }) => ({
-        results: await searchKnowledge(botId, query, 6, { userId: ctx.principal.user.id, conversationId: ctx.conversationId }),
+        results: await searchKnowledge(botId, query, 6, { userId: ctx.principal.user.id, conversationId: ctx.conversationId }, ctx.usage),
       }),
     }),
   };

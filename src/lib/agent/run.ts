@@ -1,4 +1,6 @@
 import { isCodexApp } from '@/lib/codex/target';
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
+import { nativeBudgetApplies } from "@/lib/llm/run-budget-store";
 import { InvalidToolApprovalSignatureError } from "ai";
 import { convertToModelMessages, createUIMessageStream, isStepCount, streamText, toUIMessageStream, type UIMessageChunk } from "ai";
 import { eq } from "drizzle-orm";
@@ -69,6 +71,7 @@ export type TurnResult = {
  * (src/lib/runs/execute.ts) for every direct chat and routine segment; group chats have their own loop (group.ts).
  */
 export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
+  if (isCodexApp(opts.app) && await nativeBudgetApplies(opts.delegation?.task.rootMessageId ?? (opts.continuation ? opts.history.at(-1)?.id : opts.responseMessageId))) throw new NativeRunBudgetError("Codex has no supported native company budget contract. No billing fallback was selected.");
   if (isCodexApp(opts.app)) return (await import('@/lib/codex/run')).runCodexTurn(opts);
   const { principal, conversation, app, bot, history } = opts;
   const toolSettings = await getSetting("tools");
@@ -77,7 +80,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   // (including delegates and the title) can be linked to it and to the run in the usage ledger. A continuation
   // extends the last assistant message.
   const responseMessageId = opts.continuation ? history.at(-1)!.id : (opts.responseMessageId ?? newId());
-  const usage = newUsageScope({ messageId: responseMessageId, runId: opts.run?.id });
+  const usage = newUsageScope({ messageId: responseMessageId, runId: opts.run?.id, rootBudgetId: opts.delegation?.task.rootMessageId ?? responseMessageId });
   const delegated = opts.delegation;
   const nativeEligible = app.provider !== "hermes" && !!opts.run?.holder && !!opts.run.deadlineAt && (!delegated || delegated.task.mode === "async");
   const previousNative = opts.run?.resumeState?.native;
@@ -126,8 +129,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     const userText = lastUser ? partsToText(lastUser.parts) : "";
     const memories = !bot?.hermesTeam && !delegated && bot?.executionMode !== "service" && (await memoryEnabled(principal.user.id))
-      ? await selectMemories({ userId: principal.user.id, botId: bot?.id ?? null, query: userText, limit: 15, conversationId: conversation.id }).catch(
-          () => [],
+      ? await selectMemories({ userId: principal.user.id, botId: bot?.id ?? null, query: userText, limit: 15, conversationId: conversation.id, usage }).catch(
+          error => { if (error instanceof NativeRunBudgetError) throw error; return []; },
         )
       : [];
 
@@ -285,7 +288,10 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
                   conversationId: conversation.id,
                   botId: bot?.id ?? null,
                   usage,
-                }).catch(() => fallback)
+                }).catch(error => {
+                  if (error instanceof NativeRunBudgetError) writer.write({ type: "data-notice", data: { message: error.message }, transient: true });
+                  return fallback;
+                })
               : fallback;
             await db.update(conversations).set({ title }).where(eq(conversations.id, conversation.id));
             writer.write({ type: "data-title", data: { title }, transient: true });

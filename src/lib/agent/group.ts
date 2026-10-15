@@ -1,3 +1,4 @@
+import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
 import { runConfig } from "@/lib/runs/types";
 import { runHost } from "@/lib/runs/host";
 import { receiveGroupResults } from "@/lib/delegation/receipts";
@@ -141,7 +142,7 @@ export async function runGroupTurn(opts: {
   const parentId = history.at(-1)?.id ?? null;
   const useMemory = await memoryEnabled(principal.user.id);
   const messageId = newId();
-  const usageScope = newUsageScope({ messageId });
+  const usageScope = newUsageScope({ messageId, rootBudgetId: messageId });
   const execution = { holder: runHost().instanceId, deadlineAt: Date.now() + runConfig().runTimeoutMs };
 
   return createUIMessageStream<PortalUIMessage>({
@@ -176,8 +177,8 @@ export async function runGroupTurn(opts: {
           toolset = await buildToolset(ctx);
           for (const warning of toolset.warnings) writer.write({ type: "data-notice", data: { message: warning }, transient: true });
           const memories = useMemory
-            ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id }).catch(
-                () => [],
+            ? await selectMemories({ userId: principal.user.id, botId: bot.id, query: userText, limit: 10, conversationId: conversation.id, usage: usageScope }).catch(
+                error => { if (error instanceof NativeRunBudgetError) throw error; return []; },
               )
             : [];
           const others = members.filter((m) => m.bot.id !== bot.id);
