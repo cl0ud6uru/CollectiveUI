@@ -9,6 +9,7 @@ export const administrationInput = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('install'), requestId: z.string().uuid(), preset: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('credential'), requestId: z.string().uuid(), name: z.string().min(1).max(200), envVar: z.string().regex(/^[A-Z][A-Z0-9_]{0,127}$/), value: z.string().min(1).max(16000) }).strict(),
   z.object({ operation: z.literal('remove'), requestId: z.string().uuid(), name: z.string().min(1).max(200), confirmed: z.literal(true) }).strict(),
+  z.object({ operation: z.literal('enabled'), requestId: z.string().uuid(), name: z.string().min(1).max(200), enabled: z.boolean(), confirmed: z.literal(true) }).strict(),
   z.object({ operation: z.literal('reload'), requestId: z.string().uuid(), confirmed: z.literal(true) }).strict(),
 ]);
 export type AdministrationInput = z.infer<typeof administrationInput>;

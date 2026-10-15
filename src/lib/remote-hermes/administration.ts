@@ -66,6 +66,12 @@ export async function nativeAdministration(ownerId: string, connectionId: string
     if (!server) throw new HttpError(404, 'MCP server not found in this profile.');
     if (server.source !== 'config') throw new HttpError(409, 'Only configured MCP servers can be removed here.');
   }
+  if (input.operation === 'enabled') {
+    const inventory = mcpInventory(await hub.socket.call('mcp.servers.list', { profile: row.profile }), {}, {});
+    const server = inventory.servers.find(s => s.name === input.name);
+    if (!server) throw new HttpError(404, 'MCP server not found in this profile.');
+    if (server.source !== 'config') throw new HttpError(409, 'Only configured MCP servers can be changed here.');
+  }
   if (input.operation === 'install') {
     const inventory = mcpInventory({}, {}, await hub.socket.call('mcp.catalog', { profile: row.profile }));
     if (!inventory.catalog.some(s => s.name === input.preset && !s.installed)) throw new HttpError(409, 'Choose an uninstalled preset from this profile’s catalog.');
@@ -98,6 +104,12 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   // not its acknowledgement; reuse tx to avoid nested-pool/session deadlocks.
   const { reply } = await db.transaction(async tx => {
     await lock(tx);
+    if (input.operation === 'enabled') {
+      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed. Refresh and confirm this change again.');
+      await access.client.setMcpServerEnabled(row.profile, input.name, input.enabled);
+      if (hub.socket.connectionEpoch !== epoch) throw new HttpError(409, 'The verified Hermes connection changed during the update. Refresh to check its outcome.');
+      return { reply: Promise.resolve({ ok: true }) };
+    }
     if (input.operation === 'setting') return hub.socket.dispatchConnected('config.set', { profile: row.profile, ...(input.scope === 'session' ? { session_id: params.session_id, scope: 'session' } : { scope: 'global' }), key: input.key, value: input.value }, epoch, 30_000, tx);
     if (input.operation === 'install') return hub.socket.dispatchConnected('mcp.servers.add', { profile: row.profile, name: input.preset, preset: input.preset }, epoch, 30_000, tx);
     if (input.operation === 'credential') return hub.socket.dispatchConnected('mcp.servers.set_api_key', { profile: row.profile, name: input.name, env_var: input.envVar, value: input.value }, epoch, 30_000, tx);
@@ -115,6 +127,13 @@ export async function nativeAdministration(ownerId: string, connectionId: string
   if (input.operation === 'reload') {
     if (result.status !== 'reloaded') throw new HttpError(502, 'Hermes did not confirm the MCP reload. Refresh to check its outcome.');
     return { accepted: true, reloaded: true };
+  }
+  if (input.operation === 'enabled') {
+    const current = await hub.socket.callConnected('mcp.servers.list', { profile: row.profile }, epoch, 30_000);
+    const server = mcpInventory(current, {}, {}).servers.find(s => s.name === input.name);
+    if (!server || server.source !== 'config' || server.enabled !== input.enabled)
+      throw new HttpError(502, 'Hermes did not confirm the MCP server state. Refresh to check its outcome.');
+    return { accepted: true, enabled: input.enabled };
   }
   return { accepted: result.ok === true };
 }

@@ -88,6 +88,21 @@ function passwordGateway(mismatch = false) {
 }
 
 describe('Hermes native dashboard authentication', () => {
+  it('uses the pinned authenticated PUT contract for config-owned MCP enablement', async () => {
+    const transport = vi.fn(async () => Response.json({ ok: true, name: 'server-name', enabled: false })) as unknown as typeof fetch;
+    const client = new DashboardClient('https://example.com/hermes', transport, { mode: 'sessionToken', sessionToken: 'synthetic-session-token' });
+    await expect(client.setMcpServerEnabled('work', 'server-name', false)).resolves.toEqual({ ok: true, name: 'server-name', enabled: false });
+    const [url, init] = (transport as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://example.com/hermes/api/mcp/servers/server-name/enabled');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ enabled: false, profile: 'work' });
+    expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('synthetic-session-token');
+  });
+  it('rejects mismatched native echo and invalid MCP identities', async () => {
+    const client = new DashboardClient('https://example.com', async () => Response.json({ ok: true, name: 'other', enabled: true }));
+    await expect(client.setMcpServerEnabled('default', 'server', false)).rejects.toThrow('did not confirm');
+    await expect(client.setMcpServerEnabled('default', '../config', false)).rejects.toThrow();
+  });
   it('uses PKCE with attempt-local cookies and returns tokens without retaining passwords', async () => {
     const { transport, calls } = passwordGateway();
     const result = await new DashboardClient('https://example.com/hermes', transport).passwordLogin('alice', 'temporary-password');

@@ -24,6 +24,7 @@ const server = createServer(async (req, res) => {
   const bytes = []; for await (const chunk of req) bytes.push(chunk);
   const input = JSON.parse(Buffer.concat(bytes).toString()).input; received.push(input);
   if (input.operation === 'setting') inventory[input.scope][input.key].value = input.value;
+  if (input.operation === 'enabled') { inventory.mcp.servers.find(server => server.name === input.name).enabled = input.enabled; res.end(JSON.stringify({ accepted: true, enabled: input.enabled })); return; }
   if (input.operation === 'install') inventory.mcp.catalog[0].installed = true;
   if (input.operation === 'remove') { inventory.mcp.servers = inventory.mcp.servers.filter(server => server.name !== input.name); res.end(JSON.stringify({ accepted: true, removed: true })); return; }
   if (input.operation === 'reload') { res.end(JSON.stringify({ accepted: true, reloaded: true })); return; }
@@ -43,6 +44,11 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.getByRole('button', { name: 'Native settings & MCP' }).click();
   await expect(page.getByText('Hermes profile: default')).toBeVisible();
+  await page.getByRole('button', { name: 'Disable server' }).click();
+  await expect(page.getByText('Hermes disabled this server for new sessions.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Enable server' })).toBeVisible();
+  await page.getByRole('button', { name: 'Enable server' }).click();
+  await expect(page.getByText('Hermes enabled this server for new sessions.')).toBeVisible();
   await page.getByLabel('Setting value', { exact: true }).click(); await page.getByRole('option', { name: 'high', exact: true }).click();
   await page.getByRole('button', { name: 'Apply setting' }).click();
   await expect(page.getByText('Current: high.', { exact: false })).toBeVisible();
@@ -56,9 +62,10 @@ try {
   await page.getByRole('button', { name: 'Save protected credential' }).click();
   await expect(page.getByLabel('Protected MCP credential')).toHaveValue('');
   expect(await page.locator('body').textContent()).not.toContain('synthetic-protected-value');
-  expect(received.map(input => input.operation)).toEqual(['setting', 'test', 'install', 'credential']);
-  expect(received[0]).toMatchObject({ scope: 'session', key: 'reasoning', value: 'high' });
-  expect(received[3]).toMatchObject({ name: 'fixture-server', envVar: 'FIXTURE_KEY', value: 'synthetic-protected-value' });
+  expect(received.map(input => input.operation)).toEqual(['enabled', 'enabled', 'setting', 'test', 'install', 'credential']);
+  expect(received[0]).toMatchObject({ operation: 'enabled', name: 'fixture-server', enabled: false, confirmed: true });
+  expect(received[2]).toMatchObject({ scope: 'session', key: 'reasoning', value: 'high' });
+  expect(received[5]).toMatchObject({ name: 'fixture-server', envVar: 'FIXTURE_KEY', value: 'synthetic-protected-value' });
   await page.getByLabel('Setting key', { exact: true }).click(); await page.getByRole('option', { name: 'Speed tier', exact: true }).click();
   for (const [scope, label] of [['session', 'This chat'], ['profile', 'Profile defaults']]) {
     await page.getByLabel('Setting scope', { exact: true }).click(); await page.getByRole('option', { name: label, exact: true }).click();
@@ -82,7 +89,7 @@ try {
   await expect(page.getByText('fixture-server', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Reload MCP for live sessions' }).click();
   await expect(page.getByText('Hermes reloaded MCP for its live sessions.')).toBeVisible();
-  expect(received.map(input => input.operation)).toEqual(['setting', 'test', 'install', 'credential', 'setting', 'setting', 'setting', 'setting', 'test', 'test', 'test', 'remove', 'reload']);
+  expect(received.map(input => input.operation)).toEqual(['enabled', 'enabled', 'setting', 'test', 'install', 'credential', 'setting', 'setting', 'setting', 'setting', 'test', 'test', 'test', 'remove', 'reload']);
   const countBeforePending = received.length;
   await page.evaluate(() => window.fixtureSetRunning(true));
   for (const name of ['Apply setting', 'Install preset', 'Save protected credential', 'Reload MCP for live sessions']) {
