@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { APICallError, RetryError } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
@@ -18,8 +19,8 @@ describe("native error boundary", () => {
     expect(text).not.toContain(privateText);
     const record = log.mock.calls[0][1] as { reference: string };
     expect(text).toContain(record.reference);
-    expect(JSON.stringify(log.mock.calls)).not.toContain("arbitrary-fixture-secret");
-    expect(JSON.stringify(log.mock.calls)).not.toContain("private.fixture.invalid");
+    expect(inspect(log.mock.calls)).not.toContain("arbitrary-fixture-secret");
+    expect(inspect(log.mock.calls)).not.toContain("private.fixture.invalid");
     expect(JSON.stringify(log.mock.calls).length).toBeLessThan(200);
   });
   it("preserves typed connect, quota and provider guidance across retries", () => {

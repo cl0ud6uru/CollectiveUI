@@ -1,3 +1,4 @@
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import type { ToolUIPart, UIMessageChunk } from "ai";
 import { and, eq } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
@@ -80,6 +81,6 @@ export async function answerTaskApproval(p: Principal, conversationId: string, a
     return { run: queued, enqueue: true };
   });
   // A lost queue delivery is recovered from this committed queued row by the ordinary sweeper.
-  if (result.enqueue) await enqueueRun(result.run).catch(err => console.warn("[tasks] approval continuation dispatch delayed", err));
+  if (result.enqueue) await enqueueRun(result.run).catch(err => nativeErrorText(err));
   return { accepted: true, runId: result.run.id, status: result.run.status };
 }

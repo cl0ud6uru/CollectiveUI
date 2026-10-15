@@ -1,14 +1,15 @@
 /**
  * Workspace tools (P5): commands and file operations in the acting person's own sandbox. Output is cleaned and capped
  * inside `execute`, before it is streamed, stored or shown, so every copy (browser, message parts, tool_calls, later
- * replays) is bounded and has secrets masked. Failures are results, not throws, so the model and the person see the
- * real message.
+ * replays) is bounded and has secrets masked. Failures are results, not throws; their messages pass through the
+ * same typed/generic error boundary as streamed errors.
  *
  * Only workspace_bash runs a shell. The read-only tools use sandboxd's argv-only helpers.
  */
 import { createHash } from "node:crypto";
 import { tool } from "ai";
 import { z } from "zod";
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import { SandboxError } from "@/lib/sandbox/client";
 import { artifactLink } from "@/lib/chat/workspace-artifacts";
 import { capHeadTail, cleanText, isHardDenied, looksBinary } from "@/lib/sandbox/policy";
@@ -24,9 +25,9 @@ export const execIdForToolCall = (toolCallId: string) => createHash("sha256").up
 
 export type Failure = { ok: false; reason: string; message: string };
 
+const FAILURE_REASONS = new Set(["unauthorized", "bad_request", "outside_workspace", "not_found", "too_large", "isolation_unavailable", "busy", "capacity", "image_missing", "docker_unavailable", "internal", "unreachable", "not_configured", "timeout", "protocol"]);
 function failure(err: unknown): Failure {
-  if (err instanceof SandboxError) return { ok: false, reason: err.code, message: err.message };
-  return { ok: false, reason: "error", message: cleanText(err instanceof Error ? err.message : String(err)).slice(0, 500) };
+  return { ok: false, reason: err instanceof SandboxError && FAILURE_REASONS.has(err.code) ? err.code : "error", message: nativeErrorText(err) };
 }
 
 export type BashOutput =

@@ -1,3 +1,4 @@
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import { and, asc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { UIMessageChunk } from "ai";
 import { db, type Tx } from "@/db";
@@ -170,10 +171,10 @@ export async function reconcileAsyncParent(parentId: string): Promise<void> {
     const { afterFinishedFromLog } = await import("@/lib/runs/sweeper");
     await afterFinishedFromLog(outcome.finished, outcome.finished.run.error ?? "Stopped.");
   } else if ("queued" in outcome) {
-    for (const run of outcome.queued ?? []) await enqueueRun(run).catch(err => console.warn("[tasks] dispatch delayed", err));
+    for (const run of outcome.queued ?? []) await enqueueRun(run).catch(err => nativeErrorText(err));
   } else {
     await logToolCalls({ runId: outcome.resumed.id, conversationId: outcome.resumed.conversationId, userId: outcome.resumed.userId, botId: outcome.resumed.botId }, outcome.message).catch(() => {});
-    if (outcome.resumed.status === "queued") await enqueueRun(outcome.resumed).catch(err => console.warn("[tasks] parent continuation dispatch delayed", err));
+    if (outcome.resumed.status === "queued") await enqueueRun(outcome.resumed).catch(err => nativeErrorText(err));
     else {
       const { afterRunTransition } = await import("@/lib/runs/hooks");
       await afterRunTransition(outcome.resumed, "waiting", outcome.message);
@@ -215,6 +216,6 @@ export async function reconcileAsyncTasks(): Promise<number> {
   });
   const parents = await db.select({ id: agentRuns.id }).from(agentRuns).where(eq(agentRuns.status, "waiting_tasks"))
     .orderBy(asc(agentRuns.updatedAt), asc(agentRuns.id)).limit(100);
-  for (const parent of parents) await reconcileAsyncParent(parent.id).catch(err => console.error(`[tasks] reconcile ${parent.id}`, err));
+  for (const parent of parents) await reconcileAsyncParent(parent.id).catch(err => nativeErrorText(err));
   return parents.length + finished.length;
 }

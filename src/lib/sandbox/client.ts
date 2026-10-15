@@ -35,6 +35,11 @@ const MESSAGES: Partial<Record<ClientErrorCode, string>> = {
   unauthorized: "The portal couldn't authenticate to the workspace service.",
 };
 
+/** Application-owned guidance only; never reflect an upstream message for an unknown code. */
+export function sandboxErrorGuidance(code: ClientErrorCode): string | undefined {
+  return Object.hasOwn(MESSAGES, code) ? MESSAGES[code] : undefined;
+}
+
 export class SandboxError extends Error {
   readonly code: ClientErrorCode;
   readonly status: number;

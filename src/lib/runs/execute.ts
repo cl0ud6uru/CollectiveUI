@@ -412,7 +412,7 @@ async function supersedeWaiting(run: AgentRun, app: AiApp) {
  */
 async function failSetup(run: AgentRun, holder: string, err: unknown) {
   // HttpErrors here come from local setup authorization and lifecycle checks.
-  const text = nativeErrorText(err, err instanceof HttpError ? err.message : undefined);
+  const text = nativeErrorText(err, err instanceof HttpError && err.constructor === HttpError ? err.message : undefined);
   const fenced = await withRunFence(run.id, holder, async (tx) => {
     let message: PortalUIMessage | null = null;
     const closing: UIMessageChunk[] = [];
