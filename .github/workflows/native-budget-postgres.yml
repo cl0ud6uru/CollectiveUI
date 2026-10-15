@@ -30,9 +30,16 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - name: Prove target guards without database imports
-        run: npx vitest run --project unit tests/unit/native-budget-disposable-database.test.ts
+        run: npx vitest run --project unit tests/unit/native-budget-disposable-database.test.ts tests/unit/architect-draft-disposable-database.test.ts
       - name: Require actual multiprocess locks, migration upgrades, group and worker approval paths
         env:
           NATIVE_BUDGET_POSTGRES_PROOF: '1'
           NATIVE_BUDGET_POSTGRES_TEST_URL: postgres://native_budget_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_native_budget_proof_test
         run: npx vitest run --project integration tests/integration/native-budget-postgres.test.ts --maxWorkers=1
+      - name: Create isolated Architect draft concurrency database
+        run: PGPASSWORD=synthetic-fixture-only psql -h 127.0.0.1 -U native_budget_fixture -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE collective_architect_draft_proof_test'
+      - name: Require same-admin provider draft lock contention on PostgreSQL
+        env:
+          ARCHITECT_DRAFT_POSTGRES_PROOF: '1'
+          ARCHITECT_DRAFT_POSTGRES_TEST_URL: postgres://native_budget_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_architect_draft_proof_test
+        run: npx vitest run --project integration tests/integration/architect-provider-draft-postgres.test.ts --maxWorkers=1
