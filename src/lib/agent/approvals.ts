@@ -19,7 +19,8 @@ export type ApprovalDecisionInput = {
 };
 
 const ADMIN_WRITE_TOOLS = new Set([
-  "admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools",
+  "admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills",
+  "admin_update_provider_connection", "admin_test_provider_connection",
 ]);
 
 /**

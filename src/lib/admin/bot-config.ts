@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { z } from "zod";
 import { db, type Tx } from "@/db";
-import { aiApps, botAccess, botDelegates, botTools, botUserAccess, bots, codexBotConfigs, providerConnections } from "@/db/schema";
+import { aiApps, botAccess, botDelegates, botTools, botUserAccess, bots, codexBotConfigs, providerConnections, skills } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { HttpError } from "@/lib/authz";
 import { auditVia } from "@/lib/audit";
@@ -25,6 +25,12 @@ export const architectBotUpdateInput = z.object({
   instructions: z.string().max(20000).nullable().optional(), boundaries: z.string().max(5000).nullable().optional(),
 }).strict().refine(x => [x.name, x.appId, x.label, x.description, x.instructions, x.boundaries].some(v => v !== undefined), "Choose at least one bot field to update.");
 export const architectBotToolsInput = z.object({ botId: z.string().min(1).max(128), expectedRevision: z.number().int().min(1), tools: z.array(toolGroup).max(20) }).strict();
+export const architectBotSkillsInput = z.object({
+  botId: z.string().min(1).max(128), expectedRevision: z.number().int().min(1),
+  attachSkillIds: z.array(z.string().min(1).max(128)).max(50).default([]), detachSkillIds: z.array(z.string().min(1).max(128)).max(50).default([]),
+}).strict().refine(input => input.attachSkillIds.length + input.detachSkillIds.length > 0, "Choose skills to attach or detach.")
+  .refine(input => new Set([...input.attachSkillIds, ...input.detachSkillIds]).size === input.attachSkillIds.length + input.detachSkillIds.length,
+    "Each skill can appear only once and cannot be attached and detached in the same call.");
 const via = (ctx: AgentCtx) => ({ agent: "architect" as const, botId: ctx.bot!.id });
 const checkAbort = (signal?: AbortSignal) => signal?.throwIfAborted();
 
@@ -154,5 +160,54 @@ export async function assignArchitectBotTools(ctx: AgentCtx, _actor: Principal, 
     checkAbort(signal);
     return { status: "verified" as const, bot: { id: row.id, name: row.name, revision: saved.bot.revision },
       tools: saved.tools.map(t => ({ group: t.key, approval: t.approval })) };
+  });
+}
+
+/** Move only the caller-owned skill rows between their shared library and one of their ordinary bots. */
+export async function assignArchitectBotSkills(ctx: AgentCtx, _actor: Principal, raw: unknown, signal?: AbortSignal) {
+  const input = architectBotSkillsInput.parse(raw);
+  return db.transaction(async tx => {
+    const fresh = await prepareWrite(ctx, tx);
+    const { row } = await assertOrdinaryBot(tx, input.botId, input.expectedRevision);
+    if (row.ownerId !== fresh.user.id) throw new HttpError(403, "Skills can be assigned only to a bot you own.");
+    const [enabled] = await tx.select({ botId: botTools.botId }).from(botTools)
+      .where(and(eq(botTools.botId, row.id), eq(botTools.toolKey, "skills"))).limit(1);
+    if (!enabled) throw new HttpError(409, "Enable the Skills tool group first, then read the bot again.");
+
+    const toAttach = input.attachSkillIds.length
+      ? await tx.select().from(skills).where(and(eq(skills.ownerId, fresh.user.id), inArray(skills.id, input.attachSkillIds), or(isNull(skills.botId), eq(skills.botId, row.id)))).for("update")
+      : [];
+    const toDetach = input.detachSkillIds.length
+      ? await tx.select().from(skills).where(and(eq(skills.ownerId, fresh.user.id), eq(skills.botId, row.id), inArray(skills.id, input.detachSkillIds))).for("update")
+      : [];
+    if (toAttach.length !== input.attachSkillIds.length || toDetach.length !== input.detachSkillIds.length)
+      throw new HttpError(409, "A selected skill is missing, belongs to another owner, or is assigned to another bot.");
+
+    checkAbort(signal);
+    const [savedBot] = await tx.update(bots).set({ revision: row.revision + 1, publishedRevision: null, publishedConfigHash: null, updatedAt: new Date() })
+      .where(and(eq(bots.id, row.id), eq(bots.revision, input.expectedRevision))).returning();
+    if (!savedBot) throw new HttpError(409, "Bot configuration changed. Read it again and request fresh approval.");
+    for (const skill of toAttach.filter(item => item.botId === null)) {
+      const [saved] = await tx.update(skills).set({ botId: row.id, version: skill.version + 1, updatedAt: new Date() })
+        .where(and(eq(skills.id, skill.id), eq(skills.ownerId, fresh.user.id), isNull(skills.botId), eq(skills.version, skill.version))).returning();
+      if (!saved || saved.botId !== row.id) throw new HttpError(409, "Skill assignment could not be verified.");
+    }
+    for (const skill of toDetach) {
+      const [saved] = await tx.update(skills).set({ botId: null, version: skill.version + 1, updatedAt: new Date() })
+        .where(and(eq(skills.id, skill.id), eq(skills.ownerId, fresh.user.id), eq(skills.botId, row.id), eq(skills.version, skill.version))).returning();
+      if (!saved || saved.botId !== null) throw new HttpError(409, "Skill assignment could not be verified.");
+    }
+    const assignments = await tx.select({ id: skills.id, name: skills.name, description: skills.description, version: skills.version, botId: skills.botId })
+      .from(skills).where(and(eq(skills.ownerId, fresh.user.id), or(eq(skills.botId, row.id), isNull(skills.botId)))).orderBy(skills.name);
+    if (input.attachSkillIds.some(id => !assignments.some(skill => skill.id === id && skill.botId === row.id)) ||
+      input.detachSkillIds.some(id => !assignments.some(skill => skill.id === id && skill.botId === null)))
+      throw new HttpError(409, "Skill assignment could not be verified.");
+    checkAbort(signal);
+    await auditVia(fresh.user.id, via(ctx), "architect.bot.skills.update", row.id,
+      { revision: savedBot.revision, attached: input.attachSkillIds, detached: input.detachSkillIds }, tx);
+    checkAbort(signal);
+    return { status: "verified" as const, bot: { id: row.id, name: row.name, revision: savedBot.revision },
+      skills: assignments.map(skill => ({ id: skill.id, name: skill.name, description: skill.description, version: skill.version,
+        scope: skill.botId === row.id ? "bot" as const : "shared" as const })) };
   });
 }

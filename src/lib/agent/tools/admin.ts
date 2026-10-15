@@ -6,7 +6,8 @@ import { secretSafe } from "@/lib/admin/secret-safe";
 import type { AgentCtx, ToolEntry } from "../types";
 import { changeBotStatus } from "@/lib/admin/bot-status";
 import { authorizeArchitectCall, lockArchitectActor, runArchitectCall } from "./admin-guard";
-import { architectBotCreateInput, architectBotToolsInput, architectBotUpdateInput, assignArchitectBotTools, createArchitectBot, updateArchitectBot } from "@/lib/admin/bot-config";
+import { architectBotCreateInput, architectBotSkillsInput, architectBotToolsInput, architectBotUpdateInput, assignArchitectBotSkills, assignArchitectBotTools, createArchitectBot, updateArchitectBot } from "@/lib/admin/bot-config";
+import { architectProviderConnectionTestInput, architectProviderConnectionUpdateInput, testArchitectProviderConnection, updateArchitectProviderConnection } from "@/lib/admin/architect-connections";
 
 /** The Architect's tool group key (never stored in bot_tools: the tools follow the installation receipt). */
 export const ADMIN_TOOL_KEY = "admin";
@@ -57,6 +58,21 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
       description: "Replace an ordinary caller bot's built-in tool-group assignments, including Skills. Read admin_get_bot first and pass its exact revision. Each selected group and approval mode requires approval; MCP assignments are preserved and cannot be edited here. Returns verified saved state.",
       inputSchema: architectBotToolsInput,
       execute: guarded("admin_assign_bot_tools", (p, i: z.output<typeof architectBotToolsInput>, signal) => assignArchitectBotTools(ctx, p, i, signal)),
+    }) },
+    { name: "admin_assign_bot_skills", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Move skills you own between your shared skill library and one of your ordinary caller bots. Read admin_get_bot first and pass its exact revision. This changes whether the skill is available to all your bots or only this bot; the Skills tool group must already be enabled. It preserves bot audiences, tool groups and MCP assignments. Always requires exact per-call approval.",
+      inputSchema: architectBotSkillsInput,
+      execute: guarded("admin_assign_bot_skills", (p, i: z.output<typeof architectBotSkillsInput>, signal) => assignArchitectBotSkills(ctx, p, i, signal)),
+    }) },
+    { name: "admin_update_provider_connection", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Update only the display name or enabled state of an existing saved provider connection. Read admin_list_connections first and pass its exact updatedAt value. Provider, endpoint, billing target and credential are protected and unchanged. Always requires exact per-call approval.",
+      inputSchema: architectProviderConnectionUpdateInput,
+      execute: guarded("admin_update_provider_connection", (p, i: z.output<typeof architectProviderConnectionUpdateInput>, signal) => updateArchitectProviderConnection(ctx, p, i, signal)),
+    }) },
+    { name: "admin_test_provider_connection", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
+      description: "Test an enabled existing saved provider connection using only its stored credential and a metadata-only endpoint check. Read admin_list_connections first and pass its exact updatedAt value. Does not accept or reveal a credential, send a model prompt, or generate content. Always requires exact per-call approval.",
+      inputSchema: architectProviderConnectionTestInput,
+      execute: guarded("admin_test_provider_connection", (p, i: z.output<typeof architectProviderConnectionTestInput>, signal) => testArchitectProviderConnection(ctx, p, i, signal)),
     }) },
     entry("admin_list_bots", tool({
       description: "List bots: owner, model, visibility, tool groups, routines, and whether each is built in (The Architect, Office Bot) or the default coordinator.",

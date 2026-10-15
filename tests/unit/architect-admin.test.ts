@@ -32,6 +32,7 @@ import { getAccessibleBot, listAccessibleBots } from "@/lib/authz";
 import { resolveApproval } from "@/lib/agent/approvals";
 import { isGrantable } from "@/lib/agent/tool-names";
 import { applyApprovalDecisions, decisionsFromClientParts } from "@/lib/agent/approval-merge";
+import { sealProviderCredential } from "@/lib/llm/provider-connections";
 
 let admin: Principal, member: Principal, ctx: AgentCtx;
 const secret = "arbitrary-secret-KEEP-PRIVATE";
@@ -124,10 +125,10 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(result.failedRuns[0]).toMatchObject({ hasError: true });
     expect(JSON.stringify(result)).not.toContain(secret);
   });
-  it("offers all eleven reads and the approval-gated write only to a fresh admin", async () => {
+  it("offers read tools and approval-gated writes only to a fresh admin", async () => {
     const set = await buildToolset(ctx);
     try {
-      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(15);
+      expect(set.entries.filter(e => e.key === "admin")).toHaveLength(18);
       expect(set.approval({ toolCall: { toolName: "admin_set_bot_enabled", input: { botId: "target", enabled: false, expectedRevision: 1 } } })).toBe("user-approval");
       expect(set.approval({ toolCall: { toolName: "admin_get_bot", input: { botId: "target" } } })).toBeUndefined();
     } finally { await set.close(); }
@@ -167,8 +168,8 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
   it("always asks for exact write approval, ignoring grants and auto modes", () => {
-    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools"].includes(e.name));
-    expect(writes).toHaveLength(4);
+    const writes = adminTools(ctx).filter(e => ["admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills", "admin_update_provider_connection", "admin_test_provider_connection"].includes(e.name));
+    expect(writes).toHaveLength(7);
     for (const write of writes) {
       expect(write).toMatchObject({ sensitive: true, grantable: false });
       expect(isGrantable(write.name)).toBe(false);
@@ -223,6 +224,73 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     await expect(execute("admin_create_bot", { name: "Cancelled helper", appId: "model" }, signal)).rejects.toThrow("could not be verified");
     expect((await db.select().from(s.bots)).some(bot => bot.name === "Cancelled helper")).toBe(false);
     expect((await db.select().from(s.auditLog)).some(row => row.action === "architect.bot.create")).toBe(false);
+  });
+  it("assigns caller-owned skills with exact bot revisions without replacing audiences or MCP assignments", async () => {
+    const created = await execute("admin_create_bot", { name: "Skill helper", appId: "model" }) as { bot: { id: string; revision: number } };
+    await execute("admin_assign_bot_tools", { botId: created.bot.id, expectedRevision: 1, tools: [{ key: "skills", approval: "ask" }] });
+    await db.insert(s.groups).values({ id: "reviewers", name: "Reviewers" });
+    await db.update(s.bots).set({ visibility: "groups" }).where(eq(s.bots.id, created.bot.id));
+    await db.insert(s.botAccess).values({ botId: created.bot.id, groupId: "reviewers" });
+    await db.insert(s.botTools).values({ botId: created.bot.id, toolKey: "mcp:server", approval: "ask", config: { tools: ["lookup"] } });
+    const [skill] = await db.insert(s.skills).values({ ownerId: admin.user.id, name: "Review policy", slug: "review-policy", description: "Review guidance", instructions: "Check source evidence." }).returning();
+    const attached = await execute("admin_assign_bot_skills", { botId: created.bot.id, expectedRevision: 2, attachSkillIds: [skill.id] }) as { status: string; bot: { revision: number }; skills: { id: string; scope: string }[] };
+    expect(attached).toMatchObject({ status: "verified", bot: { revision: 3 }, skills: [{ id: skill.id, scope: "bot" }] });
+    const [assigned] = await db.select().from(s.skills).where(eq(s.skills.id, skill.id));
+    expect(assigned).toMatchObject({ ownerId: admin.user.id, botId: created.bot.id, version: 2 });
+    expect(await db.select().from(s.botAccess).where(eq(s.botAccess.botId, created.bot.id))).toMatchObject([{ groupId: "reviewers" }]);
+    expect((await db.select().from(s.botTools).where(eq(s.botTools.botId, created.bot.id))).map(row => row.toolKey).sort()).toEqual(["mcp:server", "skills"]);
+    await execute("admin_assign_bot_skills", { botId: created.bot.id, expectedRevision: 3, detachSkillIds: [skill.id] });
+    const [shared] = await db.select().from(s.skills).where(eq(s.skills.id, skill.id));
+    expect(shared).toMatchObject({ botId: null, version: 3 });
+    await expect(execute("admin_assign_bot_skills", { botId: "target", expectedRevision: 1, attachSkillIds: [skill.id] })).rejects.toThrow("could not be verified");
+    expect((await db.select().from(s.auditLog)).filter(row => row.action === "architect.bot.skills.update")).toHaveLength(2);
+  });
+  it("updates provider connection metadata with CAS while preserving its credential and destination", async () => {
+    const credentialEnc = sealProviderCredential("provider", secret);
+    await db.insert(s.providerConnections).values({ id: "provider", name: "Shared API", provider: "openai", baseUrl: null,
+      organization: "org-a", project: "proj-a", credentialEnc, createdBy: admin.user.id });
+    const [before] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
+    const updated = await execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: before.updatedAt.toISOString(), name: "Production API", enabled: false }) as { status: string; connection: { name: string; enabled: boolean; baseUrl: string | null; hasCredential: boolean } };
+    expect(updated).toMatchObject({ status: "verified", connection: { name: "Production API", enabled: false, baseUrl: null, hasCredential: true } });
+    const [after] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
+    expect(after).toMatchObject({ credentialEnc, provider: "openai", baseUrl: null, organization: "org-a", project: "proj-a" });
+    expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+    await expect(execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: before.updatedAt.toISOString(), enabled: true })).rejects.toThrow("could not be verified");
+    expect((await db.select().from(s.auditLog)).filter(row => row.action === "architect.provider_connection.update")).toHaveLength(1);
+  });
+  it("tests a saved provider connection through a metadata endpoint and never returns its credential", async () => {
+    const credentialEnc = sealProviderCredential("provider", secret);
+    await db.insert(s.providerConnections).values({ id: "provider", name: "Shared API", provider: "openai", baseUrl: null, credentialEnc, createdBy: admin.user.id });
+    const [row] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).Authorization).toBe(`Bearer ${secret}`);
+      return new Response(JSON.stringify({ data: [{ id: "fixture-model" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const result = await execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: row.updatedAt.toISOString() });
+      expect(result).toMatchObject({ status: "verified", models: ["fixture-model"] });
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.test" && JSON.stringify(audit.details).includes('"modelsFound":1'))).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it("rolls back provider metadata and test audits when their transaction barriers are cancelled", async () => {
+    const credentialEnc = sealProviderCredential("provider", secret);
+    await db.insert(s.providerConnections).values({ id: "provider", name: "Shared API", provider: "openai", credentialEnc, createdBy: admin.user.id });
+    const [row] = await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider"));
+    let updateChecks = 0;
+    const updateSignal = { throwIfAborted: () => { if (++updateChecks === 4) throw new Error(secret); } } as unknown as AbortSignal;
+    await expect(execute("admin_update_provider_connection", { connectionId: "provider", expectedUpdatedAt: row.updatedAt.toISOString(), name: "Cancelled" }, updateSignal)).rejects.toThrow("could not be verified");
+    expect((await db.select().from(s.providerConnections).where(eq(s.providerConnections.id, "provider")))[0].name).toBe("Shared API");
+    expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.update")).toBe(false);
+
+    const controller = new AbortController();
+    vi.stubGlobal("fetch", async () => { controller.abort(); return new Response(JSON.stringify({ data: [] }), { status: 200 }); });
+    try {
+      await expect(execute("admin_test_provider_connection", { connectionId: "provider", expectedUpdatedAt: row.updatedAt.toISOString() }, controller.signal)).rejects.toThrow("could not be verified");
+      expect((await db.select().from(s.auditLog)).some(audit => audit.action === "architect.provider_connection.test")).toBe(false);
+    } finally { vi.unstubAllGlobals(); }
   });
   it("refuses stale approval, missing targets and missing revisions without mutation", async () => {
     await expect(execute("admin_set_bot_enabled", { botId: "target", enabled: false, expectedRevision: 9 })).rejects.toMatchObject({ status: 409 });
