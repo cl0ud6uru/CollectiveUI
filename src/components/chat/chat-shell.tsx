@@ -54,9 +54,21 @@ export function ChatShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelAnimationFrame(focusDrawer);
       document.removeEventListener("keydown", onKeyDown, true);
-      if (opener?.isConnected) requestAnimationFrame(() => opener.focus());
+      if (opener?.isConnected && !window.matchMedia("(min-width: 48rem)").matches) {
+        requestAnimationFrame(() => opener.focus());
+      }
     };
   }, [mobileOpen, setMobileOpen]);
+
+  useEffect(() => {
+    const desktop = window.matchMedia("(min-width: 48rem)");
+    const closeDrawerOnDesktop = () => {
+      if (desktop.matches) setMobileOpen(false);
+    };
+    closeDrawerOnDesktop();
+    desktop.addEventListener("change", closeDrawerOnDesktop);
+    return () => desktop.removeEventListener("change", closeDrawerOnDesktop);
+  }, [setMobileOpen]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

@@ -74,7 +74,23 @@ try {
   await dialog.getByRole('button',{name:'Close sidebar'}).click();
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
-  console.log('Responsive sidebar focus, Tab/Shift+Tab containment, Escape, explicit close, and focus restoration passed.');
+  await opener.click();
+  await expect(dialog).toBeVisible();
+  await page.setViewportSize({width:1280,height:900});
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('main')).toHaveJSProperty('inert',false);
+  await expect(page.locator('#start-side-chat')).toBeVisible();
+  await page.locator('#start-side-chat').focus();
+  await expect(page.locator('#start-side-chat')).toBeFocused();
+  await page.setViewportSize({width:590,height:900});
+  await expect(page.locator('main')).toHaveJSProperty('inert',false);
+  await opener.click();
+  await expect(dialog).toBeVisible();
+  await expect(close).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  console.log('Responsive sidebar focus containment, close/focus restoration, and desktop resize recovery passed.');
 } finally {
   await browser.close();
   await new Promise(resolve=>server.close(resolve));
