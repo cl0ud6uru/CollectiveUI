@@ -28,7 +28,8 @@ export async function startPinnedDashboard() {
         try {
           const ready = JSON.parse(line);
           if (typeof ready.startupError === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(ready.startupError) && typeof ready.missingModule === 'string' && /^([A-Za-z0-9_.]{1,120})?$/.test(ready.missingModule)) {
-            reject(new Error(`Pinned dashboard startup failed (${ready.startupError}${ready.missingModule ? `: ${ready.missingModule}` : ''})`)); return;
+            const site = typeof ready.startupSite === 'string' && /^[A-Za-z0-9_.:<>-]{1,160}$/.test(ready.startupSite) ? ` at ${ready.startupSite}` : '';
+            reject(new Error(`Pinned dashboard startup failed (${ready.startupError}${ready.missingModule ? `: ${ready.missingModule}` : ''})${site}`)); return;
           }
           if (ready.pin !== DASHBOARD_PIN || ready.runtimeVersion !== '0.21.5' || ready.desktopContract !== 8 || !Number.isInteger(ready.port) || ready.port < 1 || ready.port > 65535) throw new Error();
           resolve(ready.port);
