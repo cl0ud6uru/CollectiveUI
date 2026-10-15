@@ -18,6 +18,7 @@ import { buildInstructionSections, toModelInstructions } from "./instructions";
 import { memoryEnabled, selectMemories } from "./memory";
 import { hasPendingApproval, persistAssistantTurn, type PersistTurnInput } from "./persist";
 import { resolveAttachmentsForModel } from "./prepare";
+import { compactModelContext, resolveContextBudget } from "./context-budget";
 import { scrubForeignOpenAIMetadata } from "./replay";
 import { buildToolset } from "./toolset";
 import { slashInvokedSkill } from "./skill-lookup";
@@ -98,6 +99,10 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   const { delegatedAuthorityBinding, DelegationAuthorityChangedError } = await import("@/lib/delegation/authority");
   const authority = delegated ? await delegatedAuthorityBinding(ctx, true) : null;
   const toolset = await buildToolset(ctx);
+  let contextNotice: string | undefined;
+  let omittedContextTurns = 0;
+  let notifyContextNotice: ((message: string) => void) | undefined;
+  let sentContextNotice: string | undefined;
   const authorizeDispatch = async () => {
     if (!delegated) return;
     await delegated.authorize();
@@ -184,10 +189,12 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     // Sealed reasoning is only replayed to the app, model and account that produced it (see replay.ts).
     const modelHistory = scrubForeignOpenAIMetadata(withFiles, { appId: app.id, providerKind: app.provider, model: app.model, replayKey });
     const messages = await convertToModelMessages(modelHistory, { tools: toolset.tools, ignoreIncompleteToolCalls: true });
+    const contextBudget = resolveContextBudget(app.contextWindowTokens, app.maxTokens);
+    const instructions = toModelInstructions(sections, capabilities.instructionStyle);
     const maxSteps = native ? native.maxSteps - native.stepsUsed : bot ? Math.min(bot.maxSteps, toolSettings.maxStepsCap) : 1;
     const result = streamText({
       model,
-      instructions: toModelInstructions(sections, capabilities.instructionStyle),
+      instructions,
       messages,
       tools: toolset.tools,
       toolApproval: toolset.approval,
@@ -196,15 +203,30 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       stopWhen: [isStepCount(maxSteps), () => !!native?.taskIds.length],
       ...(native ? { onStepEnd: () => { native.stepsUsed++; } } : {}),
       temperature: app.temperature ?? undefined,
-      maxOutputTokens: app.maxTokens ?? undefined,
+      maxOutputTokens: contextBudget.outputReserveTokens,
       timeout: toolset.timeout,
       abortSignal: opts.abortSignal,
       ...(toolset.nativeSearch ? { maxRetries: 0 } : {}),
-      ...(delegated ? { maxRetries: 0, prepareStep: async () => { await authorizeDispatch(); return {}; } } : {}),
-      // Both independent visibility filters apply only to the first planning step; later steps restore all tools.
-      ...(!delegated && firstTools ? { prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
-        activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools),
-      }) } : {}),
+      ...(delegated ? { maxRetries: 0 } : {}),
+      // Compose context management with delegated re-authorization and the existing first-step tool visibility.
+      // prepareStep runs before every model request, including every tool continuation.
+      prepareStep: async ({ stepNumber, messages: stepMessages }) => {
+        await authorizeDispatch();
+        const bounded = await compactModelContext(stepMessages, {
+          inputBudgetTokens: contextBudget.inputBudgetTokens,
+          instructions,
+          tools: toolset.tools,
+          omittedTurnsBefore: omittedContextTurns,
+        });
+        omittedContextTurns = bounded.omittedTurns;
+        contextNotice = bounded.notice;
+        if (contextNotice) notifyContextNotice?.(contextNotice);
+        return {
+          messages: bounded.messages,
+          instructions: bounded.instructions,
+          ...(!delegated && firstTools ? { activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools) } : {}),
+        };
+      },
     });
     return { result, userText, billing, replayKey };
   };
@@ -247,6 +269,12 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     },
     execute: async ({ writer }) => {
       for (const w of toolset.warnings) writer.write({ type: "data-notice", data: { message: w }, transient: true });
+      notifyContextNotice = (message) => {
+        if (message === sentContextNotice) return;
+        sentContextNotice = message;
+        writer.write({ type: "data-notice", data: { message }, transient: true });
+      };
+      if (contextNotice) notifyContextNotice(contextNotice);
 
       const titlePromise = isFirstTurn
         ? (async () => {

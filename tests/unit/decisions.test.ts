@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DECISIONS_DEFAULTS, decisionsCapability, decisionsSettingsSchema } from "@/lib/decisions-policy";
+import { DECISIONS_DEFAULTS, DECISIONS_OUTPUT_TOKENS, decisionsCapability, decisionsSettingsSchema } from "@/lib/decisions-policy";
 import type { ProviderContext } from "@/lib/llm/providers/types";
 vi.mock("server-only", () => ({}));
 import { requestDecision, type DecisionQuestion } from "@/lib/llm/providers/decisions";
@@ -28,13 +28,15 @@ describe("Decisions supported configuration and wire contract", () => {
     expect(decisionsCapability({ ...app, credentialMode: "user" })).toBe(false);
     expect(decisionsCapability({ ...app, baseUrl: "https://proxy.example/v1" })).toBe(false);
     expect(decisionsSettingsSchema.safeParse({ queenRouting: "true" }).success).toBe(false);
+    expect(decisionsSettingsSchema.safeParse({ contextWindowTokens: 4096, maxOutputTokens: 4096 }).success).toBe(false);
+    expect(decisionsSettingsSchema.safeParse({ contextWindowTokens: 16_384, maxOutputTokens: 2_048 }).success).toBe(true);
   });
   it("sends the documented Decisions body and existing server billing selectors once", async () => {
     const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
       expect(init).toMatchObject({ method: "POST", redirect: "error", headers: {
         Authorization: "Bearer fixture-key", "OpenAI-Organization": "org-fixture", "OpenAI-Project": "project-fixture",
       } });
-      expect(JSON.parse(String(init?.body))).toEqual({ model: "gpt-6-luna", input: "fixture request", questions, max_output_tokens: 1024 });
+      expect(JSON.parse(String(init?.body))).toEqual({ model: "gpt-6-luna", input: "fixture request", questions, max_output_tokens: DECISIONS_OUTPUT_TOKENS });
       return Response.json(data());
     });
     expect(await requestDecision(provider(fetcher), "fixture request", questions)).toMatchObject({ status: "ok", inputTokens: 123 });
@@ -62,6 +64,28 @@ describe("Decisions supported configuration and wire contract", () => {
     expect((await requestDecision(provider(fetcher), "x".repeat(6001), questions)).status).toBe("invalid");
     await requestDecision(provider(fetcher), "request", questions, { signal: AbortSignal.abort() });
     expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("rejects question payloads that exceed the fixed-model input budget before dispatch", async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json(data()));
+    const oversizedQuestions: DecisionQuestion[] = Array.from({ length: 12 }, (_, i) => ({
+      type: "predicate", name: `skill_${i}`, instructions: "Optional skill description. ".repeat(150),
+    }));
+    expect((await requestDecision(provider(fetcher), "Read the report", oversizedQuestions)).status).toBe("invalid");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("uses explicit fixed-model context and output limits", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ max_output_tokens: 512 });
+      return Response.json(data());
+    });
+    expect((await requestDecision(provider(fetcher), "request", questions, {
+      contextWindowTokens: 4096, maxOutputTokens: 512,
+    })).status).toBe("ok");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect((await requestDecision(provider(fetcher), "request", questions, {
+      contextWindowTokens: 1024, maxOutputTokens: 512,
+    })).status).toBe("invalid");
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it("bounds a hanging provider, makes no retry, and rejects oversized responses", async () => {
     const fetcher = vi.fn<typeof fetch>(() => new Promise(() => {}));

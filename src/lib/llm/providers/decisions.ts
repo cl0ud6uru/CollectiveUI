@@ -1,6 +1,6 @@
 // Used by the native Node worker as well as web server code; never import into a client component.
 import { z } from "zod";
-import { DECISIONS_BASE, DECISIONS_MODEL } from "@/lib/decisions-policy";
+import { DECISIONS_BASE, DECISIONS_CONTEXT_WINDOW_TOKENS, DECISIONS_MODEL, DECISIONS_OUTPUT_TOKENS } from "@/lib/decisions-policy";
 import type { ProviderContext } from "./types";
 import { mapUsage, recordUsage, type UsageContext } from "../usage";
 import { nativeRunBudgetPolicy, NativeRunBudgetError } from "../run-budget-policy";
@@ -27,8 +27,8 @@ export async function requestDecision(ctx: ProviderContext, input: string, quest
       (ctx.baseUrl && ctx.baseUrl.replace(/\/$/, "") !== DECISIONS_BASE)) return { status: "unavailable" };
   if (!input.trim() || input.length > 6000 || !questions.length || questions.length > 32) return { status: "invalid" };
   const config = ctx.config as { organization?: string; project?: string };
-  const contextWindowTokens = options.contextWindowTokens ?? 16_384;
-  const maxOutputTokens = options.maxOutputTokens ?? 1_024;
+  const contextWindowTokens = options.contextWindowTokens ?? DECISIONS_CONTEXT_WINDOW_TOKENS;
+  const maxOutputTokens = options.maxOutputTokens ?? DECISIONS_OUTPUT_TOKENS;
   if (!Number.isSafeInteger(contextWindowTokens) || !Number.isSafeInteger(maxOutputTokens) ||
       contextWindowTokens < 1 || maxOutputTokens < 1 || maxOutputTokens >= contextWindowTokens ||
       contextWindowTokens - maxOutputTokens < 1_024) return { status: "invalid" };
