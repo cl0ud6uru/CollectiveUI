@@ -106,7 +106,9 @@ export function memoryTools(ctx: AgentCtx): ToolEntry[] {
 
           abortSignal?.throwIfAborted();
           await changeLearning(ctx.principal, learning.id, learning.version, {
-            content: { ...learning.content, description: fact, instructions: fact },
+            // `learnedPreferences` recalls boundaries alongside description and instructions.
+            // A full correction supersedes the old preference, including any stale boundary.
+            content: { ...learning.content, description: fact, instructions: fact, boundaries: "" },
           }, abortSignal);
           unchangedForgetIds.delete(id);
           return {

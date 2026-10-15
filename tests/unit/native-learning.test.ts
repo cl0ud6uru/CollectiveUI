@@ -169,7 +169,7 @@ describe("native learning with real PostgreSQL migrations", () => {
   it("corrects ordinary memory and an approved personal preference by distinct IDs, retaining learned history", async () => {
     const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
     const ordinaryContent = "Use a short update summary.";
-    const preferenceContent = { ...content, name: "Report format", description: "Use my report layout.", instructions: "Lead with a summary." };
+    const preferenceContent = { ...content, name: "Report format", description: "Use my report layout.", instructions: "Lead with a summary.", boundaries: "Always use two numbered summary bullets." };
     const [ordinary] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: ordinaryContent, embedding: [0.1, 0.2] }).returning();
     const [preference] = await db.insert(schema.botLearnings).values({
       botId: "bot", userId: "member", topic: "report-format", kind: "preference", status: "active",
@@ -199,16 +199,18 @@ describe("native learning with real PostgreSQL migrations", () => {
       .toEqual({ content: "Lead with a concise executive summary.", embedding: [0.5, 0.25] });
     expect((await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.id, preference.id)))[0]).toMatchObject({
       userId: "member", botId: "bot", kind: "preference", status: "active", version: 2,
-      content: { ...preferenceContent, description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details." },
+      content: { ...preferenceContent, description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details.", boundaries: "" },
     });
     expect(await learningHistory(member, preference.id)).toMatchObject([
-      { version: 2, content: { description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details." } },
-      { version: 1, content: { description: "Use my report layout." } },
+      { version: 2, content: { description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details.", boundaries: "" } },
+      { version: 1, content: { description: "Use my report layout.", boundaries: "Always use two numbered summary bullets." } },
     ]);
-    expect(await selectMemories({ userId: "member", botId: "bot" })).toEqual(expect.arrayContaining([
+    const recalled = await selectMemories({ userId: "member", botId: "bot" });
+    expect(recalled).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: ordinary.id, content: "Lead with a concise executive summary." }),
       expect.objectContaining({ id: preference.id, content: expect.stringContaining("Use a concise executive summary before the details.") }),
     ]));
+    expect(recalled.find(entry => entry.id === preference.id)?.content).not.toContain("Always use two numbered summary bullets.");
 
     const [foreignPreference] = await db.insert(schema.botLearnings).values({
       botId: "bot", userId: "boss", topic: "private-layout", kind: "preference", status: "active",
