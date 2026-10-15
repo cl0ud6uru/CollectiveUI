@@ -37,6 +37,8 @@ The checked-in manifest marks each `imageRef` as `build_required` until a succes
 
 ## Checks
 
+`node tests/browser/admin-primary-contrast.mjs` renders the actual starter-catalog and Office Bot controls with production CSS in light and dark themes. Synthetic held actions verify pending labels, unavailable-model labels and disabled single-submit behavior without changing settings or starting a workspace.
+
 The sandbox test file always checks the manifest, digest-pinned base, profile capabilities, Linux target, lock file, helper reuse and first-start no-overwrite commands. Real image checks use the normal sandbox harness, which runs with a read-only root filesystem, dropped capabilities, a private persistent home volume and no network. Run them after building and recording the images:
 
 ```sh

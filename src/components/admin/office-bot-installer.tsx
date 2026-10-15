@@ -30,7 +30,7 @@ export function OfficeBotInstaller({ models, botId }: { models: { id: string; na
               {models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
             </select>
           </label>
-          <Button type="submit" disabled={pending || !appId}>{pending ? "Checking workspace…" : "Add Office Bot"}</Button>
+          <Button type="submit" className="disabled:bg-surface-2 disabled:text-muted disabled:opacity-100 disabled:ring-1 disabled:ring-border" disabled={pending || !appId}>{pending ? "Checking workspace…" : "Add Office Bot"}</Button>
         </form>
       )}
       {!botId && <p className="mt-2 text-xs text-muted">Requires a public company model with tools and the Office sandbox image. Existing workspace access and approvals apply.</p>}
