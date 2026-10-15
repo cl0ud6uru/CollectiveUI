@@ -184,6 +184,9 @@ jobs:
         run: |
           node tests/browser/remote-hermes-commands.mjs
           node tests/browser/remote-hermes-workspace.mjs
+          node tests/browser/remote-hermes-administration.mjs
+          node tests/browser/remote-hermes-operations.mjs
+          node tests/browser/remote-hermes-panel-navigation.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: bot-recent-use-screenshots
