@@ -186,7 +186,7 @@ export function WorkspaceTemplateCatalog({
                 <p className="text-xs text-muted">{enabledCapabilities.join(" and ")} · Starter: {profile.seedBundleKey} · network access: none.</p>
                 {exists
                   ? <p className="text-sm text-muted">{profile.templateName} is already in the catalog. Use its version controls below.</p>
-                  : <Button type="submit" disabled={pending}>
+                  : <Button type="submit" className="disabled:bg-surface-2 disabled:text-muted disabled:opacity-100 disabled:ring-1 disabled:ring-border" disabled={pending}>
                       {pending ? "Saving…" : `Create ${profile.templateName} draft`}
                     </Button>}
               </form>
