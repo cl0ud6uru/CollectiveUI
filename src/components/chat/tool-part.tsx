@@ -347,6 +347,18 @@ export function ToolPartView({
   const failed = part.state === "output-error";
   const denied = part.state === "output-denied";
   const output = part.state === "output-available" ? part.output : undefined;
+  const memoryResult = output && typeof output === "object" ? output as { status?: string; recordType?: string } : undefined;
+  const memoryDone = name === "forget" ? ({
+    forgotten: memoryResult?.recordType === "learned_preference" ? "Learned preference forgotten" : "Memory forgotten",
+    repeat_noop: "No change — same target already checked",
+    unsupported_pending: "No change — review pending preference",
+    not_found: "No matching memory changed",
+  } as Record<string, string>)[memoryResult?.status ?? ""] ?? d.done
+    : name === "correct_memory" ? ({
+      corrected: memoryResult?.recordType === "learned_preference" ? "Learned preference corrected" : "Memory corrected",
+      corrected_pending: "Correction saved for review",
+      not_found: "No matching memory changed",
+    } as Record<string, string>)[memoryResult?.status ?? ""] ?? d.done : d.done;
   const isDelegate = isDelegationTool(name);
   const artifact = workspaceArtifact(name, output);
   const preliminary = part.state === "output-available" && !!(part as { preliminary?: boolean }).preliminary;
@@ -365,7 +377,7 @@ export function ToolPartView({
       >
         {(running && !interrupted) || preliminaryRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : failed ? <AlertTriangle className="h-4 w-4 text-danger" /> : <Icon className="h-4 w-4" />}
         <span className={cn(running && !interrupted && "animate-pulse")}>
-          {denied ? `${d.done} — denied` : failed ? `${d.done} — failed` : interrupted ? `${d.running} — interrupted` : running || preliminaryRunning ? d.running : d.done}
+          {denied ? `${d.done} — denied` : failed ? `${d.done} — failed` : interrupted ? `${d.running} — interrupted` : running || preliminaryRunning ? d.running : memoryDone}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>

@@ -37,6 +37,7 @@ import { currentSkillsForTurn, renderSkill, skillTool } from "@/lib/agent/tools/
 import type { AgentCtx } from "@/lib/agent/types";
 import { findSkill, slashInvokedSkill } from "@/lib/agent/skill-lookup";
 import { buildToolset } from "@/lib/agent/toolset";
+import { memoryTools } from "@/lib/agent/tools/memory";
 import { toolShortlisting } from "@/lib/agent/tool-shortlisting";
 import { getSetting } from "@/lib/settings";
 import { AAD, encrypt } from "@/lib/crypto";
@@ -163,6 +164,102 @@ describe("native learning with real PostgreSQL migrations", () => {
     const [privateRow] = await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.userId, "member"));
     await expect(changeLearning(owner, privateRow.id, 1, { status: "archived" })).rejects.toMatchObject({ status: 403 });
     await expect(learningHistory(boss, privateRow.id)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("corrects ordinary memory and an approved personal preference by distinct IDs, retaining learned history", async () => {
+    const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
+    const ordinaryContent = "Use a short update summary.";
+    const preferenceContent = { ...content, name: "Report format", description: "Use my report layout.", instructions: "Lead with a summary." };
+    const [ordinary] = await db.insert(schema.memories).values({ userId: "member", botId: "bot", content: ordinaryContent }).returning();
+    const [preference] = await db.insert(schema.botLearnings).values({
+      botId: "bot", userId: "member", topic: "report-format", kind: "preference", status: "active",
+      content: preferenceContent, verification: "The user explicitly requested this format.", version: 1,
+    }).returning();
+    await db.insert(schema.botLearningRevisions).values({
+      learningId: preference.id, version: 1, status: "active", kind: "preference", content: preferenceContent,
+      verification: "The user explicitly requested this format.",
+    });
+    const ctx = { principal: member, bot, conversationId: "chat" } as AgentCtx;
+    const entries = memoryTools(ctx);
+    const correct = entries.find(entry => entry.name === "correct_memory")!.tool.execute!;
+    const args = { toolCallId: "correction", messages: [], context: undefined };
+
+    expect(await correct({ id: ordinary.id, fact: "Lead with a concise executive summary." }, args as never)).toMatchObject({
+      corrected: true, status: "corrected", recordType: "ordinary_memory",
+    });
+    expect(await correct({ id: preference.id, fact: "Use a concise executive summary before the details." }, args as never)).toMatchObject({
+      corrected: true, status: "corrected", recordType: "learned_preference",
+    });
+    expect((await db.select({ content: schema.memories.content }).from(schema.memories).where(eq(schema.memories.id, ordinary.id)))[0].content)
+      .toBe("Lead with a concise executive summary.");
+    expect((await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.id, preference.id)))[0]).toMatchObject({
+      userId: "member", botId: "bot", kind: "preference", status: "active", version: 2,
+      content: { ...preferenceContent, description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details." },
+    });
+    expect(await learningHistory(member, preference.id)).toMatchObject([
+      { version: 2, content: { description: "Use a concise executive summary before the details.", instructions: "Use a concise executive summary before the details." } },
+      { version: 1, content: { description: "Use my report layout." } },
+    ]);
+    expect(await selectMemories({ userId: "member", botId: "bot" })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: ordinary.id, content: "Lead with a concise executive summary." }),
+      expect.objectContaining({ id: preference.id, content: expect.stringContaining("Use a concise executive summary before the details.") }),
+    ]));
+
+    const [foreignPreference] = await db.insert(schema.botLearnings).values({
+      botId: "bot", userId: "boss", topic: "private-layout", kind: "preference", status: "active",
+      content: preferenceContent, verification: "Explicit preference.", version: 1,
+    }).returning();
+    expect(await correct({ id: foreignPreference.id, fact: "Unauthorized edit." }, args as never)).toMatchObject({ status: "not_found", corrected: false });
+    expect((await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.id, foreignPreference.id)))[0].content).toEqual(preferenceContent);
+  });
+
+  it("keeps the prior approved preference active when a correction is still pending", async () => {
+    const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
+    const approved = { ...content, description: "Approved short summaries." };
+    const pending = { ...content, description: "Proposed new summary format." };
+    const [row] = await db.insert(schema.botLearnings).values({
+      botId: "bot", userId: "member", topic: "summary-format", kind: "preference", status: "pending",
+      content: pending, verification: "User correction awaiting review.", version: 2,
+    }).returning();
+    await db.insert(schema.botLearningRevisions).values([
+      { learningId: row.id, version: 1, status: "active", kind: "preference", content: approved, verification: "Approved." },
+      { learningId: row.id, version: 2, status: "pending", kind: "preference", content: pending, verification: "Pending." },
+    ]);
+    const entries = memoryTools({ principal: member, bot, conversationId: "chat" } as AgentCtx);
+    const correct = entries.find(entry => entry.name === "correct_memory")!.tool.execute!;
+    expect(await correct({ id: row.id, fact: "Corrected summary still needs review." }, { toolCallId: "pending", messages: [], context: undefined } as never))
+      .toMatchObject({ status: "corrected_pending", corrected: true, recordType: "learned_preference" });
+    expect(await learnedPreferences("member", "bot")).toMatchObject([{ content: expect.stringContaining("Approved short summaries.") }]);
+    expect(await learningHistory(member, row.id)).toMatchObject([
+      { version: 3, content: { description: "Corrected summary still needs review.", instructions: "Corrected summary still needs review." } },
+      { version: 2, content: pending },
+      { version: 1, content: approved },
+    ]);
+  });
+
+  it("reports forget no-ops honestly, avoids repeating failed IDs, and archives only its owner's active bot preference", async () => {
+    const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, "bot"));
+    const ctx = { principal: member, bot, conversationId: "chat" } as AgentCtx;
+    const forget = memoryTools(ctx).find(entry => entry.name === "forget")!.tool.execute!;
+    const args = { toolCallId: "forget", messages: [], context: undefined };
+    expect(await forget({ id: "missing-record" }, args as never)).toMatchObject({ status: "not_found", deleted: false });
+    expect(await forget({ id: "missing-record" }, args as never)).toMatchObject({ status: "repeat_noop", deleted: false });
+
+    const preferenceContent = { ...content, description: "Prefers short updates." };
+    const [preference] = await db.insert(schema.botLearnings).values({
+      botId: "bot", userId: "member", topic: "short-updates", kind: "preference", status: "active",
+      content: preferenceContent, verification: "Explicit preference.", version: 1,
+    }).returning();
+    await db.insert(schema.botLearningRevisions).values({
+      learningId: preference.id, version: 1, status: "active", kind: "preference", content: preferenceContent,
+      verification: "Explicit preference.",
+    });
+    expect(await forget({ id: preference.id }, args as never)).toMatchObject({
+      status: "forgotten", deleted: true, recordType: "learned_preference",
+    });
+    expect((await db.select().from(schema.botLearnings).where(eq(schema.botLearnings.id, preference.id)))[0].status).toBe("archived");
+    expect(await db.select().from(schema.botLearningRevisions).where(eq(schema.botLearningRevisions.learningId, preference.id)))
+      .toHaveLength(2);
   });
 
   it("keeps organizational policies pending until the bot owner approves", async () => {
