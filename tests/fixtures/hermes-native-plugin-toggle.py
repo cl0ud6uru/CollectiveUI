@@ -52,6 +52,7 @@ def main() -> None:
         from tui_gateway import server
         import hermes_cli.profiles as profiles
         import hermes_cli.plugins_activation as activation
+        import hermes_cli.plugins_cmd as plugins_cmd
 
         with patch.object(profiles, "get_profile_dir", lambda name: profile_home if name == "fixture" else None), \
              patch.object(activation, "activate_plugin_now", lambda key: {
@@ -93,7 +94,18 @@ def main() -> None:
             assert result["plugin"]["source"] == "user" and result["plugin"]["status"] == "disabled"
             assert result["gateway_reloaded"] is False and result["restart_required"] is True
 
-        print("Pinned native plugins.manage list/enable/disable conformance passed (synthetic profile).")
+        # The exact pin's resolver matches either manifest name or canonical key
+        # and returns the first discovery-order hit. Portal callers must reject
+        # a requested user key that aliases another row's manifest name before
+        # sending the mutating RPC.
+        collision = [
+            ("probe", "1.0", "bundled fixture", "bundled", None, "tools/probe"),
+            ("probe", "1.0", "user fixture", "user", None, "probe"),
+        ]
+        with patch.object(plugins_cmd, "_discover_all_plugins", return_value=collision):
+            assert plugins_cmd._resolve_plugin_key("probe") == "tools/probe"
+
+        print("Pinned native plugins.manage list/toggle and ambiguous-key resolver conformance passed (synthetic profile).")
 
 
 if __name__ == "__main__":

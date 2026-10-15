@@ -38,10 +38,13 @@ const binding = (owner: string, connection: string, session: string) => JSON.str
 const pluginState = (status: string) => status === 'enabled' ? true : status === 'disabled' || status === 'not enabled' ? false : null;
 type ListedPlugin = { key: string; name: string; status: string; source: string };
 function listedUserPlugin(plugins: ListedPlugin[], key: string, name?: string) {
-  const matches = plugins.filter(plugin => plugin.key === key);
+  // Hermes' resolver accepts either the manifest name OR the canonical key and
+  // returns the first discovery-order match. A key unique in the key column is
+  // still unsafe when it equals another plugin's manifest name.
+  const matches = plugins.filter(plugin => plugin.key === key || plugin.name === key);
   if (matches.length !== 1) return undefined;
   const plugin = matches[0];
-  if (!plugin.key || plugin.source !== 'user' || !plugin.name || name !== undefined && plugin.name !== name ||
+  if (!plugin.key || plugin.key !== key || plugin.source !== 'user' || !plugin.name || name !== undefined && plugin.name !== name ||
     !['enabled', 'disabled', 'not enabled'].includes(plugin.status)) return undefined;
   return plugin;
 }

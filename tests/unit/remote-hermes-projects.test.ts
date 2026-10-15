@@ -240,6 +240,32 @@ describe('confirmed native Hermes workspace operations', () => {
     expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
   });
 
+  it('refuses a canonical key that aliases an earlier bundled manifest name before any toggle RPC', async () => {
+    // The pinned resolver scans discovery order and accepts either manifest name
+    // or canonical key. Passing "probe" would therefore resolve the bundled row
+    // before the user-installed plugin whose canonical key is "probe".
+    f.plugins = [
+      { key: 'tools/probe', name: 'probe', source: 'bundled', status: 'enabled' },
+      { key: 'probe', name: 'probe', source: 'user', status: 'disabled' },
+    ];
+    await expect(nativeWorkspaceOperation('owner', 'connection', 'session', {
+      operation: 'prepare', action: 'enable-plugin', pluginKey: 'probe',
+    })).rejects.toThrow('supported, unambiguous user-installed');
+    expect(f.calls.mock.calls.some(([method, params]) => method === 'plugins.manage' && (params as Record<string, unknown>)?.action === 'toggle')).toBe(false);
+    expect(f.receipt).toBeNull();
+  });
+
+  it('does not accept duplicate reconciliation after a plugin name collision appears', async () => {
+    f.plugins = [{ key: 'probe', name: 'probe', source: 'user', status: 'disabled' }];
+    const prepared = await nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'probe' });
+    const applied = await confirm(prepared.confirmation!);
+    expect(applied.accepted).toBe(true);
+    f.plugins.unshift({ key: 'tools/probe', name: 'probe', source: 'bundled', status: 'enabled' });
+    const duplicate = await confirm(prepared.confirmation!);
+    expect(duplicate).toMatchObject({ accepted: false, duplicate: true });
+    expect(f.calls.mock.calls.filter(([method, params]) => method === 'plugins.manage' && (params as Record<string, unknown>)?.action === 'toggle')).toHaveLength(1);
+  });
+
   it('refuses plugin mutations when the native inventory exceeds the complete verification bound', async () => {
     f.plugins = Array.from({ length: 501 }, (_, index) => ({ key: `category:${index}`, name: `Plugin ${index}`, source: 'user', status: 'disabled' }));
     await expect(nativeWorkspaceOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'enable-plugin', pluginKey: 'category:500' }))
