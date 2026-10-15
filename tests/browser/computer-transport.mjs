@@ -130,6 +130,7 @@ async function main() {
   const gid = process.getgid();
   for (const [source, destination] of [
     ['docker/computer/app-server.mjs', 'app-server.mjs'],
+    ['src/agent-browserd/private-socket.mjs', 'private-socket.mjs'],
     ['docker/computer/bridge.mjs', 'bridge.mjs'],
     ['docker/personal-codex/server.mjs', 'server.mjs'],
     ['docker/personal-codex/prepare-workspace.mjs', 'prepare-workspace.mjs'],
@@ -154,13 +155,14 @@ ARG FIXTURE_UID
 ARG FIXTURE_GID
 RUN mkdir -p /codex-home /home/agent/workspace /opt/collective-computer /opt/collective-codex/node_modules/ws
 COPY app-server.mjs /opt/collective-computer/app-server.mjs
+COPY private-socket.mjs /opt/collective-computer/private-socket.mjs
 COPY bridge.mjs /opt/collective-codex/bridge.mjs
 COPY server.mjs /opt/collective-codex/server.mjs
 COPY prepare-workspace.mjs /opt/collective-codex/prepare-workspace.mjs
 COPY ws/ /opt/collective-codex/node_modules/ws/
 COPY codex /usr/local/bin/codex
 RUN chmod -R a+rX /opt/collective-codex/node_modules/ws \\
- && chmod 0644 /opt/collective-computer/app-server.mjs /opt/collective-codex/bridge.mjs /opt/collective-codex/server.mjs /opt/collective-codex/prepare-workspace.mjs \\
+ && chmod 0644 /opt/collective-computer/app-server.mjs /opt/collective-computer/private-socket.mjs /opt/collective-codex/bridge.mjs /opt/collective-codex/server.mjs /opt/collective-codex/prepare-workspace.mjs \\
  && chmod 0755 /usr/local/bin/codex \\
  && chown -R \${FIXTURE_UID}:\${FIXTURE_GID} /codex-home /home/agent
 USER \${FIXTURE_UID}:\${FIXTURE_GID}

@@ -3,8 +3,9 @@ import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer, connect } from 'node:net';
 import { spawn } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { lstat, chmod, unlink, readdir, readFile } from 'node:fs/promises';
+import { lstat, unlink, readdir, readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { listenPrivateSocket } from './private-socket.mjs';
 import { WebSocketServer } from '/opt/collective-codex/node_modules/ws/wrapper.mjs';
 
 const socketPath = '/codex-home/computer-runtime.sock';
@@ -243,28 +244,26 @@ const tokenServer = createNetServer({ allowHalfOpen: true }, socket => {
     })().catch(() => socket.destroy());
   });
 });
-await new Promise((resolve, reject) => {
-  const onError = error => { server.removeListener('error', onError); reject(error); };
-  server.once('error', onError);
-  server.listen(socketPath, () => { server.removeListener('error', onError); resolve(); });
-});
-await chmod(socketPath, 0o600);
-await new Promise((resolve, reject) => {
-  const onError = error => { tokenServer.removeListener('error', onError); reject(error); };
-  tokenServer.once('error', onError);
-  tokenServer.listen(tokenSocketPath, () => { tokenServer.removeListener('error', onError); resolve(); });
-});
-await chmod(tokenSocketPath, 0o600);
+const startupController = new AbortController();
+let publication, cleanupRuntimeSocket, cleanupTokenSocket;
 
 async function stop() {
   if (stopping) return;
   stopping = true;
   rotating = true;
+  startupController.abort();
   for (const ws of sockets.clients) ws.terminate();
   await stopAllSessions().catch(() => {});
   await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => tokenServer.close(resolve))]);
-  await Promise.all([unlink(socketPath).catch(() => {}), unlink(tokenSocketPath).catch(() => {})]);
+  await publication?.catch(() => {});
+  await Promise.all([cleanupRuntimeSocket?.(), cleanupTokenSocket?.()]);
   process.exit(0);
 }
 process.on('SIGTERM', () => { void stop(); });
 process.on('SIGINT', () => { void stop(); });
+
+publication = (async () => {
+  cleanupRuntimeSocket = await listenPrivateSocket(server, socketPath, startupController.signal);
+  cleanupTokenSocket = await listenPrivateSocket(tokenServer, tokenSocketPath, startupController.signal);
+})();
+try { await publication; } catch (error) { if (!stopping) throw error; }

@@ -97,6 +97,15 @@ Run `node src/agent-browserd/egress.ts` in a **separate** networked process/cont
 private egress Unix socket shared with the broker. Supply separate random secrets to browser control
 and egress; never reuse or mount SANDBOXD_SECRET. Paths are `AGENT_BROWSER_SOCKET` and
 `AGENT_BROWSER_EGRESS_SOCKET`; secrets are `AGENT_BROWSER_SECRET` and `AGENT_BROWSER_EGRESS_SECRET`.
+Browser-control and egress sockets are bound inside an owner-only staging directory,
+confirmed as mode `0600`, then atomically hard-linked to their configured paths.
+Startup fails if permissions or no-replacement publication cannot be established;
+the socket filesystem must support hard links. Closing removes only the published
+socket with the same filesystem identity, preserving a replacement at that path.
+Termination handlers are installed before publication starts. Startup cancellation
+closes the binding, prevents subsequent publication phases and waits for pending
+filesystem work and guarded cleanup before shutdown completes.
+
 Portal opt-in requires `AGENT_BROWSER_ENABLED=1`, the control socket and browser secret in web/worker.
 No production configuration is enabled here. Socket mount/permissions and namespace support need an
 operator-reviewed deployment; no compose/security settings or live credentials are modified.
