@@ -12,11 +12,12 @@ import { ownedNativeSession, profileName } from './sessions';
 import { nativeHub } from './hub';
 import { remoteAccess } from './store';
 import { NativeConnectionChanged, NativeRpcError, record } from './socket';
-import { projectProjection } from './operations';
+import { projectProjection, scheduleProjection } from './operations';
 
 export const projectOperationInput = z.union([
   z.object({ operation: z.literal('prepare'), action: z.literal('create'), name: z.string().trim().min(1).max(80) }).strict(),
   z.object({ operation: z.literal('prepare'), action: z.literal('select'), projectId: z.string().min(1).max(200) }).strict(),
+  z.object({ operation: z.literal('prepare'), action: z.enum(['pause', 'resume']), scheduleId: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('confirm'), confirmation: z.string().min(1).max(4000) }).strict(),
 ]);
 
@@ -24,7 +25,9 @@ const claimSchema = z.discriminatedUnion('action', [
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
     socketEpoch: z.number().int().positive(), action: z.literal('create'), name: z.string().min(1).max(80), slug: z.string().regex(/^cu-[0-9a-f]{32}$/), expiresAt: z.number().int() }).strict(),
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
-    socketEpoch: z.number().int().positive(), action: z.literal('select'), projectId: z.string().min(1).max(200), expiresAt: z.number().int() }).strict(),
+    socketEpoch: z.number().int().positive(), action: z.literal('select'), projectId: z.string().min(1).max(200), projectName: z.string().max(300), expiresAt: z.number().int() }).strict(),
+  z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
+    socketEpoch: z.number().int().positive(), action: z.literal('schedule'), scheduleId: z.string().min(1).max(200), scheduleName: z.string().max(300), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
 ]);
 type Claim = z.infer<typeof claimSchema>;
 type Session = typeof remoteHermesSessions.$inferSelect;
@@ -38,7 +41,7 @@ function readClaim(token: string, aad: string): Claim {
   } catch { throw new HttpError(409, 'This project confirmation is invalid or expired. Review the Hermes profile and try again.'); }
 }
 
-/** Project changes use only the pinned project RPCs and never accept filesystem paths. */
+/** Project and schedule changes use only pinned native RPCs and never accept filesystem paths. */
 export async function nativeProjectOperation(ownerId: string, connectionId: string, sessionId: string, raw: unknown) {
   const input = projectOperationInput.parse(raw);
   const initialRow = await ownedNativeSession(ownerId, connectionId, sessionId);
@@ -84,25 +87,37 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   async function projects(epoch: number) {
     return projectProjection(await hub.socket.callConnected('projects.list', { profile: row.profile }, epoch, 30_000));
   }
+  async function schedules(epoch: number) {
+    const value = record(await hub.socket.callConnected('cron.manage', { profile: row.profile, action: 'list', include_disabled: true }, epoch, 30_000));
+    if (value.scoped !== row.profile) throw new HttpError(501, 'This Hermes version cannot confirm profile-scoped schedules.');
+    return scheduleProjection(value);
+  }
 
   if (input.operation === 'prepare') {
     const snapshot = idle(row);
-    const listed = await projects(snapshot.socketEpoch);
     if (snapshot.socketEpoch !== hub.socket.connectionEpoch) throw new NativeConnectionChanged();
     let claim: Claim;
     if (input.action === 'create') {
+      await projects(snapshot.socketEpoch);
       const requestId = randomUUID();
       claim = { requestId, runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
         action: 'create', name: input.name, slug: `cu-${requestId.replaceAll('-', '')}`, expiresAt: Date.now() + 60_000 };
-    } else {
+    } else if (input.action === 'select') {
+      const listed = await projects(snapshot.socketEpoch);
       const project = listed.projects.find(value => value.id === input.projectId);
       if (!project || project.archived) throw new HttpError(409, 'Choose an active project from the refreshed Hermes list.');
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
-        action: 'select', projectId: project.id, expiresAt: Date.now() + 60_000 };
+        action: 'select', projectId: project.id, projectName: project.name, expiresAt: Date.now() + 60_000 };
+    } else {
+      const listed = await schedules(snapshot.socketEpoch);
+      const schedule = listed.schedules.find(value => value.id === input.scheduleId);
+      if (!schedule || schedule.enabled !== (input.action === 'pause')) throw new HttpError(409, 'Choose a schedule with a current state from the refreshed Hermes list.');
+      claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
+        action: 'schedule', scheduleId: schedule.id, scheduleName: schedule.name, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
     }
-    return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action,
-      name: claim.action === 'create' ? claim.name : listed.projects.find(project => project.id === claim.projectId)?.name,
-      profile: row.profile, title: snapshot.view.title, activeId: listed.activeId };
+    return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action, enabled: claim.action === 'schedule' ? claim.enabled : undefined,
+      name: claim.action === 'create' ? claim.name : claim.action === 'select' ? claim.projectName : claim.scheduleName,
+      profile: row.profile, title: snapshot.view.title };
   }
 
   const claim = target!;
@@ -113,18 +128,30 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   const [existingReceipt] = await db.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, sessionId), eq(remoteHermesTurns.requestId, claim.requestId)));
   if (existingReceipt) {
     if (existingReceipt.digest !== digest) throw new HttpError(409, 'This project confirmation was already used for different content.');
+    if (claim.action === 'schedule') {
+      const current = await schedules(claim.socketEpoch);
+      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled);
+      return { accepted: complete, duplicate: true, schedules: current.schedules,
+        output: complete ? 'This schedule request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
+    }
     const current = await projects(claim.socketEpoch);
     const complete = claim.action === 'create'
       ? current.projects.some(project => project.slug === claim.slug && project.name === claim.name && project.folders.length === 0)
-      : current.activeId === claim.projectId;
+      : current.activeId === claim.projectId && current.projects.some(project => project.id === claim.projectId && !project.archived);
     return { accepted: complete, duplicate: true, projects: current.projects, activeId: current.activeId,
-      output: complete ? 'This project request was already applied and will not be replayed.' : 'This project request was already submitted and will not be replayed. Refresh the native project list to check its outcome.' };
+      output: complete ? 'This project request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
   }
-  const listed = await projects(claim.socketEpoch);
-  if (claim.action === 'select' && !listed.projects.some(project => project.id === claim.projectId && !project.archived))
-    throw new HttpError(409, 'The chosen project changed after confirmation. Refresh the list and choose it again.');
-  if (claim.action === 'create' && listed.projects.some(project => project.slug === claim.slug))
-    throw new HttpError(409, 'This project request already appears in Hermes. Refresh the list instead of creating it again.');
+  if (claim.action === 'schedule') {
+    const listed = await schedules(claim.socketEpoch);
+    const current = listed.schedules.find(schedule => schedule.id === claim.scheduleId);
+    if (!current || current.enabled === claim.enabled) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
+  } else {
+    const listed = await projects(claim.socketEpoch);
+    if (claim.action === 'select' && !listed.projects.some(project => project.id === claim.projectId && !project.archived))
+      throw new HttpError(409, 'The chosen project changed after confirmation. Refresh the list and choose it again.');
+    if (claim.action === 'create' && listed.projects.some(project => project.slug === claim.slug))
+      throw new HttpError(409, 'This project request already appears in Hermes. Refresh the list instead of creating it again.');
+  }
   const preflight = idle(row);
   const reserved = await db.transaction(async tx => {
     await lockAdmission(tx);
@@ -142,10 +169,18 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       .where(eq(remoteHermesSessions.id, sessionId)).returning())[0];
   });
   if (!reserved) {
+    if (claim.action === 'schedule') {
+      const current = await schedules(claim.socketEpoch);
+      const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled);
+      return { accepted: complete, duplicate: true, schedules: current.schedules,
+        output: complete ? 'This schedule request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
+    }
     const current = await projects(claim.socketEpoch);
-    const complete = claim.action === 'create' ? current.projects.some(project => project.slug === claim.slug) : current.activeId === claim.projectId;
+    const complete = claim.action === 'create'
+      ? current.projects.some(project => project.slug === claim.slug && project.name === claim.name && project.folders.length === 0)
+      : current.activeId === claim.projectId && current.projects.some(project => project.id === claim.projectId && !project.archived);
     return { accepted: complete, duplicate: true, projects: current.projects, activeId: current.activeId,
-      output: complete ? 'This project request was already applied and will not be replayed.' : 'This project request was already submitted and will not be replayed. Refresh the native project list to check its outcome.' };
+      output: complete ? 'This request was already applied and will not be replayed.' : 'This request was already submitted and will not be replayed. Refresh the native panel to check its outcome.' };
   }
 
   const live = cached()!;
@@ -160,10 +195,12 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
         active.view.running || active.view.queuePending || active.view.queued || active.pending.size || active.view.prompts.length)
         throw new HttpError(409, 'This project confirmation is no longer ready. Review the Hermes chat and confirm again.');
       sent = true;
+      const method = claim.action === 'create' ? 'projects.create' : claim.action === 'select' ? 'projects.set_active' : 'cron.manage';
       const params = claim.action === 'create'
         ? { profile: claim.profile, name: claim.name, slug: claim.slug, folders: [], use: false }
-        : { profile: claim.profile, id: claim.projectId };
-      return hub.socket.dispatchConnected(claim.action === 'create' ? 'projects.create' : 'projects.set_active', params, claim.socketEpoch, 30_000, tx);
+        : claim.action === 'select' ? { profile: claim.profile, id: claim.projectId }
+          : { profile: claim.profile, action: claim.enabled ? 'resume' : 'pause', name: claim.scheduleId };
+      return hub.socket.dispatchConnected(method, params, claim.socketEpoch, 30_000, tx);
     });
     const replyValue = await reply;
     let createdId: string | undefined;
@@ -172,8 +209,19 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       if (typeof created.id !== 'string' || created.slug !== claim.slug || created.name !== claim.name || !Array.isArray(created.folders) || created.folders.length !== 0)
         throw new HttpError(502, 'Hermes did not confirm the requested empty project. Refresh before continuing.');
       createdId = created.id;
-    } else if (replyValue.active_id !== claim.projectId) {
+    } else if (claim.action === 'select' && replyValue.active_id !== claim.projectId) {
       throw new HttpError(502, 'Hermes did not confirm the selected active project. Refresh before continuing.');
+    } else if (claim.action === 'schedule') {
+      const changed = record(replyValue.job);
+      if (replyValue.success !== true || changed.job_id !== claim.scheduleId || changed.enabled !== claim.enabled)
+        throw new HttpError(502, 'Hermes did not confirm the requested schedule state. Refresh before continuing.');
+    }
+    if (claim.action === 'schedule') {
+      const latest = await schedules(claim.socketEpoch);
+      if (!latest.schedules.some(schedule => schedule.id === claim.scheduleId && schedule.enabled === claim.enabled))
+        throw new HttpError(502, 'Hermes readback did not match the requested schedule state. The result is uncertain; refresh before taking action.');
+      await settle('idle');
+      return { accepted: true, duplicate: false, schedules: latest.schedules, output: claim.enabled ? 'Schedule resumed; it may run soon and use model usage.' : 'Schedule paused.' };
     }
     const latest = await projects(claim.socketEpoch);
     const matched = claim.action === 'create'

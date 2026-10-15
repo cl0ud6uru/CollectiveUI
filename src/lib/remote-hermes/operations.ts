@@ -45,9 +45,9 @@ export async function inspectNative(ownerId: string, connectionId: string, raw: 
   const input = inspectionQuery.parse(raw);
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(p => p.name === input.profile)) throw new HttpError(404, 'Hermes profile not found.');
-  const rpc = (method: 'projects.list' | 'plugins.list' | 'plugins.manage') => nativeHub(ownerId, connectionId).socket.call(method, { profile: input.profile, ...(method === 'plugins.manage' ? { action: 'list' } : {}) });
+  const rpc = (method: 'projects.list' | 'plugins.list' | 'plugins.manage' | 'cron.manage') => nativeHub(ownerId, connectionId).socket.call(method, { profile: input.profile, ...(method === 'plugins.manage' ? { action: 'list' } : method === 'cron.manage' ? { action: 'list', include_disabled: true } : {}) });
   const transport = dashboardFetch(access.baseUrl, access.policy);
-  const get = async (endpoint: '/api/fs/default-cwd' | '/api/fs/list' | '/api/cron/jobs' | '/api/system/stats', extra: Record<string, string> = {}) => {
+  const get = async (endpoint: '/api/fs/default-cwd' | '/api/fs/list' | '/api/system/stats', extra: Record<string, string> = {}) => {
     const query = new URLSearchParams({ profile: input.profile, ...extra });
     const headers: Record<string, string> = access.secrets.mode === 'sessionToken' ? { 'X-Hermes-Session-Token': access.secrets.sessionToken! } : { Authorization: `Bearer ${access.secrets.accessToken}` };
     const response = await transport(`${access.baseUrl}${endpoint}?${query}`, { headers, redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(15_000) });
@@ -60,7 +60,11 @@ export async function inspectNative(ownerId: string, connectionId: string, raw: 
   };
   if (input.panel === 'projects') return projectProjection(await rpc('projects.list'));
   if (input.panel === 'plugins') return pluginProjection(await rpc('plugins.manage').catch((e: unknown) => { if (e instanceof HttpError && e.status === 501) return rpc('plugins.list'); throw e; }));
-  if (input.panel === 'schedules') return scheduleProjection(await get('/api/cron/jobs'));
+  if (input.panel === 'schedules') {
+    const value = record(await rpc('cron.manage'));
+    if (value.scoped !== input.profile) throw new HttpError(501, 'This Hermes version cannot confirm profile-scoped schedules.');
+    return scheduleProjection(value);
+  }
   if (input.panel === 'system') return systemProjection(await get('/api/system/stats'));
   const home = record(await get('/api/fs/default-cwd'));
   const projects = projectProjection(await rpc('projects.list').catch((e: unknown) => { if (e instanceof HttpError && e.status === 501) return {}; throw e; }));
