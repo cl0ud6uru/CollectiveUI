@@ -147,7 +147,7 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
       execute: guarded("admin_runs", async (p, i: z.output<typeof window>) => (await ops()).adminRuns(p, i)),
     })),
     entry("admin_jobs", tool({
-      description: "Background job queues: ready, deferred, active and recently failed job counts per queue.",
+      description: "Read persisted pg-boss queue counters without starting the queue service. If its queue catalog is not available, reports unavailable rather than initializing it.",
       inputSchema: none,
       execute: guarded("admin_jobs", async (p) => (await ops()).adminJobs(p)),
     })),

@@ -11,7 +11,6 @@ const services = vi.hoisted(() => ({
   sandboxList: vi.fn(async () => []),
   localStatus: vi.fn(async () => ({ status: 'ok' })),
   brokerReadiness: vi.fn(async () => ({ status: 'ready', message: 'synthetic fixture' })),
-  queueList: vi.fn(async () => [{ name: 'agent.run', readyCount: 0, deferredCount: 0, activeCount: 0, failedCount: 0, totalCount: 0 }]),
 }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite');
@@ -26,10 +25,6 @@ vi.mock('@/lib/sandbox/client', () => ({
 }));
 vi.mock('@/lib/local-hermes/client', () => ({ localControl: services.localStatus }));
 vi.mock('@/lib/docker-hermes/enrollment', () => ({ dockerBrokerReadiness: services.brokerReadiness }));
-vi.mock('@/lib/jobs', () => ({
-  QUEUES: { agentRun: 'agent.run', agentRunBackground: 'agent.run.bg', agentRunTasks: 'agent.run.tasks', routineRun: 'routine.run', memoryExtract: 'memory.extract', learningReview: 'learning.review', learningCurate: 'learning.curate', mcpRefresh: 'mcp.refresh', sandboxCleanup: 'sandbox.cleanup' },
-  getBoss: async () => ({ getQueues: services.queueList }),
-}));
 
 import { db, schema as s } from '@/db';
 import { adminDiagnosticBundle } from '@/lib/admin/architect-diagnostics';
@@ -53,10 +48,21 @@ beforeAll(async () => {
   await fixture.client!.waitReady;
   for (const file of readdirSync('src/db/migrations').filter(file => file.endsWith('.sql')).sort())
     await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, 'utf8').replace('CREATE EXTENSION IF NOT EXISTS vector;', '').replace(/\bvector\b/g, 'real[]'));
+  await fixture.client!.exec(`CREATE SCHEMA IF NOT EXISTS pgboss;
+    CREATE TABLE IF NOT EXISTS pgboss.queue (name text primary key, ready_count integer not null default 0,
+      deferred_count integer not null default 0, active_count integer not null default 0,
+      failed_count integer not null default 0, total_count integer not null default 0)`);
 }, 45_000);
 beforeEach(async () => {
   vi.clearAllMocks();
   await fixture.client!.exec('TRUNCATE users, ai_apps, settings CASCADE');
+  await fixture.client!.exec(`CREATE SCHEMA IF NOT EXISTS pgboss;
+    CREATE TABLE IF NOT EXISTS pgboss.queue (name text primary key, ready_count integer not null default 0,
+      deferred_count integer not null default 0, active_count integer not null default 0,
+      failed_count integer not null default 0, total_count integer not null default 0)`);
+  await fixture.client!.exec('TRUNCATE pgboss.queue');
+  await fixture.client!.exec(`INSERT INTO pgboss.queue (name, ready_count, deferred_count, active_count, failed_count, total_count)
+    VALUES ('agent.run', 1, 2, 3, 4, 10)`);
   await db.insert(s.users).values([
     { id: 'admin', name: 'Synthetic administrator', upn: 'private-admin@example.invalid', authSource: 'ldap', isAdmin: true },
     { id: 'member', name: 'Synthetic member', upn: 'private-member@example.invalid', authSource: 'ldap' },
@@ -106,7 +112,17 @@ describe('worker-safe Architect diagnostic summary', () => {
     expect(services.sandboxList).toHaveBeenCalled();
     expect(services.localStatus).toHaveBeenCalled();
     expect(services.brokerReadiness).toHaveBeenCalled();
-    expect(services.queueList).toHaveBeenCalled();
+    expect(results[calls.findIndex(([name]) => name === 'admin_jobs')]).toMatchObject({ available: true, queues: [{ name: 'agent.run', ready: 1, deferred: 2, active: 3, failed: 4, total: 10 }] });
     expect(JSON.stringify(results)).not.toContain('opaque-credential-sentinel');
+  });
+
+  it('reports queue counters unavailable without initializing pg-boss when its catalog is absent', async () => {
+    await fixture.client!.exec('DROP SCHEMA pgboss CASCADE');
+    await expect(executeReadTool('admin_jobs')).resolves.toEqual({
+      available: false,
+      queues: [],
+      reason: 'The persisted pg-boss queue counters are unavailable.',
+    });
+    await expect(fixture.client!.query("select to_regclass('pgboss.queue') as queue")).resolves.toMatchObject({ rows: [{ queue: null }] });
   });
 });
