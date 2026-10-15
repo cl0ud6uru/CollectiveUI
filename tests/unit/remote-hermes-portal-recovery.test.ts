@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import type { PGlite } from '@electric-sql/pglite';
-const f = vi.hoisted(() => ({ client: null as PGlite | null, socketEpoch: 2, nativeFence: true, call: vi.fn(), invalidated: vi.fn(), prepareRefresh: vi.fn() }));
+const f = vi.hoisted(() => ({ client: null as PGlite | null, socketEpoch: 2, nativeFence: true, nativeGeneration: 11, call: vi.fn(), invalidated: vi.fn(), prepareRefresh: vi.fn() }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'); const { drizzle } = await import('drizzle-orm/pglite');
   f.client = new PGlite(); return { db: drizzle(f.client) };
@@ -20,7 +20,7 @@ vi.mock('@/lib/remote-hermes/hub', async () => {
     const row = (await q.execute(sql`SELECT * FROM remote_hermes_sessions WHERE id = 'session'`)).rows[0];
     return { protocol: 'collective.portal-hub-ownership.v1', ownerId: 'owner', connectionId: 'connection', instanceId: 'process', leaseGeneration: 3,
       sessionId: 'session', profile: row.profile, storedId: row.stored_id, runtimeId: row.runtime_id, sessionRevision: row.revision, ownershipGeneration: row.ownership_generation,
-      socketEpoch: f.socketEpoch, nativeFence: f.nativeFence ? { protocol: 'collective.native-hub-owner.v1', generation: 3, socketEpoch: f.socketEpoch } : null };
+      socketEpoch: f.socketEpoch, nativeFence: f.nativeFence ? { protocol: 'collective.native-hub-owner.v1', generation: 3, socketEpoch: f.socketEpoch, nativeGeneration: f.nativeGeneration } : null };
   };
   const hub = {
     refresh: f.prepareRefresh, lockBoundary: connection,
@@ -52,7 +52,7 @@ beforeEach(async () => {
     INSERT INTO remote_hermes_sessions(id,connection_id,profile,stored_id,runtime_id,title,status,admission_request_id,revision,ownership_generation,queue_request_id,queue_status)
       VALUES ('session','connection','default','stored','runtime','Synthetic','uncertain','request-a',7,4,'request-q','uncertain');
     INSERT INTO remote_hermes_turns(id,session_id,request_id,digest) VALUES ('receipt','session','request-a','digest');`);
-  vi.clearAllMocks(); f.socketEpoch = 2; f.nativeFence = true; nativeBinding = {};
+  vi.clearAllMocks(); f.prepareRefresh.mockReset(); f.socketEpoch = 2; f.nativeFence = true; f.nativeGeneration = 11; nativeBinding = {};
   f.call.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     if (method === 'collective.recovery.capabilities') return { protocol: 'collective.cancel-drain.v1', scope: 'inline_prompt_runtime', durable: true };
     if (method === 'collective.recovery.cancel_and_drain') nativeBinding = params;
@@ -97,8 +97,8 @@ it.each(['revision', 'ownership_generation', 'runtime_id', 'stored_id', 'profile
   expect(f.call.mock.calls.some(([method]) => method === 'collective.recovery.cancel_and_drain')).toBe(false);
   expect((await read()).status).toBe('uncertain');
 });
-it.each(['socket', 'credential', 'native'])('rejects changed %s binding', async change => {
-  const intent = await prepare(); if (change === 'socket') f.socketEpoch++; else if (change === 'native') f.nativeFence = false;
+it.each(['socket', 'credential', 'native', 'native generation'])('rejects changed %s binding', async change => {
+  const intent = await prepare(); if (change === 'socket') f.socketEpoch++; else if (change === 'native') f.nativeFence = false; else if (change === 'native generation') f.nativeGeneration++;
   else await f.client!.exec("UPDATE remote_hermes_connections SET secret_enc = 'replacement'");
   await expect(confirm(intent.intentId)).rejects.toThrow(); expect((await read()).admission_request_id).toBe('request-a');
 });
@@ -126,5 +126,31 @@ it('pending evidence cannot release and repeated prepare reuses the confirmed na
   const intent = await prepare(); const original = f.call.getMockImplementation()!;
   f.call.mockImplementation(async (method, params) => { const result = await original(method, params); return method === 'collective.recovery.capabilities' ? result : { ...result, state: 'pending', reason: 'workers_pending' }; });
   expect(await confirm(intent.intentId)).toMatchObject({ state: 'pending' });
-  expect(await prepare()).toMatchObject({ intentId: intent.intentId, state: 'pending' }); expect((await read()).status).toBe('uncertain');
+  f.prepareRefresh.mockRejectedValueOnce(new Error('must not resume a fenced runtime'));
+  expect(await prepare()).toMatchObject({ intentId: intent.intentId, state: 'pending' });
+  expect(f.prepareRefresh).toHaveBeenCalledOnce();
+  f.prepareRefresh.mockReset(); expect((await read()).status).toBe('uncertain');
+});
+
+it('expired prepared intent cannot cancel or release reservations', async () => {
+  const intent = await prepare();
+  await db.update(remoteHermesRecoveries).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(remoteHermesRecoveries.id, intent.intentId));
+  await expect(confirm(intent.intentId)).rejects.toThrow('confirmation expired');
+  expect(f.call.mock.calls.some(([method]) => method === 'collective.recovery.cancel_and_drain')).toBe(false);
+  expect((await read()).admission_request_id).toBe('request-a');
+});
+it('overlapping confirmations send one cancellation and increment the released generation once', async () => {
+  const intent = await prepare(); const original = f.call.getMockImplementation()!;
+  let release!: () => void; const barrier = new Promise<void>(resolve => { release = resolve; });
+  let admitted!: () => void; const acceptance = new Promise<void>(resolve => { admitted = resolve; });
+  f.call.mockImplementation(async (method, params) => {
+    const receipt = await original(method, params);
+    if (method === 'collective.recovery.cancel_and_drain') { admitted(); await barrier; }
+    return receipt;
+  });
+  const first = confirm(intent.intentId); await acceptance;
+  expect(await confirm(intent.intentId)).toMatchObject({ state: 'applied' });
+  release(); expect(await first).toMatchObject({ state: 'applied' });
+  expect(f.call.mock.calls.filter(([method]) => method === 'collective.recovery.cancel_and_drain')).toHaveLength(1);
+  expect(await read()).toMatchObject({ revision: 8, ownership_generation: 5 });
 });

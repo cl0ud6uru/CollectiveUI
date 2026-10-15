@@ -71,8 +71,10 @@ separate work; this change performs neither.
 
 Contracts are declared in the optional native module itself. Upstreaming the
 extension would also require regenerating upstream client/OpenRPC artifacts and
-upstream acceptance. The repository's ordinary dashboard path does not call this
-adapter, enable a recovery UI or clear a database reservation. The strict
+upstream acceptance. The native foundation alone does not call this adapter from the dashboard, enable
+a recovery UI or clear a database reservation. The separate [owner-confirmed portal
+path](./remote-hermes-portal-recovery.md) consumes this contract only with verified
+native ownership and exact transactional bindings. The strict
 TypeScript client refuses absent/version-mismatched capabilities and any receipt
 with a different runtime, stored conversation, recovery UUID or reservation set.
 That client is the explicit integration boundary for a later owner-scoped,
@@ -102,6 +104,7 @@ restart uncertainty, unsupported/missing/wrong runtime identities, failed receip
 writes and auxiliary worker tracking. Strict client tests reject incomplete,
 foreign, inconsistent and unadvertised evidence.
 
-This advances the native evidence gap in #90. Owner-confirmed portal recovery,
-transactional revision checks, live deployment and isolated-child conformance
-remain unimplemented or unverified; no current admission safety gate is relaxed.
+This advances the native evidence gap in #90. The separately gated portal path
+adds owner confirmation and transactional revision checks. Live deployment, actual
+adapter installation and isolated-child conformance remain unverified; no current
+admission safety gate is relaxed.

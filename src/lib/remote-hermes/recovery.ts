@@ -54,6 +54,10 @@ export async function nativeRecovery(ownerId: string, connectionId: string, raw:
   const row = await ownedNativeSession(ownerId, connectionId, input.sessionId);
   const hub = recoveryHub(ownerId, connectionId);
   if (input.operation === 'prepare') {
+    // A confirmed fence must never resume/create another native runtime before terminal CAS.
+    const [existing] = await db.select().from(remoteHermesRecoveries).where(and(eq(remoteHermesRecoveries.ownerId, ownerId),
+      eq(remoteHermesRecoveries.connectionId, connectionId), eq(remoteHermesRecoveries.sessionId, row.id), inArray(remoteHermesRecoveries.state, ['pending', 'uncertain'])));
+    if (existing) return view(existing);
     // A read can reconnect/resume, so it happens BEFORE capturing immutable intent bindings.
     await hub.refresh(row);
     const [fresh] = await db.select(sessionColumns).from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id));

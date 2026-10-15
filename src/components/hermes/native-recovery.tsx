@@ -26,7 +26,7 @@ export function NativeRecovery({ connectionId, sessionId, disabled, onOpenChange
         body: JSON.stringify({ operation, sessionId, ...(operation === 'prepare' ? {} : { intentId: intent?.intentId }), ...(operation === 'confirm' ? { confirmed: true } : {}) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Recovery could not be verified. Reservations remain blocked.');
-      setIntent(result);
+      setIntent(result); if (result.state === 'prepared') setExpired(false);
       if (result.state === 'applied') { setOpen(false); onOpenChange(false); onApplied(); }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Recovery is uncertain. Reservations remain blocked.'); }
     finally { pending.current = false; setBusy(false); }

@@ -8,7 +8,7 @@ export const recoveryOwnership = z.object({
   protocol: z.literal('collective.portal-hub-ownership.v1'), ownerId: id, connectionId: id, instanceId: id,
   leaseGeneration: positive, sessionId: id, profile: id, storedId: id, runtimeId: id,
   sessionRevision: nonnegative, ownershipGeneration: nonnegative, socketEpoch: positive,
-  nativeFence: z.object({ protocol: z.literal('collective.native-hub-owner.v1'), generation: positive, socketEpoch: positive }).strict(),
+  nativeFence: z.object({ protocol: z.literal('collective.native-hub-owner.v1'), generation: positive, socketEpoch: positive, nativeGeneration: positive }).strict(),
 }).strict();
 export const recoveryBinding = z.object({
   ownership: recoveryOwnership,
