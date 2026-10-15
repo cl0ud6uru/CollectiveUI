@@ -134,7 +134,7 @@ export async function reviewNativeRun(runId: string) {
           ));
           const verification = cleanLearningText(lesson.verification);
           const lessonText = JSON.stringify({ content, verification }).toLowerCase();
-          if (unsupportedAuthorizationGuidance([content.description, content.instructions, content.expectedOutput, content.boundaries, verification].join("\n"))) continue;
+          if (unsupportedAuthorizationGuidance([content.name, content.description, content.instructions, content.expectedOutput, content.boundaries, verification].join("\n"))) continue;
           if (secrets.some(v => lessonText.includes(v.toLowerCase()))) continue;
           if (disposition.scope === "bot" && (containsPrivateIdentity(lessonText, actor.user) || privateValues.some(v => lessonText.includes(v.toLowerCase())))) continue;
           const userId = disposition.scope === "user" ? actor.user.id : null;
