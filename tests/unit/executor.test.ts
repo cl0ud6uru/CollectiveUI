@@ -61,7 +61,7 @@ vi.mock("@/lib/runs/state", () => ({
   claimRun: h.claimRun,
   getRun: h.getRun,
   finalizeRunTx: h.finalizeRunTx,
-  pauseRun: h.pauseRun,
+  pauseRunTx: h.pauseRun,
   setRunBilling: h.setRunBilling,
   withRunFence: h.withRunFence,
 }));
@@ -242,12 +242,13 @@ describe("executeRun", () => {
     h.writers = [];
     h.rows = new Map<unknown, unknown[]>([[conversations, [conv]]]);
     h.claimRun.mockImplementation(async () => runRow());
+    h.getRun.mockResolvedValue(runRow());
     h.loadPrincipal.mockResolvedValue(principal);
     h.resolveTurnTarget.mockResolvedValue({ bot: null, app });
     h.loadMessageRows.mockResolvedValue([userRow]);
     h.withRunFence.mockImplementation(async (_id: string, _holder: string, fn: (tx: unknown) => unknown) => ({ value: await fn(h.tx) }));
     h.finalizeRunTx.mockImplementation(async (_tx: unknown, id: string, _from: unknown, to: { status: string }) => runRow({ id, status: to.status as never }));
-    h.pauseRun.mockImplementation(async (run: AgentRun) => ({ ...run, status: "waiting" }));
+    h.pauseRun.mockImplementation(async (_tx: unknown, run: AgentRun) => ({ ...run, status: "waiting" }));
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -456,7 +457,7 @@ describe("executeRun", () => {
     const resumeState: ResumeState = { hermes: { runId: "hr1", lastEventId: "7", state: { runId: "hr1" } as never } };
     useTurn({ chunks: [{ type: "start" }, { type: "tool-approval-request", approvalId: "ap1", toolCallId: "t1" }, { type: "finish" }], message: msg, resumeState });
     await executeRun("run1");
-    expect(h.pauseRun).toHaveBeenCalledWith(expect.objectContaining({ id: "run1" }), HOLDER, resumeState, []);
+    expect(h.pauseRun).toHaveBeenCalledWith(h.tx, expect.objectContaining({ id: "run1" }), HOLDER, resumeState, []);
     expect(h.finalizeRunTx).not.toHaveBeenCalled();
     expect(h.afterRunTransition).toHaveBeenCalledWith(expect.objectContaining({ status: "waiting" }), "waiting", msg, null);
   });
@@ -469,7 +470,7 @@ describe("executeRun", () => {
     };
     useTurn({ chunks: [{ type: "start" }, { type: "finish" }], message: msg });
     await executeRun("run1");
-    expect(h.pauseRun).toHaveBeenCalledWith(expect.anything(), HOLDER, null, []);
+    expect(h.pauseRun).toHaveBeenCalledWith(h.tx, expect.anything(), HOLDER, null, []);
   });
 
   it("continues a later segment from the stored message and hands the saved resume state to the provider", async () => {

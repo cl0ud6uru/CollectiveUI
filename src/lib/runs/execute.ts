@@ -25,11 +25,10 @@ import { RunEventWriter } from "./events";
 import { afterRunTransition } from "./hooks";
 import { loadHermesRunContext } from "./hermes-context";
 import { hermesAdmissionRecorder } from "./hermes-admission";
-import { stopHermesConversation } from "./hermes-stop";
 import { runHost } from "./host";
 import { notifyRun } from "./log";
 import { closeOpenParts } from "./replay";
-import { claimRun, finalizeRunTx, getRun, noteRunResumeState, pauseRun, setRunBilling, withRunFence } from "./state";
+import { claimRun, finalizeRunTx, getRun, noteRunResumeState, pauseRunTx, setRunBilling, withRunFence } from "./state";
 import { stopProviderRun } from "./provider-stop";
 import { prepareTeamWorkerTarget,executeTeamLearningSegment } from "./team-candidate";
 import { settleTeamCandidateRun,type ActiveTeamCandidateRun } from "@/lib/hermes-team/candidate-startup";
@@ -265,19 +264,28 @@ async function executeSegmentBody(run: AgentRun, holder: string, ac: AbortContro
     else if (paused) await hooks(paused, paused.status, o.message, paused.error);
     return;
   }
-  if (o.status === "waiting") {
-    const paused = await pauseRun(run, holder, turn.native ? { ...(saved ?? {}), native: turn.native } : saved, closing);
-    if (paused?.cancelRequestedAt && handle.hermes) await stopHermesConversation(run.userId, run.conversationId);
-    else if (paused) await hooks(paused, "waiting", o.message, null);
-    return;
-  }
-  const status = o.status as FinalStatus;
-  const finished = await db.transaction((tx) => finalizeRunTx(tx, run.id, { status: ["running"], holder }, { status, error: o.error, closing }));
-  if (!finished) return;
-  // Ended early: a provider run that reached an approval in this segment (its stream held for a pause that won't
-  // come now) or is otherwise still going must not carry on unobserved.
-  if (finished.status !== "succeeded") await stopProviderRun({ id: run.id, appId: run.appId, resumeState: saved ?? run.resumeState });
-  await hooks(finished, finished.status, o.message, o.error);
+  // Stop can be committed after saveTurn chose an outcome. Re-read it under the same run lock that settles
+  // the message, closing events and status; a delayed cancellation signal cannot strand an answerable approval.
+  const settled = await withRunFence(run.id, holder, async tx => {
+    const current = await getRun(run.id, tx);
+    if (!current) return null;
+    if (current.cancelRequestedAt) {
+      const cancelled = closeOpenParts(o.produced, "cancelled", { openIds: writer.openStreamIds(), stoppedText: STOPPED_MID_RUN });
+      await updateMessageParts(run.conversationId, cancelled.message, {}, tx);
+      const finished = await finalizeRunTx(tx, run.id, { status: ["running"], holder }, { status: "cancelled", closing: cancelled.chunks });
+      if (!finished) throw new Error(`run ${run.id} changed while locked`);
+      return { run: finished, message: cancelled.message, error: null };
+    }
+    const finished = o.status === "waiting"
+      ? await pauseRunTx(tx, run, holder, turn.native ? { ...(saved ?? {}), native: turn.native } : saved, closing)
+      : await finalizeRunTx(tx, run.id, { status: ["running"], holder }, { status: o.status as FinalStatus, error: o.error, closing });
+    return finished && { run: finished, message: o.message, error: o.error };
+  });
+  const done = settled?.value;
+  if (!done) return;
+  if (done.run.status !== "succeeded" && done.run.status !== "waiting")
+    await stopProviderRun({ id: run.id, appId: run.appId, resumeState: saved ?? run.resumeState });
+  await hooks(done.run, done.run.status, done.message, done.error);
 }
 
 /** Reads the turn's stream into the log. After an abort the stream gets runConfig().cancelDeadlineMs to end by itself. */

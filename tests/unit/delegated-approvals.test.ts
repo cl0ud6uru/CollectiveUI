@@ -6,12 +6,13 @@ import { MockLanguageModelV4, convertArrayToReadableStream } from "ai/test";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { AgentCtx } from "@/lib/agent/types";
 import type { Principal } from "@/lib/auth/groups";
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, enqueue: vi.fn(async () => "fixture-job"), exec: vi.fn(), write: vi.fn(), model: vi.fn(), lock: vi.fn(async (tx: unknown, userId: string) => { void tx; void userId; }) }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, enqueue: vi.fn(async () => "fixture-job"), exec: vi.fn(), write: vi.fn(), model: vi.fn(), lock: vi.fn(async (tx: unknown, userId: string) => { void tx; void userId; }), afterSaved: vi.fn(async () => {}) }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", async () => {
   const { PGlite } = await import("@electric-sql/pglite"); const { drizzle } = await import("drizzle-orm/pglite"); const schema = await import("@/db/schema");
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
 });
+vi.mock("@/lib/agent/persist", async original => ({ ...await original<typeof import("@/lib/agent/persist")>(), afterAssistantSaved: fixture.afterSaved }));
 vi.mock("@/lib/runs/lock", () => ({ lockUserRuns: fixture.lock })); // Embedded Postgres serializes transactions; no advisory locks.
 vi.mock("@/lib/runs/host", () => ({ runHost: () => ({ instanceId:"fixture-worker", shuttingDown:false, track:()=>()=>{} }) }));
 vi.mock("@/lib/jobs", () => ({ enqueueRun:fixture.enqueue, enqueue:async()=>null, scheduleMemoryExtraction:async()=>{}, getBoss:async()=>{throw new Error("No fixture queue transport");} }));
@@ -27,6 +28,8 @@ import { answerTaskApproval, pendingTaskApprovals } from "@/lib/delegation/appro
 import { getRun } from "@/lib/runs/state";
 import { executeRun } from "@/lib/runs/execute";
 import { stopRuns } from "@/lib/runs/store";
+import { rebuildMessage, replayFilter } from "@/lib/runs/replay";
+import { readEvents } from "@/lib/runs/log";
 import { buildToolset } from "@/lib/agent/toolset";
 let owner: Principal; let other: Principal;
 const usage = {inputTokens:{total:1,noCache:1,cacheRead:0,cacheWrite:0},outputTokens:{total:1,text:1,reasoning:0}};
@@ -54,7 +57,7 @@ beforeEach(async()=>{
   await db.insert(schema.botTools).values({botId:"bot",toolKey:"workspace",approval:"auto"});
   await setSetting("sandbox",{enabled:true,access:"everyone",allowedGroupIds:[],allowedUpns:[],allowRunc:false,commandTimeoutSec:120,outputKb:32,deleteAfterDays:30});
   await db.insert(schema.conversations).values([{id:"origin",userId:"owner",botId:"queen",title:"Fixture origin"},{id:"unrelated",userId:"owner",botId:"queen"},{id:"foreign",userId:"other",botId:"queen"}]);
-  fixture.write.mockReset();fixture.write.mockImplementation(async (_ref: string, input: {contentB64:string}) => ({created:true,bytes:Buffer.from(input.contentB64,"base64").length}));fixture.exec.mockReset();fixture.exec.mockResolvedValue({t:"exit",code:0,reason:"exited",ms:1,dropped:0});fixture.enqueue.mockClear();fixture.lock.mockReset();fixture.lock.mockResolvedValue(undefined);scripted();
+  fixture.write.mockReset();fixture.write.mockImplementation(async (_ref: string, input: {contentB64:string}) => ({created:true,bytes:Buffer.from(input.contentB64,"base64").length}));fixture.exec.mockReset();fixture.exec.mockResolvedValue({t:"exit",code:0,reason:"exited",ms:1,dropped:0});fixture.enqueue.mockClear();fixture.afterSaved.mockReset();fixture.afterSaved.mockResolvedValue(undefined);fixture.lock.mockReset();fixture.lock.mockResolvedValue(undefined);scripted();
 });
 afterAll(async()=>{await fixture.client!.close();vi.unstubAllEnvs();});
 async function paused(parts?:LanguageModelV4StreamPart[]) {
@@ -79,6 +82,24 @@ describe("durable native workspace approvals with embedded PostgreSQL and real e
     expect((await getRun(request.runId))?.segment).toBe(1);
     scripted(response());await executeRun(request.runId);await executeRun(request.runId);
     expect(fixture.exec).toHaveBeenCalledTimes(1);expect((await getRun(request.runId))?.status).toBe("succeeded");
+  });
+  it.each(["approval", "success"] as const)("Stop wins after %s outcome selection and before settlement",async kind=>{
+    await db.insert(schema.botTools).values({botId:"queen",toolKey:"workspace",approval:"auto"});
+    await upsertMessage("origin",{id:"race-prompt",role:"user",parts:[{type:"text",text:"Fixture request"}]},null,{});
+    await db.insert(schema.agentRuns).values({id:"race",userId:"owner",conversationId:"origin",messageId:"race-reply",parentMessageId:"race-prompt",botId:"queen",appId:"model"});
+    let reached!:()=>void;const checkpoint=new Promise<void>(r=>{reached=r;});let release!:()=>void;const barrier=new Promise<void>(r=>{release=r;});
+    fixture.afterSaved.mockImplementation(async()=>{reached();await barrier;});scripted(kind==="approval"?undefined:response());
+    const executing=executeRun("race");await checkpoint;
+    try { expect(await stopRuns(owner,"origin")).toEqual({cancelled:0,signalled:1}); } finally { release(); }
+    await executing;
+    const run=(await getRun("race"))!;expect(run.status).toBe("cancelled");expect(run.holder).toBeNull();expect(run.resumeState).toBeNull();
+    const [stored]=await db.select().from(schema.messages).where(eq(schema.messages.id,"race-reply"));
+    expect((stored.parts as {state?:string}[]).some(p=>p.state==="approval-requested")).toBe(false);
+    const events=await readEvents(run.id,0,1000);const filter=replayFilter(run.segment);const chunks=[];
+    for(const event of events){const chunk=filter(event);if(chunk==="end")break;if(chunk)chunks.push(chunk);}
+    const replayed=await rebuildMessage(null,chunks,run.messageId);
+    expect(JSON.parse(JSON.stringify(replayed.parts))).toEqual(stored.parts);
+    expect(fixture.exec).not.toHaveBeenCalled();
   });
   it("denial resumes the child without executing the command",async()=>{
     const {requests}=await paused();const r=requests[0];await answerTaskApproval(owner,"origin",{runId:r.runId,approvalId:r.part.approval!.id,approved:false});scripted(response());await executeRun(r.runId);

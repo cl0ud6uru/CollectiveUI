@@ -122,24 +122,33 @@ export async function pauseRun(
   resumeState: ResumeState | null,
   closing: UIMessageChunk[] = [],
 ): Promise<AgentRun | null> {
-  return db.transaction(async (tx) => {
-    const [row] = await tx
-      .update(agentRuns)
-      .set({
-        status: "waiting",
-        holder: null,
-        resumeState: resumeState as Record<string, unknown> | null,
-        heartbeatAt: sql`now()`,
-        updatedAt: sql`now()`,
-      })
-      .where(and(eq(agentRuns.id, run.id), eq(agentRuns.holder, holder), eq(agentRuns.status, "running"), inArray(agentRuns.executionMode, ["worker", "async_delegate"])))
-      .returning();
-    if (!row) return null;
-    const drafts: EventDraft[] = [...closing.map((chunk) => ({ kind: "chunk" as const, chunk })), { kind: "segment-end" }];
-    const appended = await appendEventsTx(tx, run.id, run.segment, drafts);
-    await notifyRun(tx, { r: run.id, k: "t" });
-    return { ...row, lastSeq: appended?.lastSeq ?? row.lastSeq };
-  });
+  return db.transaction(tx => pauseRunTx(tx, run, holder, resumeState, closing));
+}
+
+/** Pause while the caller holds the run lock, sharing its message/status settlement transaction. */
+export async function pauseRunTx(
+  tx: Tx,
+  run: Pick<AgentRun, "id" | "segment">,
+  holder: string,
+  resumeState: ResumeState | null,
+  closing: UIMessageChunk[] = [],
+): Promise<AgentRun | null> {
+  const [row] = await tx
+    .update(agentRuns)
+    .set({
+      status: "waiting",
+      holder: null,
+      resumeState: resumeState as Record<string, unknown> | null,
+      heartbeatAt: sql`now()`,
+      updatedAt: sql`now()`,
+    })
+    .where(and(eq(agentRuns.id, run.id), eq(agentRuns.holder, holder), eq(agentRuns.status, "running"), inArray(agentRuns.executionMode, ["worker", "async_delegate"])))
+    .returning();
+  if (!row) return null;
+  const drafts: EventDraft[] = [...closing.map((chunk) => ({ kind: "chunk" as const, chunk })), { kind: "segment-end" }];
+  const appended = await appendEventsTx(tx, run.id, run.segment, drafts);
+  await notifyRun(tx, { r: run.id, k: "t" });
+  return { ...row, lastSeq: appended?.lastSeq ?? row.lastSeq };
 }
 
 export type FinalizeFrom = {

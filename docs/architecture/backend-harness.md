@@ -630,3 +630,7 @@ All come from `src/db/schema.ts`, then `npm run db:generate`, then `npm run db:m
 4. **Prompt-injection exfiltration.** Per-user internal networks, a default-empty egress allowlist, secrets never in sandboxes, IP-bound short-lived tokens, ask-by-default commands.
 5. **Protocol churn** (Codex app-server is experimental; the Claude control protocol is undocumented). Exact pins, generated types, recorded fixtures plus fake binaries, fail-closed handling of unknown requests.
 6. **Durable-run correctness.** Full-message replay, boundary tails, LISTEN before SELECT with re-query on reconnect, a heartbeat sweeper, an approval TTL that denies, and the fake-driver e2e suite gating merges.
+
+## Native Stop settlement
+
+The executor checks the durable cancellation request again under the run row lock when settling an approval pause or final outcome. A Stop committed before that lock wins even if its abort notification is delayed. Cancellation closes pending approvals, updates the saved message, appends matching closing events and sets the terminal status in one transaction. The same holder fence remains required. Async task suspension keeps its existing cancellation check and row lock. Stop cannot reverse actions already dispatched.
