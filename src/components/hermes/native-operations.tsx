@@ -6,7 +6,7 @@ import type { RemoteHermesProfile } from '@/lib/remote-hermes/client';
 
 type Panel = 'projects' | 'files' | 'schedules' | 'plugins' | 'system';
 type Row = Record<string, unknown>;
-type Result = { projects?: Row[]; activeId?: string; schedules?: Row[]; plugins?: Row[]; entries?: { name: string; path: string; directory: boolean }[]; roots?: string[]; directory?: string; [key: string]: unknown };
+type Result = { projects?: Row[]; activeId?: string; schedules?: Row[]; plugins?: Row[]; entries?: { name: string; path: string; directory: boolean }[]; workspaceId?: string; projectName?: string; available?: boolean; action?: 'list' | 'read'; path?: string; content?: string; truncated?: boolean; [key: string]: unknown };
 const labels: Record<Panel, string> = { projects: 'Projects', files: 'Directories', schedules: 'Schedules', plugins: 'Plugins', system: 'System' };
 const fieldLabels: Record<string, string> = { id: 'ID', nextRun: 'Next run', lastStatus: 'Last result', cpuCount: 'CPU cores', cpuPercent: 'CPU usage (%)', uptimeSeconds: 'Uptime (seconds)' };
 const fieldLabel = (key: string) => fieldLabels[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase());
@@ -16,6 +16,8 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
   const [profile, setProfile] = useState(nativeSession?.profile ?? profiles[0]?.name ?? '');
   const [panel, setPanel] = useState<Panel>('projects');
   const [directory, setDirectory] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
+  const [selectedFile, setSelectedFile] = useState('');
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState('');
@@ -25,13 +27,14 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
   useEffect(() => {
     if (!profile) return;
     const controller = new AbortController();
-    const query = new URLSearchParams({ profile, panel, ...(directory && panel === 'files' ? { path: directory } : {}) });
+    const query = new URLSearchParams({ profile, panel,
+      ...(panel === 'files' && nativeSession ? { sessionId: nativeSession.id, action: selectedFile ? 'read' : 'list', ...(workspaceId ? { workspaceId } : {}), ...(selectedFile ? { path: selectedFile } : directory ? { path: directory } : {}) } : {}) });
     fetch(`/api/hermes/${encodeURIComponent(connectionId)}/operations?${query}`, { signal: controller.signal, cache: 'no-store' })
       .then(async response => { const value = await response.json(); if (!response.ok) throw new Error(value.error || 'Could not load this Hermes panel.'); return value as Result; })
-      .then(value => { if (!controller.signal.aborted) { setResult(value); setError(''); } })
+      .then(value => { if (!controller.signal.aborted) { setResult(value); setError(''); if (value.workspaceId) setWorkspaceId(value.workspaceId); } })
       .catch(e => { if (!controller.signal.aborted) { setResult(null); setError(e instanceof Error ? e.message : 'Could not load this Hermes panel.'); } });
     return () => controller.abort();
-  }, [connectionId, profile, panel, directory, revision]);
+  }, [connectionId, profile, panel, directory, workspaceId, selectedFile, nativeSession, revision]);
   const reset = () => { setResult(null); setError(''); };
   async function projectRequest(input: { operation: 'prepare'; action: 'create'; name: string } | { operation: 'prepare'; action: 'select'; projectId: string } | { operation: 'prepare'; action: 'pause' | 'resume'; scheduleId: string } | { operation: 'confirm'; confirmation: string }) {
     if (!nativeSession) return;
@@ -50,9 +53,9 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
   }
   const rows = result?.projects ?? result?.schedules ?? result?.plugins;
   return <div className="space-y-4">
-    <div className="flex flex-wrap gap-2"><Select aria-label="Hermes workspace profile" value={profile} onChange={e => { reset(); setPrepared(null); setProfile(e.target.value); setDirectory(''); }}>{profiles.map(p => <option key={p.name} value={p.name}>{p.displayName || p.name}</option>)}</Select>
+    <div className="flex flex-wrap gap-2"><Select aria-label="Hermes workspace profile" value={profile} onChange={e => { reset(); setPrepared(null); setProfile(e.target.value); setDirectory(''); setWorkspaceId(''); setSelectedFile(''); }}>{profiles.map(p => <option key={p.name} value={p.name}>{p.displayName || p.name}</option>)}</Select>
       <Button variant="outline" onClick={() => { reset(); setRevision(r => r + 1); }}>Refresh</Button></div>
-    <nav aria-label="Hermes workspace panels" className="flex flex-wrap gap-2">{(Object.keys(labels) as Panel[]).map(p => <Button key={p} variant={panel === p ? 'primary' : 'outline'} onClick={() => { reset(); setPanel(p); setDirectory(''); }}>{labels[p]}</Button>)}</nav>
+    <nav aria-label="Hermes workspace panels" className="flex flex-wrap gap-2">{(Object.keys(labels) as Panel[]).map(p => <Button key={p} variant={panel === p ? 'primary' : 'outline'} onClick={() => { reset(); setPanel(p); setDirectory(''); setWorkspaceId(''); setSelectedFile(''); }}>{labels[p]}</Button>)}</nav>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <p className="text-sm text-muted-foreground">Hermes profiles are shared native account contexts, not portal tenant boundaries. Project selection changes the active project for this entire profile and may affect other native clients.</p>
     {panel === 'projects' && <section aria-label="Project controls" className="space-y-3 rounded-md border p-3">
@@ -71,9 +74,12 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
     </section>}
     {!profile && <p>No Hermes profiles are available.</p>}
     {profile && !error && !result && <p role="status">Loading {labels[panel].toLowerCase()}…</p>}
-    {result && panel === 'files' && <div className="space-y-3"><div className="flex flex-wrap gap-2">{result.roots?.map(root => <Button key={root} variant="outline" onClick={() => { reset(); setDirectory(root); }}>{root}</Button>)}</div><p className="break-all text-sm">{result.directory}</p>
-      {result.directory && result.roots && !result.roots.includes(result.directory) && <Button variant="outline" onClick={() => { reset(); setDirectory(result.directory!.slice(0, result.directory!.lastIndexOf('/')) || '/'); }}>Parent directory</Button>}
-      <ul className="space-y-1">{result.entries?.map(e => <li key={e.path}>{e.directory ? <button className="text-sm underline" onClick={() => { reset(); setDirectory(e.path); }}>{e.name}/</button> : <span className="text-sm text-muted-foreground">{e.name}</span>}</li>)}</ul>{!result.entries?.length && <p>No visible entries.</p>}</div>}
+    {result && panel === 'files' && <div className="space-y-3">{result.available === false ? <p role="status">No eligible, explicitly selected local project workspace is available for this chat.</p> : <>
+      <p className="text-sm text-muted-foreground">Read-only files in {result.projectName}. Only the selected chat’s persisted local project workspace is available.</p>
+      {result.action === 'read' ? <><div className="flex items-center gap-2"><Button variant="outline" onClick={() => { reset(); setSelectedFile(''); }}>Back to files</Button><span className="break-all text-sm">{result.path}</span></div><pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border p-3 text-sm">{result.content}</pre></>
+        : <><div className="flex items-center gap-2"><span className="break-all text-sm">{result.path || '.'}</span>{result.path && result.path !== '.' && <Button variant="outline" onClick={() => { reset(); setSelectedFile(''); setDirectory(result.path!.includes('/') ? result.path!.slice(0, result.path!.lastIndexOf('/')) : '.'); }}>Parent directory</Button>}</div>
+          <ul className="space-y-1">{result.entries?.map(e => <li key={e.path}>{e.directory ? <button className="text-sm underline" onClick={() => { reset(); setSelectedFile(''); setDirectory(e.path); }}>{e.name}/</button> : <button className="text-sm text-muted-foreground underline" onClick={() => { reset(); setSelectedFile(e.path); }}>{e.name}</button>}</li>)}</ul>{!result.entries?.length && <p>No visible entries.</p>}{result.truncated && <p className="text-sm text-muted-foreground">Showing the first 100 visible entries.</p>}</>}
+    </>}</div>}
     {rows && <div className="space-y-2">{rows.map((r, i) => <article className="rounded-md border p-3 text-sm" key={String(r.id ?? r.name ?? i)}>{Object.entries(r).map(([key, value]) => <div key={key} className="break-all"><span className="text-muted-foreground">{fieldLabel(key)}: </span>{Array.isArray(value) ? value.map((v: Row) => String(v.path)).join(', ') : typeof value === 'boolean' ? value ? 'yes' : 'no' : String(value ?? '—')}</div>)}{panel === 'projects' && <div className="mt-2 flex items-center gap-2">{result?.activeId === r.id && <span aria-current="true" className="text-xs text-muted-foreground">Active project</span>}{r.archived !== true && result?.activeId !== r.id && <Button variant="outline" disabled={!nativeSession || profile !== nativeSession.profile || mutating} onClick={() => void projectRequest({ operation: 'prepare', action: 'select', projectId: String(r.id) })}>Review as active project</Button>}</div>}{panel === 'schedules' && (r.state === 'scheduled' || r.state === 'paused' || r.state === 'error') && <div className="mt-2"><Button variant="outline" disabled={!nativeSession || profile !== nativeSession.profile || mutating} onClick={() => void projectRequest({ operation: 'prepare', action: r.state === 'scheduled' ? 'pause' : 'resume', scheduleId: String(r.id) })}>Review {r.state === 'scheduled' ? 'pause' : 'resume'}</Button></div>}</article>)}{!rows.length && <p>No {labels[panel].toLowerCase()} listed.</p>}</div>}
     {result && panel === 'system' && <dl className="grid gap-2 text-sm">{Object.entries(result).map(([key, value]) => <div key={key}><dt className="text-muted-foreground">{fieldLabel(key)}</dt><dd>{value && typeof value === 'object' ? Object.entries(value).filter(([, v]) => v !== undefined).map(([k, v]) => `${fieldLabel(k)}: ${k === 'percent' ? `${Number(v).toLocaleString()}%` : bytes(Number(v))}`).join(' · ') || 'Unavailable' : value === undefined || value === '' ? 'Unavailable' : String(value)}</dd></div>)}</dl>}
   </div>;
