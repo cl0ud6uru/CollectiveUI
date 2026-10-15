@@ -4,6 +4,8 @@ import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, access, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { diagnosticContext, safeDiagnostics } from './lib/docker-hermes-browser-reporter.mjs';
 import { AcceptanceRefusal, acceptanceDiagnostic, browserAcceptanceEnvironment, EXPECTED_BROWSER_CASES } from './lib/docker-hermes-browser-guard.mjs';
 
 const children = [], logs = [];
@@ -64,6 +66,7 @@ async function main() {
     DOCKER_HERMES_BROWSER: '1', DOCKER_HERMES_BROWSER_ONLINE: '1', DOCKER_HERMES_BROWSER_ENV: path.join(temp, 'broker.env'),
     BASE_URL: 'http://localhost:3327', PLAYWRIGHT_JSON_OUTPUT_FILE: path.join(temp, 'playwright.json'),
     PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH,
+    ACCEPTANCE_DIAGNOSTICS_OUTPUT: path.join(temp, 'browser-diagnostics.json'),
   };
   phase = 'fresh disposable database';
   const require = createRequire(path.join(appRoot, 'package.json'));
@@ -91,7 +94,8 @@ async function main() {
   const app = await start(appRoot, process.execPath, ['node_modules/next/dist/bin/next', 'dev', '--hostname', '127.0.0.1', '--port', '3327'], env, phase); app.fixtureService = true;
   await until(() => fetch('http://localhost:3327/login').then(r => r.ok, () => false), 180000);
   phase = 'browser acceptance';
-  const browser = await start(appRoot, process.execPath, ['node_modules/@playwright/test/cli.js', 'test', '--config', 'playwright.docker-hermes.config.ts', '--reporter=json'], env, phase);
+  const reporter = fileURLToPath(new URL('./lib/docker-hermes-browser-reporter.mjs', import.meta.url));
+  const browser = await start(appRoot, process.execPath, ['node_modules/@playwright/test/cli.js', 'test', '--config', 'playwright.docker-hermes.config.ts', `--reporter=json,${reporter}`], env, phase);
   const code = await finished(browser);
   const report = JSON.parse(await readFile(env.PLAYWRIGHT_JSON_OUTPUT_FILE, 'utf8'));
   const walk = suites => suites.flatMap(suite => [...(suite.specs ?? []).map(spec => ({ title: spec.title, statuses: spec.tests.flatMap(test => test.results.map(result => result.status)) })), ...walk(suite.suites ?? [])]);
@@ -99,6 +103,7 @@ async function main() {
   // Only source-authored titles, canonical status strings and aggregate counts leave the runner.
   const source = await readFile(path.join(appRoot, 'tests/e2e/docker-hermes.spec.ts'), 'utf8');
   evidence.cases = cases.map(item => ({ title: source.includes(`test('${item.title}'`) ? item.title : '(unrecognized case)', statuses: item.statuses.map(s => ['passed', 'failed', 'skipped', 'timedOut', 'interrupted'].includes(s) ? s : 'unknown') }));
+  evidence.browserDiagnostics = safeDiagnostics(JSON.parse(await readFile(env.ACCEPTANCE_DIAGNOSTICS_OUTPUT, 'utf8')), diagnosticContext(source, path.join(appRoot, 'tests/e2e/docker-hermes.spec.ts')));
   evidence.passed = cases.filter(c => c.statuses.length === 1 && c.statuses[0] === 'passed').length;
   evidence.failed = cases.filter(c => c.statuses.some(s => s !== 'passed' && s !== 'skipped')).length;
   evidence.skipped = cases.filter(c => c.statuses.includes('skipped')).length;

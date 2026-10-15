@@ -6,6 +6,8 @@ on:
       - '.github/workflows/docker-hermes-browser.yml'
       - 'scripts/run-docker-hermes-browser-acceptance.mjs'
       - 'scripts/lib/docker-hermes-browser-guard.mjs'
+      - 'scripts/lib/docker-hermes-browser-reporter.mjs'
+      - 'tests/unit/docker-hermes-browser-reporter.test.mjs'
       - 'tests/unit/docker-hermes-browser-guard.test.mjs'
 
 permissions:
@@ -57,7 +59,7 @@ jobs:
           DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/collective_docker_hermes_test
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/acceptance-chromium
         run: |
-          env -i PATH="$PATH" HOME="$HOME" node --test tests/unit/docker-hermes-browser-guard.test.mjs
+          env -i PATH="$PATH" HOME="$HOME" node --test tests/unit/docker-hermes-browser-guard.test.mjs tests/unit/docker-hermes-browser-reporter.test.mjs
           env -i PATH="$PATH" HOME="$HOME" \
             CI=true GITHUB_ACTIONS=true \
             GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" \

@@ -219,3 +219,12 @@ The narrowly scoped `Disposable Docker Hermes browser acceptance` workflow runs 
 The workflow invokes Node with an explicit minimal environment, dropping ambient runner provider/configuration values before the guard starts; the standalone guard still rejects those values if supplied directly. Before importing PostgreSQL or application code, the harness refuses non-Linux/non-CI execution, ambient `PG*` overrides, non-loopback or non-named databases, URL query/fragment overrides, reused credentials, ambient provider/broker/auth configuration and a changed source checkout. Only the CI run's disposable database is permitted. The database must have no user tables before migrations. Chromium has an isolated install/home; existing owner browsers and profiles are never used.
 
 Refusals report fixed reason codes and allowlisted public environment key names only; values, unknown key names, URLs and exception bodies are never reported. Only `acceptance-evidence/summary.json` is uploaded: app/spec SHA, harness SHA, public test titles, canonical statuses/counts and fixed diagnostic codes. Screenshots, traces, raw errors/logs, environment files and credentials remain on the disposable runner. A skipped, failed, interrupted or missing case fails acceptance; a workflow definition alone is not passing browser evidence. Scheduled runs and deployment are not part of this workflow.
+
+The acceptance workflow also loads a reporter from the harness checkout without
+changing the accepted app or spec. Failure diagnostics contain only a source
+allowlisted case title, canonical status/error category, and line/column within
+`tests/e2e/docker-hermes.spec.ts`. Raw assertion messages, locator values, errors,
+stacks, URLs, local paths and captured images never enter the uploaded summary.
+The orchestration validates this diagnostic projection again before upload.
+A diagnostic rerun still requires all ten cases to pass; serially skipped cases
+remain unproven.
