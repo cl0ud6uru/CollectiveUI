@@ -16,7 +16,7 @@ export const isArchitectBot = (bot: Pick<Bot, "id"> | null | undefined, botId: s
   !!bot && !!botId && bot.id === botId;
 
 /** SQL: this bots row is the installed Architect. Never NULL: false while no receipt exists, so `not` stays safe. */
-export const architectBotSql = sql`${bots.id} = coalesce((select s.value->>'botId' from settings s where s.key = ${ARCHITECT_SETTING}), '')`;
+export const architectBotSql = () => sql`${bots.id} = coalesce((select s.value->>'botId' from settings s where s.key = ${ARCHITECT_SETTING}), '')`;
 
 export type ArchitectCallFacts = {
   /** The caller reloaded from the database now (null: deleted or disabled). */

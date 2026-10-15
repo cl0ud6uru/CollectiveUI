@@ -119,7 +119,7 @@ function botVisibleTo(p: Principal, adminSeesAll = true) {
         : sql`false`),
     ),
   );
-  return p.isAdmin ? and(privateNative, or(architectBotSql, audience)) : and(privateNative, sql`not (${architectBotSql})`, audience);
+  return p.isAdmin ? and(privateNative, or(architectBotSql(), audience)) : and(privateNative, sql`not (${architectBotSql()})`, audience);
 }
 
 export async function listAccessibleBots(p: Principal, q: DbOrTx = db): Promise<Bot[]> {
