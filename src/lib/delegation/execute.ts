@@ -7,7 +7,7 @@ import { afterAssistantSaved, saveAssistantMessage, type PersistTurnInput } from
 import { resolveTurnTarget } from "@/lib/agent/target";
 import type { AgentCtx } from "@/lib/agent/types";
 import { loadMessageRows, rowToUIMessage, type PortalUIMessage } from "@/lib/chat/store";
-import { userFacingMessage } from "@/lib/llm";
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import { HttpError } from "@/lib/authz";
 import { loadHermesRunContext } from "@/lib/runs/hermes-context";
 import { hermesAdmissionRecorder } from "@/lib/runs/hermes-admission";
@@ -23,7 +23,7 @@ import { abortKindOf, RunAbort, runConfig, type FinalStatus, type RunHandle } fr
 import { admitDelegation, assertTaskExecution, type DelegatedTask } from "./store";
 import type { DelegationResult } from "./policy";
 
-const safeError = (e: unknown) => e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The delegated task could not finish.";
+const safeError = (e: unknown) => nativeErrorText(e, e instanceof HttpError && e.constructor === HttpError ? e.message : undefined);
 
 /** One admitted invocation, never exposed as a queue handler. The task's caller owns its lifetime. */
 async function executeInline(task: DelegatedTask, parent: AgentCtx, signal: AbortSignal | undefined) {
@@ -155,7 +155,7 @@ export async function* runDelegation(ctx: AgentCtx, receiverId: string, prompt: 
   const { task, created } = await admitDelegation(ctx, receiverId, prompt, toolCallId, runHost().instanceId, "sync", authorizationMode);
   const streamStop = new AbortController();
   const execution = (created ? executeInline(task, ctx, signal) : Promise.resolve()).catch(err => {
-    console.error(`[delegation] task ${task.id}: finalization failed`, err);
+    nativeErrorText(err);
     streamStop.abort(new Error("The task was interrupted before its result could be saved."));
   });
   // Always observe the committed child. Repeated invocations attach, never execute another child.

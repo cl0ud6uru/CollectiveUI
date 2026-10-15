@@ -34,6 +34,7 @@ export type AppRow = {
   systemPrompt: string | null;
   temperature: number | null;
   maxTokens: number | null;
+  contextWindowTokens?: number | null;
   supportsVision: boolean;
   supportsTools: boolean;
   embeddingModel: string | null;
@@ -58,6 +59,7 @@ const EMPTY: FormState = {
   systemPrompt: null,
   temperature: null,
   maxTokens: null,
+  contextWindowTokens: null,
   supportsVision: false,
   supportsTools: true,
   embeddingModel: null,
@@ -154,6 +156,7 @@ function AppDialog({
       systemPrompt: f.systemPrompt,
       temperature: f.temperature,
       maxTokens: f.maxTokens,
+      contextWindowTokens: f.contextWindowTokens,
       supportsVision: f.supportsVision,
       supportsTools: f.supportsTools,
       embeddingModel: f.embeddingModel,
@@ -375,6 +378,18 @@ function AppDialog({
                 onChange={(e) => set("maxTokens", e.target.value === "" ? null : Number(e.target.value))}
               />
             </Field>
+            )}
+            {!agent && (
+              <Field label="Model context window" hint="Optional. Input is conservatively budgeted below this size; default is 16,384 tokens. Max output tokens are reserved separately.">
+                <Input
+                  aria-label="Model context window"
+                  type="number"
+                  min={4096}
+                  max={2_000_000}
+                  value={f.contextWindowTokens ?? ""}
+                  onChange={(e) => set("contextWindowTokens", e.target.value === "" ? null : Number(e.target.value))}
+                />
+              </Field>
             )}
           </div>
           <Field label="System prompt">
