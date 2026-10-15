@@ -327,6 +327,8 @@ class HubOwner:
                 with self._guard:
                     self._owners[str(home)] = binding
                     self._transports[transport] = binding
+                if p.phase == "recovery":
+                    self._stop_profile_notification_pollers(home)
                 result = ClaimResult(accepted=True, portal_connection_id=p.portal_connection_id,
                     portal_instance_id=p.portal_instance_id, profile=profile, portal_generation=p.portal_generation,
                     portal_socket_epoch=p.portal_socket_epoch, native_generation=native_generation,
@@ -337,6 +339,25 @@ class HubOwner:
             return self._err(rid, "Profile ownership is busy; no operation was sent.")
         except (OSError, sqlite3.Error, ValueError):
             return self._err(rid, "Profile ownership state is unavailable; no operation was sent.", 5031)
+
+    def _stop_profile_notification_pollers(self, home):
+        """Stop this profile's long-lived pollers after recovery-only ownership is durable.
+
+        Pollers are counted as workers until their loops exit, so a recovery can never promote
+        while one might still publish. Other profiles keep their independent pollers running.
+        """
+        with self.server._sessions_lock:
+            sessions = list(self.server._sessions.values())
+            for session in sessions:
+                try:
+                    session_home = Path(self.server._session_home(session)).resolve()
+                except (OSError, TypeError, ValueError):
+                    continue
+                if session_home != Path(home).resolve():
+                    continue
+                stop = session.get("_notif_stop")
+                if hasattr(stop, "set"):
+                    stop.set()
 
     def _profile_for_request(self, params):
         requested = self._home(params["profile"]) if isinstance(params.get("profile"), str) and params["profile"].strip() else None
