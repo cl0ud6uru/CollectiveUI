@@ -28,7 +28,7 @@ export async function readNativeDrain(socket: Rpc, input: NativeDrainBinding): P
   await requireCapability(socket);
   return validateReceipt(await socket.call('collective.recovery.status', { recovery_id: binding.recovery_id }), binding);
 }
-async function requireCapability(socket: Rpc) {
+export async function requireCapability(socket: Rpc) {
   try {
     if (capability.safeParse(await socket.call('collective.recovery.capabilities')).success) return;
   } catch (error) {

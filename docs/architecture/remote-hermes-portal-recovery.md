@@ -1,0 +1,21 @@
+# Owner-confirmed native reservation recovery
+
+An unknown prompt or queue acknowledgement keeps the portal reservation blocked. An idle snapshot, successful interrupt, disconnected socket or native close reply cannot prove the original operation stopped. The owner can review recovery, then explicitly confirm cancellation of unresolved work in that conversation. The portal never resends a prompt or protected answer as recovery.
+
+This path requires both explicitly installed native adapters: `collective.cancel-drain.v1` (PR247) and the native ownership fence from issue96. An older portal hub, missing ownership capability, unsupported child/slash worker or unavailable native runtime fails closed. These are optional adapter contracts, not APIs supplied by the unmodified pinned dashboard. No adapter installation or deployment is performed by this change.
+
+## Immutable intent and release
+
+Preparation refreshes the owned native conversation before capturing its exact binding. The durable intent contains the authenticated owner, connection, profile, portal/native/stored session IDs, exact session revision and ownership generation, portal lease owner/generation, actual socket epoch, native owner fence, the exact prompt/queue reservation set and a SHA256 digest of the connection identity plus encrypted credential envelope. It contains no prompt text, protected answer, plaintext credential or raw native diagnostic. A rotated credential envelope invalidates confirmation conservatively.
+
+Preparation verifies both capabilities without cancelling work. The confirmation expires after one minute. Confirming atomically transitions the same durable UUID to pending before any cancellation can be sent. Confirmed intents fence normal event and snapshot reconciliation; lease/identity validation still applies. The ownership adapter must reject obsolete transports at native execution, including recovery status reads by their native journal binding. PostgreSQL lease election alone is insufficient.
+
+Only the first confirmation dispatches cancel-and-drain. Duplicate confirms and explicit checks query the same native UUID. They do not repeat cancellation, prompts or answers. If the portal crashes after committing intent but before native admission, the unresolved intent remains blocked; absence of a journal row is not permission to reset or replay.
+
+The strict native client validates the version, runtime/stored IDs, UUID and exact reservation IDs of every receipt. A validated receipt is retained even if later local settlement fails. Only a `drained` receipt with reason `drained`, together with unchanged ownership, credentials, socket, session revision and reservation set, permits the transaction to clear both reservations, set the runtime binding to NULL and increment the session revision and ownership generation. Existing turn receipts and native conversation history remain. Cache invalidation follows commit and checks the new generation before eviction. A later resume creates a fresh native runtime; original work is never automatically submitted.
+
+Pending, invalid, mismatched, stale, missing or unavailable evidence leaves reservations blocked. A process restart or native owner takeover does not silently rebind the old intent. The UI reports that recovery remains unverified and offers an explicit evidence check. Ordinary workspace polling pauses while the confirmation dialog is open; server fences remain authoritative for other tabs and processes.
+
+## Verification boundary
+
+The focused PGlite suite exercises the real durable intent and transactional release code with synthetic native ownership/transport responses. It verifies revision/generation/runtime/profile/stored-ID/credential/socket changes, owner and confirmation boundaries, exact receipt matching, lost replies, same-UUID checks, pending receipts, retained turn receipts and cache invalidation. The API suite checks origin/authentication before dispatch, bounded strict inputs and diagnostic redaction. These tests do not prove native ownership fencing, distributed failover, actual adapter installation, detached resource teardown or external side-effect rollback. Combined exact-pin native ownership/drain conformance must pass before enabling the composed capability.

@@ -6,6 +6,7 @@ import { Input, Select, Textarea } from '@/components/ui/input';
 import { Markdown } from '@/components/chat/markdown';
 import type { RemoteHermesProfile } from '@/lib/remote-hermes/client';
 import type { NativePrompt, NativeSessionView } from '@/lib/remote-hermes/view';
+import { NativeRecovery } from './native-recovery';
 import { NativeAdministration } from './native-administration';
 import { parseNativeInput, type NativeCommandCatalog } from '@/lib/remote-hermes/commands';
 import { insertCommandIntoDraft } from '@/lib/chat/composer-commands';
@@ -22,6 +23,8 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
 }) {
   const [profile, setProfile] = useState(saved.find(s => s.id === initialSession)?.profile ?? profiles[0]?.name ?? saved[0]?.profile ?? 'default');
   const [sessionId, setSessionId] = useState(initialSession);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryGeneration, setRecoveryGeneration] = useState(0);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [browse, setBrowse] = useState<Browse>({ sessions: [], linked: saved });
   const [older, setOlder] = useState<NativeSessionView['messages']>([]);
@@ -69,7 +72,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     return () => { abort.abort(); clearTimeout(timer); };
   }, [loadBrowse]);
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId || recoveryOpen) return;
     const generation = selection.current;
     const abort = new AbortController(); let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -81,7 +84,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
       finally { if (!abort.signal.aborted && generation === selection.current) timer = setTimeout(poll, document.hidden ? 5000 : 1000); }
     }
     void poll(); return () => { abort.abort(); clearTimeout(timer); };
-  }, [endpoint, sessionId]);
+  }, [endpoint, sessionId, recoveryOpen, recoveryGeneration]);
   useEffect(() => {
     if (!sessionId || !allowed) return;
     const abort = new AbortController(), generation = selection.current;
@@ -105,7 +108,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     setOlder([]); setHistoryOffset(0); setHistoryMore(true); setHistoryBusy(false);
     setSnapshot(null); setSessionId(id); setProfile(selectedProfile); setDetails(null); setError('');
     setCatalog(null); setShowCommands(false); setCommandSearch(''); setCommandIndex(0); commandAttempt.current = null;
-    closeYolo();
+    closeYolo(); setRecoveryOpen(false);
     setText(''); setFiles([]); if (fileInput.current) fileInput.current.value = '';
     if (selectedProfile !== profile) setBrowse({ sessions: [], linked: saved });
     const url = new URL(location.href);
@@ -230,6 +233,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
           <Button size="sm" variant="outline" disabled={busy || !enabled} onClick={() => void inspect('context')}>Context</Button>
           {(snapshot.running || snapshot.uncertain) && <Button size="sm" variant="danger" disabled={busy} onClick={() => void action({ operation: 'stop' })}>Stop</Button>}
         </header>
+        {snapshot.uncertain && <NativeRecovery key={`recovery-${sessionId}`} connectionId={connectionId} sessionId={sessionId} disabled={busy} onOpenChange={setRecoveryOpen} onApplied={() => { setSnapshot(null); setRecoveryGeneration(value => value + 1); }} />}
         <NativeAdministration key={sessionId} connectionId={connectionId} sessionId={sessionId} allowed={enabled} running={snapshot.running || snapshot.uncertain || snapshot.queuePending || !!snapshot.queued} />
         {Object.keys(snapshot.usage).length > 0 && <p className="text-xs text-muted">{Object.entries(snapshot.usage).map(([k, v]) => `${k.replaceAll('_', ' ')}: ${v}`).join(' · ')}</p>}
         {snapshot.uncertain && <p role="status" className="text-sm">Hermes has not confirmed the last operation. This chat is being checked automatically. Start a new chat if its outcome cannot be recovered; sending again could repeat the work.</p>}
