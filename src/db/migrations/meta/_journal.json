@@ -449,6 +449,13 @@
       "when": 1792059357800,
       "tag": "0063_remote_hermes_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1792060395448,
+      "tag": "0064_pet_generation_preview_recovery",
+      "breakpoints": true
     }
   ]
 }
