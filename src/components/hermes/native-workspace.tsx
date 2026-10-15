@@ -11,11 +11,13 @@ import { parseNativeInput, type NativeCommandCatalog } from '@/lib/remote-hermes
 import { insertCommandIntoDraft } from '@/lib/chat/composer-commands';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { sessionYoloCompatible, yoloStatusText, type YoloConfirmation } from '@/lib/remote-hermes/yolo-contract';
+import { nativeModelChoices, sessionModelCompatible, type NativeModelChoice } from '@/lib/remote-hermes/model-contract';
 
 type Saved = { id: string; storedId: string; title: string; profile: string; status: string };
 type Snapshot = NativeSessionView & { admissionAllowed: boolean; yoloAllowed?: boolean };
 type Browse = { sessions: { id: string; title?: string; offset?: number }[]; linked: Saved[]; nextOffset?: number; hasMore?: boolean };
 type Operation = Record<string, unknown>;
+type ModelConfirmation = { confirmation: string; expiresAt: number; model: string; provider: string; profile: string; title: string; currentModel: string; currentProvider: string; warning?: string };
 
 export function NativeWorkspace({ connectionId, profiles, saved, allowed, initialSession, initialError }: {
   connectionId: string; profiles: RemoteHermesProfile[]; saved: Saved[]; allowed: boolean; initialSession: string | null; initialError: string;
@@ -36,8 +38,11 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
   const [yoloDialog, setYoloDialog] = useState<{ confirmation?: YoloConfirmation } | null>(null);
   const [yoloError, setYoloError] = useState('');
   const [yoloExpired, setYoloExpired] = useState(false);
+  const [modelDialog, setModelDialog] = useState<{ choices: NativeModelChoice[]; model: string; provider: string; confirmation?: ModelConfirmation } | null>(null);
+  const [modelExpired, setModelExpired] = useState(false);
   const yoloGeneration = useRef(0);
   const yoloDraft = useRef<string | null>(null);
+  const modelGeneration = useRef(0);
   const commandAttempt = useRef<{ key: string; attachments: File[]; requestId: string } | null>(null);
   const actionPending = useRef(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -106,6 +111,7 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
     setSnapshot(null); setSessionId(id); setProfile(selectedProfile); setDetails(null); setError('');
     setCatalog(null); setShowCommands(false); setCommandSearch(''); setCommandIndex(0); commandAttempt.current = null;
     closeYolo();
+    closeModel();
     setText(''); setFiles([]); if (fileInput.current) fileInput.current.value = '';
     if (selectedProfile !== profile) setBrowse({ sessions: [], linked: saved });
     const url = new URL(location.href);
@@ -157,12 +163,58 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
       if (typeof result.effectiveBypass === 'boolean') setSnapshot(s => s ? { ...s, yolo: result.effectiveBypass } : s);
     }
   }
+  function closeModel() { ++modelGeneration.current; setModelDialog(null); setModelExpired(false); }
+  const modelReady = !!snapshot && enabled && sessionModelCompatible(snapshot) && !snapshot.running && !snapshot.uncertain && !snapshot.queuePending && !snapshot.queued && !snapshot.prompts.length;
+  async function openModel() {
+    const generation = ++modelGeneration.current;
+    setModelDialog({ choices: [], model: '', provider: '' }); setError(''); setModelExpired(false);
+    if (!modelReady) return;
+    const result = await action({ input: { operation: 'options' } }, [], '/model');
+    if (generation !== modelGeneration.current || !result) return;
+    const choices = nativeModelChoices({ providers: (result as { choices?: unknown[] }).choices?.reduce((rows: Record<string, unknown>[], choice) => {
+      const c = choice as NativeModelChoice; const row = rows.find(item => item.slug === c.provider);
+      if (row) (row.models as string[]).push(c.model); else rows.push({ slug: c.provider, name: c.providerName, authenticated: true, models: [c.model] });
+      return rows;
+    }, []) ?? [] });
+    const current = result as { model?: string; provider?: string };
+    const selected = choices.find(c => c.model === current.model && c.provider === current.provider) ?? choices[0];
+    setModelDialog({ choices, model: selected?.model ?? '', provider: selected?.provider ?? '' });
+  }
+  async function prepareModel() {
+    if (!modelDialog || !modelReady || !modelDialog.model || !modelDialog.provider) return;
+    const generation = modelGeneration.current;
+    const result = await action({ input: { operation: 'prepare', model: modelDialog.model, provider: modelDialog.provider } }, [], '/model');
+    if (generation === modelGeneration.current && result?.confirmation) setModelDialog(s => s ? { ...s, confirmation: result as ModelConfirmation } : s);
+  }
+  async function confirmModel() {
+    const confirmation = modelDialog?.confirmation;
+    if (!confirmation || !modelReady || modelExpired) return;
+    const generation = modelGeneration.current;
+    const result = await action({ input: { operation: 'confirm', confirmation: confirmation.confirmation } }, [], '/model');
+    if (generation !== modelGeneration.current || !result) return;
+    if (result.confirmRequired === true && typeof result.confirmation === 'string' && typeof result.warning === 'string') {
+      setModelExpired(false);
+      setModelDialog(s => s ? { ...s, confirmation: result as ModelConfirmation } : s);
+      return;
+    }
+    if (result.accepted === true) {
+      closeModel(); commandAttempt.current = null;
+      setDetails({ title: 'Hermes session model', text: result.output });
+      if (typeof result.model === 'string' && typeof result.provider === 'string') setSnapshot(s => s ? { ...s, model: result.model, provider: result.provider } : s);
+    }
+  }
   useEffect(() => {
     const expiresAt = yoloDialog?.confirmation?.expiresAt;
     if (!expiresAt) return;
     const timer = setTimeout(() => setYoloExpired(true), Math.max(0, expiresAt - Date.now()));
     return () => clearTimeout(timer);
   }, [yoloDialog]);
+  useEffect(() => {
+    const expiresAt = modelDialog?.confirmation?.expiresAt;
+    if (!expiresAt) return;
+    const timer = setTimeout(() => setModelExpired(true), Math.max(0, expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [modelDialog]);
   async function loadOlder() {
     if (!sessionId || historyBusy) return;
     setHistoryBusy(true); setError('');
@@ -223,7 +275,8 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
       {error && <p role="alert" className="rounded-lg border border-danger p-3 text-sm">{error}</p>}
       {!sessionId ? <p className="text-muted">Choose a conversation or start a new Hermes chat.</p> : !snapshot ? <p role="status">Opening Hermes conversation…</p> : <>
         <header className="flex flex-wrap items-center gap-2">
-          <h2 className="font-medium">{snapshot.title}</h2><span className="text-xs text-muted">{snapshot.model} · {snapshot.connection}</span>
+          <h2 className="font-medium">{snapshot.title}</h2><span className="text-xs text-muted">{snapshot.model} · {snapshot.provider} · {snapshot.connection}</span>
+          <Button size="sm" variant="outline" disabled={busy || !modelReady} onClick={() => void openModel()}>Model…</Button>
           {(snapshot.yolo === true || snapshot.approvalMode === 'off') && <span role="status" className="text-sm text-danger">Hermes effective approval bypass is active</span>}
           <Button size="sm" variant="outline" disabled={busy || !enabled} onClick={() => { yoloDraft.current = null; setError(''); setYoloError(''); setYoloDialog({}); }}>Approval mode</Button>
           <Button size="sm" variant="outline" disabled={busy || !enabled} onClick={() => void inspect('catalog')}>Commands &amp; skills</Button>
@@ -294,6 +347,42 @@ export function NativeWorkspace({ connectionId, profiles, saved, allowed, initia
             <Button variant="outline" disabled={busy || !yoloReady} onClick={() => void prepareYolo('off')}>Disable session YOLO…</Button>
           </div>}
           <Button variant="outline" onClick={closeYolo}>Cancel</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!modelDialog} onOpenChange={open => { if (!open) closeModel(); }}>
+      <DialogContent title={modelDialog?.confirmation?.warning ? 'Confirm Hermes model warning' : modelDialog?.confirmation ? 'Confirm session model change' : 'Choose a Hermes model'} description="Changes only this native conversation. The profile default is not changed.">
+        <div className="space-y-3 text-sm">
+          <p>Connection: {connectionId}. Profile: {modelDialog?.confirmation?.profile || snapshot?.profile}. Conversation: {modelDialog?.confirmation?.title || snapshot?.title}.</p>
+          <p>Current: {modelDialog?.confirmation ? `${modelDialog.confirmation.currentModel} · ${modelDialog.confirmation.currentProvider}` : `${snapshot?.model} · ${snapshot?.provider}`}</p>
+          <p>Other native clients sharing this conversation will see the selection. No prompt is sent; your next explicit message may use this provider and its billing terms.</p>
+          {modelDialog?.confirmation ? <>
+            <p>Selected: <strong>{modelDialog.confirmation.model} · {modelDialog.confirmation.provider}</strong></p>
+            {modelDialog.confirmation.warning && <p role="alert" className="whitespace-pre-wrap rounded border border-danger p-3">{modelDialog.confirmation.warning}</p>}
+            <p>This confirmation expires in one minute. Confirming changes only the session model.</p>
+            {modelExpired && <p role="status">Confirmation expired. Cancel and choose the model again.</p>}
+            <Button disabled={busy || !modelReady || modelExpired} onClick={() => void confirmModel()}>{modelDialog.confirmation.warning ? 'Confirm model warning' : 'Confirm session model'}</Button>
+          </> : <>
+            <label className="block space-y-1">Provider
+              <Select aria-label="Hermes model provider" value={modelDialog?.provider ?? ''} onChange={e => {
+                const provider = e.target.value; const first = modelDialog?.choices.find(c => c.provider === provider);
+                setModelDialog(s => s ? { ...s, provider, model: first?.model ?? '' } : s);
+              }}>
+                {[...new Map((modelDialog?.choices ?? []).map(c => [c.provider, c.providerName])).entries()].map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              </Select>
+            </label>
+            <label className="block space-y-1">Model
+              <Select aria-label="Hermes model" value={modelDialog?.model ?? ''} onChange={e => setModelDialog(s => s ? { ...s, model: e.target.value } : s)}>
+                {(modelDialog?.choices ?? []).filter(c => c.provider === modelDialog?.provider).map(c => <option key={c.model} value={c.model}>{c.model}</option>)}
+              </Select>
+            </label>
+            {!modelDialog?.choices.length && <p role="status">No explicitly authenticated provider/model choices are available.</p>}
+            {snapshot && !sessionModelCompatible(snapshot) && <p role="status">This runtime is unavailable for model changes. Verified Hermes 0.21.5 with native desktop contract 8 and a matching profile is required.</p>}
+            {snapshot && (snapshot.running || snapshot.uncertain || snapshot.queuePending || snapshot.queued || snapshot.prompts.length > 0) && <p role="status">Finish pending prompts, queued work and the native turn before changing its model.</p>}
+            <Button disabled={busy || !modelReady || !modelDialog?.model || !modelDialog.provider} onClick={() => void prepareModel()}>Review model change…</Button>
+          </>}
+          {error && <p role="alert">{error}</p>}
+          <Button variant="outline" onClick={closeModel}>Cancel</Button>
         </div>
       </DialogContent>
     </Dialog>
