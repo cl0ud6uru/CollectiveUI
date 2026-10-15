@@ -7,4 +7,4 @@ export const NON_GRANTABLE_TOOLS: ReadonlySet<string> = new Set(["workspace_bash
 /** Tools a Hermes server runs itself: Hermes decides what needs approval, and each approval is for one call only. */
 export const isHermesTool = (toolName: string) => toolName.startsWith("hermes__");
 
-export const isGrantable = (toolName: string) => !NON_GRANTABLE_TOOLS.has(toolName) && !isHermesTool(toolName);
+export const isGrantable = (toolName: string) => !NON_GRANTABLE_TOOLS.has(toolName) && !isHermesTool(toolName) && !toolName.startsWith("admin_");

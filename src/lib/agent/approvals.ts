@@ -30,6 +30,7 @@ export type ApprovalDecisionInput = {
  * (An admin turning an MCP tool off removes it from the toolset before this runs.)
  */
 export function resolveApproval(i: ApprovalDecisionInput): "user-approval" | undefined {
+  if (i.toolName === "admin_set_bot_enabled") return "user-approval";
   if (i.enforced.includes(i.toolName) || i.enforced.includes(i.toolKey) || i.mcp?.requireApproval) return "user-approval";
   const mode = i.mcp?.override ?? i.mode;
   const ask = mode === "ask" || (mode === "smart" && !!i.mcp && !(i.mcp.trusted && i.mcp.readOnly && !i.mcp.destructive));

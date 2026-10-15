@@ -28,6 +28,8 @@ import { memoryTools } from "./tools/memory";
 import { skillsForBot, skillTool, learnedSkillsForTurn } from "./tools/skills";
 import { nativeSearchFor } from "./native-search";
 import { webTools } from "./tools/web";
+import { adminTools } from "./tools/admin";
+import { authorizeArchitectCall } from "./tools/admin-guard";
 import { workspaceTools } from "./tools/workspace";
 import { workspaceAttachmentTool } from "./tools/workspace-attachment";
 import { integratedAgentBrowserTools } from "@/lib/agent-browser/native-integration";
@@ -190,6 +192,12 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
     }
     const s = skillTool(ctx, skills);
     if (s) entries.push(s);
+  }
+
+  // Installation receipt and fresh actor/session checks, repeated at every dispatch.
+  if ((await getSetting("architectBot")).botId === bot.id) {
+    try { await authorizeArchitectCall(ctx); entries.push(...adminTools(ctx)); }
+    catch { /* Unavailable, non-admin, group and unattended turns receive no admin tools. */ }
   }
 
   // MCP servers: one access check for all of them. Servers with an accepted tool snapshot connect lazily, on
