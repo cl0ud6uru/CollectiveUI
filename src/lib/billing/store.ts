@@ -11,6 +11,7 @@ import { BILLING_REFRESH_COOLDOWN_MS, type BillingAccountView } from './contract
 import { readOpenAISpending } from './openai';
 
 import { billingAad } from './secrets';
+import { readBillingAccounts } from './read';
 const Input = z.object({ id: z.string().min(1).max(100).optional(), name: z.string().trim().min(1).max(80), organization: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
   adminKey: z.string().max(10000).optional(), enabled: z.boolean(), showHealthBar: z.boolean() }).strict();
 export type BillingAccountInput = z.input<typeof Input>;
@@ -20,8 +21,7 @@ export function billingView(row: Account): BillingAccountView {
     snapshot: row.snapshot, lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null, lastError: row.lastError };
 }
 export async function listBillingAccounts(p: Principal) {
-  assertAdmin(p);
-  return (await db.select().from(providerBillingAccounts).orderBy(providerBillingAccounts.name)).map(billingView);
+  return readBillingAccounts(p);
 }
 export async function saveBillingAccount(p: Principal, raw: BillingAccountInput) {
   assertAdmin(p); const parsed = Input.safeParse(raw);

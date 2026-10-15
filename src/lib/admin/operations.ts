@@ -5,11 +5,11 @@ import {
 } from "@/db/schema";
 import type { Principal } from "@/lib/auth/groups";
 import { assertAdmin } from "@/lib/authz";
-import { listBillingAccounts } from "@/lib/billing/store";
+import { readBillingAccounts } from "@/lib/billing/read";
 import { QUEUES } from "@/lib/jobs";
 import { sandboxd } from "@/lib/sandbox/client";
 import { workspaceConfigState } from "@/lib/sandbox/setup";
-import { readWorkspaceSetup } from "@/lib/sandbox/setup-server";
+import { readWorkspaceSetup } from "@/lib/sandbox/setup-check";
 import { listSandboxRows, listWorkspaceInstances } from "@/lib/sandbox/store";
 import { getSetting } from "@/lib/settings";
 import { usageSummary } from "@/lib/usage";
@@ -111,13 +111,13 @@ async function workerCheck(): Promise<Check> {
 
 async function queueCheck(): Promise<Check> {
   try {
-    const queues = await within(5000, adminQueues(), null as Awaited<ReturnType<typeof adminQueues>> | null);
+    const queues = await within(5000, readPersistedQueues(), null as QueueCounts[] | null);
     if (!queues) return { id: "queues", label: "Job queues", state: "unknown", detail: "The job queue did not answer within 5 seconds." };
     const failed = queues.reduce((n, q) => n + q.failed, 0);
     return { id: "queues", label: "Job queues", state: failed ? "warn" : "pass",
       detail: failed ? `${failed} recently failed job(s) are retained; see admin_jobs.` : `${queues.length} queues readable, no retained failures.` };
   } catch {
-    return { id: "queues", label: "Job queues", state: "fail", detail: "The job queue could not be read." };
+    return { id: "queues", label: "Job queues", state: "unknown", detail: "Persisted job queue counters could not be read." };
   }
 }
 
@@ -213,22 +213,37 @@ export async function adminRuns(p: Principal, opts: { hours?: number; limit?: nu
   return { windowHours: hours, byStatus: Object.fromEntries(byStatus.map(r => [r.status, r.count])), active };
 }
 
-/** pg-boss queue counts. Job payloads (ids) and outputs are not returned. */
-async function adminQueues() {
-  const { getBoss } = await import("@/lib/jobs");
-  const queues = await (await getBoss()).getQueues(Object.values(QUEUES));
-  return queues.map(q => ({ name: q.name, ready: q.readyCount, deferred: q.deferredCount, active: q.activeCount, failed: q.failedCount, total: q.totalCount }));
+type QueueCounts = { name: string; ready: number; deferred: number; active: number; failed: number; total: number };
+
+/** Read the persisted pg-boss counters without starting its client or creating queues. */
+async function readPersistedQueues(): Promise<QueueCounts[]> {
+  const names = Object.values(QUEUES);
+  const queueNames = sql.join(names.map(name => sql`${name}`), sql`, `);
+  const rows = await db.execute<QueueCounts>(sql`
+      select name, ready_count as ready, deferred_count as deferred, active_count as active,
+        failed_count as failed, total_count as total
+      from pgboss.queue
+      where name in (${queueNames})
+      order by name
+    `);
+  return rows.rows;
 }
 
 export async function adminJobs(p: Principal) {
   assertAdmin(p);
-  return { queues: await adminQueues() };
+  try {
+    return { available: true, queues: await readPersistedQueues() };
+  } catch {
+    // The queue catalog may not have been installed or may be unavailable. Do not
+    // initialize pg-boss here: this is an observational read and must not create queues.
+    return { available: false, queues: [], reason: "The persisted pg-boss queue counters are unavailable." };
+  }
 }
 
 export async function adminSpending(p: Principal, opts: { days?: number } = {}) {
   assertAdmin(p);
   const days = clamp(opts.days, 30, 365);
-  const [accounts, usage] = await Promise.all([listBillingAccounts(p), usageSummary(days)]);
+  const [accounts, usage] = await Promise.all([readBillingAccounts(p), usageSummary(days)]);
   return {
     accounts: accounts.map(a => ({ name: a.name, organization: a.organization, enabled: a.enabled, snapshot: a.snapshot, lastAttemptAt: a.lastAttemptAt, hasError: !!a.lastError })),
     usage: { days, byTarget: usage.byApp.map(a => ({ name: a.name, messages: num(a.messages), tokenCount: num(a.tokens) })),
