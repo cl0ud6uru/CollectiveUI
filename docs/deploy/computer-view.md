@@ -131,6 +131,12 @@ The [research note](../reviews/computer-view-research.md) links authentic Dots, 
 
 `node tests/browser/computer-transport.mjs` exercises the actual desktop Unix-socket proxy and bridge in an ephemeral, network-disabled Docker container with the real stock supervisor and a synthetic Codex executable. It checks two independent initialized transports, socket ownership/mode, Origin rejection, oversized messages, absence of a TCP listener, and socket cleanup. It does not exercise a logged-in Codex instance.
 
+The desktop runtime and SIWC control sockets first become visible at their final paths
+with mode `0600`. They bind in a private staging directory and use atomic hard-link
+publication after permissions are confirmed, so a readiness poll cannot race a later
+chmod. Publication never overwrites an existing listener. The disposable transport
+fixture retains its immediate mode and ownership assertions.
+
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium node tests/browser/computer-viewer.mjs` exercises the real viewer against fixture API responses, including takeover, expiry, sanitized input, reconnect, and delayed responses across conversation changes. It saves the labeled desktop/mobile screenshots.
 
 This development host also blocks the nested namespaces needed for the GUI's bubblewrap/Chromium sandbox. A full desktop boot, headed browser, protected-file and `/proc` access attempts from the GUI, real SIWC synchronization, authenticated model inference, native agent tool execution, and KVM containment remain part of the staging preflight. No `--no-sandbox` fallback is supplied. Do not infer desktop, credential-isolation, or microVM readiness from the passing transport and UI fixtures.

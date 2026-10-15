@@ -1,5 +1,5 @@
 import { networkInterfaces } from "node:os";
-import { chmod } from "node:fs/promises";
+import { listenPrivateSocket } from "./private-socket.mjs";
 import { BrowserRuntime } from "./runtime.ts";
 import { createBrowserServer } from "./server.ts";
 import { unixEgress } from "./egress.ts";
@@ -21,7 +21,7 @@ if (process.argv[1]?.endsWith("/index.ts")) {
   const runtime = new BrowserRuntime({ egress: unixEgress(egressSocket, egressSecret), executablePath: "/usr/bin/chromium" });
   const server = createBrowserServer(runtime, process.env.AGENT_BROWSER_SECRET ?? "");
   const sweep = setInterval(() => { void runtime.sweep(); }, 10_000);
-  server.listen(socket, () => { void chmod(socket, 0o600); });
+  await listenPrivateSocket(server, socket);
   let stopping = false;
   for (const name of ["SIGTERM", "SIGINT"]) process.on(name, () => {
     if (stopping) return; stopping = true; clearInterval(sweep);
