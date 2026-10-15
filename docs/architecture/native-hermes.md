@@ -78,3 +78,40 @@ Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac0853
 - Implement distributed hub ownership before multi-instance deployment; the sidebar roster and paged remote history are now implemented. Native remote chats remain distinct from Runs API conversation records and bot homes.
 
 References reviewed: Vory `622c9b41d1fcb2cee3564a328c11cd72cff7ee18` and Hermes native contracts at `79af3f6cea8067284a7ea5725078578b3f790adb`. No real credentials or private deployment configuration are included.
+
+### Prompt answer delivery (issue #91)
+
+Native JSON-RPC responses do not have a second acknowledgement. The socket waits
+for its write callback (or rejects on write failure, close, or a 30-second deadline)
+and fences the response to the socket epoch that supplied the pending request.
+A successful write means **sent**, not native acceptance. After sending, the hub
+drains any earlier refresh and reads a fresh snapshot. The answer API returns
+`{ sent: true, status: "pending" | "resolved" | "uncertain" }`: `resolved` means the
+native prompt is absent, which can also result from cancellation or another
+client. It does not certify that the protected value was used or an approved
+command executed. `uncertain` means the post-send snapshot failed.
+
+The hub reserves an answer before dispatch and keeps only a delivery marker on
+the pending prompt. Snapshot polling, repeated request frames and reconnection
+preserve that marker while the same request remains open. An attempted answer
+cannot be submitted again through that hub; the UI shows delivery status and
+removes its answer controls. A failed write retains an uncertain marker and
+reconciles without replaying the response. Values are never persisted, hashed,
+added to transcript projections or retained for retry. Allow-once/deny validation
+is unchanged. Approval snapshots that require `approval.respond` use the same
+socket-epoch fence and fresh-snapshot settlement.
+
+These markers are process-local, as are the socket's native request routes. They
+are not distributed answer receipts. A process restart or another portal replica
+can recover an open prompt only through native `session.resume`; this integration
+does not automatically resend any prior answer. Inspect the native dashboard if
+delivery remains uncertain. Stronger exactly-once confirmation across replicas
+requires a verified native receipt contract and the distributed ownership work
+in #96.
+
+Focused regressions cover held write callbacks, write errors, disconnect during
+write, stale socket epochs, concurrent answers, still-open prompts, resolved
+prompts, failed post-send snapshots and marker recovery without protected-value
+retention. Transport tests use real loopback WebSockets; hub tests use synthetic
+native snapshots and database boundaries. No real pinned dashboard compatibility
+or live authentication is established by these tests.
