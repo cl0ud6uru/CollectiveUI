@@ -13,6 +13,10 @@ import { db } from "@/db";
 
 const BACKGROUND = sql`('title', 'memory', 'draft', 'embedding')`;
 
+/** Shared rolling period for the admin dashboard and its CSV download. */
+export const ADMIN_USAGE_DAYS = 30;
+export const ADMIN_USAGE_PERIOD = `Last ${ADMIN_USAGE_DAYS} days`;
+
 /** One row per token-bearing record (ledger event or legacy reply) plus reply counts, since `since`. */
 function tokenRows(since: SQL) {
   return sql`
@@ -48,7 +52,7 @@ function tokenRows(since: SQL) {
     where m.role = 'assistant' and m.created_at > ${since}`;
 }
 
-export async function usageSummary(days = 30) {
+export async function usageSummary(days = ADMIN_USAGE_DAYS) {
   const since = sql`now() - make_interval(days => ${days})`;
   const [totals] = (
     await db.execute<{
@@ -133,7 +137,7 @@ export const USAGE_EXPORT_COLUMNS = [
 ] as const;
 
 /** Rows for the admin CSV export (last `days` days), grouped by day, user, target, purpose and who paid. */
-export async function usageExportRows(days = 90) {
+export async function usageExportRows(days = ADMIN_USAGE_DAYS) {
   const since = sql`now() - make_interval(days => ${days})`;
   const { rows } = await db.execute<Record<(typeof USAGE_EXPORT_COLUMNS)[number], unknown>>(sql`
     with t as (${tokenRows(since)})

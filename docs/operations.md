@@ -136,6 +136,10 @@ You can enable both options at once. Hybrid users are matched by UPN, so either 
 
 **Bootstrap admins:** set `ADMIN_UPNS` and/or `ADMIN_GROUPS`, separated by semicolons (LDAP DNs contain commas). After that, grant admin rights through groups or on the Users page.
 
+## Usage reports
+
+Admin → Usage and **Export CSV · last 30 days** use the same rolling 30-day period, measured from each request's database time. The download is named `usage-last-30-days.csv`. Records exactly at or before the cutoff are excluded in both views. Reload the dashboard before comparing a later download; new records and the rolling cutoff can change between requests. CSV rows are grouped by day, user, target, purpose and billing source, so aggregate reply and token columns when comparing those totals with the dashboard.
+
 ## Workspaces (sandboxed commands)
 
 A workspace is a Docker container per person, run by **sandboxd** (`src/sandboxd/`), the only component of the stock workspace add-on with Docker-socket access. Optional Docker Hermes uses its own separately configured broker. The web app and worker ask it for things over HTTP, signed with `SANDBOXD_SECRET`; it has no database access or model-provider keys, and creates containers from one fixed spec:
