@@ -57,21 +57,36 @@ jobs:
           DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/collective_docker_hermes_test
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/acceptance-chromium
         run: |
-          node --test tests/unit/docker-hermes-browser-guard.test.mjs
-          node scripts/run-docker-hermes-browser-acceptance.mjs --guard-only
+          env -i PATH="$PATH" HOME="$HOME" node --test tests/unit/docker-hermes-browser-guard.test.mjs
+          env -i PATH="$PATH" HOME="$HOME" \
+            CI=true GITHUB_ACTIONS=true \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            ACCEPTANCE_APP_SHA="$ACCEPTANCE_APP_SHA" ACCEPTANCE_HARNESS_SHA="$ACCEPTANCE_HARNESS_SHA" \
+            DOCKER_HERMES_BROWSER=1 DISPOSABLE_PG_PORT="$DISPOSABLE_PG_PORT" \
+            DATABASE_URL="$DATABASE_URL" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+            node scripts/run-docker-hermes-browser-acceptance.mjs --guard-only
       - name: Install the pinned accepted application's dependencies and isolated Chromium
         working-directory: acceptance-target
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/acceptance-chromium
         run: |
-          npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
+          env -i PATH="$PATH" HOME="$HOME" npm ci --no-audit --no-fund
+          env -i PATH="$PATH" HOME="$HOME" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" npx playwright install --with-deps chromium
       - name: Run every opt-in browser case against the exact accepted app and spec
         env:
           DISPOSABLE_PG_PORT: ${{ job.services.postgres.ports[5432] }}
           DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/collective_docker_hermes_test
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/acceptance-chromium
-        run: node scripts/run-docker-hermes-browser-acceptance.mjs
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" \
+            CI=true GITHUB_ACTIONS=true \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" RUNNER_TEMP="$RUNNER_TEMP" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" \
+            ACCEPTANCE_APP_SHA="$ACCEPTANCE_APP_SHA" ACCEPTANCE_HARNESS_SHA="$ACCEPTANCE_HARNESS_SHA" \
+            DOCKER_HERMES_BROWSER=1 DISPOSABLE_PG_PORT="$DISPOSABLE_PG_PORT" \
+            DATABASE_URL="$DATABASE_URL" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" \
+            node scripts/run-docker-hermes-browser-acceptance.mjs
       - name: Upload sanitized aggregate evidence only
         if: always()
         uses: actions/upload-artifact@v4
