@@ -59,19 +59,21 @@ export async function dashboardAddress(base: string, policy: RemoteHermesSetting
   return chosen;
 }
 
-/** Resolve once per request and pin the connection. Redirects are handled by the dashboard client. */
-export function dashboardFetch(base: string, policy: RemoteHermesSettings): typeof fetch {
+/** Build a transport from an address already checked under the caller's current policy lock. */
+export function dashboardFetchPinned(base: string, address: { address: string; family: number }): typeof fetch {
   const normalized = dashboardBase(base);
-  return (async (input, init = {}) => {
+  return ((input, init = {}) => {
     const url = new URL(String(input));
     const root = new URL(normalized);
     if (url.origin !== root.origin || (root.pathname !== '/' && !url.pathname.startsWith(root.pathname + '/')))
       throw new HttpError(400, 'Hermes redirected outside this dashboard.');
     if (url.username || url.password || !['http:', 'https:'].includes(url.protocol)) throw new HttpError(400, 'Invalid Hermes destination.');
-    const address = await dashboardAddress(normalized, policy);
     if (init.body != null && typeof init.body !== 'string') throw new HttpError(400, 'Invalid Hermes request body.');
     const signal = init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
-    return await new Promise<Response>((resolve, reject) => {
+    // Starting this promise constructs and ends the request synchronously. Callers
+    // may therefore commit a guarded dispatch envelope without holding a DB
+    // transaction until the remote HTTP response arrives.
+    return new Promise<Response>((resolve, reject) => {
       const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
         agent: false, family: address.family,
         lookup: (_host, _options, callback) => callback(null, address.address, address.family),
@@ -90,5 +92,14 @@ export function dashboardFetch(base: string, policy: RemoteHermesSettings): type
       req.on('error', () => reject(new HttpError(502, 'The Hermes dashboard could not be reached. Check its URL and network access.')));
       req.end(init.body);
     });
+  }) as typeof fetch;
+}
+
+/** Resolve once per request and pin the connection. Redirects are handled by the dashboard client. */
+export function dashboardFetch(base: string, policy: RemoteHermesSettings): typeof fetch {
+  const normalized = dashboardBase(base);
+  return (async (input, init = {}) => {
+    const address = await dashboardAddress(normalized, policy);
+    return dashboardFetchPinned(normalized, address)(input, init);
   }) as typeof fetch;
 }

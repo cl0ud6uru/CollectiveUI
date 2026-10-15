@@ -55,6 +55,42 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
     try { await first.connect(); await expect(reused.connect()).rejects.toThrow(); }
     finally { first.close(); reused.close(); }
   });
+  it('adds a synthetic manual provider key through the exact dashboard pool routes and reads back metadata only', async () => {
+    const apiKey = 'synthetic-provider-pool-secret';
+    const added = await auth.addCredentialPoolEntry('default', 'openrouter', apiKey, 'Fixture account 94');
+    expect(added).toEqual({ ok: true, provider: 'openrouter', count: expect.any(Number) });
+    const pool = await auth.credentialPool('default');
+    expect(pool.providers).toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'openrouter', entries: expect.arrayContaining([expect.objectContaining({
+      label: 'Fixture account 94', authType: 'api_key', source: 'manual', hasRefresh: false,
+    })]) })]));
+    expect(JSON.stringify(pool)).not.toContain(apiKey);
+    expect(JSON.stringify(pool)).not.toContain('tokenPreview');
+  });
+  it('confirms exact native behavior when adding an account restores a suppressed environment source', async () => {
+    const existing = (await auth.credentialPool('default')).providers.find(provider => provider.provider === 'openrouter')?.entries ?? [];
+    for (const entry of [...existing].reverse()) {
+      const response = await fetch(`${base}/api/credentials/pool/openrouter/${entry.index}?profile=default`, { method: 'DELETE', headers: { Authorization: `Bearer ${secrets.accessToken}` } });
+      expect(response.ok).toBe(true);
+      await response.body?.cancel();
+    }
+    await fixture('control', { suppress_openrouter_environment: true });
+    const before = await auth.credentialPool('default');
+    expect(before.providers.find(provider => provider.provider === 'openrouter')?.entries ?? []).toHaveLength(0);
+    const apiKey = 'synthetic-manual-openrouter-key';
+    const added = await auth.addCredentialPoolEntry('default', 'openrouter', apiKey, 'Fixture reengagement account');
+    // The pinned POST reports the count before it clears source suppression.
+    expect(added).toEqual({ ok: true, provider: 'openrouter', count: 1 });
+    const after = await auth.credentialPool('default');
+    const entries = after.providers.find(provider => provider.provider === 'openrouter')?.entries ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Fixture reengagement account', authType: 'api_key', source: 'manual' }),
+      expect.objectContaining({ source: 'env:OPENROUTER_API_KEY', authType: 'api_key' }),
+    ]));
+    expect(JSON.stringify([added, after])).not.toContain(apiKey);
+    expect(JSON.stringify([added, after])).not.toContain('synthetic-restored-openrouter-source');
+    expect(JSON.stringify(after)).not.toContain('tokenPreview');
+  });
   it('stages original image and file bytes through actual native handlers; bounds PDF capability explicitly', async () => {
     const image = await rpc('image.attach_bytes', { ...params(), filename: 'fixture.png', content_base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zf7cAAAAASUVORK5CYII=' });
     expect(image).toMatchObject({ attached: true });
@@ -67,6 +103,49 @@ describe.skipIf(!enabled)('actual pinned Hermes dashboard conformance; synthetic
     expect(hashes).toContain(createHash('sha256').update('Synthetic fixture').digest('hex'));
     expect(hashes).toContain(createHash('sha256').update(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zf7cAAAAASUVORK5CYII=', 'base64')).digest('hex'));
     await rpc('image.detach', { ...params(), path: image.path });
+  });
+  it('adds a typed HTTPS MCP server through the exact native handler and reads back redacted inventory', async () => {
+    const token = 'synthetic-mcp-bearer-only';
+    const added = await rpc('mcp.servers.add', {
+      profile: 'default', name: 'fixture-custom-http',
+      config: { url: 'https://mcp.example.invalid/v1' }, bearer_token: token,
+    });
+    expect(added).toMatchObject({ ok: true, name: 'fixture-custom-http', server: {
+      name: 'fixture-custom-http', transport: 'http', source: 'config', auth: 'header', env: [],
+    } });
+    expect(JSON.stringify(added)).not.toContain(token);
+    const inventory = await rpc('mcp.servers.list', { profile: 'default' });
+    expect(inventory.servers).toEqual(expect.arrayContaining([expect.objectContaining({
+      name: 'fixture-custom-http', transport: 'http', source: 'config', auth: 'header', env: [],
+    })]));
+    expect(JSON.stringify(inventory)).not.toContain(token);
+    await expect(rpc('mcp.servers.add', {
+      profile: 'default', name: 'fixture-custom-http', config: { url: 'https://other.example.invalid/mcp' },
+    })).rejects.toMatchObject({ code: 4090 });
+    expect((await rpc('mcp.servers.list', { profile: 'default' })).servers).toEqual(expect.arrayContaining([expect.objectContaining({
+      name: 'fixture-custom-http', url: 'https://mcp.example.invalid/v1',
+    })]));
+  });
+  it('confirms the pinned native credential-slot punctuation normalization', async () => {
+    const names = ['fixture-slot-team-api', 'fixture-slot-team.api'];
+    const token = 'synthetic-slot-parity-token';
+    try {
+      for (const name of names) {
+        await expect(rpc('mcp.servers.add', {
+          profile: 'default', name, config: { url: 'https://mcp.example.invalid/v1' },
+        })).resolves.toMatchObject({ ok: true, name });
+      }
+      const slots = [];
+      for (const name of names) {
+        const configured = await rpc('mcp.servers.set_api_key', { profile: 'default', name, value: token });
+        expect(JSON.stringify(configured)).not.toContain(token);
+        slots.push(configured.env_var);
+      }
+      // Exact pinned _env_key_for_server replaces punctuation with underscores.
+      expect(slots).toEqual(['MCP_FIXTURE_SLOT_TEAM_API_API_KEY', 'MCP_FIXTURE_SLOT_TEAM_API_API_KEY']);
+    } finally {
+      for (const name of names) await rpc('mcp.servers.remove', { profile: 'default', name }).catch(() => undefined);
+    }
   });
   it('runs a deterministic native turn, restores history and reconnects without resubmitting', async () => {
     const before = (await fixture('metrics')).agent_turns;

@@ -1,24 +1,47 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { administrationInput, mcpInventory, probeSummary } from '@/lib/remote-hermes/administration-contract';
+import { administrationInput, mcpInventory, nativeMcpBearerEnvSlot, nativeProviderPoolRequestLabel, probeSummary } from '@/lib/remote-hermes/administration-contract';
 import { HttpError } from '@/lib/authz';
 
-const f = vi.hoisted(() => ({ enabled: true, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, receipt: null as null | { digest: string }, call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn() }));
+const f = vi.hoisted(() => ({ enabled: true, privateAllowed: true, revokeAfterReceipt: false, status: 'idle', profile: 'default', allowed: true, disableAtLock: 0, reserveQueueAtLock: 0, queueRequestId: null as string | null, uncertain: false, queuePending: false, runtimeRunning: false, missingView: false, locks: 0, profileAdvisoryHeld: false, profileLockLoss: null as null | (() => void), profileClients: new Set<unknown>(), dispatchConnected: vi.fn(), receipt: null as null | { digest: string }, transaction: null as null | ((run: (tx: unknown) => unknown) => unknown), call: vi.fn(), refresh: vi.fn(), profiles: vi.fn(), setEnabled: vi.fn(), addPool: vi.fn(), readPool: vi.fn(), withTransport: vi.fn() }));
 vi.mock('@/lib/remote-hermes/sessions', () => ({ ownedNativeSession: async (owner: string) => { if (owner !== 'owner') throw new Error('not found'); return { id: 'session', profile: f.profile, status: f.status, queueRequestId: f.queueRequestId }; } }));
-vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: [] }) }));
-vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { profiles: f.profiles, setMcpServerEnabled: f.setEnabled } }; } }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: async (method: string, params: unknown) => ({ reply: f.call(method, params) }) }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
-vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown) => run({
+vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled, privateGateways: f.privateAllowed ? ['http://127.0.0.1:8123'] : [] }) }));
+vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async (_base: string, policy: { privateGateways: string[] }) => { if (!policy.privateGateways.includes('http://127.0.0.1:8123')) throw new HttpError(403, 'private destination revoked'); return { address: '127.0.0.1', family: 4 }; }, dashboardFetchPinned: vi.fn(() => fetch) }));
+vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => { if (!f.enabled) throw new Error('disabled'); return { client: { base: 'http://127.0.0.1:8123', profiles: f.profiles, setMcpServerEnabled: f.setEnabled, addCredentialPoolEntry: f.addPool, credentialPool: f.readPool, withTransport: f.withTransport } }; } }));
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ lockBoundary: async (tx: { select: () => { from: (table: unknown) => { where: (condition: unknown) => { for: (mode: string) => Promise<unknown> } } } }) => { const { settings } = await import('@/db/schema'); await tx.select().from(settings).where(null).for('share'); return { baseUrl: 'http://127.0.0.1:8123' }; }, socket: { connectionEpoch: 1, call: f.call, callConnected: f.call, dispatchConnected: f.dispatchConnected }, refresh: f.refresh, sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: f.missingView ? undefined : { running: f.status === 'running' || f.runtimeRunning, uncertain: f.uncertain, queuePending: f.queuePending } }]]) }) }));
+vi.mock('@/db', () => {
+  const transaction = async (run: (tx: unknown) => unknown) => run({
   select: () => ({ from: (table: { [key: symbol]: unknown }) => {
     const name = table[Symbol.for('drizzle:Name')];
     const rows = name === 'settings' ? [] : name === 'remote_hermes_turns' ? f.receipt ? [f.receipt] : [] : [{ status: f.status, queueRequestId: f.queueRequestId }];
     return { where: () => Object.assign(Promise.resolve(rows), { for: async () => { if (name === 'settings') { ++f.locks; if (f.locks === f.disableAtLock) f.enabled = false; if (f.locks === f.reserveQueueAtLock) f.queueRequestId = 'pending-queue'; } return rows; } }) };
   } }),
-  insert: () => ({ values: async (value: { digest: string }) => { f.receipt = { digest: value.digest }; } }),
-}) } }));
+  insert: () => ({ values: async (value: { digest: string }) => { f.receipt = { digest: value.digest }; if (f.revokeAfterReceipt) f.privateAllowed = false; } }),
+  });
+  f.transaction = transaction;
+  return { pool: { connect: async () => {
+    const client = { on: (event: string, callback: () => void) => { if (event === 'error' || event === 'end') f.profileLockLoss = callback; }, removeListener: (event: string) => { if (event === 'error' || event === 'end') f.profileLockLoss = null; }, query: async (sql: string) => {
+    if (sql.includes('pg_try_advisory_lock')) {
+      if (f.profileAdvisoryHeld) return { rows: [{ locked: false }] };
+      f.profileAdvisoryHeld = true; return { rows: [{ locked: true }] };
+    }
+    if (sql.includes('pg_advisory_unlock')) f.profileAdvisoryHeld = false;
+    return { rows: [] };
+  }, release: vi.fn() };
+    f.profileClients.add(client);
+    return client;
+  } }, schema: {}, db: { transaction } };
+});
+vi.mock('drizzle-orm/node-postgres', () => ({ drizzle: (client: unknown) => ({ transaction: (run: (tx: unknown) => unknown) => {
+  if (!f.profileClients.has(client)) throw new Error('bounded pool exhausted by a nested database checkout');
+  return f.transaction!(run);
+} }) }));
 import { nativeAdministration } from '@/lib/remote-hermes/administration';
 const requestId = 'f1eeac5a-c19f-4b5b-97ef-a1cd7b02e658';
 describe('native administration protocol and isolation', () => {
-  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
+  beforeEach(() => { vi.clearAllMocks(); f.enabled = true; f.privateAllowed = true; f.revokeAfterReceipt = false; f.status = 'idle'; f.profile = 'default'; f.receipt = null; f.locks = 0; f.profileAdvisoryHeld = false; f.profileLockLoss = null; f.profileClients.clear(); f.disableAtLock = 0; f.reserveQueueAtLock = 0; f.queueRequestId = null; f.uncertain = false; f.queuePending = false; f.runtimeRunning = false; f.missingView = false; f.refresh.mockResolvedValue({ running: false }); f.profiles.mockResolvedValue([{ name: 'default' }]); f.setEnabled.mockResolvedValue({ ok: true }); f.addPool.mockResolvedValue({ provider: 'openrouter', count: 1 }); f.readPool.mockResolvedValue({ providers: [] }); f.withTransport.mockImplementation(() => ({ setMcpServerEnabled: f.setEnabled, addCredentialPoolEntry: f.addPool, credentialPool: f.readPool })); f.dispatchConnected.mockImplementation(async (method: string, params: unknown, _epoch: number, _timeout: number, tx: unknown) => {
+    if (f.profileAdvisoryHeld && !tx) throw new Error('bounded pool exhausted by a nested database checkout');
+    return { reply: f.call(method, params) };
+  }); f.call.mockResolvedValue({ value: 'high', ok: true }); });
   it('rejects unowned sessions before native RPC', async () => {
     await expect(nativeAdministration('other', 'connection', 'session', { operation: 'inspect' })).rejects.toThrow('not found'); expect(f.call).not.toHaveBeenCalled();
   });
@@ -28,6 +51,13 @@ describe('native administration protocol and isolation', () => {
     expect(administrationInput.safeParse({ operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'once' }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'remove', requestId, name: 'example' }).success).toBe(false);
     expect(administrationInput.safeParse({ operation: 'reload', requestId, confirmed: false }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'http://mcp.example.test/mcp', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://user:pass@mcp.example.test/mcp', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://mcp.example.test/mcp?token=secret', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'demo', url: 'https://mcp.example.test/mcp', command: 'sh', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'customServer', requestId, name: 'bad name', url: 'https://mcp.example.test/mcp', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'providerKey', requestId, provider: 'Bad Provider', label: 'account', apiKey: 'secret', confirmed: true }).success).toBe(false);
+    expect(administrationInput.safeParse({ operation: 'providerKey', requestId, provider: 'openrouter', label: 'account', apiKey: 'secret' }).success).toBe(false);
   });
   it('sends chat settings only with the bound runtime session and explicit session scope', async () => {
     await nativeAdministration('owner', 'connection', 'session', { operation: 'setting', requestId, key: 'reasoning', value: 'high', scope: 'session' });
@@ -73,12 +103,289 @@ describe('native administration protocol and isolation', () => {
     await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
     expect(await nativeAdministration('owner', 'connection', 'session', input)).toEqual({ accepted: true, duplicate: true }); expect(f.call).toHaveBeenCalledOnce();
   });
+  it('adds a manual provider key only after confirmation and returns redacted profile readback', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const operationLabel = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    f.readPool.mockResolvedValueOnce({ providers: [] }).mockResolvedValueOnce({ providers: [{ provider: 'openrouter', entries: [{ index: 1, id: 'synthetic-new-id', label: operationLabel, authType: 'api_key', source: 'manual', priority: 0, requestCount: 0, hasRefresh: false }] }] });
+    const result = await nativeAdministration('owner', 'connection', 'session', input);
+    expect(result).toEqual({ accepted: true, provider: 'openrouter', label: operationLabel, count: 1 });
+    expect(f.addPool).toHaveBeenCalledExactlyOnceWith('default', 'openrouter', 'synthetic-provider-secret', operationLabel);
+    expect(f.readPool).toHaveBeenCalledTimes(2); expect(f.readPool).toHaveBeenNthCalledWith(1, 'default'); expect(f.readPool).toHaveBeenNthCalledWith(2, 'default');
+    expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-provider-secret');
+    expect(f.receipt?.digest).not.toContain('synthetic-provider-secret');
+  });
+  it('adds a provider key when the profile already has MCP servers', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const operationLabel = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    f.call.mockResolvedValue({ servers: [{ name: 'existing-mcp', source: 'config', transport: 'http', env: [] }] });
+    f.readPool.mockResolvedValueOnce({ providers: [] }).mockResolvedValueOnce({ providers: [{ provider: 'openrouter', entries: [{ id: 'synthetic-new-id', label: operationLabel, authType: 'api_key', source: 'manual' }] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, provider: 'openrouter', label: operationLabel, count: 1 });
+    expect(f.addPool).toHaveBeenCalledExactlyOnceWith('default', 'openrouter', input.apiKey, operationLabel);
+    expect(f.call).not.toHaveBeenCalled();
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
+  it('does not replay an uncertain provider-key write after a lost acknowledgement', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.addPool.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, duplicate: true });
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledOnce();
+  });
+  it('returns the matching receipt when a provider row persists before its acknowledgement is lost', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const entries: { id: string; label: string; authType: string; source: string }[] = [];
+    f.readPool.mockImplementation(async () => ({ providers: [{ provider: input.provider, entries }] }));
+    f.addPool.mockImplementationOnce(async (_profile, _provider, _apiKey, label: string) => {
+      expect(f.profileAdvisoryHeld).toBe(true);
+      entries.push({ id: 'synthetic-persisted-id', label, authType: 'api_key', source: 'manual' });
+      throw new Error('Synthetic lost acknowledgement');
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    expect(entries).toHaveLength(1);
+    const receipt = { ...f.receipt };
+    await expect(nativeAdministration('other', 'connection', 'session', input)).rejects.toThrow('not found');
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toEqual({ accepted: true, duplicate: true });
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledOnce();
+    expect(f.receipt).toEqual(receipt);
+    expect(JSON.stringify(f.receipt)).not.toContain(input.apiKey);
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
+  it.each([
+    { apiKey: 'synthetic-different-secret' }, { provider: 'openai' }, { label: 'Different account' },
+  ])('rejects a provider receipt retry with changed content (%o)', async change => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.addPool.mockRejectedValueOnce(new Error('Synthetic lost acknowledgement'));
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    await expect(nativeAdministration('owner', 'connection', 'session', { ...input, ...change })).rejects.toThrow('receipt belongs to different content');
+    expect(f.addPool).toHaveBeenCalledOnce(); expect(f.readPool).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.receipt)).not.toContain(input.apiKey);
+  });
+  it('rejects a colliding provider label for a new request before reserving a receipt', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.readPool.mockResolvedValue({ providers: [{ provider: input.provider, entries: [{ id: 'synthetic-existing-id', label: nativeProviderPoolRequestLabel(input.label, input.requestId), authType: 'api_key', source: 'manual' }] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('request-specific provider label already exists');
+    expect(f.receipt).toBeNull(); expect(f.addPool).not.toHaveBeenCalled();
+  });
+  it('rechecks private destination authorization after the receipt and before provider POST', async () => {
+    f.revokeAfterReceipt = true;
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('private destination revoked');
+    expect(f.receipt).not.toBeNull(); expect(f.readPool).toHaveBeenCalledOnce(); expect(f.addPool).not.toHaveBeenCalled();
+    expect(f.withTransport).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.receipt)).not.toContain(input.apiKey);
+  });
+  it('accepts one uniquely read-back manual identity when native re-seeds a suppressed source', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    const operationLabel = nativeProviderPoolRequestLabel(input.label, input.requestId);
+    f.addPool.mockResolvedValue({ provider: 'openrouter', count: 1 });
+    f.readPool.mockResolvedValueOnce({ providers: [] }).mockResolvedValueOnce({ providers: [{ provider: 'openrouter', entries: [
+      { index: 1, id: 'synthetic-manual-id', label: operationLabel, authType: 'api_key', source: 'manual', priority: 0, requestCount: 0, hasRefresh: false },
+      { index: 2, id: 'synthetic-restored-source-id', label: 'Environment account', authType: 'api_key', source: 'openai_env', priority: 0, requestCount: 0, hasRefresh: false },
+    ] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).resolves.toMatchObject({ accepted: true, provider: 'openrouter', label: operationLabel, count: 2 });
+    expect(f.addPool).toHaveBeenCalledOnce();
+  });
+  it('requires an idle owner-bound session and authoritative provider readback', async () => {
+    const input = { operation: 'providerKey', requestId, provider: 'openrouter', label: 'Remote account f1eeac5a', apiKey: 'synthetic-provider-secret', confirmed: true };
+    f.runtimeRunning = true;
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('Finish');
+    expect(f.receipt).toBeNull(); expect(f.addPool).not.toHaveBeenCalled();
+    f.runtimeRunning = false; f.readPool.mockResolvedValue({ providers: [] });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('provider pool');
+    expect(f.receipt).not.toBeNull(); expect(f.addPool).toHaveBeenCalledOnce();
+  });
   it('blocks administration during an active turn and disallows unlisted presets', async () => {
     f.status = 'running';
     await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'setting', requestId, key: 'fast', value: 'normal', scope: 'session' })).rejects.toThrow('Finish');
     f.status = 'idle'; f.call.mockResolvedValue({ servers: [] });
     await expect(nativeAdministration('owner', 'connection', 'session', { operation: 'install', requestId, preset: 'arbitrary' })).rejects.toThrow('preset');
     expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+  });
+  it('creates only a typed HTTPS server, stores bearer material natively, and verifies redacted readback', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-secret', confirmed: true } as const;
+    const configured = { name: 'team-api', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: f.call.mock.calls.filter(([call]) => call === 'mcp.servers.add').length ? [configured] : [] };
+      if (method === 'mcp.servers.add') return { ok: true, name: 'team-api', server: configured };
+      return { ok: true };
+    });
+    const result = await nativeAdministration('owner', 'connection', 'session', input);
+    expect(result).toEqual({ accepted: true, added: true, name: 'team-api', credentialConfigured: true });
+    expect(f.call).toHaveBeenCalledWith('mcp.servers.add', {
+      profile: 'default', name: 'team-api', config: { url: 'https://mcp.example.test/mcp' }, bearer_token: 'synthetic-bearer-secret',
+    });
+    expect(f.call).toHaveBeenCalledWith('mcp.servers.list', { profile: 'default' });
+    expect(JSON.stringify([result, f.receipt])).not.toContain('synthetic-bearer-secret');
+    expect(f.receipt?.digest).not.toContain('synthetic-bearer-secret');
+  });
+  it.each([
+    { existing: 'team-api', candidate: 'team.api' },
+    { existing: 'team.api', candidate: 'team-api' },
+  ])('prevents bearer writes when native names normalize to the same credential slot (%o)', async ({ existing, candidate }) => {
+    const preserved = 'synthetic-existing-token';
+    let persistedToken = preserved;
+    f.call.mockImplementation(async (method: string, params: { bearer_token?: string }) => {
+      if (method === 'mcp.servers.list') return { servers: [{ name: existing, source: 'config', transport: 'stdio', enabled: true, env: [] }] };
+      if (method === 'mcp.servers.add') persistedToken = params.bearer_token ?? '';
+      return { ok: true };
+    });
+    expect(nativeMcpBearerEnvSlot(existing)).toBe('MCP_TEAM_API_API_KEY');
+    expect(nativeMcpBearerEnvSlot(candidate)).toBe('MCP_TEAM_API_API_KEY');
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: candidate, url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('shares a protected credential slot');
+    expect(f.call).toHaveBeenCalledExactlyOnceWith('mcp.servers.list', { profile: 'default' });
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+    expect(persistedToken).toBe(preserved);
+  });
+  it('serializes profile inventory preflight through receipt, native write, and readback across concurrent requests', async () => {
+    const configured = { name: 'team-api', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    const first = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-first-token', confirmed: true } as const;
+    const second = { ...first, requestId: '9a3330fc-f779-4b8b-8e79-1fba2cb2a2f5', name: 'team.api', bearerToken: 'synthetic-second-token' } as const;
+    let initialLists = 0;
+    let heldDuringAdd = false;
+    let heldDuringReadback = false;
+    let releaseInitialLists!: () => void;
+    const bothInitialLists = new Promise<void>(resolve => { releaseInitialLists = resolve; });
+    f.call.mockImplementation(async (method: string, params: { bearer_token?: string }) => {
+      if (method === 'mcp.servers.list') {
+        if (initialLists < 2) {
+          initialLists++;
+          if (initialLists === 2) releaseInitialLists();
+          await bothInitialLists;
+          return { servers: [] };
+        }
+        if (f.call.mock.calls.some(([call]) => call === 'mcp.servers.add')) heldDuringReadback = f.profileAdvisoryHeld;
+        return { servers: f.call.mock.calls.some(([call]) => call === 'mcp.servers.add') ? [configured] : [] };
+      }
+      if (method === 'mcp.servers.add') { heldDuringAdd = f.profileAdvisoryHeld; return { ok: true, name: 'team-api', server: configured, bearer_token: params.bearer_token }; }
+      return { ok: true };
+    });
+
+    const outcomes = await Promise.allSettled([
+      nativeAdministration('owner', 'connection', 'session', first),
+      nativeAdministration('owner', 'connection', 'session', second),
+    ]);
+    expect(initialLists).toBe(2);
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(outcome => outcome.status === 'rejected')).toHaveLength(1);
+    const adds = f.call.mock.calls.filter(([method]) => method === 'mcp.servers.add');
+    expect(adds).toHaveLength(1);
+    expect(JSON.stringify(adds)).not.toContain('synthetic-second-token');
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.list').length).toBeGreaterThanOrEqual(3);
+    expect(heldDuringAdd).toBe(true);
+    expect(heldDuringReadback).toBe(true);
+    expect(f.receipt).not.toBeNull();
+    expect(JSON.stringify(f.receipt)).not.toContain('synthetic-');
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
+  it('uses the held pool-one client for lock-bound inventory RPC dispatch and readback', async () => {
+    const configured = { name: 'team-api', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: f.call.mock.calls.some(([call]) => call === 'mcp.servers.add') ? [configured] : [] };
+      if (method === 'mcp.servers.add') return { ok: true, name: 'team-api', server: configured };
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-token', confirmed: true,
+    })).resolves.toMatchObject({ accepted: true, added: true });
+    // The initial optimistic read is outside the profile lock. The locked
+    // revalidation and post-write readback carry the transaction on the same
+    // client that owns the advisory lock, so a pool of size one can progress.
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.list')).toHaveLength(3);
+    const lockedReads = f.dispatchConnected.mock.calls.filter(([method]) => method === 'mcp.servers.list');
+    expect(lockedReads).toHaveLength(2);
+    expect(lockedReads.every(([, , , , tx]) => tx !== undefined)).toBe(true);
+    expect(f.profileAdvisoryHeld).toBe(false);
+  });
+  it('does not reserve or mutate after the cross-process lock client is lost', async () => {
+    let inventoryReads = 0;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') {
+        if (++inventoryReads === 2) f.profileLockLoss?.();
+        return { servers: [] };
+      }
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-token', confirmed: true,
+    })).rejects.toThrow('profile lock connection was lost');
+    expect(f.receipt).toBeNull();
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.profileAdvisoryHeld).toBe(false);
+    expect(f.profileLockLoss).toBeNull();
+  });
+  it('does not report a confirmed custom server if the lock client is lost during readback', async () => {
+    const configured = { name: 'new-server', source: 'config', transport: 'http', auth: 'header', url: 'https://mcp.example.test/mcp', env: [] };
+    let inventoryReads = 0;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') {
+        if (++inventoryReads === 3) f.profileLockLoss?.();
+        return { servers: inventoryReads <= 2 ? [] : [configured] };
+      }
+      if (method === 'mcp.servers.add') return { ok: true, name: 'new-server', server: configured };
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: configured.url, bearerToken: 'synthetic-token', confirmed: true,
+    })).rejects.toThrow('profile lock connection was lost');
+    expect(f.receipt).not.toBeNull();
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1);
+    expect(JSON.stringify(f.receipt)).not.toContain('synthetic-token');
+    expect(f.profileAdvisoryHeld).toBe(false);
+    expect(f.profileLockLoss).toBeNull();
+  });
+  it('fails closed when an existing native name cannot be normalized safely', async () => {
+    f.call.mockResolvedValue({ servers: [{ name: 'mcp-東京', source: 'config', transport: 'stdio', enabled: true, env: [] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('credential slots could not be verified safely');
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+  });
+  it('rejects a normalized bearer slot already declared by another server environment', async () => {
+    f.call.mockResolvedValue({ servers: [{ name: 'other-server', source: 'config', transport: 'stdio', enabled: true, env: ['MCP_NEW_SERVER_API_KEY'] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('shares a protected credential slot');
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+  });
+  it('fails closed when an HTTP server hides its header environment references', async () => {
+    f.call.mockResolvedValue({ servers: [{ name: 'existing', source: 'config', transport: 'http', enabled: true, auth: 'header', env: [] }] });
+    await expect(nativeAdministration('owner', 'connection', 'session', {
+      operation: 'customServer', requestId, name: 'new-server', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-new-token', confirmed: true,
+    })).rejects.toThrow('not expose enough MCP credential metadata');
+    expect(f.call).not.toHaveBeenCalledWith('mcp.servers.add', expect.anything());
+    expect(f.receipt).toBeNull();
+  });
+  it('does not replay an uncertain custom-server write when the same receipt is retried', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', bearerToken: 'synthetic-bearer-secret', confirmed: true } as const;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: [] };
+      if (method === 'mcp.servers.add') throw new Error('Synthetic lost acknowledgement');
+      return { ok: true };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('lost acknowledgement');
+    expect(await nativeAdministration('owner', 'connection', 'session', input)).toEqual({ accepted: true, duplicate: true });
+    expect(f.call.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1);
+    expect(JSON.stringify(f.receipt)).not.toContain('synthetic-bearer-secret');
+  });
+  it('blocks custom-server writes during active or uncertain native work before reserving a receipt', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', confirmed: true } as const;
+    f.runtimeRunning = true;
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('Finish');
+    expect(f.receipt).toBeNull(); expect(f.call).not.toHaveBeenCalled();
+  });
+  it('fails closed if native add or authoritative inventory readback does not confirm the custom server', async () => {
+    const input = { operation: 'customServer', requestId, name: 'team-api', url: 'https://mcp.example.test/mcp', confirmed: true } as const;
+    f.call.mockImplementation(async (method: string) => {
+      if (method === 'mcp.servers.list') return { servers: f.call.mock.calls.filter(([call]) => call === 'mcp.servers.add').length ? [] : [] };
+      return { ok: true, name: 'team-api', server: { name: 'team-api', source: 'config', transport: 'http', url: input.url } };
+    });
+    await expect(nativeAdministration('owner', 'connection', 'session', input)).rejects.toThrow('profile inventory');
+    expect(f.receipt).not.toBeNull();
   });
   it('blocks probes with a durable queue reservation even if the cached snapshot is idle', async () => {
     f.queueRequestId = 'uncertain-queue';
