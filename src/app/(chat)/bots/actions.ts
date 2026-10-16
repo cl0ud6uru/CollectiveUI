@@ -261,6 +261,18 @@ export async function updateBot(botId: string, raw: BotInput) {
   return { id: botId };
 }
 
+/** Expected editor validation failures must cross the Server Action boundary as data. */
+export async function saveBotFromBuilder(botId: string | null, raw: BotInput) {
+  try {
+    const result = botId ? await updateBot(botId, raw) : await createBot(raw);
+    return { ok: true as const, id: result.id };
+  } catch (error) {
+    if (error instanceof HttpError && error.status < 500) return { ok: false as const, error: error.message };
+    if (error instanceof z.ZodError) return { ok: false as const, error: error.issues[0]?.message ?? "Check the bot settings and try again." };
+    throw error;
+  }
+}
+
 export async function deleteBot(botId: string) {
   const p = await requirePrincipal();
   await getEditableBot(p, botId);

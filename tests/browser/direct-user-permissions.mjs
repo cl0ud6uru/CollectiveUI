@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { eq, inArray } from 'drizzle-orm';
 import { db, pool } from '../../src/db/index.ts';
-import { aiApps, botUserAccess, bots, groupMembers, groups, localAuthBootstrap, users } from '../../src/db/schema.ts';
+import { aiApps, botAccess, botUserAccess, bots, groupMembers, groups, localAuthBootstrap, users } from '../../src/db/schema.ts';
 import { createLocalUser } from '../../src/lib/auth/local.ts';
 import { newId } from '../../src/lib/ids.ts';
 
@@ -46,6 +46,19 @@ try {
   await page.goto(`${url}/bots/${botId}/edit`);
   await page.getByLabel('Who can use it').click();
   await page.locator('[role="option"][data-value="groups"]').click();
+  await page.getByRole('button', { name: 'Update', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Select at least one group or individual user' }).waitFor();
+  assert.equal((await db.select().from(bots).where(eq(bots.id, botId)))[0].visibility, 'private');
+  const groupButton = page.getByRole('button', { name, exact: true });
+  assert.equal(await groupButton.getAttribute('aria-pressed'), 'false');
+  await groupButton.click();
+  assert.equal(await groupButton.getAttribute('aria-pressed'), 'true');
+  await page.getByRole('button', { name: 'Update', exact: true }).click();
+  await page.getByText('Bot updated', { exact: true }).waitFor();
+  assert.equal((await db.select().from(botAccess).where(eq(botAccess.botId, botId)))[0].groupId, groupId);
+  await page.reload();
+  assert.equal(await page.getByRole('button', { name, exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.getByRole('button', { name, exact: true }).click();
   await page.getByLabel('Search users').fill(member.email);
   await page.getByRole('checkbox', { name: /^Select Direct Recipient/ }).check();
   await page.getByRole('button', { name: 'Update', exact: true }).click();
