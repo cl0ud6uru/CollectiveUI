@@ -160,6 +160,16 @@ describe('Native resource capture, persistence and private metadata isolation', 
       vi.stubEnv('MCP_APPS_SANDBOX_URL', bad); expect(mcpAppSandboxUrl()).toBeNull();
     }
   });
+  it('requires the exact /sandbox endpoint served by the dedicated proxy', () => {
+    for (const path of ['/', '/widgets', '/sandbox/', '/prefix/sandbox', '/%73andbox']) {
+      vi.stubEnv('MCP_APPS_SANDBOX_URL', `https://sandbox.test.invalid${path}`);
+      expect(mcpAppSandboxUrl()).toBeNull();
+    }
+    for (const url of ['https://sandbox.test.invalid/sandbox', 'http://127.0.0.1:3102/sandbox']) {
+      vi.stubEnv('MCP_APPS_SANDBOX_URL', url);
+      expect(mcpAppSandboxUrl()).toBe(url);
+    }
+  });
   it.each(['server', 'bot', 'session', 'descriptor', 'expiry', 'codex', 'hermes', 'sandbox'])('revokes loading and actions after %s changes', async change => {
     const { id } = await capture();
     if (change === 'server') await db.update(schema.mcpServers).set({ status: 'disabled' });

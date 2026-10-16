@@ -30,7 +30,7 @@ export function mcpAppSandboxUrl(): string | null {
   try {
     const host = new URL(process.env.AUTH_URL!);
     const sandbox = new URL(process.env.MCP_APPS_SANDBOX_URL!);
-    if (host.origin === sandbox.origin || sandbox.username || sandbox.password || sandbox.search || sandbox.hash ||
+    if (host.origin === sandbox.origin || sandbox.pathname !== '/sandbox' || sandbox.username || sandbox.password || sandbox.search || sandbox.hash ||
         (sandbox.protocol !== 'https:' && !(sandbox.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(sandbox.hostname)))) return null;
     return sandbox.href;
   } catch { return null; }

@@ -9,7 +9,7 @@ This change supplies code and a migration; it does not alter a running installat
 1. Apply migration `0066_mcp_apps` through the normal deployment process.
 2. Serve `scripts/mcp-app-sandbox.mjs` on a **dedicated, cookieless origin**, distinct from `AUTH_URL`. Do not serve CollectiveUI, an authenticated proxy, or any other application on that origin. Preserve its HTTP CSP and Permissions-Policy headers. Production must use HTTPS. Only loopback may use HTTP.
 3. Set `MCP_APPS_HOST_ORIGIN` to the CollectiveUI origin for that separate sandbox process. It listens on `127.0.0.1:3102` by default; `MCP_APPS_SANDBOX_HOST` and `MCP_APPS_SANDBOX_PORT` control the listener behind a reverse proxy.
-4. Set `MCP_APPS_SANDBOX_URL` on the application **and worker** to the complete sandbox URL, ending in `/sandbox`. No query, fragment, user info, or same-origin URL is accepted.
+4. Set `MCP_APPS_SANDBOX_URL` on the application **and worker** to the complete sandbox URL with the exact pathname `/sandbox`. Other paths (including prefixes or a trailing slash), query, fragment, user info, and same-origin URLs are rejected.
 5. Test/refresh an MCP server and review/accept any tool snapshot drift through the existing admin workflow. The catalog refresh advertises MCP Apps support. Previously discarded descriptors are not silently trusted.
 
 Example local **synthetic development only** configuration (not applied by this PR):
