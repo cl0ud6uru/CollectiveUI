@@ -6,7 +6,9 @@ set -euo pipefail
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 fixture_dir=$(mktemp -d)
 trap 'rm -rf "$fixture_dir"' EXIT
-npm --cache "$fixture_dir/npm-cache" pack @openai/codex@0.163.0-alpha.2-linux-x64 --pack-destination "$fixture_dir"
+: > "$fixture_dir/npmrc"
+npm --userconfig "$fixture_dir/npmrc" --cache "$fixture_dir/npm-cache" \
+  pack @openai/codex@0.163.0-alpha.2-linux-x64 --pack-destination "$fixture_dir"
 tar -xzf "$fixture_dir/openai-codex-0.163.0-alpha.2-linux-x64.tgz" -C "$fixture_dir"
 mv "$fixture_dir/package/vendor/x86_64-unknown-linux-musl" "$fixture_dir/vendor"
 cp "$repo_dir"/docker/personal-codex/{requirements.toml,server.mjs,bridge.mjs,prepare-workspace.mjs} "$fixture_dir/"

@@ -1,0 +1,2 @@
+# Unified diff context uses a single marker space on empty lines.
+patches/codex/a6274249-protected-masks.patch whitespace=-blank-at-eol
