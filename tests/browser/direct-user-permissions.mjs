@@ -39,7 +39,7 @@ try {
   assert.equal((await db.select().from(groupMembers).where(eq(groupMembers.groupId, groupId)))[0].userId, member.id);
   await page.getByText(name, { exact: true }).click();
   assert.equal(await dialog.getByRole('checkbox', { name: /^Select Direct Recipient/ }).isChecked(), true);
-  await dialog.getByRole('button', { name: 'Remove Direct Recipient', exact: true }).click();
+  await dialog.getByRole('button', { name: /^Remove Direct Recipient/ }).click();
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
   assert.equal((await db.select().from(groupMembers).where(eq(groupMembers.groupId, groupId))).length, 0);
