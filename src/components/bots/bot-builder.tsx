@@ -4,13 +4,12 @@ import { UserPicker, type UserOption } from "@/components/user-picker";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { FileText, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
+import { Check, FileText, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
 import {
   addKnowledgeFile,
-  createBot,
   draftBotFromDescription,
   removeKnowledgeFile,
-  updateBot,
+  saveBotFromBuilder,
   type BotInput,
 } from "@/app/(chat)/bots/actions";
 import { Chat } from "@/components/chat/chat";
@@ -209,6 +208,7 @@ export function BotBuilder({
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const set = <K extends keyof BotInput>(k: K, v: BotInput[K]) => setForm((f) => ({ ...f, [k]: v }));
   const app = apps.find((a) => a.id === form.appId);
   const [engineChoice, setEngineChoice] = useState<"native" | "hermes" | "codex">(() => initial.codex ? "codex" : apps.find((a) => a.id === initial.appId)?.agentServer ? "hermes" : "native");
@@ -226,11 +226,17 @@ export function BotBuilder({
   }
 
   function save() {
+    setSaveError("");
+    if (form.visibility === "groups" && !form.groupIds.length && !form.userIds?.length) {
+      setSaveError("Select at least one group or individual user under Who can use it.");
+      return;
+    }
     start(async () => {
       try {
         const existingId = botId ?? createdBotId.current;
         if (existingId) {
-          await updateBot(existingId, form);
+          const result = await saveBotFromBuilder(existingId, form);
+          if (!result.ok) { setSaveError(result.error); return; }
           await saveTeamSettings(existingId);
           toast.success("Bot updated");
           if (botId) router.refresh();
@@ -245,14 +251,18 @@ export function BotBuilder({
             sessionStorage.setItem(storageKey, JSON.stringify(request));
             ({ id } = await createPersonalHermesBot(request));
             sessionStorage.removeItem(storageKey);
-          } else ({ id } = await createBot(form));
+          } else {
+            const result = await saveBotFromBuilder(null, form);
+            if (!result.ok) { setSaveError(result.error); return; }
+            id = result.id;
+          }
           createdBotId.current = id;
           await saveTeamSettings(id);
           toast.success("Bot created");
           router.push(`/bots/${id}/edit`);
         }
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Save failed");
+        setSaveError(err instanceof Error && !("digest" in err) ? err.message : "Could not save the bot. Please try again.");
       }
     });
   }
@@ -469,15 +479,18 @@ export function BotBuilder({
               </Field>
               {form.visibility === "groups" && (
                 <div className="space-y-4">
-                  <Field label="Groups"><div className="flex flex-wrap gap-2">
+                  <Field label="Groups" hint="Click a group to select it. Selected groups show a checkmark."><div className="flex flex-wrap gap-2">
                   {groups.map((g) => {
                     const on = form.groupIds.includes(g.id);
                     return (
                       <button
                         key={g.id}
+                        type="button"
+                        aria-pressed={on}
                         onClick={() => set("groupIds", on ? form.groupIds.filter((x) => x !== g.id) : [...form.groupIds, g.id])}
-                        className={cn("rounded-full border px-3 py-1 text-sm", on ? "border-fg bg-fg text-bg" : "border-border")}
+                        className={cn("inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm", on ? "border-fg bg-fg text-bg" : "border-border")}
                       >
+                        {on && <Check aria-hidden="true" className="h-3.5 w-3.5" />}
                         {g.name}
                       </button>
                     );
@@ -648,6 +661,7 @@ export function BotBuilder({
             </div>
           )}
 
+          {saveError && <p role="alert" className="mt-4 text-sm text-danger">{saveError}</p>}
           <div className="sticky bottom-0 mt-6 flex items-center gap-2 border-t border-border bg-bg py-3">
             <Button onClick={save} disabled={pending || !form.name.trim() || (form.codex ? !form.codex.model.trim() : !form.appId)}>
               {pending && <Loader2 className="h-4 w-4 animate-spin" />} {botId ? service ? "Save draft" : "Update" : "Create"}

@@ -10,7 +10,7 @@ import { newId } from "@/lib/ids";
 const f = vi.hoisted(() => ({ principal: vi.fn() }));
 vi.mock("@/lib/session", () => ({ requirePrincipal: f.principal }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-import { createBot, updateBot, type BotInput } from "@/app/(chat)/bots/actions";
+import { createBot, updateBot, saveBotFromBuilder, type BotInput } from "@/app/(chat)/bots/actions";
 
 const run = process.env.DATABASE_URL ? describe : describe.skip;
 run("individual portal group and bot audiences", () => {
@@ -94,6 +94,17 @@ run("individual portal group and bot audiences", () => {
     await expect(createBot(botInput([]))).rejects.toMatchObject({ status: 400 });
     await expect(updateBot(id, { ...input, userIds: ["unknown-user"] })).rejects.toMatchObject({ status: 400 });
     expect((await getAccessibleBot(member, id)).id).toBe(id);
+  });
+  it("returns editor audience errors as data and preserves the saved audience until a valid update", async () => {
+    f.principal.mockResolvedValue(owner);
+    const input = botInput([member.user.id]);
+    const { id } = await createBot(input); botIds.push(id);
+    expect(await saveBotFromBuilder(id, { ...input, userIds: [] })).toEqual({ ok: false, error: "Pick at least one group or user" });
+    expect((await getAccessibleBot(member, id)).id).toBe(id);
+    expect(await saveBotFromBuilder(null, botInput([]))).toEqual({ ok: false, error: "Pick at least one group or user" });
+    expect(await saveBotFromBuilder(id, { ...input, userIds: [stranger.user.id] })).toEqual({ ok: true, id });
+    expect((await getAccessibleBot(stranger, id)).id).toBe(id);
+    await expect(getAccessibleBot(member, id)).rejects.toMatchObject({ status: 403 });
   });
   it("includes individually selected users in service publication checks", async () => {
     const [bot] = await db.insert(bots).values({ name: `Service fixture ${newId()}`, ownerId: owner.user.id, appId, executionMode: "service", visibility: "groups" }).returning(); botIds.push(bot.id);
