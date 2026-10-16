@@ -26,6 +26,8 @@ export type McpToolDef = {
   inputSchema: { type: "object"; properties?: Record<string, unknown>; required?: string[]; [k: string]: unknown };
   outputSchema?: Record<string, unknown>;
   annotations?: McpToolAnnotations;
+  /** Validated host-only routing fields; included in snapshot drift and service grant hashes. */
+  _meta?: import('./apps-contract').McpAppMeta;
 };
 
 /** Admin choices per tool, by tool name. Tools not listed are on and follow the bot's approval setting. */

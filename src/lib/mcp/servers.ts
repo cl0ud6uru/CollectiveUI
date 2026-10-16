@@ -24,7 +24,7 @@ export async function refreshMcpServer(serverId: string, actorId: string | null 
   let tools: McpToolDef[];
   let info: McpServerInfo;
   try {
-    const client = await connectMcp(server, { subject: { kind: "system" } });
+    const client = await connectMcp(server, { subject: { kind: "system" }, apps: true });
     try {
       tools = await listAllTools(client, { timeout: server.timeoutMs });
       const init = client.initializeResult;
