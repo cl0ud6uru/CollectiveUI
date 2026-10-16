@@ -2,11 +2,13 @@
 
 <a id="ai-portal"></a>
 
-**A self-hosted AI workspace. Choose what runs your bots.**
+**Self-hosted, open-source alternative to Grok Bot and OpenAI Dots, with Hermes integration. Bring your own models, agent harnesses, and sandboxes.**
 
-CollectiveUI brings AI conversations and task-focused bots into one web app, with a choice of engine behind each bot. Use CollectiveUI’s built-in engine with a connected model, or connect a Hermes backend with its own tools, memory, skills and model. A separately gated Codex preview is described below; it is not currently a generally available engine.
+CollectiveUI brings AI conversations and task-focused bots into one web app, with a choice of engine behind each bot. Use CollectiveUI’s built-in engine with a connected model, or connect a **Hermes backend** with its own tools, memory, skills and model. Hermes supports manually connected profiles, with optional managed and personal Docker modes that require operator setup; see [Hermes setup and limits](#choose-the-engine-behind-each-bot). A separately gated Codex preview is described below; it is not currently a generally available engine.
 
 Use it for yourself or a team, with an administrator choosing the available connections, tools and access rules.
+
+The goal is control over your assistant infrastructure, including supported bot engines and operator-configured sandboxes. The Grok Bot and OpenAI Dots comparison describes the project's purpose, without implying feature parity or affiliation with xAI or OpenAI. Engine and sandbox availability depends on setup and the [current limitations](#current-limitations).
 
 Already have an invitation or a link from your team? Open that site and sign in. You only need the setup instructions below if you are running your own installation.
 
