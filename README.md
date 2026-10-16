@@ -150,6 +150,7 @@ See the [development status and backlog](TODO.md), [service-bot restrictions](do
 | Deploy, update, back up or recover an installation | [Operator guide](docs/operations.md) |
 | Deploy published images without building on the VM | [Docker Hub deployment and updates](docs/docker-hub-deployment.md) |
 | Connect models, MCP tools or Hermes | [Connection guide](docs/connections.md) |
+| Render bundled widgets in native web chats | [MCP Apps support and exact limits](docs/architecture/mcp-apps.md) |
 | Set up an optional coordinator or The Queen starter | [Default coordinator](docs/features/default-coordinator.md) |
 | Configure narrowly scoped shared capabilities | [Service bots](docs/service-bots.md) |
 | Manage pet artwork and identity permissions | [Pet avatars](docs/features/bot-companions.md) |

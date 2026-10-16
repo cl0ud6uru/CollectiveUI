@@ -1968,6 +1968,33 @@ export const codexApprovals = pgTable('codex_approvals', {
   decision: text('decision').$type<'decline' | 'cancel'>(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, t => [index('codex_approvals_run_idx').on(t.runId), check('codex_approval_decision_check', sql`${t.decision} is null or ${t.decision} in ('decline', 'cancel')`)]);
 
+/** Native MCP App data is separate from messages, model history, search, shares and tool audit output. */
+export const mcpAppInstances = pgTable('mcp_app_instances', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  botId: text('bot_id').notNull().references(() => bots.id, { onDelete: 'cascade' }),
+  serverId: text('server_id').notNull().references(() => mcpServers.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), definitionHash: text('definition_hash').notNull(),
+  binding: text('binding').notNull(), sessionVersion: integer('session_version').notNull(), runId: text('run_id'),
+  payloadEnc: text('payload_enc').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(),
+}, t => [index('mcp_app_instances_conversation_idx').on(t.conversationId),
+  check('mcp_app_instance_payload_bound', sql`octet_length(${t.payloadEnc}) <= 2000000`)]);
+
+/** An approval covers one immutable input; claiming dispatch is atomic and never retried after uncertainty. */
+export const mcpAppActions = pgTable('mcp_app_actions', {
+  id: text('id').primaryKey(),
+  instanceId: text('instance_id').notNull().references(() => mcpAppInstances.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), definitionHash: text('definition_hash').notNull(),
+  input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+  status: text('status').$type<'pending' | 'running' | 'done' | 'denied' | 'error'>().notNull(),
+  resultEnc: text('result_enc'), createdAt: createdAt(),
+}, t => [index('mcp_app_actions_instance_idx').on(t.instanceId),
+  check('mcp_app_action_status_check', sql`${t.status} in ('pending', 'running', 'done', 'denied', 'error')`),
+  check('mcp_app_action_input_bound', sql`octet_length(${t.input}::text) <= 65536`),
+  check('mcp_app_action_result_bound', sql`${t.resultEnc} is null or octet_length(${t.resultEnc}) <= 2000000`)]);
+
 
 // The recovery journal has its own protocol module; re-export it into Drizzle's schema.
 export { remoteHermesRecoveries } from './remote-hermes-recovery-schema';
