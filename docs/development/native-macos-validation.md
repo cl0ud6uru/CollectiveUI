@@ -38,26 +38,33 @@ distribution signing disabled; the app is not notarized or ready for distributio
 
 ## UI and production limits
 
-The earlier foundation had six unique passing offline UI cases. The current
-polish UI suite did **not** complete: its runner timed out enabling automation
-before any test case began. Developer testing mode was subsequently enabled
-with the user's approval; the suite has not been rerun successfully. The added
-appearance, compact resizing and long-draft case is included as unverified
-coverage. Screenshot review does not certify those interactions.
+The current offline macOS UI suite passed **all nine cases**, with no failures or
+skips, on the publication branch after a test-harness correction. SwiftUI's
+TextEditor reported disabled through XCTest while accepting text; the runner now
+activates the fixture, waits for foreground state and checks visibility. The
+existing assertions still verify the actual typed draft and its restoration.
+The earlier automation timeout and initial guard failures are superseded by this
+completed run; they are not counted as successful attempts.
 
-Live validation of the new QA build awaits interactive Keychain authorization.
+The suite verified direct approval settlement, Command-Return and visible Send,
+immediate Stop and persistence of the stopped row, multiline drafts across
+repeated navigation and relaunch, window-close/Settings recovery, read-only error
+refresh preserving the next draft, streaming scroll stability and Jump to Latest,
+and light/dark appearance with compact resizing and twenty-line draft restoration.
+These are offline fixtures, not production authentication or server tool actions.
+
+Live validation is incomplete. An earlier QA launch requested interactive Keychain
+authorization; a later check found neither a dialog nor a running native QA app.
 The configured server's public native-info endpoint responded successfully, but
 that does not prove authenticated access. No live message or tool action was sent.
-Production browser sign-in,
-Keychain persistence/failure handling, authenticated streaming and the existing
-server reply error remain unverified. Diagnosing that error needs the existing
-production server log for the failed turn.
+Production browser sign-in, Keychain persistence/failure handling, authenticated
+streaming and the existing server reply error remain unverified. Diagnosing that
+error needs the existing production server log for the failed turn.
 
-Remaining checks include Send/Stop, repeated navigation, draft/window restoration,
-streaming scroll behavior, the resize/appearance matrix, VoiceOver, Reduce Motion,
-macOS 14/Intel runtime behavior and broader rendered iOS regressions. Attachments,
-search/inbox, complete Groups parity, pagination, localization, distribution and
-voice are outside this foundation.
+Remaining checks include VoiceOver, Reduce Motion, broader keyboard/scrollbar and
+resize coverage, macOS 14/Intel runtime behavior and broader rendered iOS
+regressions. Attachments, search/inbox, complete Groups parity, pagination,
+localization, distribution and voice are outside this foundation.
 
 Reproduction commands and fixture isolation are documented in
 [macos/README.md](../../macos/README.md). Native UI runs must use the separate

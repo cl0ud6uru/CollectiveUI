@@ -37,9 +37,12 @@ final class CollectiveUIRegression: XCTestCase {
         if reset { app.launchArguments.append("--demo-reset-drafts") }
         if let appearance { app.launchArguments += ["-desktopAppearance", appearance] }
         app.launch()
+        app.activate()
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
-        XCTAssertEqual(app.state, .runningForeground, "The isolated native fixture must activate before interaction")
-        XCTAssertTrue(composer.isEnabled, "The desktop or an OS dialog is blocking the native editor")
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5), "The isolated native fixture must activate before interaction")
+        // TextEditor can report disabled while still accepting input. Draft helpers
+        // verify actual typed text; visibility is the useful prerequisite here.
+        XCTAssertTrue(composer.isHittable, "The native editor must be visible before interaction")
     }
 
     private func enterDraft(_ text: String) {
