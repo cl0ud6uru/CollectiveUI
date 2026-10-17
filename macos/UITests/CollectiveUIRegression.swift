@@ -48,7 +48,10 @@ final class CollectiveUIRegression: XCTestCase {
     private func enterDraft(_ text: String) {
         composer.click()
         composer.typeKey("a", modifierFlags: .command)
-        composer.typeText(text)
+        for (index, line) in text.components(separatedBy: "\n").enumerated() {
+            if index > 0 { composer.typeKey(.return, modifierFlags: .shift) }
+            if !line.isEmpty { composer.typeText(line) }
+        }
         XCTAssertEqual(composer.value as? String, text)
     }
 
@@ -61,7 +64,7 @@ final class CollectiveUIRegression: XCTestCase {
 
     func testDraftsSurviveRepeatedNavigationAndRelaunch() {
         launch()
-        let first = "Native research draft\nReturn inserts a new line"
+        let first = "Native research draft\nShift Enter inserts a new line"
         let second = "Independent chart draft"
         enterDraft(first)
         XCTAssertFalse(app.buttons["chat.stop"].exists)
@@ -105,6 +108,30 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.staticTexts["Reply stopped"].waitForExistence(timeout: 5))
     }
 
+    func testEnterSendsOnceAndShiftEnterKeepsNewlineAndNextDraft() {
+        launch(scenario: "delayed")
+        composer.click()
+        composer.typeText("Keyboard send first line")
+        composer.typeKey(.return, modifierFlags: .shift)
+        composer.typeText("Keyboard send second line")
+        let message = "Keyboard send first line\nKeyboard send second line"
+        XCTAssertEqual(composer.value as? String, message)
+        XCTAssertFalse(app.buttons["chat.stop"].exists, "Shift Enter must not send")
+        composer.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.buttons["chat.stop"].waitForExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, "")
+        composer.click()
+        composer.typeText("Next draft stays unsent")
+        composer.typeKey(.return, modifierFlags: [])
+        XCTAssertEqual(composer.value as? String, "Next draft stays unsent")
+        let sent = app.scrollViews["chat.transcript"].staticTexts.matching(
+            NSPredicate(format: "value == %@ OR label == %@", message, message))
+        XCTAssertEqual(sent.count, 1, "One Return press must create exactly one user message")
+        app.buttons["chat.stop"].click()
+        XCTAssertTrue(app.staticTexts["Reply stopped"].waitForExistence(timeout: 10))
+        XCTAssertEqual(composer.value as? String, "Next draft stays unsent")
+    }
+
     func testApprovalDecisionSettlesAcrossNavigation() {
         launch("demo-approval")
         let approve = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "approval.approve.")).firstMatch
@@ -116,12 +143,36 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertFalse(approve.exists)
     }
 
+    func testEnterAfterNavigationSendsOnlyTheCurrentChat() {
+        launch(scenario: "delayed")
+        let retainedDraft = "Research draft must stay local"
+        let submittedDraft = "Send only the selected image chat"
+        enterDraft(retainedDraft)
+        openChat("demo-image")
+        enterDraft(submittedDraft)
+        openChat("demo-research")
+        XCTAssertEqual(composer.value as? String, retainedDraft)
+        openChat("demo-image")
+        XCTAssertEqual(composer.value as? String, submittedDraft)
+        composer.click()
+        composer.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.buttons["chat.stop"].waitForExistence(timeout: 5))
+        let sent = app.scrollViews["chat.transcript"].staticTexts.matching(
+            NSPredicate(format: "value == %@ OR label == %@", submittedDraft, submittedDraft))
+        XCTAssertEqual(sent.count, 1)
+        app.buttons["chat.stop"].click()
+        XCTAssertTrue(app.staticTexts["Reply stopped"].waitForExistence(timeout: 10))
+        openChat("demo-research")
+        XCTAssertEqual(composer.value as? String, retainedDraft)
+        XCTAssertFalse(app.buttons["chat.stop"].exists)
+    }
+
     func testVisibleSendButtonAndMultilineEditorKeepDraftWhileStopping() {
         launch(scenario: "delayed")
         let originalHeight = composer.frame.height
         composer.click()
         composer.typeText("First line")
-        composer.typeKey(.return, modifierFlags: [])
+        composer.typeKey(.return, modifierFlags: .shift)
         composer.typeText("Second line")
         composer.typeKey(.return, modifierFlags: .shift)
         composer.typeText("Third line")

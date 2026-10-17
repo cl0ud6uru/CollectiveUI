@@ -38,7 +38,7 @@ distribution signing disabled; the app is not notarized or ready for distributio
 
 ## UI and production limits
 
-The current offline macOS UI suite passed **all nine cases**, with no failures or
+Before the Enter-key update, the offline macOS UI suite passed **all nine cases**, with no failures or
 skips, on the publication branch after a test-harness correction. SwiftUI's
 TextEditor reported disabled through XCTest while accepting text; the runner now
 activates the fixture, waits for foreground state and checks visibility. The
@@ -52,6 +52,26 @@ repeated navigation and relaunch, window-close/Settings recovery, read-only erro
 refresh preserving the next draft, streaming scroll stability and Jump to Latest,
 and light/dark appearance with compact resizing and twenty-line draft restoration.
 These are offline fixtures, not production authentication or server tool actions.
+
+## Enter and Shift+Enter
+
+Enter now sends from the active Mac chat composer; Shift+Enter inserts a newline.
+Command-Return remains an alternate Send shortcut. The existing native TextEditor
+retains its selection, undo and input-method behavior. Key handling leaves marked
+text, other editors/windows and modified shortcuts to AppKit, consumes repeated
+Enter key-down events, and checks the current chat's send eligibility. An Enter
+press while a reply is active preserves the next draft without adding a newline.
+
+Seven additional AppKit regressions passed, bringing macOS hosted coverage to
+**85 passing tests**. They cover marked text, key repeats, keypad Enter, modifier
+keys and editor/window/owner isolation. Mac Debug and universal Release builds
+passed. The dedicated offline UI test verified Shift+Enter's actual newline,
+Enter's single message, and preservation of the next draft while streaming.
+The expanded suite also checks Enter after conversation navigation. Final
+full-suite and latest-head CI results are recorded on
+[PR #294](https://github.com/cl0ud6uru/CollectiveUI/pull/294).
+No real bot message was sent to test this behavior. The change is Mac-only;
+shared iOS sources and deployment targets are unchanged.
 
 Live validation is incomplete. An earlier QA launch requested interactive Keychain
 authorization; a later check found neither a dialog nor a running native QA app.

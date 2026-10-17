@@ -59,7 +59,8 @@ without changing anything. No XcodeGen or third-party app frameworks are needed.
   approvals with an optional denial reason, delegated approvals, and an optional
   inspector of current tools and server bot activity. The server remains responsible
   for admission, approval identity, policy enforcement and access control.
-- Return inserts a newline; **⌘Return** sends, **⌘.** stops an attached stream,
+- **Enter** sends; **Shift+Enter** inserts a newline. **⌘Return** remains an alternate
+  Send shortcut. **⌘.** stops an attached stream,
   **⌘N** opens New Chat, **⌥⌘I** toggles the inspector, **⌘,** opens Settings, and
   **⌘0** shows the main window while Settings remains open. Native
   sidebar commands and System/Light/Dark appearance are provided.
@@ -169,7 +170,9 @@ Release compilation excludes all demo transport/fixtures.
 3. Stream with `--demo --demo-open demo-research --demo-send "Fixture question"`.
    Repeat with `--demo-stream-scenario long` and `delayed`. Scroll away with wheel,
    trackpad, scrollbar and keyboard; confirm chunks preserve the reader's position
-   and Jump to Latest restores following. Test Return and ⌘Return separately.
+   and Jump to Latest restores following. Verify Enter sends exactly once, Shift+Enter
+   inserts a newline, and Enter used to commit input-method marked text never sends.
+   Check the alternate ⌘Return shortcut separately.
 4. Stop immediately and during output. Inspect the retained original request and
    unconfirmed status behavior, plus the persisted empty **Reply stopped** row where
    the server acknowledges cancellation. Reopen chats and quit/relaunch mid-send.

@@ -2,6 +2,7 @@ import SwiftUI
 
 @MainActor
 struct DesktopComposerView: View {
+    @Environment(DesktopWorkspace.self) private var workspace
     @Bindable var model: ChatModel
     @FocusState private var isFocused: Bool
 
@@ -31,8 +32,17 @@ struct DesktopComposerView: View {
                                 TextEditor(text: $model.composerText)
                                     .font(.body).scrollContentBackground(.hidden)
                                     .focused($isFocused)
+                                    .background {
+                                        DesktopComposerKeyHandler {
+                                            guard workspace.chat === model else { return false }
+                                            if model.canSend { model.send() }
+                                            return true
+                                        }
+                                        .frame(width: 0, height: 0)
+                                        .allowsHitTesting(false).accessibilityHidden(true)
+                                    }
                                     .accessibilityLabel(placeholder)
-                                    .accessibilityHint("Return inserts a new line. Command Return sends your message.")
+                                    .accessibilityHint("Enter sends your message. Shift Enter inserts a new line.")
                                     .accessibilityIdentifier("chat.composer")
                                 if model.composerText.isEmpty {
                                     Text(placeholder).foregroundStyle(PortalTheme.muted).padding(5)
@@ -41,7 +51,7 @@ struct DesktopComposerView: View {
                             }
                         }
                     HStack {
-                        Text("Return for a new line · ⌘Return to send")
+                        Text("Enter to send · ⇧Enter for a new line")
                             .font(.caption).foregroundStyle(PortalTheme.muted)
                         Spacer(minLength: 8)
                         if model.isStreaming {
@@ -61,7 +71,7 @@ struct DesktopComposerView: View {
                             .font(.title3.weight(.semibold)).frame(width: 36, height: 36)
                             .background(model.canSend ? PortalTheme.ink : PortalTheme.surfaceSecondary, in: Circle())
                             .foregroundStyle(model.canSend ? PortalTheme.onInk : PortalTheme.muted)
-                            .disabled(!model.canSend).help("Send message (⌘Return)")
+                            .disabled(!model.canSend).help("Send message (Enter)")
                             .accessibilityIdentifier("chat.send")
                         }
                     }
