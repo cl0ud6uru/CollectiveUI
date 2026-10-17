@@ -8,8 +8,9 @@ change in this milestone.
 **Status:** native Debug and universal Release builds pass on Xcode 27.0. The
 Apple-toolchain package suite and macOS/iOS hosted fixture suites pass. See the
 [native validation record](../docs/development/native-macos-validation.md)
-for completed checks and remaining limits. Current polish UI cases have not completed. Real browser sign-in and Keychain behavior
-remain outside fixture coverage.
+for completed checks and remaining limits. The offline Mac UI suite is included
+in GitHub Actions. Real browser sign-in and Keychain behavior remain outside
+fixture coverage.
 
 ## Project and boundaries
 
