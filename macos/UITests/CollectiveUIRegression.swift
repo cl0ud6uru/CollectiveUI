@@ -56,16 +56,20 @@ final class CollectiveUIRegression: XCTestCase {
     }
 
     private func openChat(_ id: String, expectedDraft: String = "") {
-        let row = app.descendants(matching: .any)["sidebar.chat." + id].firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
-        row.click()
+        let identifier = "sidebar.chat." + id
+        let label = app.descendants(matching: .any)[identifier].firstMatch
+        XCTAssertTrue(label.waitForExistence(timeout: 5))
+        // Select the native outline row rather than a nested label/image.
+        let outlineRow = app.outlineRows.containing(.any, identifier: identifier).firstMatch
+        let row = outlineRow.exists ? outlineRow : label
+        row.doubleClick()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         // The old and new editors share an identifier. Existence alone can
         // return before SwiftUI activates the selected conversation's model.
         let restored = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", expectedDraft), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed,
-            "Selecting \(id) must restore its own draft before the next interaction")
+            "Selecting \(id) must restore its own draft; editor=\(String(describing: composer.value)); row=\(row.debugDescription); outlines=\(app.outlineRows.debugDescription)")
     }
 
     private func renderedMessageCount(_ text: String) throws -> Int {
@@ -236,20 +240,22 @@ final class CollectiveUIRegression: XCTestCase {
         launch(appearance: "dark")
         captureWindow("native-after-dark")
         let window = app.windows["main"]
+        let initialFrame = window.frame
         // A hosted Mac has a 1024-point display. Its fitted initial window can
         // put the resize edge against the display boundary. Move that edge
         // on-screen before dragging it, then keep the compact window visible.
         let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 12))
-        titlebar.press(forDuration: 0.2, thenDragTo: titlebar.withOffset(CGVector(dx: -120, dy: 0)))
+        titlebar.click(forDuration: 0.5, thenDragTo: titlebar.withOffset(CGVector(dx: -120, dy: 0)))
+        let movedFrame = window.frame
         let rightEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.999, dy: 0.5))
-        rightEdge.press(forDuration: 0.2, thenDragTo: rightEdge.withOffset(CGVector(dx: 760 - window.frame.width, dy: 0)))
+        rightEdge.click(forDuration: 0.5, thenDragTo: rightEdge.withOffset(CGVector(dx: 760 - window.frame.width, dy: 0)))
         let bottomEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.999))
-        bottomEdge.press(forDuration: 0.2, thenDragTo: bottomEdge.withOffset(CGVector(dx: 0, dy: 600 - window.frame.height)))
+        bottomEdge.click(forDuration: 0.5, thenDragTo: bottomEdge.withOffset(CGVector(dx: 0, dy: 600 - window.frame.height)))
         let compactTitlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 12))
-        compactTitlebar.press(forDuration: 0.2, thenDragTo: compactTitlebar.withOffset(
+        compactTitlebar.click(forDuration: 0.5, thenDragTo: compactTitlebar.withOffset(
             CGVector(dx: 20 - window.frame.minX, dy: 60 - window.frame.minY)))
-        XCTAssertLessThan(window.frame.width, 820)
-        XCTAssertLessThan(window.frame.height, 650)
+        XCTAssertLessThan(window.frame.width, 820, "initial=\(initialFrame); moved=\(movedFrame); resized=\(window.frame)")
+        XCTAssertLessThan(window.frame.height, 650, "initial=\(initialFrame); moved=\(movedFrame); resized=\(window.frame)")
         let draft = (1...20).map { "Draft line \($0): keep this multiline text." }.joined(separator: "\n")
         enterDraft(draft)
         XCTAssertLessThan(composer.frame.height, 180)
