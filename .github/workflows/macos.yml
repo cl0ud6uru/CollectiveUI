@@ -120,8 +120,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' \
             2>&1 | tee "$RUNNER_TEMP/macos-ci/release-build.log" | tail -150
-          xcrun lipo -verify_arch arm64 x86_64 \
-            "$RUNNER_TEMP/macos-release/Build/Products/Release/CollectiveUI.app/Contents/MacOS/CollectiveUI"
+          release_binary="$RUNNER_TEMP/macos-release/Build/Products/Release/CollectiveUI.app/Contents/MacOS/CollectiveUI"
+          xcrun lipo "$release_binary" -info \
+            | tee "$RUNNER_TEMP/macos-ci/release-architectures.log"
+          xcrun lipo "$release_binary" -verify_arch arm64 x86_64
 
       - name: Run hosted fixture tests without rebuilding
         timeout-minutes: 10
