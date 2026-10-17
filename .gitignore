@@ -58,3 +58,6 @@ __pycache__/
 /.collectiveui-deploy/
 /release-input/
 /release-manifest.json
+
+# Private native recovery archives and machine-specific evidence
+/.native-macos-recovery/
