@@ -108,6 +108,28 @@ image with networking disabled; no Apple toolchain is installed in the cloud.
 See the [validation record](../docs/development/native-macos-validation.md) for
 recorded results and remaining scope.
 
+## GitHub Actions
+
+[The macOS workflow](../.github/workflows/macos.yml) runs on pull requests and
+pushes to `main` that change Mac code, its shared iOS sources/tests, CollectiveKit
+or the workflow itself. It can also be run manually. New commits cancel an
+older run for the same PR or branch.
+
+A Linux job checks project membership, shared-source contracts and the workflow
+with actionlint/ShellCheck before using GitHub's hosted `xcode-27` Apple Silicon
+runner. The native job runs CollectiveKit tests, builds Debug and its hosted
+tests once, executes hosted tests without rebuilding, then runs the offline UI
+suite against that same `io.collectiveui.macos.polish` app. The two suites run
+sequentially because they launch the same fixture app. Release builds both
+`arm64` and `x86_64` with distribution signing disabled and verifies the binary
+contains both architectures.
+
+Each stage has a timeout. Toolchain/build/test logs, hosted and UI `.xcresult`
+bundles, and exported UI attachments are uploaded as `macos-native-validation`
+even after a failure and retained for 14 days. Fixtures use no production
+session, browser sign-in or real server actions. This gate does not establish
+macOS 14/Intel runtime coverage or distribution readiness.
+
 ## Native validation
 
 These checks require no real account or paid model. The macOS test scheme launches the host with `--demo`; application tests
@@ -237,7 +259,7 @@ Independent multiwindow navigation/session coordination; Groups lead/activity UI
 native attachments/import/download/search/inbox; the remaining avatar types;
 voice, microphone and dictation; full website settings/admin parity; transcript
 pagination; app icon, localization and distribution packaging; broader macOS UI
-regressions and a native macOS CI gate.
+regressions.
 
 Uploaded references in saved drafts remain intact, failed uploads block send, and
 the desktop can remove them, but a native attachment workflow is not complete.
