@@ -57,19 +57,30 @@ final class CollectiveUIRegression: XCTestCase {
 
     private func openChat(_ id: String, expectedDraft: String = "") {
         let identifier = "sidebar.chat." + id
-        let label = app.descendants(matching: .any)[identifier].firstMatch
-        XCTAssertTrue(label.waitForExistence(timeout: 5))
-        // Select the native outline row rather than a nested label/image.
-        let outlineRow = app.outlineRows.containing(.any, identifier: identifier).firstMatch
-        let row = outlineRow.exists ? outlineRow : label
-        row.doubleClick()
+        let row = app.descendants(matching: .any)[identifier].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let sidebar = app.scrollViews.containing(.any, identifier: identifier).firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
+        // Existence includes rows clipped below the sidebar on a hosted Mac's
+        // 1024-point display. Bring the label inside the viewport before clicking;
+        // XCTest can report the containing outline row disabled or unhittable.
+        for _ in 0..<8 {
+            let viewport = sidebar.frame.insetBy(dx: 4, dy: 8)
+            if viewport.contains(row.frame), row.isHittable { break }
+            let delta: CGFloat = row.frame.midY > viewport.midY ? -240 : 240
+            sidebar.scroll(byDeltaX: 0, deltaY: delta)
+        }
+        XCTAssertTrue(sidebar.frame.insetBy(dx: 4, dy: 8).contains(row.frame),
+            "Selecting \(id) requires a visible row; viewport=\(sidebar.frame); row=\(row.frame)")
+        XCTAssertTrue(row.isHittable)
+        row.click()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         // The old and new editors share an identifier. Existence alone can
         // return before SwiftUI activates the selected conversation's model.
         let restored = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", expectedDraft), object: composer)
         XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed,
-            "Selecting \(id) must restore its own draft; editor=\(String(describing: composer.value)); row=\(row.debugDescription); outlines=\(app.outlineRows.debugDescription)")
+            "Selecting \(id) must restore its own draft; editor=\(String(describing: composer.value)); row=\(row.debugDescription); viewport=\(sidebar.frame)")
     }
 
     private func renderedMessageCount(_ text: String) throws -> Int {
