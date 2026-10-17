@@ -1,15 +1,26 @@
 import XCTest
+#if os(iOS)
 import UIKit
+#endif
 import CollectiveKit
 @testable import CollectiveUI
 
 final class MemoryCredentials: CredentialStore {
     var values: [String: String]
     var operations: [String] = []
+    var rejectsTokenRemoval = false
+    var rejectedWrites: Set<String> = []
     init(_ values: [String: String] = [:]) { self.values = values }
-    func set(_ value: String, for account: String) { operations.append("set:\(account)"); values[account] = value }
+    func set(_ value: String, for account: String) {
+        operations.append("set:\(account)")
+        if !rejectedWrites.contains(account) { values[account] = value }
+    }
     func string(for account: String) -> String? { operations.append("read:\(account)"); return values[account] }
-    func remove(_ account: String) { operations.append("remove:\(account)"); values.removeValue(forKey: account) }
+    func remove(_ account: String) {
+        operations.append("remove:\(account)")
+        if account == "token" && rejectsTokenRemoval { return }
+        values.removeValue(forKey: account)
+    }
 }
 
 @MainActor
@@ -245,6 +256,34 @@ final class SessionAndDraftTests: XCTestCase {
         XCTAssertEqual(app().conversationStates.state(for: "deleted").text, "")
     }
 
+    func testLateDeleteCannotRemoveReplacementSessionDraftWithSameConversationID() async {
+        let requested = expectation(description: "Delete requested")
+        let gate = FixtureDeliveryGate()
+        FixtureProtocol.handler = { request in
+            if request.httpMethod == "DELETE", request.url?.path.hasSuffix("/conversations/same-id") == true {
+                requested.fulfill()
+                return .init(deliveryGate: gate)
+            }
+            return .init()
+        }
+        let credentials = MemoryCredentials(["baseURL": server.absoluteString, "token": "first"])
+        let model = AppModel(credentials: credentials, defaults: defaults, draftRoot: root,
+            session: FixtureProtocol.session(), launchDemo: false)
+        let deletion = Task { await model.delete(ConversationSummary(id: "same-id", title: "Old chat")) }
+        await fulfillment(of: [requested], timeout: 3)
+        model.completeSignIn(token: "replacement")
+        let draft = model.conversationStates.state(for: "same-id")
+        draft.text = "Replacement session draft"
+        draft.flush()
+        gate.release()
+        await deletion.value
+        XCTAssertEqual(draft.text, "Replacement session draft")
+        XCTAssertEqual(model.conversationStates.state(for: "same-id").text, "Replacement session draft")
+        let restored = AppModel(credentials: credentials, defaults: defaults, draftRoot: root,
+            session: FixtureProtocol.session(), launchDemo: false)
+        XCTAssertEqual(restored.conversationStates.state(for: "same-id").text, "Replacement session draft")
+    }
+
     func testTrueDemoNeverTouchesExistingRealCredentials() async {
         let seeded = ["baseURL": server.absoluteString, "token": "existing-unrelated-fixture"]
         for action in ["logout", "401", "server"] {
@@ -355,6 +394,7 @@ final class SessionAndDraftTests: XCTestCase {
         XCTAssertFalse(restored.preventsResume(in: [user, replacement]))
     }
 
+    #if os(iOS)
     func testSignInInkAndLabelContrastInBothAppearances() {
         for style in [UIUserInterfaceStyle.light, .dark] {
             let traits = UITraitCollection(userInterfaceStyle: style)
@@ -371,4 +411,5 @@ final class SessionAndDraftTests: XCTestCase {
         func linear(_ c: CGFloat) -> Double { c <= 0.04045 ? Double(c / 12.92) : pow(Double((c + 0.055) / 1.055), 2.4) }
         return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
     }
+    #endif
 }

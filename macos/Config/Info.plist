@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleURLTypes</key><array><dict>
+        <key>CFBundleURLName</key><string>io.collectiveui.macos</string>
+        <key>CFBundleURLSchemes</key><array><string>collectiveui</string></array>
+    </dict></array>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+    <key>NSLocalNetworkUsageDescription</key><string>Connect to the CollectiveUI server address you choose on your local network.</string>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+</dict></plist>

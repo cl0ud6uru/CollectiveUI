@@ -2,6 +2,10 @@
 
 A native SwiftUI client for a CollectiveUI server. It runs on iPhone and iPad (iOS 27+). You can chat with model connections and bots, approve tool actions, read the inbox and search your history.
 
+The native macOS first milestone is a separate target that compiles selected shared
+client logic from this directory. See [macos/README.md](../macos/README.md) for its
+scope, platform boundaries and recorded validation.
+
 ```
 ios/
   CollectiveKit/            Swift package (Foundation only): models, API client, SSE parser,
