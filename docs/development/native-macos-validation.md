@@ -25,6 +25,12 @@ The recovered implementation was validated on an Apple Silicon Mac with Xcode
 | iOS hosted fixture tests | 84 passed |
 | Native project guardrails, seven iOS parity checks, voice bundle consistency | Passed |
 
+After reconciling with current main, all four Debug/Release builds passed again,
+as did 90 package tests, 78 macOS hosted tests and 85 iOS hosted tests, with no
+failures or skips. Main adds a command-result dismissal fixture, accounting for
+the one additional hosted test on each platform. Project guardrails and all seven
+iOS source-parity checks also passed on the publication branch.
+
 These are completed local results, not a claim that GitHub CI has passed.
 Build products, logs, recovery history and result bundles are retained locally
 and are excluded from the repository. Release compilation was checked with
