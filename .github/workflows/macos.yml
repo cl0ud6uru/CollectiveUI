@@ -107,6 +107,22 @@ jobs:
             "$RUNNER_TEMP/macos-debug/Build/Products/Debug/CollectiveUI.app/Contents/Info.plist")" \
             = io.collectiveui.macos.polish
 
+      - name: Build universal Release without distribution signing
+        timeout-minutes: 10
+        run: |
+          xcodebuild build \
+            -project macos/CollectiveUI.xcodeproj \
+            -scheme CollectiveUI \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/macos-release" \
+            COLLECTIVE_BUNDLE_ID=io.collectiveui.macos.polish \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' \
+            2>&1 | tee "$RUNNER_TEMP/macos-ci/release-build.log" | tail -150
+          xcrun lipo -verify_arch arm64 x86_64 \
+            "$RUNNER_TEMP/macos-release/Build/Products/Release/CollectiveUI.app/Contents/MacOS/CollectiveUI"
+
       - name: Run hosted fixture tests without rebuilding
         timeout-minutes: 10
         run: |
@@ -139,22 +155,24 @@ jobs:
             CODE_SIGN_IDENTITY=- \
             2>&1 | tee "$RUNNER_TEMP/macos-ci/ui-tests.log" | tail -200
 
-      - name: Build universal Release without distribution signing
-        timeout-minutes: 10
+      - name: Summarize native test results and failures
+        if: always()
+        timeout-minutes: 5
         run: |
-          xcodebuild build \
-            -project macos/CollectiveUI.xcodeproj \
-            -scheme CollectiveUI \
-            -configuration Release \
-            -destination 'generic/platform=macOS' \
-            -derivedDataPath "$RUNNER_TEMP/macos-release" \
-            COLLECTIVE_BUNDLE_ID=io.collectiveui.macos.polish \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' \
-            2>&1 | tee "$RUNNER_TEMP/macos-ci/release-build.log" | tail -150
-          xcrun lipo -verify_arch arm64 x86_64 \
-            "$RUNNER_TEMP/macos-release/Build/Products/Release/CollectiveUI.app/Contents/MacOS/CollectiveUI"
-
+          for suite in hosted ui; do
+            bundle="$RUNNER_TEMP/macos-ci/$suite.xcresult"
+            if [ -d "$bundle" ]; then
+              xcrun xcresulttool get test-results summary --path "$bundle" \
+                | tee "$RUNNER_TEMP/macos-ci/$suite-summary.json"
+            fi
+          done
+          for log in "$RUNNER_TEMP"/macos-ci/*.log; do
+            if [ -f "$log" ]; then
+              echo "::group::${log##*/} failure details"
+              grep -nE 'error:|failed -|XCTAssert|Test Case .* failed|Failing tests:' "$log" | head -100 || true
+              echo '::endgroup::'
+            fi
+          done
       - name: Export offline UI attachments
         if: always()
         timeout-minutes: 5
