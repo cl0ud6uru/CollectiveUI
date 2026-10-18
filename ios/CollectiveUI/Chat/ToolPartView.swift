@@ -31,6 +31,11 @@ struct ToolPartView: View {
         return part.state == "approval-requested" && part.approval != nil
     }
 
+    /// Running, including an approved call that has not reported back yet.
+    private var isRunning: Bool {
+        part.phase == .running || (part.phase == .approvalResponded && part.approval?.approved != false)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
@@ -44,8 +49,13 @@ struct ToolPartView: View {
                         .padding(.top, 2)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(displayName).font(.subheadline.weight(.medium)).fixedSize(horizontal: false, vertical: true)
-                        Text(statusText).font(.caption).foregroundStyle(PortalTheme.muted)
+                        if isRunning {
+                            RunningTicker(toolCallId: part.toolCallId, command: ToolPartView.commandLine(part.input))
+                        } else {
+                            Text(statusText).font(.caption).foregroundStyle(PortalTheme.muted)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 4)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption)
@@ -82,6 +92,12 @@ struct ToolPartView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(isAwaitingApproval ? PortalTheme.warning.opacity(0.6) : Color.clear, lineWidth: 1)
         )
+        .overlay {
+            if isRunning { RunningStroke(cornerRadius: 12) }
+        }
+        .onChange(of: isRunning) { _, running in
+            if !running { ToolRunClock.finish(part.toolCallId) }
+        }
         .alert("Deny this action?", isPresented: $showDenyPrompt) {
             TextField("Reason (optional)", text: $denyReason)
             Button("Deny", role: .destructive) {
@@ -121,8 +137,7 @@ struct ToolPartView: View {
     private var stateIcon: some View {
         switch part.phase {
         case .running:
-            ProgressView()
-                .controlSize(.small)
+            toolGlyph
         case .awaitingApproval:
             Image(systemName: "shield.lefthalf.filled")
                 .foregroundStyle(PortalTheme.warning)
@@ -131,8 +146,7 @@ struct ToolPartView: View {
                 Image(systemName: "hand.raised.fill")
                     .foregroundStyle(Color.secondary)
             } else {
-                ProgressView()
-                    .controlSize(.small)
+                toolGlyph
             }
         case .completed:
             Image(systemName: "checkmark.circle.fill")
@@ -144,6 +158,11 @@ struct ToolPartView: View {
             Image(systemName: "hand.raised.fill")
                 .foregroundStyle(Color.secondary)
         }
+    }
+
+    private var toolGlyph: some View {
+        Image(systemName: ToolKind(toolName: part.toolName).symbol)
+            .foregroundStyle(PortalTheme.hermes)
     }
 
     private var statusText: String {
@@ -231,6 +250,131 @@ struct ToolPartView: View {
             return text
         }
         return String(text.prefix(maxDetailLength)) + "\n…"
+    }
+
+    /// The one line a running step shows: its command, query or target, whitespace collapsed.
+    static func commandLine(_ input: JSONValue?) -> String? {
+        guard let input else { return nil }
+        guard let object = input.objectValue else { return input.stringValue.flatMap(oneLine) }
+        // `preview` is what a Hermes server reports for its own tools (see hermes/mapper.ts).
+        for key in ["command", "preview", "code", "query", "url", "pattern", "path", "goal"] {
+            if let line = object[key]?.stringValue.flatMap(oneLine) { return line }
+        }
+        return object.keys.sorted().lazy.compactMap { object[$0]?.stringValue.flatMap(oneLine) }.first
+    }
+
+    private static func oneLine(_ text: String) -> String? {
+        let line = text.prefix(400).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return line.isEmpty ? nil : line
+    }
+
+    /// "12s", then "1m 5s", matching the website's step timings.
+    static func elapsed(_ seconds: Int) -> String {
+        seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
+    }
+}
+
+/// What a tool call does, for its glyph (and later the collapsed turn chip).
+enum ToolKind: Equatable {
+    case terminal, web, other
+
+    init(toolName: String) {
+        let name = toolName.hasPrefix("hermes__") ? String(toolName.dropFirst("hermes__".count)) : toolName
+        switch name {
+        case "workspace_bash", "terminal", "process_manage", "execute_code": self = .terminal
+        case "web_search", "openai_web_search", "fetch_url", "web_extract": self = .web
+        default: self = .other
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .terminal: "terminal"
+        case .web: "globe"
+        case .other: "wrench.and.screwdriver"
+        }
+    }
+}
+
+/// When each running step was first seen, so its timer survives the card scrolling out and back.
+@MainActor
+private enum ToolRunClock {
+    private static var starts: [String: Date] = [:]
+
+    static func start(_ toolCallId: String) -> Date {
+        if let date = starts[toolCallId] { return date }
+        let now = Date()
+        starts[toolCallId] = now
+        return now
+    }
+
+    static func finish(_ toolCallId: String) {
+        starts[toolCallId] = nil
+    }
+}
+
+/// `$ command`, a blinking cursor and the elapsed time, on one line. The cursor holds still under Reduce Motion.
+@MainActor
+private struct RunningTicker: View {
+    let toolCallId: String
+    let command: String?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        let start = ToolRunClock.start(toolCallId)
+        TimelineView(.periodic(from: start, by: reduceMotion ? 1 : 0.5)) { context in
+            let running = max(0, context.date.timeIntervalSince(start))
+            let cursorOn = reduceMotion || Int(running * 2) % 2 == 0
+            let stacked = dynamicTypeSize.isAccessibilitySize
+            let layout = stacked
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
+            layout {
+                HStack(spacing: 0) {
+                    Text("$ " + (command ?? ""))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text("▌")
+                        .foregroundStyle(PortalTheme.hermes)
+                        .opacity(cursorOn ? 1 : 0)
+                }
+                if !stacked { Spacer(minLength: 4) }
+                Text(ToolPartView.elapsed(Int(running)))
+                    .monospacedDigit()
+            }
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(PortalTheme.muted)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Running \(command ?? ""), \(Duration.seconds(Int(running)).formatted(.units(width: .wide)))")
+        }
+    }
+}
+
+/// The running card's border: a flat, slow fade between the hairline and Hermes green. Static under Reduce Motion.
+@MainActor
+private struct RunningStroke: View {
+    let cornerRadius: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        Group {
+            if reduceMotion {
+                shape.stroke(PortalTheme.hermes, lineWidth: 1)
+            } else {
+                shape.stroke(PortalTheme.border, lineWidth: 1)
+                    .phaseAnimator([false, true]) { content, lit in
+                        content.overlay { shape.stroke(PortalTheme.hermes, lineWidth: 1).opacity(lit ? 1 : 0) }
+                    } animation: { _ in
+                        .easeInOut(duration: 1.2)
+                    }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
