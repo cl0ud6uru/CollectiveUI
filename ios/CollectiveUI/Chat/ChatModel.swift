@@ -32,6 +32,12 @@ struct ComposerAttachment: Identifiable, Hashable, Codable {
 final class ChatModel {
     let app: AppModel
     let conversationId: String
+    @ObservationIgnored private let sessionGeneration: UUID
+
+    private var sessionClient: APIClient? {
+        guard app.settingsAccess.generation == sessionGeneration, app.token != nil else { return nil }
+        return app.api
+    }
 
     private(set) var newChatTarget: TargetOption? = nil
     private(set) var isNew: Bool = false
@@ -50,14 +56,20 @@ final class ChatModel {
     var delegateApprovalError: String?
 
     func refreshDelegatedApprovals() async {
-        guard !isNew, let api = app.api else { return }
-        do { delegatedApprovals = try await api.delegatedApprovals(conversationId: conversationId) }
-        catch { delegatedApprovals = [] }
+        guard !isNew, let api = sessionClient else { return }
+        do {
+            let fresh = try await api.delegatedApprovals(conversationId: conversationId)
+            guard sessionClient === api, !Task.isCancelled else { return }
+            delegatedApprovals = fresh
+        } catch {
+            guard sessionClient === api, !Task.isCancelled else { return }
+            delegatedApprovals = []
+        }
         if isReadOnly && !isStreaming { await load(showSpinner: false) }
     }
 
     func answerDelegate(_ request: DelegatedApproval, approved: Bool) async {
-        guard !answeringDelegate, request.expiresAt > Date(), let api = app.api else { return }
+        guard !answeringDelegate, request.expiresAt > Date(), let api = sessionClient else { return }
         answeringDelegate = true
         delegateApprovalError = nil
         defer { answeringDelegate = false }
@@ -67,7 +79,7 @@ final class ChatModel {
     }
 
     func stopDelegate(_ request: DelegatedApproval) async {
-        guard !answeringDelegate, let api = app.api else { return }
+        guard !answeringDelegate, let api = sessionClient else { return }
         answeringDelegate = true
         defer { answeringDelegate = false }
         do { try await api.stop(conversationId: request.conversationId, messageId: nil) }
@@ -76,6 +88,7 @@ final class ChatModel {
     }
     var isLoading: Bool = false
     var loadError: String? = nil
+    private(set) var isRefreshingConversation = false
     var isStreaming: Bool = false
     var isStopping: Bool = false
     private(set) var hasDetachedReply = false
@@ -138,20 +151,26 @@ final class ChatModel {
     @ObservationIgnored private var streamingMessageId: String? = nil
     @ObservationIgnored private var autoResumeBudget: Int = 2
     @ObservationIgnored private var isActive: Bool = false
+    #if os(iOS)
     @ObservationIgnored private var voiceStartTask: Task<Void, Never>?
+    #endif
     @ObservationIgnored private var hasLoaded: Bool = false
     @ObservationIgnored private var streamGeneration = UUID()
     @ObservationIgnored private var stopRequestedFor: String?
 
     init(app: AppModel, conversationId: String, newChatTarget: TargetOption?) {
         self.app = app
+        self.sessionGeneration = app.settingsAccess.generation
         self.conversationId = conversationId
         self.conversationState = app.conversationStates.state(for: conversationId)
-        self.newChatTarget = newChatTarget
-        self.isNew = newChatTarget != nil
-        self.target = newChatTarget
-        self.isUnavailable = newChatTarget?.hermesTeam == true
-        if newChatTarget?.hermesTeam == true {
+        self.newChatTarget = conversationState.isEstablished ? nil : (newChatTarget ?? conversationState.newChatTarget)
+        self.isNew = self.newChatTarget != nil
+        self.target = self.newChatTarget
+        self.isUnavailable = self.newChatTarget?.hermesTeam == true
+        if !conversationState.isEstablished, let newChatTarget, conversationState.newChatTarget != newChatTarget {
+            conversationState.newChatTarget = newChatTarget
+        }
+        if self.newChatTarget?.hermesTeam == true {
             self.unavailableReason = "Hermes Team Bots are available in the web app. Use it for private chat, Admin mode and reviewing team updates."
         }
     }
@@ -214,16 +233,34 @@ final class ChatModel {
     }
 
     var canSend: Bool {
-        return !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && !attachments.contains(where: { $0.errorText != nil }) && hasComposerContent
+        return sessionClient != nil && !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && !attachments.contains(where: { $0.errorText != nil }) && hasComposerContent
     }
 
     var canRegenerate: Bool {
-        !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isStopping && !isExecutingCommand && !isLoading && loadError == nil && !isReadOnly && !isUnavailable
+        sessionClient != nil && !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isStopping && !isExecutingCommand && !isLoading && loadError == nil && !isReadOnly && !isUnavailable
+    }
+
+    var canRefreshConversation: Bool {
+        sessionClient != nil && !isLoading && !isStreaming && !isExecutingCommand && !isCheckingMessageStatus && !isRefreshingConversation
+    }
+
+    /// A read-only recovery action. Never resends a draft or repeats a tool action.
+    func refreshConversation() async {
+        guard canRefreshConversation else { return }
+        isRefreshingConversation = true
+        defer { isRefreshingConversation = false }
+        await load(showSpinner: true)
+    }
+
+    func dismissReplyError() {
+        guard !needsMessageStatusCheck, !hasDetachedReply, !isStreaming else { return }
+        inlineError = nil
+        errorRecovery = .none
     }
 
     /// Inspect Hermes without submitting the composer or bypassing message admission guards.
     var canCheckHermesStatus: Bool {
-        target?.hermes == true && !isReadOnly && !isUnavailable && !isExecutingCommand && app.api != nil
+        target?.hermes == true && !isReadOnly && !isUnavailable && !isExecutingCommand && sessionClient != nil
     }
 
     func checkHermesStatus() {
@@ -233,7 +270,7 @@ final class ChatModel {
     }
 
     var canRetryOriginalMessage: Bool {
-        needsMessageStatusCheck && confirmedMissingSubmission && pendingDraft != nil && !isGroup && !isCheckingMessageStatus && !isStreaming && !isExecutingCommand && !isReadOnly && !isUnavailable
+        sessionClient != nil && needsMessageStatusCheck && confirmedMissingSubmission && pendingDraft != nil && !isGroup && !isCheckingMessageStatus && !isStreaming && !isExecutingCommand && !isReadOnly && !isUnavailable
     }
 
     var showsTypingIndicator: Bool {
@@ -251,7 +288,7 @@ final class ChatModel {
     }
 
     var canAnswerApprovals: Bool {
-        return !needsMessageStatusCheck && !isStreaming && !isReadOnly && !isUnavailable
+        return sessionClient != nil && !needsMessageStatusCheck && !isStreaming && !isReadOnly && !isUnavailable
     }
 
     // MARK: - Lifecycle
@@ -298,8 +335,9 @@ final class ChatModel {
     }
     #endif
 
+    #if os(iOS)
     func startVoice() {
-        guard let api = app.api, !isLoading, !isStreaming, !isUnavailable, !isReadOnly, !isGroup, target != nil else { return }
+        guard let api = sessionClient, !isLoading, !isStreaming, !isUnavailable, !isReadOnly, !isGroup, target != nil else { return }
         guard voiceStartTask == nil else { return }
         if let voice = app.voice {
             if voice.conversationId == conversationId && (voice.status == "connecting" || voice.status == "connected") {
@@ -333,26 +371,30 @@ final class ChatModel {
     }
 
     private func startVoiceAfterTransition(api: APIClient) {
-        guard app.api?.token == api.token, app.api?.baseURL == api.baseURL, app.phase == .main,
+        guard sessionClient === api, app.phase == .main,
               !isLoading, !isStreaming, !isUnavailable, !isReadOnly, !isGroup, target != nil else { return }
         app.voice = VoiceSessionModel(chat: self, api: api)
     }
 
     func refreshAfterVoice() async {
-        guard !isStreaming, let api = app.api else { return }
+        guard !isStreaming, let api = sessionClient else { return }
         let generation = streamGeneration
         do {
             let snapshot = try await api.snapshot(conversationId: conversationId)
-            guard generation == streamGeneration, !isStreaming else { return }
+            guard sessionClient === api, generation == streamGeneration, !isStreaming else { return }
             isNew = false
             apply(snapshot)
             if snapshot.resume && isActive && !conversationState.preventsResume(in: messages) { resume() }
         } catch { /* Voice retains its own save/retry notice. */ }
     }
 
+    #endif
+
     func deactivate() {
         isActive = false
+        #if os(iOS)
         voiceStartTask?.cancel()
+        #endif
         snapshotRequest = UUID()
         isLoading = false
         commandTask?.cancel()
@@ -373,7 +415,7 @@ final class ChatModel {
             await checkMessageStatus()
             return
         }
-        guard !isNew, !isStreaming, !isCheckingMessageStatus, let api = app.api else { return }
+        guard !isNew, !isStreaming, !isCheckingMessageStatus, let api = sessionClient else { return }
         let request = UUID()
         snapshotRequest = request
         let generation = streamGeneration
@@ -392,8 +434,9 @@ final class ChatModel {
             }
         } catch {
             guard snapshotRequest == request, streamGeneration == generation, app.api === api, !Task.isCancelled else { return }
-            if !error.isUnauthorized && !error.isCancellation && messages.isEmpty {
-                loadError = error.localizedDescription
+            if !error.isUnauthorized && !error.isCancellation {
+                if messages.isEmpty { loadError = error.localizedDescription }
+                else { showInlineError("Couldn't refresh this conversation. \(error.localizedDescription)", recovery: .status) }
             }
         }
     }
@@ -414,6 +457,9 @@ final class ChatModel {
 
     private func apply(_ snapshot: ConversationSnapshot) {
         loadError = nil
+        isNew = false
+        conversationState.isEstablished = true
+        conversationState.newChatTarget = nil
         if let summary = snapshot.summary {
             title = summary.title
             source = summary.source
@@ -438,12 +484,12 @@ final class ChatModel {
     }
 
     private func loadCommandCatalog() async {
-        guard target?.hermes == true, let api = app.api else { return }
+        guard target?.hermes == true, let api = sessionClient else { return }
         do {
             var query = [URLQueryItem(name: "conversationId", value: conversationId)]
             if let target { query.append(URLQueryItem(name: target.kind == "bot" ? "botId" : "appId", value: target.id)) }
             let catalog = try await api.get("/api/chat/commands", query: query, as: ChatCommandCatalog.self)
-            guard !Task.isCancelled else { return }
+            guard sessionClient === api, !Task.isCancelled else { return }
             commandCatalog = catalog
             commandRevision = max(commandRevision, catalog.revision ?? 0)
         } catch { /* Basic controls remain available if optional discovery fails. */ }
@@ -455,7 +501,7 @@ final class ChatModel {
             commandTask = nil
             requestScroll(.content)
         }
-        guard let api = app.api, let target else { return }
+        guard let api = sessionClient, let target else { return }
         let isFreshCommand = text.range(of: #"^/(?:hermes\s+|portal\s+)?(?:new|reset)$"#,
             options: [.regularExpression, .caseInsensitive]) != nil
         if isFreshCommand && commandAttempt == nil {
@@ -475,14 +521,18 @@ final class ChatModel {
         requestScroll(.content)
         do {
             let result = try await api.send("/api/chat/commands", method: "POST", body: .object(body), as: ChatCommandResult.self)
-            guard !Task.isCancelled else { return }
+            guard sessionClient === api, !Task.isCancelled else { return }
             commandResult = result
             requestScroll(.content)
             commandRevision = max(commandRevision, result.revision ?? 0)
             if let freshAttemptId, commandAttempt?.nextId == freshAttemptId { commandAttempt = nil }
             if !preservesDraft && composerText == originalDraft { composerText = "" }
             conversationState.flush()
-            if result.conversationId != nil { isNew = false }
+            if result.conversationId != nil {
+                isNew = false
+                conversationState.isEstablished = true
+                conversationState.newChatTarget = nil
+            }
             if let destination = result.destinationConversationId {
                 app.openConversation(destination)
             } else if result.refresh == true {
@@ -492,6 +542,7 @@ final class ChatModel {
             await app.refreshShell()
             await loadCommandCatalog()
         } catch {
+            guard sessionClient === api else { return }
             if !error.isCancellation && !error.isUnauthorized {
                 let command = text.lowercased()
                 commandError = command == "/yolo" || command == "/hermes yolo"
@@ -506,7 +557,7 @@ final class ChatModel {
     // MARK: - Sending
 
     func send() {
-        guard canSend, let api = app.api else { return }
+        guard canSend, let api = sessionClient else { return }
         let draft = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
         if ComposerCommands.isControl(draft, target: target) {
             guard attachments.isEmpty else {
@@ -568,7 +619,7 @@ final class ChatModel {
 
     /// Re-generates the reply to the user message preceding `assistantMessageId`.
     func regenerate(assistantMessageId: String) {
-        guard canRegenerate, let api = app.api else { return }
+        guard canRegenerate, let api = sessionClient else { return }
         guard let index = messages.firstIndex(where: { $0.id == assistantMessageId }) else { return }
         guard let userIndex = messages[..<index].lastIndex(where: { $0.role == .user }) else { return }
         let userMessageId = messages[userIndex].id
@@ -587,12 +638,12 @@ final class ChatModel {
 
     /// Re-attaches to a reply that is still running on the server.
     func resume() {
-        guard !isStreaming, !needsMessageStatusCheck, hasDetachedReply, let api = app.api else { return }
+        guard !isStreaming, !needsMessageStatusCheck, hasDetachedReply, let api = sessionClient else { return }
         startStream(api.resumeStream(conversationId: conversationId), reducer: UIMessageStreamReducer(messageId: IDGenerator.make()), existingMessageId: nil, resuming: true)
     }
 
     func retryOriginalMessage() {
-        guard canRetryOriginalMessage, var pending = pendingDraft, let api = app.api else { return }
+        guard canRetryOriginalMessage, var pending = pendingDraft, let api = sessionClient else { return }
         pending.wasRetried = true
         pendingDraft = pending
         confirmedMissingSubmission = false
@@ -606,7 +657,7 @@ final class ChatModel {
     }
 
     func stop() {
-        guard isStreaming, !isStopping else { return }
+        guard sessionClient != nil, isStreaming, !isStopping else { return }
         isStopping = true
         let answeredId = answeredUserMessageId()
         let hadReplyIdentity = streamingMessageId != nil
@@ -617,13 +668,13 @@ final class ChatModel {
         let operation = UUID()
         conversationState.stopOperation = operation
         let replyId = streamingMessageId ?? "stopped-" + IDGenerator.make()
-        let api = app.api
+        let api = sessionClient
         let id = conversationId
         Task {
             if let api {
                 do {
                     let result = try await api.stop(conversationId: id, messageId: answeredId)
-                    guard self.conversationState.stopOperation == operation else { return }
+                    guard self.sessionClient === api, self.conversationState.stopOperation == operation else { return }
                     // Group Stop closes its request; direct replies need a real Stop
                     // outcome and acceptance evidence. Positive conversation-level counts
                     // can belong to another run while this submission is still admitting.
@@ -637,6 +688,8 @@ final class ChatModel {
                         self.messages = self.conversationState.reconcileStoppedReplies(in: self.messages)
                     }
                     self.isNew = false
+                    self.conversationState.isEstablished = true
+                    self.conversationState.newChatTarget = nil
                     if self.pendingDraft?.messageId == answeredId { self.pendingDraft = nil }
                     self.needsMessageStatusCheck = false
                     self.hasDetachedReply = false
@@ -675,7 +728,7 @@ final class ChatModel {
                 return
             }
         }
-        guard let api = app.api else { return }
+        guard let api = sessionClient else { return }
 
         var answeredParts: [JSONValue] = []
         for partIndex in message.parts.indices {
@@ -738,7 +791,9 @@ final class ChatModel {
         isStopping = false
         isStreaming = true
         hasDetachedReply = false
+        #if os(iOS)
         app.liveActivities.observe(conversationId: conversationId, replace: true)
+        #endif
         streamingMessageId = existingMessageId
         streamTask = Task { [weak self] in
             var reducer = initialReducer
@@ -747,12 +802,13 @@ final class ChatModel {
                 for try await chunk in stream {
                     guard let self, self.streamGeneration == generation else { return }
                     let events = reducer.apply(chunk)
+                    guard self.sessionClient != nil else { return }
                     self.receive(reducer.message, events: events)
                 }
             } catch {
                 failure = error
             }
-            guard let self, self.streamGeneration == generation else { return }
+            guard let self, self.sessionClient != nil, self.streamGeneration == generation else { return }
             await self.streamDidEnd(error: failure, generation: generation)
         }
     }
@@ -781,7 +837,11 @@ final class ChatModel {
             case .error(let errorText):
                 showInlineError(errorText)
             case .started:
+                #if os(iOS)
                 app.liveActivities.observe(conversationId: conversationId, replace: true)
+                #else
+                break
+                #endif
             case .aborted:
                 // An abort is a terminal stream event, never the normal finishReason "stop".
                 if let parentId = stopRequestedFor { markStopped(parentId: parentId) }
@@ -831,7 +891,7 @@ final class ChatModel {
     }
 
     func checkMessageStatus() async {
-        guard !isCheckingMessageStatus, !isStreaming, let api = app.api else { return }
+        guard !isCheckingMessageStatus, !isStreaming, let api = sessionClient else { return }
         let request = UUID()
         snapshotRequest = request
         let generation = streamGeneration
@@ -913,7 +973,7 @@ final class ChatModel {
     // MARK: - Attachments
 
     func addAttachment(data: Data, filename: String, mediaType: String) {
-        guard let api = app.api else { return }
+        guard let api = sessionClient else { return }
         let attachment = ComposerAttachment(
             id: UUID(),
             filename: filename,
