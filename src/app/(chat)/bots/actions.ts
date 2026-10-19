@@ -264,6 +264,8 @@ export async function updateBot(botId: string, raw: BotInput) {
 /** Expected editor validation failures must cross the Server Action boundary as data. */
 export async function saveBotFromBuilder(botId: string | null, raw: BotInput) {
   try {
+    await requirePrincipal();
+    // Creation policy and edit access are also checked by the delegated actions, including inside their transactions.
     const result = botId ? await updateBot(botId, raw) : await createBot(raw);
     return { ok: true as const, id: result.id };
   } catch (error) {

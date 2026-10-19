@@ -18,7 +18,7 @@ try {
   const [member] = await db.insert(users).values({ upn: `${suffix}@fixture.invalid`, name: 'Direct Recipient', authSource: 'ldap', email: `${suffix}@fixture.invalid` }).returning(); userIds.push(member.id);
   const [app] = await db.insert(aiApps).values({ name: `UI model ${suffix}`, provider: 'openai-compatible', baseUrl: 'http://127.0.0.1:4010/v1', model: 'fixture', supportsTools: true }).returning(); appId = app.id;
   const [bot] = await db.insert(bots).values({ ownerId: admin.id, appId, name: botName, visibility: 'private' }).returning(); botId = bot.id;
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   page = await browser.newPage({ ignoreHTTPSErrors: true, viewport: { width: 1360, height: 1000 } });
   page.setDefaultTimeout(30000); page.setDefaultNavigationTimeout(30000);
   await page.goto(`${url}/login`);

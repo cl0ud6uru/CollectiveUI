@@ -4,8 +4,9 @@ import { db, pool } from "@/db";
 import { aiApps, appAccess, botUserAccess, bots, groupMembers, groups, users, userExternalGroups } from "@/db/schema";
 import { savePortalGroup } from "@/lib/admin/groups";
 import { loadPrincipal, syncUserOnSignIn, usersInGroups, type Principal } from "@/lib/auth/groups";
-import { getAccessibleApp, getAccessibleBot, getEditableBot, listAccessibleBots } from "@/lib/authz";
+import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleBots } from "@/lib/authz";
 import { serviceConfigHash } from "@/lib/bots/service";
+import { getSetting, setSetting } from "@/lib/settings";
 import { newId } from "@/lib/ids";
 const f = vi.hoisted(() => ({ principal: vi.fn() }));
 vi.mock("@/lib/session", () => ({ requirePrincipal: f.principal }));
@@ -105,6 +106,47 @@ run("individual portal group and bot audiences", () => {
     expect(await saveBotFromBuilder(id, { ...input, userIds: [stranger.user.id] })).toEqual({ ok: true, id });
     expect((await getAccessibleBot(stranger, id)).id).toBe(id);
     await expect(getAccessibleBot(member, id)).rejects.toMatchObject({ status: 403 });
+  });
+  it("refuses unauthenticated editor creates and updates without changing the bot or audience", async () => {
+    const input = botInput([member.user.id]);
+    const { id } = await createBot(input); botIds.push(id);
+    const before = await db.select().from(bots).where(eq(bots.id, id));
+    f.principal.mockRejectedValue(new HttpError(401, "Unauthorized"));
+    try {
+      for (const target of [null, id])
+        expect(await saveBotFromBuilder(target, { ...input, userIds: [stranger.user.id] })).toEqual({ ok: false, error: "Unauthorized" });
+      expect(await db.select().from(bots).where(eq(bots.name, input.name))).toEqual(before);
+      expect((await getAccessibleBot(member, id)).id).toBe(id);
+      await expect(getAccessibleBot(stranger, id)).rejects.toMatchObject({ status: 403 });
+    } finally { f.principal.mockResolvedValue(owner); }
+  });
+  it("enforces editor creation policy and refuses audience members' edits", async () => {
+    const input = botInput([member.user.id]);
+    const { id } = await createBot(input); botIds.push(id);
+    const before = await db.select().from(bots).where(eq(bots.id, id));
+    const policy = await getSetting("tools");
+    try {
+      await setSetting("tools", { ...policy, botCreation: "admins" });
+      f.principal.mockResolvedValue(member);
+      expect(await saveBotFromBuilder(null, input)).toEqual({ ok: false, error: "Only admins can create bots" });
+      expect(await saveBotFromBuilder(id, { ...input, userIds: [stranger.user.id] })).toEqual({ ok: false, error: "Only an authorized bot editor can change it" });
+      expect(await db.select().from(bots).where(eq(bots.name, input.name))).toEqual(before);
+      expect((await getAccessibleBot(member, id)).id).toBe(id);
+      await expect(getAccessibleBot(stranger, id)).rejects.toMatchObject({ status: 403 });
+    } finally { f.principal.mockResolvedValue(owner); await setSetting("tools", policy); }
+  });
+  it("rechecks the editor session in create and update transactions", async () => {
+    const input = botInput([member.user.id]);
+    const { id } = await createBot(input); botIds.push(id);
+    const before = await db.select().from(bots).where(eq(bots.id, id));
+    f.principal.mockResolvedValue({ ...owner, user: { ...owner.user, sessionVersion: owner.user.sessionVersion + 1 } });
+    try {
+      expect(await saveBotFromBuilder(null, input)).toEqual({ ok: false, error: "Your access changed. Sign in again." });
+      expect(await saveBotFromBuilder(id, { ...input, userIds: [stranger.user.id] })).toEqual({ ok: false, error: "Only an authorized bot editor can change this bot." });
+      expect(await db.select().from(bots).where(eq(bots.name, input.name))).toEqual(before);
+      expect((await getAccessibleBot(member, id)).id).toBe(id);
+      await expect(getAccessibleBot(stranger, id)).rejects.toMatchObject({ status: 403 });
+    } finally { f.principal.mockResolvedValue(owner); }
   });
   it("includes individually selected users in service publication checks", async () => {
     const [bot] = await db.insert(bots).values({ name: `Service fixture ${newId()}`, ownerId: owner.user.id, appId, executionMode: "service", visibility: "groups" }).returning(); botIds.push(bot.id);
