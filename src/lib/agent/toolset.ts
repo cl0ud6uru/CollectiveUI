@@ -223,7 +223,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
         throw new HttpError(403, "A service-bot connector grant is unavailable. Ask an admin to review and publish it.");
       const binding = await mcpAuthorityBinding(ctx, s, config, grants, s.identityHeader && caller.subject.kind === "user" ? caller.subject.groups : []);
       bindings.push(binding);
-      return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants } };
+      return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants }, apps: { audience: 'model' as const } };
     };
     const results = await Promise.allSettled(servers.map(async (s) => (s.toolsSnapshot ? mcpTools(s, await opts(s)) : connectedMcpTools(s, await opts(s)))));
     results.forEach((r, i) => {

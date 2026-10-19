@@ -44,7 +44,7 @@ struct SignInView: View {
             .buttonStyle(.borderedProminent)
             .tint(PortalTheme.ink)
             .controlSize(.large)
-            .disabled(model.isSigningIn)
+            .disabled(model.isSigningIn || model.isDemoSession)
 
             Text("You'll sign in on your server's web page, then approve this device.")
                 .font(.footnote)
