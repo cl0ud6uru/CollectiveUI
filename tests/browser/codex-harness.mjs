@@ -24,6 +24,10 @@ export const randomBlob = () => 'fixture-avatar';
 export const SEARCH_COST_NOTICE = '';
 export const createBot = async form => { window.fixtureCreates.push(form); return {id:'created-codex-bot'}; };
 export const updateBot = async (id,form) => { window.fixtureUpdates.push({id,form}); };
+export const saveBotFromBuilder = async (id,form) => {
+  if (id) { await updateBot(id,form); return {ok:true,id}; }
+  return {ok:true,...await createBot(form)};
+};
 export const createPersonalHermesBot = async () => { throw new Error('Personal Hermes creation is not part of this fixture.'); };
 export const draftBotFromDescription = async () => ({ok:false,error:'Not used'});
 export const addKnowledgeFile = async () => {}; export const removeKnowledgeFile = async () => {};
