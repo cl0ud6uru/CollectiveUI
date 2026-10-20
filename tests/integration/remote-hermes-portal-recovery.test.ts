@@ -5,7 +5,6 @@ import { remoteHermesConnections, remoteHermesHubOwners, remoteHermesSessions, r
 import { remoteHermesRecoveries } from '@/db/remote-hermes-recovery-schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
-import { HttpError } from '@/lib/authz';
 import type { DashboardSecrets } from '@/lib/remote-hermes/client';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
@@ -16,6 +15,7 @@ const enabled = process.env.REMOTE_HERMES_PORTAL_RECOVERY_CONFORMANCE === '1';
 let owner = '', connection = '';
 const extraConnections = new Map<string, string>();
 let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
+let HttpError: typeof import('@/lib/authz').HttpError;
 let DashboardClient: typeof import('@/lib/remote-hermes/client').DashboardClient;
 let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket;
 let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
@@ -33,6 +33,7 @@ describe.skipIf(!enabled)('exact-pin composed ownership/drain adapters and produ
   beforeAll(async () => {
     // Reject driver overrides BEFORE any module that constructs a PostgreSQL pool is imported.
     assertDisposableHermesDatabase(process.env.DATABASE_URL);
+    ({ HttpError } = await import('@/lib/authz'));
     ({ db, pool } = await import('@/db'));
     ({ DashboardClient } = await import('@/lib/remote-hermes/client'));
     ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
