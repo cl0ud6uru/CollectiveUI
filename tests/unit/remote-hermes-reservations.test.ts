@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
-const f = vi.hoisted(() => ({ row: {} as Record<string, unknown>, receipts: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), frame: (_frame: unknown) => { void _frame; }, lock: Promise.resolve() }));
+const f = vi.hoisted(() => ({ row: {} as Record<string, unknown>, owner: undefined as Record<string, unknown> | undefined, receipts: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), frame: (_frame: unknown) => { void _frame; }, lock: Promise.resolve() }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => ({ address: '93.184.216.34', family: 4 }) }));
 vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
-  return { ...actual, DashboardSocket: class { state = 'connected'; call = f.call; answer = f.answer; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown) => void) { f.frame = frame; } close() {} } };
+  return { ...actual, DashboardSocket: class { state = 'connected'; connectionEpoch = 1; call = f.call; answer = f.answer; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown, epoch: number) => void) { f.frame = value => frame(value, 1); } close() {} } };
 });
 vi.mock('@/db', () => {
   const dialect = new PgDialect();
@@ -22,6 +22,8 @@ vi.mock('@/db', () => {
   const selection = (table: { [key: symbol]: unknown }, condition: unknown) => {
     const name = table[Symbol.for('drizzle:Name')];
     if (name === 'settings') return [];
+    if (name === 'remote_hermes_recoveries') return [];
+    if (name === 'remote_hermes_hub_owners') return f.owner ? [{ ...f.owner }] : [];
     if (name === 'remote_hermes_connections') return [{ id: 'connection', userId: 'owner', baseUrl: 'https://hermes.example.com' }];
     if (name === 'remote_hermes_turns') return f.receipts.filter(r => query(condition).params.includes(r.requestId));
     return matches(condition) ? [{ ...f.row }] : [];
@@ -29,10 +31,18 @@ vi.mock('@/db', () => {
   const mock = {
     select: () => ({ from: (table: { [key: symbol]: unknown }) => ({
       innerJoin: () => ({ where: async () => [{ session: { ...f.row } }] }),
-      where: (condition: unknown) => Object.assign(Promise.resolve(selection(table, condition)), { for: async () => selection(table, condition) }),
+      where: (condition: unknown) => Object.assign(Promise.resolve(selection(table, condition)), {
+        for: async () => selection(table, condition), limit: async (count: number) => selection(table, condition).slice(0, count),
+      }),
     }) }),
-    update: () => ({ set: (values: Record<string, unknown>) => ({ where: (condition: unknown) => {
+    update: (table: { [key: symbol]: unknown }) => ({ set: (values: Record<string, unknown>) => ({ where: (condition: unknown) => {
       const result = Promise.resolve().then(() => {
+        if (table[Symbol.for('drizzle:Name')] === 'remote_hermes_hub_owners') {
+          if (!f.owner) return [];
+          const next = { ...values };
+          for (const field of ['generation', 'socketEpoch']) if (typeof next[field] === 'object') next[field] = Number(f.owner[field]) + 1;
+          Object.assign(f.owner, next); return [{ ...f.owner }];
+        }
         if (!matches(condition)) return [];
         const next = { ...values };
         if (typeof next.revision === 'object') next.revision = Number(f.row.revision) + 1;
@@ -40,7 +50,16 @@ vi.mock('@/db', () => {
       });
       return Object.assign(result, { returning: () => result });
     } }) }),
-    insert: () => ({ values: async (values: Record<string, unknown>) => { f.receipts.push(values); } }),
+    insert: (table: { [key: symbol]: unknown }) => ({ values: (values: Record<string, unknown>) => {
+      const result = Promise.resolve().then(() => {
+        if (table[Symbol.for('drizzle:Name')] === 'remote_hermes_hub_owners') {
+          f.owner = { nativeProtocol: null, nativeGeneration: null, nativeSocketEpoch: null, ...values };
+          return [{ ...f.owner }];
+        }
+        f.receipts.push(values); return [];
+      });
+      return Object.assign(result, { returning: () => result });
+    } }),
   };
   return { db: { ...mock, transaction: async (run: (tx: unknown) => Promise<unknown>) => {
     // Model the per-session FOR UPDATE lock. Real PostgreSQL coverage is separate.
@@ -57,8 +76,8 @@ const id1 = '9fd64d53-084f-4898-96e0-59ea8fdc623f', id2 = 'af63e18c-0581-44c5-86
 const idle = { session_id: 'runtime', stored_session_id: 'stored', running: false, info: { title: 'Synthetic' }, messages: [] };
 function deferred<T>() { let resolve!: (value: T) => void, reject!: (reason: Error) => void; const promise = new Promise<T>((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; }
 beforeEach(() => {
-  vi.clearAllMocks(); f.answer.mockReset().mockResolvedValue(undefined); f.receipts = []; f.lock = Promise.resolve();
-  f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: null, status: 'idle', revision: 0, queueRequestId: null, queueStatus: null };
+  vi.clearAllMocks(); f.answer.mockReset().mockResolvedValue(undefined); f.receipts = []; f.owner = undefined; f.lock = Promise.resolve();
+  f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: null, status: 'idle', revision: 0, ownershipGeneration: 0, queueRequestId: null, queueStatus: null };
   f.call.mockImplementation(async (method: string) => method === 'session.resume' ? idle : { status: 'streaming' });
 });
 afterEach(() => { nativeHub('owner', 'connection').close(); });

@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { HttpError } from '@/lib/authz';
 import type { remoteHermesSessions } from '@/db/schema';
 
 const f = vi.hoisted(() => ({ base: '', exists: true, enabled: true, approved: true, status: 'running', rows: [] as Record<string, unknown>[], owners: [] as Record<string, unknown>[], recoveryFences: [] as string[], policyWait: undefined as (() => Promise<void>) | undefined, locks: 0, unlock: [] as (() => void)[], delayReply: false }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => { await f.policyWait?.(); return { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }; } }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ baseUrl: f.base, policy: { enabled: f.enabled, privateGateways: f.approved ? [f.base] : [] }, secrets: { mode: 'sessionToken', sessionToken: 'synthetic' } }) }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => {
-  if (!f.approved) throw new Error('Private destination revoked');
+  if (!f.approved) throw new HttpError(403, 'Private destination revoked');
   return { address: '127.0.0.1', family: 4 };
 } }));
 vi.mock('@/db/remote-hermes-recovery-schema', () => ({ remoteRecoveryFenceActive: async (_q: unknown, sessionId: string) => f.recoveryFences.includes(sessionId) }));
