@@ -72,7 +72,7 @@ async function fixture() {
   const hub = new NativeHub('owner', connection.id); cleanup.push(() => hub.close());
   hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: 'runtime', running: true }, 'connected'), pending: new Map(), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1, ownerInstanceId: hub.instanceId, leaseGeneration: 1, ownerSocketEpoch: 1 });
   await hub.socket.connect();
-  return { hub, row, input, baseUrl, received };
+  return { hub, row, input, baseUrl, received, server };
 }
 run.each(['dispatch', 'cached view'] as const)('PostgreSQL fences replacement during policy await before %s linearizes', async operation => {
   const { hub, row, input, received } = await fixture();
@@ -188,4 +188,23 @@ run('refuses a guarded setter whose native ownership capability was never prepar
       scope: 'session', key: 'model', value: 'synthetic' }, hub.socket.connectionEpoch, 1000, tx);
   })).rejects.toMatchObject({ status: 409 });
   expect(received).toEqual(['client.capabilities']);
+}, 15_000);
+run('orders incoming-event locks before session locks while a dispatcher owns the lease', async () => {
+  const { hub, row, server } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
+  const cached = hub.sessions.get(row.id)!;
+  cached.view.running = false;
+  await f.db.transaction(async tx => {
+    await tx.select().from(remoteHermesHubOwners).where(eq(remoteHermesHubOwners.connectionId, row.connectionId)).for('update');
+    server.clients.forEach(ws => ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
+      session_id: row.runtimeId, type: 'message.start',
+    } })));
+    await vi.waitFor(async () => {
+      const waiting = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE 'select%remote_hermes_hub_owners%'");
+      expect(waiting.rows[0].n).toBe(1);
+    }, { timeout: 3000 });
+    // The frame must not hold a session lock while it waits for this owner.
+    await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
+  });
+  await vi.waitFor(() => expect(cached.view.running).toBe(true), { timeout: 3000 });
 }, 15_000);
