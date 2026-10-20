@@ -21,6 +21,8 @@ enum PortalTheme {
     static let warning = adaptive("c2410c", "fbbf24")
     static let success = adaptive("2f7d5e", "4ade80")
     static let danger = adaptive("e02e2a", "f06a66")
+    /// A tool step is running. Same for every bot, so it never reads as a bot's own color.
+    static let hermes = adaptive("16a34a", "22c55e")
 
     static func adaptive(_ light: String, _ dark: String) -> Color {
         #if os(macOS)
