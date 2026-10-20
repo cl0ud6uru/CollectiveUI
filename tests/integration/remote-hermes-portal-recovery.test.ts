@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
-import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
+import { remoteHermesConnections, remoteHermesHubOwners, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { remoteHermesRecoveries } from '@/db/remote-hermes-recovery-schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
@@ -54,6 +54,33 @@ describe.skipIf(!enabled)('exact-pin composed ownership/drain adapters and produ
     await fixture?.stop(); f.base = '';
   });
   afterAll(async () => { await pool?.end(); });
+  it('uses a prepared full native fence inside caller locks and rejects a stale lease without reclaiming it', async () => {
+    const session = await openNativeSession(owner, connection, 'default'), hub = nativeHub(owner, connection);
+    const saved = await row(session.id), epoch = hub.socket.connectionEpoch;
+    const current = await hub.socket.callConnected('collective.hub_owner.current', { profile: 'default' }, epoch);
+    expect(current.phase).toBe('full');
+    const nested = vi.spyOn(db, 'transaction');
+    try {
+      const { reply } = await db.transaction(async tx => {
+        await hub.lockBoundary(tx);
+        await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, saved.id)).for('update');
+        nested.mockImplementationOnce(async () => { throw new Error('Nested native ownership transaction'); });
+        return hub.socket.dispatchConnected('session.resume', { profile: saved.profile, session_id: saved.storedId }, epoch, 5000, tx);
+      });
+      expect(await reply).toMatchObject({ session_id: saved.runtimeId });
+      expect(nested).toHaveBeenCalledTimes(1);
+    } finally { nested.mockRestore(); }
+    await expect(db.transaction(async tx => {
+      await hub.lockBoundary(tx);
+      await tx.update(remoteHermesHubOwners).set({ generation: sql`${remoteHermesHubOwners.generation} + 1` })
+        .where(eq(remoteHermesHubOwners.connectionId, connection));
+      return hub.socket.dispatchConnected('session.resume', { profile: saved.profile, session_id: saved.storedId }, epoch, 5000, tx);
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await hub.socket.callConnected('collective.hub_owner.current', { profile: 'default' }, epoch)).toMatchObject({
+      native_generation: current.native_generation, portal_generation: current.portal_generation, phase: 'full',
+    });
+    expect((await metrics()).agent_turns).toBe(0);
+  }, 15000);
   it('recovers actual accepted/completed work after a lost acknowledgement using terminal proof, retains history and never replays the old turn', async () => {
     const session = await openNativeSession(owner, connection, 'default');
     const requestId = randomUUID(), text = 'fixture-recovery-original', before = (await metrics()).agent_turns;
