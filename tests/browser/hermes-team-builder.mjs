@@ -24,6 +24,12 @@ export const randomBlob = () => 'fixture-avatar';
 export const SEARCH_COST_NOTICE = '';
 export const createBot = async form => { window.fixtureCreates.push(form); return {id:'already-created-team'}; };
 export const updateBot = async (id,form) => { window.fixtureUpdates.push({id,form}); };
+export const saveBotFromBuilder = async (id,form) => {
+  window.fixtureSaveAttempts.push({id,form});
+  if (window.fixtureSaveError) { const error=window.fixtureSaveError; window.fixtureSaveError=null; return {ok:false,error}; }
+  if (id) { await updateBot(id,form); return {ok:true,id}; }
+  return {ok:true,...await createBot(form)};
+};
 export const createPersonalHermesBot = async () => { throw new Error('Personal Hermes creation is not part of this fixture.'); };
 export const draftBotFromDescription = async () => ({ok:false,error:'Not used'});
 export const addKnowledgeFile = async () => {}; export const removeKnowledgeFile = async () => {};
@@ -36,14 +42,15 @@ const localStubs = new Set(['./builder-avatar', './bot-delete-button', './bot-av
 await writeFile(entry, `
 import React from 'react'; import { createRoot } from '${root}/node_modules/react-dom/client';
 import { BotBuilder } from '${root}/src/components/bots/bot-builder';
-window.fixtureCreates=[]; window.fixtureUpdates=[];
+window.fixtureCreates=[]; window.fixtureUpdates=[]; window.fixtureSaveAttempts=[];
 const converted = location.pathname.startsWith('/converted');
+const audience = location.pathname.startsWith('/audience');
 const convertedDisabled = location.pathname === '/converted-disabled';
 const retainPolicy = location.pathname === '/converted-policy';
 const modelRoutes = {adminRouteId:'saved-admin-route',personalRouteId:'saved-personal-route'};
 const toolPolicy = {capabilities:[{capabilityId:'saved-inbox',connectionMode:'disabled',resourceIds:['saved-resource'],effect:'read',requireApproval:true}]};
-const initial = {name:'Fixture Team',avatar:null,description:null,instructions:'',boundaries:'',appId:converted?'fixture-native':'fixture-hermes',visibility:'org',groupIds:[],userIds:[],maxSteps:10,starters:[],tools:[],delegateIds:[]};
-createRoot(document.getElementById('root')).render(<BotBuilder botId={converted?'converted-team':undefined} initial={initial} apps={[{id:'fixture-hermes',name:'Fixture Hermes',supportsTools:true,agentServer:true},{id:'fixture-native',name:'Fixture native',supportsTools:true}]} groups={[]} users={[]} tools={[]} delegates={[]} knowledge={[]} newChatId="fixture-preview" isAdmin teamConfig={{enabled:converted&&!convertedDisabled,modelPolicy:'admin_provided',maintainerIds:['admin'],expectedVersion:7,modelRoutes:retainPolicy?modelRoutes:undefined,toolPolicy:retainPolicy?toolPolicy:undefined}} teamMaintainers={[{id:'admin',name:'Fixture admin'},{id:'admin2',name:'Second admin'}]} teamModelOptions={retainPolicy?[]:[{value:'admin_provided',available:true}]}/>);
+const initial = {name:'Fixture Team',avatar:null,description:null,instructions:'',boundaries:'',appId:converted||audience?'fixture-native':'fixture-hermes',visibility:'org',groupIds:[],userIds:[],maxSteps:10,starters:[],tools:[],delegateIds:[]};
+createRoot(document.getElementById('root')).render(<BotBuilder botId={converted?'converted-team':location.pathname==='/audience-edit'?'audience-bot':undefined} initial={initial} apps={[{id:'fixture-hermes',name:'Fixture Hermes',supportsTools:true,agentServer:true},{id:'fixture-native',name:'Fixture native',supportsTools:true}]} groups={[{id:'audience-group',name:'Fixture audience'}]} users={[]} tools={[]} delegates={[]} knowledge={[]} newChatId="fixture-preview" isAdmin teamConfig={{enabled:converted&&!convertedDisabled,modelPolicy:'admin_provided',maintainerIds:['admin'],expectedVersion:7,modelRoutes:retainPolicy?modelRoutes:undefined,toolPolicy:retainPolicy?toolPolicy:undefined}} teamMaintainers={[{id:'admin',name:'Fixture admin'},{id:'admin2',name:'Second admin'}]} teamModelOptions={retainPolicy?[]:[{value:'admin_provided',available:true}]}/>);
 `);
 const bundle = await build({ entryPoints: [entry], write: false, bundle: true, platform: 'browser', format: 'iife', jsx: 'automatic', nodePaths: [path.join(root, 'node_modules')], alias: { '@': path.join(root, 'src'), 'next/navigation': navigation, sonner, ...aliases }, plugins: [{ name: 'fixture-components', setup(build) { build.onResolve({filter:/^\.\//}, args => localStubs.has(args.path) && args.importer.endsWith('/bot-builder.tsx') ? {path:stubs} : undefined); } }] });
 const updates = []; let rejectNext = true;
@@ -65,7 +72,7 @@ try {
   await page.getByRole('checkbox', {name:'Share a Hermes Team Bot',exact:false}).check();
   const save = page.getByRole('button', {name:'Create',exact:true});
   await save.click();
-  await expect.poll(() => page.evaluate(() => window.fixtureError)).toBe('Bot configuration saved, but Team Bot settings need attention: Synthetic Team settings outage.');
+  await expect(page.getByRole('alert')).toHaveText('Bot configuration saved, but Team Bot settings need attention: Synthetic Team settings outage.');
   expect(await page.evaluate(() => window.fixtureCreates.length)).toBe(1);
   expect(await page.evaluate(() => window.fixtureNavigation)).toBeUndefined();
   await expect(save).toBeEnabled(); await save.click();
@@ -104,6 +111,33 @@ try {
   await expect.poll(() => updates.length).toBe(6);
   expect(updates[5]).toEqual({method:'PUT',path:'/api/bots/converted-team/team',body:{enabled:true,maintainerIds:['admin','admin2'],modelPolicy:{mode:'admin_provided',adminRouteId:'saved-admin-route',personalRouteId:'saved-personal-route'},expectedVersion:7,toolPolicy:{capabilities:[{capabilityId:'saved-inbox',connectionMode:'disabled',resourceIds:['saved-resource'],effect:'read',requireApproval:true}]}}});
   expect(await page.evaluate(() => window.fixtureCreates.length)).toBe(0);
+  for (const mode of ['create','edit']) {
+    await page.goto(`http://127.0.0.1:${server.address().port}/audience-${mode}`);
+    await page.getByRole('button', {name:'configure',exact:true}).click();
+    await page.getByLabel('Who can use it').click();
+    await page.locator('[role="option"][data-value="groups"]').click();
+    const submit = page.getByRole('button', {name:mode==='create'?'Create':'Update',exact:true});
+    await submit.click();
+    await expect(page.getByRole('alert')).toHaveText('Select at least one group or individual user under Who can use it.');
+    expect(await page.evaluate(() => window.fixtureSaveAttempts)).toEqual([]);
+    const group = page.getByRole('button', {name:'Fixture audience',exact:true});
+    await expect(group).toHaveAttribute('aria-pressed','false');
+    await group.click();
+    await expect(group).toHaveAttribute('aria-pressed','true');
+    await expect(group.locator('svg')).toHaveCount(1);
+    await page.evaluate(() => { window.fixtureSaveError='A selected group is no longer available.'; });
+    await submit.click();
+    await expect(page.getByRole('alert')).toHaveText('A selected group is no longer available.');
+    expect(await page.evaluate(() => [window.fixtureCreates.length,window.fixtureUpdates.length])).toEqual([0,0]);
+    expect(await page.evaluate(() => window.fixtureNavigation)).toBeUndefined();
+    await expect(submit).toBeEnabled(); await submit.click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.fixtureSuccess)).toBe(mode==='create'?'Bot created':'Bot updated');
+    const saved = await page.evaluate(mode => mode==='create'?window.fixtureCreates:window.fixtureUpdates.map(update=>update.form),mode);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({visibility:'groups',groupIds:['audience-group']});
+  }
+  expect(updates).toHaveLength(6); // Audience errors never write Team settings.
   expect(errors).toEqual([]);
-  console.log('PASS: actual bot editor Team PUT 503 retry creates once; successful version advances sequential edits without remount or repeated settings writes; converted native-engine Team settings remain available; strict policy payload; synthetic actions/HTTP only.');
+  console.log('PASS: actual bot editor audience validation, selected-group feedback, structured create/update errors and retries; Team PUT 503 retry creates once; sequential versions, converted Team settings and strict policy payload; synthetic actions/HTTP only.');
 } finally { await browser.close(); server.close(); await rm(dir, {recursive:true,force:true}); }

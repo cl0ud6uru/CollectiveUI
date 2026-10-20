@@ -1,17 +1,17 @@
-import { requireAdmin } from "@/lib/session";
+import { requirePrincipal } from "@/lib/session";
 import { assertPetOrigin, readPetBody } from "@/lib/pets/import";
 import { createPetGenerationJob, listPetGenerationJobs, normalizePetReference } from "@/lib/pets/generation";
 import { petError, petJson } from "@/lib/pets/response";
 import { HttpError } from "@/lib/authz";
 
 export async function GET() {
-  try { return petJson(await listPetGenerationJobs(await requireAdmin())); }
+  try { return petJson(await listPetGenerationJobs(await requirePrincipal())); }
   catch (error) { return petError(error); }
 }
 
 export async function POST(request: Request) {
   try {
-    const p = await requireAdmin();
+    const p = await requirePrincipal();
     assertPetOrigin(request);
     const raw = await readPetBody(request, 1400 * 1024);
     let body: Record<string, unknown>;

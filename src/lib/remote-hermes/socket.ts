@@ -3,7 +3,7 @@ import { HttpError } from '@/lib/authz';
 import type { Tx } from '@/db';
 
 export type DispatchBoundary = <T>(method: string, params: RpcRecord, dispatch: () => T, tx?: Tx) => Promise<{ value: T }>;
-export type DispatchPreparation = (method: string, params: RpcRecord) => Promise<void>;
+export type DispatchPreparation = (method: string, params: RpcRecord, tx?: Tx) => Promise<void>;
 
 export type RpcRecord = Record<string, unknown>;
 export type NativeFrame = { jsonrpc: '2.0'; id?: string | number; method?: string; params?: RpcRecord; result?: RpcRecord; error?: { code?: number } };
@@ -40,7 +40,7 @@ export class DashboardSocket {
   private closed = false;
   private suppressReconnectCallback = false;
   get connectionEpoch() { return this.epoch; }
-  constructor(private target: () => Promise<{ url: URL; options: ClientOptions }>, private frame: (f: NativeFrame, socketEpoch: number) => void,
+  constructor(private target: () => Promise<{ url: URL; options: ClientOptions; protocols?: string[] }>, private frame: (f: NativeFrame, socketEpoch: number) => void,
     private changed: (state: SocketState) => void = () => {}, private reconnected: () => Promise<void> = async () => {},
     private authorize: (method: string, params: RpcRecord) => Promise<void> = async () => {},
     private boundary: DispatchBoundary = async (method, params, dispatch) => { await this.authorize(method, params); return { value: dispatch() }; },
@@ -62,7 +62,8 @@ export class DashboardSocket {
     try {
       const target = await this.target();
       if (!this.wanted) throw new HttpError(409, 'Hermes connection was closed.');
-      const ws = new WebSocket(target.url, { ...target.options, followRedirects: false, perMessageDeflate: false, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 15_000 });
+      const options = { ...target.options, followRedirects: false, perMessageDeflate: false, maxPayload: 8 * 1024 * 1024, handshakeTimeout: 15_000 };
+      const ws = target.protocols ? new WebSocket(target.url, target.protocols, options) : new WebSocket(target.url, options);
       this.ws = ws;
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => { reject(new HttpError(504, 'Hermes did not announce socket readiness.')); ws.terminate(); }, 15_000);
@@ -146,8 +147,10 @@ export class DashboardSocket {
   }
   private async dispatch(method: string, params: RpcRecord, timeoutMs: number, tx?: Tx): Promise<{ reply: Promise<RpcRecord> }> {
     if (!this.ws || !this.transportReady || this.ws.readyState !== WebSocket.OPEN) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
-    await this.prepare(method, params);
     const ws = this.ws;
+    // Ownership preparation can await native RPCs. Keep the original transport
+    // so a reconnect during that work cannot move a verified send to a new one.
+    await this.prepare(method, params, tx);
     const { value: reply } = await this.boundary(method, params, () => {
       if (this.ws !== ws || !this.transportReady || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
       if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');

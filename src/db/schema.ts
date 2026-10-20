@@ -399,6 +399,31 @@ export const providerConnections = pgTable("provider_connections", {
   check("provider_connections_compatible_target_check", sql`${t.provider} not in ('openai-compatible', 'openrouter') or (${t.baseUrl} is not null and ${t.organization} is null and ${t.project} is null)`),
 ]);
 
+/** Metadata-only, one-use handoff for an administrator to enter a provider key in the secure Admin form. */
+export const architectProviderConnectionDrafts = pgTable("architect_provider_connection_drafts", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionVersion: integer("session_version").notNull(),
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  provider: text("provider").$type<import("@/lib/llm/catalog").SavedProviderKind>().notNull(),
+  name: text("name").notNull(),
+  baseUrl: text("base_url"),
+  organization: text("organization"),
+  project: text("project"),
+  createdAt: createdAt(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  connectionId: text("connection_id"),
+}, (t) => [
+  index("architect_provider_drafts_owner_expiry_idx").on(t.userId, t.expiresAt),
+  index("architect_provider_drafts_context_idx").on(t.botId, t.conversationId),
+  check("architect_provider_drafts_session_check", sql`${t.sessionVersion} >= 0`),
+  check("architect_provider_drafts_provider_check", sql`${t.provider} in ('openai', 'openai-compatible', 'openrouter')`),
+  check("architect_provider_drafts_name_check", sql`length(trim(${t.name})) between 1 and 80`),
+  check("architect_provider_drafts_consumed_check", sql`(${t.consumedAt} is null) = (${t.connectionId} is null)`),
+]);
+
 /** Dedicated read-only billing credentials; never an inference connection or bot credential. */
 export const providerBillingAccounts = pgTable("provider_billing_accounts", {
   id: id(),
@@ -766,6 +791,7 @@ export const petGenerationJobs = pgTable("pet_generation_jobs", {
   appearanceErrorCode: text("appearance_error_code"),
   buildConsentAt: timestamp("build_consent_at", { withTimezone: true }),
   preview: petBytes("preview"),
+  previewErrorCode: text("preview_error_code"),
   catalogPetId: text("catalog_pet_id").references(() => petCatalog.id, { onDelete: "set null" }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -1941,6 +1967,33 @@ export const codexApprovals = pgTable('codex_approvals', {
   binding: text('binding').notNull(), threadId: text('thread_id').notNull(), turnId: text('turn_id').notNull(),
   decision: text('decision').$type<'decline' | 'cancel'>(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, t => [index('codex_approvals_run_idx').on(t.runId), check('codex_approval_decision_check', sql`${t.decision} is null or ${t.decision} in ('decline', 'cancel')`)]);
+
+/** Native MCP App data is separate from messages, model history, search, shares and tool audit output. */
+export const mcpAppInstances = pgTable('mcp_app_instances', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  botId: text('bot_id').notNull().references(() => bots.id, { onDelete: 'cascade' }),
+  serverId: text('server_id').notNull().references(() => mcpServers.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), definitionHash: text('definition_hash').notNull(),
+  binding: text('binding').notNull(), sessionVersion: integer('session_version').notNull(), runId: text('run_id'),
+  payloadEnc: text('payload_enc').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(),
+}, t => [index('mcp_app_instances_conversation_idx').on(t.conversationId),
+  check('mcp_app_instance_payload_bound', sql`octet_length(${t.payloadEnc}) <= 2000000`)]);
+
+/** An approval covers one immutable input; claiming dispatch is atomic and never retried after uncertainty. */
+export const mcpAppActions = pgTable('mcp_app_actions', {
+  id: text('id').primaryKey(),
+  instanceId: text('instance_id').notNull().references(() => mcpAppInstances.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), definitionHash: text('definition_hash').notNull(),
+  input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+  status: text('status').$type<'pending' | 'running' | 'done' | 'denied' | 'error'>().notNull(),
+  resultEnc: text('result_enc'), createdAt: createdAt(),
+}, t => [index('mcp_app_actions_instance_idx').on(t.instanceId),
+  check('mcp_app_action_status_check', sql`${t.status} in ('pending', 'running', 'done', 'denied', 'error')`),
+  check('mcp_app_action_input_bound', sql`octet_length(${t.input}::text) <= 65536`),
+  check('mcp_app_action_result_bound', sql`${t.resultEnc} is null or octet_length(${t.resultEnc}) <= 2000000`)]);
 
 
 // The recovery journal has its own protocol module; re-export it into Drizzle's schema.

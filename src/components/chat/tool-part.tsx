@@ -2,6 +2,9 @@
 
 import { isDelegationTool } from "@/lib/delegation/policy";
 import { workspaceArtifact } from "@/lib/chat/workspace-artifacts";
+import { appInstanceId, withoutAppReference } from '@/lib/mcp/apps-contract';
+import dynamic from 'next/dynamic';
+const McpAppHost = dynamic(() => import('./mcp-app-host').then(m => m.McpAppHost), { ssr: false });
 
 import Link from "next/link";
 import { useEffect, useId, useState } from "react";
@@ -374,6 +377,7 @@ export function ToolPartView({
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
+      {!readOnly && appInstanceId(output) && <McpAppHost key={appInstanceId(output)!} id={appInstanceId(output)!} />}
       {artifact && <div className="mt-2 flex flex-wrap gap-2">
         {openWorkspaceFile && !artifact.instanceId && <button onClick={() => openWorkspaceFile(artifact.path)} className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 hover:bg-hover">Open {artifact.path.split("/").at(-1)}</button>}
         <a href={artifact.downloadUrl} download className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>
@@ -385,7 +389,7 @@ export function ToolPartView({
           {output !== undefined && (
             <>
               <div className="text-xs font-medium text-subtle">Result</div>
-              <Json value={output} />
+              <Json value={withoutAppReference(output)} />
             </>
           )}
           {failed && <Json value={part.errorText} />}

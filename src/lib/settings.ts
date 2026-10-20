@@ -41,6 +41,8 @@ export type RemoteHermesSettings = {
   allowSessionYolo?: boolean;
   /** Exact dashboard bases approved for connections to private/LAN/tailnet addresses. */
   privateGateways: string[];
+  /** Exact non-loopback private HTTP bases an administrator has verified traverse encrypted tunnels. */
+  privateHttpTunnels?: string[];
 };
 
 export type ToolSettings = {
@@ -120,8 +122,9 @@ export type PetGenerationSettings = {
 const defaults = {
   voice: { providerAppId: null, reactions: true, avatarUrl: null } as import("./voice/policy").VoiceSettings,
   officeBot: { botId: null } as { botId: string | null },
+  architectBot: { botId: null } as { botId: string | null },
   decisions: DECISIONS_DEFAULTS,
-  remoteHermes: { enabled: false, allowSessionYolo: false, privateGateways: [] } as RemoteHermesSettings,
+  remoteHermes: { enabled: false, allowSessionYolo: false, privateGateways: [], privateHttpTunnels: [] } as RemoteHermesSettings,
   coordinator: { enabled: false, defaultBotId: null, starterBotId: null } as CoordinatorSettings,
   branding: { appName: "AI Portal", welcomeText: "What can I help with?", logoEmoji: "" } as BrandingSettings,
   // Separate from editable text so stale admin forms cannot resurrect a removed logo.

@@ -11,7 +11,8 @@ import { getSetting, type RemoteHermesSettings } from '@/lib/settings';
 import { isPrivateAddress } from '@/lib/agent/tools/web';
 import { registerNativeConnection } from './lifecycle';
 import { remoteAccess } from './store';
-import { dashboardAddress } from './transport';
+import { dashboardAddress, privateHttpTransportTrusted } from './transport';
+import { websocketAuthentication } from './websocket-auth';
 import { DashboardSocket, record, type NativeFrame, type RpcRecord } from './socket';
 import { promptView, sessionView, answerFor, type NativeSessionView, type NativePrompt } from './view';
 import { HUB_OWNER_LEASE_MS, NATIVE_HUB_OWNER_PROTOCOL, PORTAL_HUB_OWNERSHIP_PROTOCOL, type NativeHubFence, type RemoteHubOwnershipSnapshot } from './ownership';
@@ -41,10 +42,10 @@ export class NativeHub {
       this.pinned = { baseUrl: target.baseUrl, address: address.address };
       const url = new URL(target.baseUrl + '/api/ws');
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      if (target.secrets.mode === 'sessionToken') url.searchParams.set('token', target.secrets.sessionToken!);
-      else url.searchParams.set('ticket', await target.client.websocketTicket());
+      const auth = websocketAuthentication(url, target.secrets,
+        target.secrets.mode === 'password' ? await target.client.websocketTicket() : undefined);
       const options: ClientOptions & Pick<RequestOptions, 'lookup'> = { family: address.family, lookup: (_host, _opts, callback) => callback(null, address.address, address.family) };
-      return { url, options };
+      return { ...auth, options };
     }, (frame, socketEpoch) => this.onFrame(frame, socketEpoch), state => {
       for (const cached of this.sessions.values()) { cached.view.connection = state; this.changes.emit(cached.row.id); }
     }, async () => {
@@ -54,7 +55,7 @@ export class NativeHub {
         try { await this.refresh(cached.row); } catch { cached.view.uncertain = true; }
       }
     }, async () => {}, (method, params, dispatch, tx) => this.dispatchBoundary(method, params, dispatch, tx),
-      (method, params) => this.prepareOwnership(method, params));
+      (method, params, tx) => this.prepareOwnership(method, params, tx));
   }
   async assertIdentity(q: DbOrTx = db, lock = false) {
     if (this.retired) throw new HttpError(409, 'This Hermes sign-in was replaced. Open a conversation from the new connection.');
@@ -191,7 +192,7 @@ export class NativeHub {
       throw new HttpError(409, 'This Hermes socket no longer owns the native session. Refresh before continuing.');
     return lease;
   }
-  private async prepareOwnership(method: string, params: RpcRecord) {
+  private async prepareOwnership(method: string, params: RpcRecord, tx?: Tx) {
     if (['client.capabilities', 'ping', 'collective.hub_owner.capabilities', 'collective.hub_owner.current', 'collective.hub_owner.claim'].includes(method) ||
         method.startsWith('collective.recovery.')) return;
     const answerCached = method === '$answer' ? [...this.sessions.values()].find(c => [...c.pending.values()].some(p => p.nativeId === params.id)) : undefined;
@@ -199,12 +200,28 @@ export class NativeHub {
     if (!profile) return;
     const stored = method === 'session.resume' ? params.session_id : undefined;
     const runtime = typeof params.session_id === 'string' ? params.session_id : undefined;
-    const [bound] = answerCached ? [answerCached.row] : stored || runtime ? await db.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile), stored ? eq(remoteHermesSessions.storedId, String(stored)) : or(eq(remoteHermesSessions.runtimeId, String(runtime)), eq(remoteHermesSessions.storedId, String(runtime))))).limit(1) : [];
+    const q = tx ?? db;
+    const [bound] = answerCached ? [answerCached.row] : stored || runtime ? await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile), stored ? eq(remoteHermesSessions.storedId, String(stored)) : or(eq(remoteHermesSessions.runtimeId, String(runtime)), eq(remoteHermesSessions.storedId, String(runtime))))).limit(1) : [];
     const sessionScoped = !!bound || method === 'session.create';
     if (!sessionScoped) return;
-    const profileSessions = bound ? [bound] : await db.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile)));
-    for (const session of profileSessions) if (await remoteRecoveryFenceActive(db, session.id))
+    const profileSessions = bound ? [bound] : await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile)));
+    for (const session of profileSessions) if (await remoteRecoveryFenceActive(q, session.id))
       throw new HttpError(409, 'Native recovery is in progress for this profile. Ordinary session ownership cannot be promoted.');
+    if (tx) {
+      // The caller may already hold owner/session locks and the only pool slot.
+      // Its verified snapshot must have prepared ownership before this transaction;
+      // validate that proof here without starting another transaction or native claim.
+      const lease = await this.assertCurrentLease(tx);
+      if (this.nativeCapability?.socketEpoch !== this.socket.connectionEpoch)
+        throw new HttpError(409, 'Refresh the native session before confirming this operation. Ownership has not been prepared.');
+      if (!this.nativeCapability.supported) return;
+      const fence = this.nativeFences.get(profile);
+      if (!fence || fence.generation !== Number(lease.generation) || fence.socketEpoch !== Number(lease.socketEpoch) ||
+          fence.nativeGeneration < 1 || fence.phase !== 'full' || fence.recoveryId !== null ||
+          fence.recoverySessionId !== null || fence.recoveryStoredSessionId !== null)
+        throw new HttpError(409, 'Refresh the native session before confirming this operation. Its full ownership fence changed.');
+      return;
+    }
     const nativeSupported = await this.nativeOwnerSupported();
     const [lease] = await db.transaction(async tx => {
       await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
@@ -407,7 +424,8 @@ export class NativeHub {
     // use dashboardAddress and cannot reconnect to a revoked private destination.
     const address = this.pinned?.baseUrl === connection.baseUrl ? this.pinned :
       { baseUrl: connection.baseUrl, ...(await dashboardAddress(connection.baseUrl, policy)) };
-    const revoked = isPrivateAddress(address.address) && !policy.privateGateways.includes(connection.baseUrl);
+    const revoked = isPrivateAddress(address.address) && (!policy.privateGateways.includes(connection.baseUrl) ||
+      !privateHttpTransportTrusted(connection.baseUrl, address.address, policy));
     if (method === 'collective.recovery.capabilities' && this.socket.state === 'connected') return;
     if (method === 'collective.recovery.status' || method === 'collective.recovery.cancel_and_drain') {
       // assertRecoveryDispatch has already matched the exact durable owner proof and
