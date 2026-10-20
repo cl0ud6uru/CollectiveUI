@@ -176,18 +176,34 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
     }
   }, 60000);
   it('ignores a late queue acknowledgement after native recovery admits a different queue', async () => {
-    const ackA = deferred<unknown>(), ackB = deferred<unknown>(); let count = 0;
-    f.call.mockImplementation((method: string) => method === 'session.resume' ? Promise.resolve({ ...idle, running: true }) : ++count === 1 ? ackA.promise : ackB.promise);
+    const ackA = deferred<unknown>(), ackB = deferred<unknown>(), sentA = deferred<void>(), sentB = deferred<void>();
+    f.call.mockImplementation((method: string) => {
+      if (method === 'session.resume') return Promise.resolve({ ...idle, running: true });
+      sentA.resolve(); return ackA.promise;
+    });
     const a = nativeControl(owner, connection, session, 'queue', { requestId: id1, text: 'Queue A' });
-    await vi.waitFor(() => expect(count).toBe(1)); const hub = nativeHub(owner, connection);
-    f.call.mockImplementation(async () => ({ ...idle, running: true, queued: { user: 'Queue A' } })); await hub.refresh(await row());
-    f.call.mockImplementation((method: string) => method === 'session.resume' ? Promise.resolve({ ...idle, running: true }) : ackB.promise);
-    await hub.refresh(await row());
-    const b = nativeControl(owner, connection, session, 'queue', { requestId: id2, text: 'Queue B' });
-    await vi.waitFor(async () => expect((await row()).queueRequestId).toBe(id2));
-    ackA.resolve({ status: 'queued' }); await a;
-    expect(await row()).toMatchObject({ queueRequestId: id2, queueStatus: 'admitting' });
-    expect(hub.sessions.get(session)!.view.queued).not.toBe('Queue A');
-    ackB.resolve({ status: 'queued' }); await b; expect(hub.sessions.get(session)!.view.queued).toBe('Queue B');
-  });
+    let b: Promise<unknown> | undefined;
+    try {
+      // Wait for actual dispatch, not an arbitrary one-second database latency.
+      await Promise.race([sentA.promise, a]);
+      expect(f.call.mock.calls.filter(call => call[0] === 'prompt.submit')).toHaveLength(1);
+      const hub = nativeHub(owner, connection);
+      f.call.mockImplementation(async () => ({ ...idle, running: true, queued: { user: 'Queue A' } })); await hub.refresh(await row());
+      f.call.mockImplementation((method: string) => {
+        if (method === 'session.resume') return Promise.resolve({ ...idle, running: true });
+        sentB.resolve(); return ackB.promise;
+      });
+      await hub.refresh(await row());
+      b = nativeControl(owner, connection, session, 'queue', { requestId: id2, text: 'Queue B' });
+      await Promise.race([sentB.promise, b]);
+      expect((await row()).queueRequestId).toBe(id2);
+      ackA.resolve({ status: 'queued' }); await a;
+      expect(await row()).toMatchObject({ queueRequestId: id2, queueStatus: 'admitting' });
+      expect(hub.sessions.get(session)!.view.queued).not.toBe('Queue A');
+      ackB.resolve({ status: 'queued' }); await b; expect(hub.sessions.get(session)!.view.queued).toBe('Queue B');
+    } finally {
+      ackA.resolve({ status: 'queued' }); ackB.resolve({ status: 'queued' });
+      await Promise.allSettled([a, b]);
+    }
+  }, 15000);
 });
