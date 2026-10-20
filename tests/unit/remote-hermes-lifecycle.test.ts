@@ -103,7 +103,7 @@ it('fences ready sockets and cached account A identities when its connection is 
 it('negotiates a successor without touching a foreign lease and refuses unsupported takeover', async () => {
   const { hub, received } = await fixture();
   hub.close();
-  const successor = new NativeHub('owner', 'connection', 'successor-process');
+  const successor = new NativeHub('owner', 'connection', 'a64bfbd5-ea03-4d11-8f39-f82074288ec4');
   resources.push(() => successor.close());
   const original = { ...f.owners[0] }, before = received.length;
   await successor.socket.connect();
