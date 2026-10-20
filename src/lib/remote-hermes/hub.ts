@@ -55,7 +55,7 @@ export class NativeHub {
         try { await this.refresh(cached.row); } catch { cached.view.uncertain = true; }
       }
     }, async () => {}, (method, params, dispatch, tx) => this.dispatchBoundary(method, params, dispatch, tx),
-      (method, params) => this.prepareOwnership(method, params));
+      (method, params, tx) => this.prepareOwnership(method, params, tx));
   }
   async assertIdentity(q: DbOrTx = db, lock = false) {
     if (this.retired) throw new HttpError(409, 'This Hermes sign-in was replaced. Open a conversation from the new connection.');
@@ -192,7 +192,7 @@ export class NativeHub {
       throw new HttpError(409, 'This Hermes socket no longer owns the native session. Refresh before continuing.');
     return lease;
   }
-  private async prepareOwnership(method: string, params: RpcRecord) {
+  private async prepareOwnership(method: string, params: RpcRecord, tx?: Tx) {
     if (['client.capabilities', 'ping', 'collective.hub_owner.capabilities', 'collective.hub_owner.current', 'collective.hub_owner.claim'].includes(method) ||
         method.startsWith('collective.recovery.')) return;
     const answerCached = method === '$answer' ? [...this.sessions.values()].find(c => [...c.pending.values()].some(p => p.nativeId === params.id)) : undefined;
@@ -200,12 +200,28 @@ export class NativeHub {
     if (!profile) return;
     const stored = method === 'session.resume' ? params.session_id : undefined;
     const runtime = typeof params.session_id === 'string' ? params.session_id : undefined;
-    const [bound] = answerCached ? [answerCached.row] : stored || runtime ? await db.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile), stored ? eq(remoteHermesSessions.storedId, String(stored)) : or(eq(remoteHermesSessions.runtimeId, String(runtime)), eq(remoteHermesSessions.storedId, String(runtime))))).limit(1) : [];
+    const q = tx ?? db;
+    const [bound] = answerCached ? [answerCached.row] : stored || runtime ? await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile), stored ? eq(remoteHermesSessions.storedId, String(stored)) : or(eq(remoteHermesSessions.runtimeId, String(runtime)), eq(remoteHermesSessions.storedId, String(runtime))))).limit(1) : [];
     const sessionScoped = !!bound || method === 'session.create';
     if (!sessionScoped) return;
-    const profileSessions = bound ? [bound] : await db.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile)));
-    for (const session of profileSessions) if (await remoteRecoveryFenceActive(db, session.id))
+    const profileSessions = bound ? [bound] : await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile)));
+    for (const session of profileSessions) if (await remoteRecoveryFenceActive(q, session.id))
       throw new HttpError(409, 'Native recovery is in progress for this profile. Ordinary session ownership cannot be promoted.');
+    if (tx) {
+      // The caller may already hold owner/session locks and the only pool slot.
+      // Its verified snapshot must have prepared ownership before this transaction;
+      // validate that proof here without starting another transaction or native claim.
+      const lease = await this.assertCurrentLease(tx);
+      if (this.nativeCapability?.socketEpoch !== this.socket.connectionEpoch)
+        throw new HttpError(409, 'Refresh the native session before confirming this operation. Ownership has not been prepared.');
+      if (!this.nativeCapability.supported) return;
+      const fence = this.nativeFences.get(profile);
+      if (!fence || fence.generation !== Number(lease.generation) || fence.socketEpoch !== Number(lease.socketEpoch) ||
+          fence.nativeGeneration < 1 || fence.phase !== 'full' || fence.recoveryId !== null ||
+          fence.recoverySessionId !== null || fence.recoveryStoredSessionId !== null)
+        throw new HttpError(409, 'Refresh the native session before confirming this operation. Its full ownership fence changed.');
+      return;
+    }
     const nativeSupported = await this.nativeOwnerSupported();
     const [lease] = await db.transaction(async tx => {
       await tx.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');

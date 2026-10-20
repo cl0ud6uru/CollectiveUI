@@ -3,7 +3,7 @@ import { HttpError } from '@/lib/authz';
 import type { Tx } from '@/db';
 
 export type DispatchBoundary = <T>(method: string, params: RpcRecord, dispatch: () => T, tx?: Tx) => Promise<{ value: T }>;
-export type DispatchPreparation = (method: string, params: RpcRecord) => Promise<void>;
+export type DispatchPreparation = (method: string, params: RpcRecord, tx?: Tx) => Promise<void>;
 
 export type RpcRecord = Record<string, unknown>;
 export type NativeFrame = { jsonrpc: '2.0'; id?: string | number; method?: string; params?: RpcRecord; result?: RpcRecord; error?: { code?: number } };
@@ -150,7 +150,7 @@ export class DashboardSocket {
     const ws = this.ws;
     // Ownership preparation can await native RPCs. Keep the original transport
     // so a reconnect during that work cannot move a verified send to a new one.
-    await this.prepare(method, params);
+    await this.prepare(method, params, tx);
     const { value: reply } = await this.boundary(method, params, () => {
       if (this.ws !== ws || !this.transportReady || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
       if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');
