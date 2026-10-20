@@ -91,7 +91,10 @@ export async function nativeRecovery(ownerId: string, connectionId: string, raw:
     if (target.state === 'applied') return target;
     if (target.state === 'superseded') throw changed();
     const binding = recoveryBinding.parse(target.binding);
-    await assertBound(tx, hub, binding, binding.ownership, false);
+    // Before confirmation the captured full fence must still match. Once the
+    // transition started, its original native generation is historical: exact
+    // recovery/full phase proofs are checked below before any native action.
+    await assertBound(tx, hub, binding, binding.ownership, target.state === 'prepared' && !!binding.ownership.nativeFence);
     const [locked] = await tx.select().from(remoteHermesRecoveries).where(eq(remoteHermesRecoveries.id, target.id)).for('update');
     if (!locked || locked.state !== target.state) throw changed();
     if (target.state === 'prepared') {
@@ -184,7 +187,7 @@ async function assertBound(tx: Tx, hub: RecoveryHub, binding: RecoveryBinding, s
   const { nativeFence: _candidateFence, ...before } = binding.ownership, { nativeFence: _proofFence, ...after } = snapshot; void _candidateFence; void _proofFence;
   if (JSON.stringify(before) !== JSON.stringify(after)) throw changed();
   const connection = await hub.lockBoundary(tx);
-  await hub.assertCurrentOwnership(tx, snapshot);
+  await hub.assertCurrentOwnership(tx, requireNative ? snapshot : { ...snapshot, nativeFence: null });
   if (requireNative) await hub.assertNativeOwnership(snapshot);
   const [current] = await tx.select(sessionColumns).from(remoteHermesSessions).where(eq(remoteHermesSessions.id, binding.ownership.sessionId)).for('update');
   if (!current) throw changed();

@@ -40,7 +40,11 @@ vi.mock('@/lib/remote-hermes/hub', async () => {
       if (f.failCompletionOnce) { f.failCompletionOnce = false; throw new Error('full claim reply lost'); }
       const value = await snapshot(); return { ...value, nativeFence: { ...value.nativeFence, ...f.completionOverride } };
     },
-    assertCurrentOwnership: async (tx: typeof db, expected: unknown) => { const { nativeFence: _actual, ...actual } = await snapshot(tx); const { nativeFence: _expected, ...wanted } = expected as Awaited<ReturnType<typeof snapshot>>; void _actual; void _expected; if (JSON.stringify(actual) !== JSON.stringify(wanted)) throw new Error('ownership changed'); },
+    assertCurrentOwnership: async (tx: typeof db, expected: unknown) => {
+      const actual = await snapshot(tx), wanted = expected as Awaited<ReturnType<typeof snapshot>>;
+      if (!wanted.nativeFence) actual.nativeFence = null;
+      if (JSON.stringify(actual) !== JSON.stringify(wanted)) throw new Error('ownership changed');
+    },
     assertNativeOwnership: async (expected: { nativeFence: unknown; socketEpoch: number }) => { if (!f.nativeFence || !expected.nativeFence || expected.socketEpoch !== f.socketEpoch || JSON.stringify(expected.nativeFence) !== JSON.stringify({ protocol: 'collective.native-hub-owner.v1', generation: 3, socketEpoch: f.portalSocketEpoch, nativeGeneration: f.nativeGeneration, phase: f.phase, recoveryId: f.recoveryId, recoverySessionId: 'runtime', recoveryStoredSessionId: 'stored' })) throw new Error('native owner changed'); },
     invalidateRecoveredSession: f.invalidated,
     sessions: new Map([['session', { row: { runtimeId: 'runtime' }, view: { nativeProfile: 'default', profile: 'default' }, socketEpoch: 2 }]]),
