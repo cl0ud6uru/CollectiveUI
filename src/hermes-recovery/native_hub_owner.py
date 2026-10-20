@@ -117,7 +117,7 @@ class HubOwner:
         self._guard = threading.Lock()
         self._profile_locks = {}
         self._owners = {}  # resolved profile home -> active process-local WSTransport binding
-        self._transports = {}  # transport identity -> binding; stale bindings intentionally remain fenced
+        self._transports = {}  # transport -> resolved profile home -> binding; stale claims stay fenced
         self._active_workers = {}  # resolved profile home -> count of already-started native workers
 
     def _home(self, profile):
@@ -275,7 +275,7 @@ class HubOwner:
                 row = self._current_row(profile, home)
                 transport = current_transport()
                 with self._guard:
-                    binding = self._transports.get(transport)
+                    binding = self._transports.get(transport, {}).get(str(home))
                     owner = self._owners.get(str(home))
             generation = int(row[0]) if row else 0
             result = CurrentResult(profile=profile, native_generation=generation,
@@ -359,7 +359,7 @@ class HubOwner:
                                   p.portal_generation, p.portal_socket_epoch, native_generation, p.phase, p.recovery_id, p.recovery_session_id, p.recovery_stored_session_id)
                 with self._guard:
                     self._owners[str(home)] = binding
-                    self._transports[transport] = binding
+                    self._transports.setdefault(transport, {})[str(home)] = binding
                 if p.phase == "recovery":
                     self._stop_profile_notification_pollers(home)
                 result = ClaimResult(accepted=True, portal_connection_id=p.portal_connection_id,
@@ -398,8 +398,10 @@ class HubOwner:
         if isinstance(recovery_id, str):
             transport = current_transport()
             with self._guard:
-                binding = self._transports.get(transport)
-            if binding is not None and binding.recovery_id == recovery_id:
+                matches = [binding for binding in self._transports.get(transport, {}).values()
+                           if binding.recovery_id == recovery_id]
+            if len(matches) == 1:
+                binding = matches[0]
                 if requested is not None and Path(requested[1]).resolve() != Path(binding.home).resolve():
                     return None, None
                 return binding.profile, Path(binding.home)
@@ -443,18 +445,19 @@ class HubOwner:
 
     def _matching_binding(self, transport, profile, home):
         with self._guard:
-            binding = self._transports.get(transport)
+            bindings = self._transports.get(transport, {})
+            binding = bindings.get(str(home)) if home is not None else None
             owner = self._owners.get(str(home)) if home is not None else None
-        if binding is None:
+        if not bindings:
             return None
-        if profile is None or home is None or binding.profile != profile or binding.home != str(home) or not binding.same_claim(owner):
+        if binding is None or profile is None or home is None or binding.home != str(home) or not binding.same_claim(owner):
             return False
         return binding
 
     def _owner_for_request(self, transport, params):
         with self._guard:
-            known_binding = self._transports.get(transport)
-        if known_binding is None:
+            known_bindings = bool(self._transports.get(transport))
+        if not known_bindings:
             return None
         try:
             profile, home = self._profile_for_request(params)
@@ -464,29 +467,28 @@ class HubOwner:
 
     def _transport_owns_any_profile(self, transport):
         with self._guard:
-            binding = self._transports.get(transport)
-            owner = self._owners.get(binding.home) if binding is not None else None
-        return binding is not None and binding.same_claim(owner) and self._durably_current(binding)
+            bindings = [(binding, self._owners.get(binding.home))
+                        for binding in self._transports.get(transport, {}).values()]
+        return any(binding.same_claim(owner) and self._durably_current(binding) for binding, owner in bindings)
 
     def guard_method(self, name, handler):
         def guarded(rid, params):
             transport = current_transport()
+            # These exact negotiation methods do not execute profile work.
+            # A socket may retain several independent profile claims.
+            if name in {"ping", "client.capabilities", "collective.recovery.capabilities"}:
+                with self._guard:
+                    known_bindings = bool(self._transports.get(transport))
+                if not known_bindings or self._transport_owns_any_profile(transport):
+                    return handler(rid, params)
+                return self._err(rid, "This dashboard socket no longer owns a native profile.")
             scoped_params = params
             if name == "request.answer":
                 scoped_params = self._request_answer_params(params)
                 if scoped_params is None:
                     return self._err(rid, "This server request is no longer open or cannot be scoped to a native session.")
-            elif name == "collective.recovery.capabilities":
-                # This exact pinned read-only method has no params. Scope it to the bound
-                # transport when one exists; unclaimed capability discovery stays read-only.
-                with self._guard:
-                    capability_binding = self._transports.get(transport)
-                if capability_binding is not None:
-                    scoped_params = {"profile": capability_binding.profile}
             binding = self._owner_for_request(transport, scoped_params)
             if binding is False:
-                if name in {"ping", "client.capabilities"} and self._transport_owns_any_profile(transport):
-                    return handler(rid, params)
                 return self._err(rid, "This dashboard socket no longer owns the native profile.")
             if binding is None:
                 if isinstance(transport, WSTransport) and name not in {
@@ -614,7 +616,7 @@ class HubOwner:
             return False
         home = Path(self.server._session_home(session)).resolve()
         with self._guard:
-            binding = self._transports.get(transport)
+            binding = self._transports.get(transport, {}).get(str(home))
             owner = self._owners.get(str(home))
         if binding is None:
             if transport is None or isinstance(transport, WSTransport):
