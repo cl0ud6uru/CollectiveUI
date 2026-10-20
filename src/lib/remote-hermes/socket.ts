@@ -147,8 +147,10 @@ export class DashboardSocket {
   }
   private async dispatch(method: string, params: RpcRecord, timeoutMs: number, tx?: Tx): Promise<{ reply: Promise<RpcRecord> }> {
     if (!this.ws || !this.transportReady || this.ws.readyState !== WebSocket.OPEN) throw new HttpError(502, 'Reconnect to Hermes before continuing.');
-    await this.prepare(method, params);
     const ws = this.ws;
+    // Ownership preparation can await native RPCs. Keep the original transport
+    // so a reconnect during that work cannot move a verified send to a new one.
+    await this.prepare(method, params);
     const { value: reply } = await this.boundary(method, params, () => {
       if (this.ws !== ws || !this.transportReady || ws.readyState !== WebSocket.OPEN) throw new NativeConnectionChanged();
       if (this.pending.size >= 64) throw new HttpError(429, 'Too many Hermes operations are pending.');
