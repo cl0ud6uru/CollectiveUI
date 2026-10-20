@@ -11,12 +11,15 @@ import type { DashboardSocket as Socket } from '@/lib/remote-hermes/socket';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
 import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
+import { queueRejectionDiagnostic } from '../fixtures/remote-hermes-queue-diagnostics';
 let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
 let DashboardClient: typeof import('@/lib/remote-hermes/client').DashboardClient;
 let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket;
 let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
 let nativeControl: typeof import('@/lib/remote-hermes/sessions').nativeControl, submitNativePrompt: typeof import('@/lib/remote-hermes/sessions').submitNativePrompt;
-const enabled = process.env.REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE === '1';
+let nativeAdministration: typeof import('@/lib/remote-hermes/administration').nativeAdministration;
+// This conformance suite explicitly exercises the worst-case production pool slot budget.
+const enabled = process.env.REMOTE_HERMES_NATIVE_DATABASE_CONFORMANCE === '1' && process.env.DATABASE_POOL_MAX === '1';
 const owner = newId(), connection = newId();
 let processFixture: Awaited<ReturnType<typeof startPinnedDashboard>>, bootstrapSocket: Socket;
 let secrets: DashboardSecrets, auth: import('@/lib/remote-hermes/client').DashboardClient;
@@ -26,10 +29,10 @@ async function control(body: unknown) {
   if (!response.ok) throw new Error('Synthetic control failed');
 }
 async function metrics() { return (await fetch(f.base + '/api/__fixture/metrics', { headers: { Authorization: `Bearer ${secrets.accessToken}` } })).json(); }
-async function session() {
-  const created = await bootstrapSocket.call('session.create', { profile: 'default', close_on_disconnect: false });
+async function session(profile = 'default') {
+  const created = await bootstrapSocket.call('session.create', { profile, close_on_disconnect: false });
   const id = newId();
-  await db.insert(remoteHermesSessions).values({ id, connectionId: connection, profile: 'default', storedId: String(created.stored_session_id) });
+  await db.insert(remoteHermesSessions).values({ id, connectionId: connection, profile, storedId: String(created.stored_session_id) });
   return id;
 }
 describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL admission/reservations', () => {
@@ -40,6 +43,7 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
     ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
     ({ nativeControl, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
+    ({ nativeAdministration } = await import('@/lib/remote-hermes/administration'));
     processFixture = await startPinnedDashboard(); f.base = processFixture.base;
     const bootstrap = new DashboardClient(f.base, fetch);
     expect((await bootstrap.status()).version).toBe('0.21.5');
@@ -56,22 +60,40 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     await processFixture?.stop(); await pool?.end();
   });
   it('dispatches only one contending queued receipt through actual native transport', async () => {
-    const id = await session(), hub = nativeHub(owner, connection), before = (await metrics()).agent_turns;
+    const id = await session(), hub = nativeHub(owner, connection);
+    const before = (await metrics()).agent_turns;
+    const phase = { agentEntered: false, nativeActive: false };
+    let contenders: Array<{ contender: number; outcome: 'accepted' } | ({ contender: number } & ReturnType<typeof queueRejectionDiagnostic>)> = [];
+    const diagnostic = () => JSON.stringify({ phase, contenders });
     await submitNativePrompt(owner, connection, id, randomUUID(), 'fixture-hold');
-    // Admission can acknowledge before the deferred native turn and its events
-    // reach the hub. Contend for a queue only after observing the active turn.
-    await vi.waitFor(async () => {
-      expect((await metrics()).agent_turns).toBe(before + 1);
-      expect((await hub.refresh(await row(id))).running).toBe(true);
-    }, { timeout: 5000 });
-    const queue = (text: string) => nativeControl(owner, connection, id, 'queue', { requestId: randomUUID(), text }).then(value => ({ value, error: null }), error => ({ value: null, error }));
-    const outcomes = await Promise.all([queue('fixture-next-one'), queue('fixture-next-two')]);
-    expect(outcomes.map(({ error }) => error === null ? 200 : error.status).sort()).toEqual([200, 409]);
-    expect((await row(id)).queueStatus).toBe('queued');
-    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(2);
-    await nativeControl(owner, connection, id, 'stop');
-    await vi.waitFor(async () => expect((await hub.refresh(await row(id))).running).toBe(false), { timeout: 10_000 });
-    expect((await row(id)).queueRequestId).toBeNull();
+    try {
+      // Native admission acknowledgement can precede worker entry. Contend only
+      // after this synthetic hold is executing, rather than racing its startup.
+      await vi.waitFor(async () => {
+        phase.agentEntered = (await metrics()).agent_turns === before + 1;
+        phase.nativeActive = (await hub.refresh(await row(id))).running === true;
+        expect(phase.agentEntered, diagnostic()).toBe(true);
+        expect(phase.nativeActive, diagnostic()).toBe(true);
+      }, { timeout: 5000 });
+      const queue = (text: string) => nativeControl(owner, connection, id, 'queue', { requestId: randomUUID(), text }).then(value => ({ value, error: null }), error => ({ value: null, error }));
+      const outcomes = await Promise.all([queue('fixture-next-one'), queue('fixture-next-two')]);
+      contenders = outcomes.map((outcome, index) => ({ contender: index + 1, ...(outcome.error === null ? { outcome: 'accepted' as const } : queueRejectionDiagnostic(outcome.error)) }));
+      // Assertions retain only counts/booleans as actual values. Neither Vitest's
+      // failure rendering nor the message can dump native results or row data.
+      expect(outcomes.filter(outcome => outcome.error === null).length, diagnostic()).toBe(1);
+      expect(outcomes.filter(outcome => outcome.error?.status === 409).length, diagnostic()).toBe(1);
+      expect((await row(id)).queueStatus === 'queued', diagnostic()).toBe(true);
+      expect((await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).length, diagnostic()).toBe(2);
+    } finally {
+      // A failed contention assertion must not leave this hold contaminating the
+      // next case's native turn count or acknowledgement-loss control.
+      await nativeControl(owner, connection, id, 'stop');
+      await vi.waitFor(async () => {
+        expect((await hub.refresh(await row(id))).running === false, diagnostic()).toBe(true);
+        expect((await row(id)).queueRequestId === null, diagnostic()).toBe(true);
+      }, { timeout: 10_000 });
+    }
+    expect((await row(id)).queueRequestId === null, diagnostic()).toBe(true);
   }, 20000);
   it('retains a durable no-replay receipt after real native acceptance loses its acknowledgement', async () => {
     const id = await session(), requestId = randomUUID(), before = (await metrics()).agent_turns;
@@ -82,4 +104,36 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     await vi.waitFor(async () => expect((await metrics()).agent_turns).toBe(before + 1), { timeout: 10_000 });
     expect((await metrics()).external_attempts).toBe(0);
   }, 20000);
+  it('completes concurrent custom-server writes with one pooled DB client across profiles', async () => {
+    expect(pool.options.max).toBe(1);
+    const profileName = `pool-one-${owner.slice(0, 8).toLowerCase()}`;
+    const createProfile = await fetch(f.base + '/api/profiles', { method: 'POST', headers: {
+      Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json',
+    }, body: JSON.stringify({ name: profileName, no_skills: true }) });
+    const profileResponse = await createProfile.text();
+    expect(createProfile.ok, `Synthetic profile creation returned ${createProfile.status}: ${profileResponse}`).toBe(true);
+    expect((await auth.profiles()).some(profile => profile.name === profileName)).toBe(true);
+    const defaultSession = await session('default');
+    const secondSession = await session(profileName);
+    const operation = (sessionId: string, name: string, token: string) => nativeAdministration(owner, connection, sessionId, {
+      operation: 'customServer', requestId: randomUUID(), name,
+      url: 'https://mcp.example.invalid/v1', bearerToken: token, confirmed: true,
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const outcomes = await Promise.race([
+      Promise.all([
+        operation(defaultSession, 'fixture-pool-default', 'synthetic-pool-default-key'),
+        operation(secondSession, 'fixture-pool-second', 'synthetic-pool-second-key'),
+      ]),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('pool-one MCP admin dispatch stalled')), 15_000); }),
+    ]).finally(() => clearTimeout(timer));
+    expect(outcomes).toEqual([
+      expect.objectContaining({ accepted: true, added: true }),
+      expect.objectContaining({ accepted: true, added: true }),
+    ]);
+    expect(pool.waitingCount).toBe(0);
+    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, defaultSession))).toHaveLength(1);
+    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, secondSession))).toHaveLength(1);
+    expect((await metrics()).external_attempts).toBe(0);
+  }, 25000);
 });

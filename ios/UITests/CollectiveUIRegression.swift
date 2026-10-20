@@ -635,52 +635,26 @@ final class CollectiveUIRegression: XCTestCase {
         capture("visible-return-newline")
     }
 
-    func testSignInLabelContrastsWithItsFillInDarkTheme() {
-        assertSignInContrast(appearance: "dark")
+    func testOfflineSignInPreviewRemainsDisabledInDarkTheme() {
+        assertOfflineSignInPreview(appearance: "dark")
     }
 
-    func testSignInLabelContrastsWithItsFillInLightTheme() {
-        assertSignInContrast(appearance: "light")
+    func testOfflineSignInPreviewRemainsDisabledInLightTheme() {
+        assertOfflineSignInPreview(appearance: "light")
     }
 
-    private func assertSignInContrast(appearance: String) {
+    private func assertOfflineSignInPreview(appearance: String) {
         app.launchArguments = ["--demo", "--demo-screen", "signin", "--demo-appearance", appearance]
         app.launch()
         let button = app.buttons["Sign in"]
         XCTAssertTrue(button.waitForExistence(timeout: 10))
         XCTAssertTrue(button.isHittable)
+        XCTAssertEqual(button.label, "Sign in")
+        XCTAssertFalse(button.isEnabled, "Offline previews must never open browser authorization")
+        XCTAssertTrue(app.buttons["Change server"].isEnabled)
         settle(0.5)
         capture("signin-" + appearance)
-        assertContrastingLabel(in: button)
-    }
-
-    private func assertContrastingLabel(in button: XCUIElement) {
-        guard let cgImage = UIImage(data: app.screenshot().pngRepresentation)?.cgImage else {
-            return XCTFail("Couldn't inspect sign-in screenshot")
-        }
-        let width = cgImage.width, height = cgImage.height
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8,
-                                      bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            return XCTFail("Couldn't decode sign-in screenshot")
-        }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let scaleX = CGFloat(width) / app.frame.width
-        let scaleY = CGFloat(height) / app.frame.height
-        let interior = button.frame.insetBy(dx: 48, dy: 10)
-        var darkPixels = 0, lightPixels = 0
-        for y in Int(interior.minY * scaleY)..<Int(interior.maxY * scaleY) {
-            for x in Int(interior.minX * scaleX)..<Int(interior.maxX * scaleX) {
-                guard x >= 0, x < width, y >= 0, y < height else { continue }
-                let offset = (y * width + x) * 4
-                let value = (0.2126 * Double(pixels[offset]) + 0.7152 * Double(pixels[offset + 1])
-                             + 0.0722 * Double(pixels[offset + 2])) / 255
-                if value < 0.2 { darkPixels += 1 }
-                if value > 0.75 { lightPixels += 1 }
-            }
-        }
-        XCTAssertGreaterThan(darkPixels, 20, "Sign-in button must include readable dark/light contrast")
-        XCTAssertGreaterThan(lightPixels, 20, "Sign-in button must include readable dark/light contrast")
+        // Native disabled controls use system-dimmed colors. Enabled sign-in ink
+        // and label contrast remain covered by the hosted appearance tests.
     }
 }

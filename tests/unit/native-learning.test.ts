@@ -587,7 +587,8 @@ describe("native learning with real PostgreSQL migrations", () => {
       await expect(legacy.exec("UPDATE bot_learning_revisions SET kind = 'unknown'")).rejects.toThrow();
       await expect(legacy.exec("UPDATE bot_learning_revisions SET kind = NULL")).rejects.toThrow();
     } finally { await legacy.close(); }
-  });
+    // This test independently migrates a second database; suite setup has a separate timeout.
+  }, 30_000);
 
   it("saves nothing when a routine repeat has no new learning", async () => {
     await reviewNativeRun("run");

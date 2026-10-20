@@ -8,13 +8,15 @@ import { aiApps, bots, users } from "@/db/schema";
 import { BotAvatar } from "@/components/bots/bot-avatar";
 import { BotDeleteButton } from "@/components/bots/bot-delete-button";
 import { OfficeBotInstaller } from "@/components/admin/office-bot-installer";
+import { ArchitectInstaller } from "@/components/admin/architect-installer";
 import { officeModels } from "@/lib/bots/office-store";
+import { architectModels } from "@/lib/bots/architect-store";
 import { DefaultCoordinatorBadge } from "@/components/bots/default-coordinator-badge";
 import { getSetting } from "@/lib/settings";
 
 export default async function AdminBotsPage() {
   const p = await requireAdminPage();
-  const [models, office] = await Promise.all([officeModels(), getSetting("officeBot")]);
+  const [models, office, architectChoices, architect] = await Promise.all([officeModels(), getSetting("officeBot"), architectModels(), getSetting("architectBot")]);
   const coordinator = await getSetting("coordinator");
   const rows = await db
     .select({
@@ -33,6 +35,7 @@ export default async function AdminBotsPage() {
     <div>
       <AdminHeader title="Bots" description="Every bot in the organization. Disable a bot to stop chats and routines immediately." />
       <OfficeBotInstaller models={models.map(({ id, name }) => ({ id, name }))} botId={office.botId} />
+      <ArchitectInstaller models={architectChoices.map(({ id, name }) => ({ id, name }))} botId={architect.botId} />
       <Table head={["Bot", "Owner", "Model / agent backend", "Visibility", "Tools", "Routines", ""]}>
         {rows.map(({ bot, owner, app, tools, routines }) => (
           <tr key={bot.id}>

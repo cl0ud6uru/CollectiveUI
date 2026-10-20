@@ -22,7 +22,7 @@ vi.mock('@/lib/settings', async original => {
     return policy;
   } };
 });
-vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardFetch: () => vi.fn(), dashboardAddress: async () => ({ address: '127.0.0.1', family: 4 }) }));
+vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardFetch: () => vi.fn(), privateHttpTransportTrusted: () => true, dashboardAddress: async () => ({ address: '127.0.0.1', family: 4 }) }));
 vi.mock('@/lib/remote-hermes/client', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/client')>();
   return { ...actual, DashboardClient: class { status = async () => ({ version: 'fixture' }); profiles = async () => [{ name: 'default' }]; } };

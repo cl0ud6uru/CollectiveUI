@@ -49,6 +49,46 @@ final class ChatRecoveryTests: XCTestCase {
         XCTAssertEqual(fixture.postCount, 1)
     }
 
+    func testReopeningEstablishedNewChatRouteLoadsTranscriptInsteadOfCreatingNewTurn() async {
+        let model = chat()
+        model.composerText = "Original request"
+        model.send()
+        await waitUntil { !model.isStreaming && !model.needsMessageStatusCheck }
+        XCTAssertTrue(model.conversationState.isEstablished)
+        model.deactivate()
+        let reopened = chat() // A single window may reopen with its original .newChat route.
+        XCTAssertFalse(reopened.isNew)
+        XCTAssertNil(reopened.newChatTarget)
+        XCTAssertNil(reopened.target, "Wait for the authoritative snapshot before enabling send")
+        let snapshots = fixture.snapshotCount
+        await reopened.activate()
+        XCTAssertGreaterThan(fixture.snapshotCount, snapshots)
+        XCTAssertEqual(reopened.messages.last?.plainText, "Recovered reply")
+        XCTAssertEqual(fixture.postCount, 1)
+    }
+
+    func testLateCommandCannotNavigateReplacementSession() async {
+        let gate = FixtureDeliveryGate()
+        let requested = expectation(description: "Command requested")
+        FixtureProtocol.handler = { request in
+            if request.url?.path == "/api/chat/commands", request.httpMethod == "POST" {
+                requested.fulfill()
+                return .init(data: Data(#"{"title":"New chat","lines":[],"navigateTo":"/c/old-destination","conversationId":"chat-a"}"#.utf8), deliveryGate: gate)
+            }
+            return .init()
+        }
+        let model = chat()
+        model.composerText = "/new"
+        model.send()
+        await fulfillment(of: [requested], timeout: 3)
+        app.completeSignIn(token: "replacement")
+        app.openConversation("replacement-chat")
+        gate.release()
+        await waitUntil { !model.isExecutingCommand }
+        XCTAssertEqual(app.selection, .conversation("replacement-chat"))
+        XCTAssertNil(model.commandResult)
+    }
+
     func testRegenerateCannotBypassUnconfirmedMessageStatus() async {
         fixture.partialFailure = true
         fixture.snapshotStatus = 503
@@ -89,6 +129,40 @@ final class ChatRecoveryTests: XCTestCase {
         XCTAssertFalse(model.needsMessageStatusCheck)
         XCTAssertEqual(model.inlineError, "Hermes run failed")
         XCTAssertEqual(model.avatarActivity, .attention)
+    }
+
+    func testRefreshingFailureKeepsDraftAndNeverRepeatsTheRequest() async {
+        fixture.serverFailure = true
+        let model = chat()
+        model.composerText = "Original request"
+        model.send()
+        await waitUntil { !model.isStreaming && !model.needsMessageStatusCheck }
+        model.composerText = "Next draft\nkept separately"
+        for _ in 0..<3 { await model.refreshConversation() }
+        XCTAssertEqual(fixture.postCount, 1)
+        XCTAssertEqual(model.composerText, "Next draft\nkept separately")
+        XCTAssertEqual(model.inlineError, "Hermes run failed", "A healthy read must not disguise a failed server reply")
+        model.dismissReplyError()
+        XCTAssertNil(model.inlineError)
+        XCTAssertTrue(model.canSend)
+    }
+
+    func testInterruptedRefreshReportsFailureThenRecoversWithoutLosingTranscript() async {
+        let model = chat()
+        model.composerText = "Original request"
+        model.send()
+        await waitUntil { !model.isStreaming && !model.needsMessageStatusCheck }
+        let messages = model.messages
+        model.composerText = "Kept draft"
+        fixture.snapshotStatus = 503
+        await model.refreshConversation()
+        XCTAssertNotNil(model.inlineError)
+        XCTAssertEqual(model.messages, messages)
+        fixture.snapshotStatus = 200
+        await model.refreshConversation()
+        XCTAssertNil(model.inlineError)
+        XCTAssertEqual(model.composerText, "Kept draft")
+        XCTAssertEqual(fixture.postCount, 1)
     }
 
     func testMissingSnapshotRetainsRequestAndRetryUsesExactIdentity() async {

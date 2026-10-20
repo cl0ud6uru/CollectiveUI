@@ -1,6 +1,10 @@
 import AuthenticationServices
 import Foundation
+#if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 enum WebAuthenticatorError: LocalizedError {
     case couldNotStart
@@ -46,21 +50,37 @@ final class ResumeGate: @unchecked Sendable {
     }
 }
 
+@MainActor
+protocol WebAuthenticating {
+    func authenticate(url: URL, callbackScheme: String) async throws -> URL
+    func cancel()
+}
+
 /// Runs the server's web sign-in page in ASWebAuthenticationSession and returns the callback URL.
 @MainActor
-final class WebAuthenticator {
+final class WebAuthenticator: WebAuthenticating {
+    private var requestID = UUID()
     private var session: ASWebAuthenticationSession?
+    private var cancelContinuation: (() -> Void)?
     private var anchorProvider: PresentationAnchorProvider?
 
     func authenticate(url: URL, callbackScheme: String) async throws -> URL {
+        let requestID = UUID()
+        self.requestID = requestID
         let provider = PresentationAnchorProvider(anchor: WebAuthenticator.currentAnchor())
         anchorProvider = provider
         defer {
-            session = nil
-            anchorProvider = nil
+            if self.requestID == requestID {
+                cancelContinuation = nil
+                session = nil
+                anchorProvider = nil
+            }
         }
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
             let gate = ResumeGate()
+            cancelContinuation = {
+                if gate.claim() { continuation.resume(throwing: CancellationError()) }
+            }
             let authSession = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { callbackURL, error in
                 guard gate.claim() else { return }
                 if let error {
@@ -82,6 +102,19 @@ final class WebAuthenticator {
         }
     }
 
+    func cancel() {
+        session?.cancel()
+        cancelContinuation?()
+    }
+
+    static var deviceName: String {
+        #if os(iOS)
+        UIDevice.current.name
+        #else
+        Host.current().localizedName ?? "CollectiveUI for Mac"
+        #endif
+    }
+
     static func isUserCancellation(_ error: Error) -> Bool {
         if let authError = error as? ASWebAuthenticationSessionError, authError.code == .canceledLogin {
             return true
@@ -92,6 +125,7 @@ final class WebAuthenticator {
     }
 
     static func currentAnchor() -> ASPresentationAnchor {
+        #if os(iOS)
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let windows = scenes.flatMap { $0.windows }
         if let keyWindow = windows.first(where: { $0.isKeyWindow }) {
@@ -101,5 +135,8 @@ final class WebAuthenticator {
             return anyWindow
         }
         return ASPresentationAnchor()
+        #else
+        return NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow ?? ASPresentationAnchor()
+        #endif
     }
 }
