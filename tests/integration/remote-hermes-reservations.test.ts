@@ -22,7 +22,7 @@ vi.mock('@/lib/remote-hermes/socket', async original => {
     close() {}
   } };
 });
-import { remoteHermesConnections, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
+import { remoteHermesConnections, remoteHermesHubOwners, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { newId } from '@/lib/ids';
 import { assertDisposableHermesDatabase } from '../fixtures/remote-hermes-disposable-database';
 let db: typeof import('@/db').db, pool: typeof import('@/db').pool;
@@ -151,6 +151,8 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
         return expect(existsSync(dispatched)).toBe(true);
       }, { timeout: 20000 });
       expect(await row()).toMatchObject({ queueRequestId: id1, queueStatus: 'admitting' });
+      const [originalOwner] = await db.select().from(remoteHermesHubOwners).where(eq(remoteHermesHubOwners.connectionId, connection));
+      expect(originalOwner).toBeDefined();
       const firstExitPromise = waitForExit(first, 5000);
       first.kill('SIGKILL');
       const firstExit = await firstExitPromise;
@@ -162,6 +164,8 @@ describe.skipIf(!enabled)('native Hermes reservations with real PostgreSQL locks
       second.stdout?.on('data', capture); second.stderr?.on('data', capture);
       const secondExit = await waitForExit(second, 30000);
       expect(secondExit.code, output).toBe(0);
+      const [retainedOwner] = await db.select().from(remoteHermesHubOwners).where(eq(remoteHermesHubOwners.connectionId, connection));
+      expect(retainedOwner).toEqual(originalOwner);
       expect(await row()).toMatchObject({ queueRequestId: id1, queueStatus: 'admitting' });
       const receipts = await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, session));
       expect(receipts).toHaveLength(1);

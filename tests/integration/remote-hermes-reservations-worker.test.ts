@@ -9,6 +9,7 @@ vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
   return { ...actual, DashboardSocket: class {
     state = 'connected';
+    connectionEpoch = 1;
     call = rpc.call;
     async callWithEpoch(...args: unknown[]) { return { result: await rpc.call(...args), epoch: 1 }; }
     close() {}
@@ -68,6 +69,13 @@ describe.skipIf(!enabled)('portal queue receipt subprocess fixture', () => {
       .rejects.toMatchObject({ status: 409 });
     await expect(nativeControl(owner, connection, session, 'queue', { requestId: request, text: 'Synthetic queue request' }))
       .resolves.toEqual({ accepted: true, duplicate: true });
-    expect(rpc.call.mock.calls.filter(([method]) => method === 'prompt.submit')).toHaveLength(0);
+    await expect(nativeControl(owner, connection, session, 'queue', { requestId: request, text: 'Changed queue request' }))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(nativeControl('another-owner', connection, session, 'queue', { requestId: request, text: 'Synthetic queue request' }))
+      .rejects.toMatchObject({ status: 404 });
+    await expect(nativeControl(owner, 'another-connection', session, 'queue', { requestId: request, text: 'Synthetic queue request' }))
+      .rejects.toMatchObject({ status: 404 });
+    // Reading a receipt cannot resume native work or acquire a new native owner.
+    expect(rpc.call).not.toHaveBeenCalled();
   });
 });
