@@ -610,12 +610,14 @@ export class NativeHub {
     if (!runtimeId) return;
     let refreshAfter = false;
     await db.transaction(async tx => {
-    const [durable] = await tx.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.id, cached.row.id),
-      eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, cached.row.profile),
-      eq(remoteHermesSessions.runtimeId, runtimeId), eq(remoteHermesSessions.ownershipGeneration, cached.row.ownershipGeneration))).for('share');
+    // Match dispatch/recovery's owner -> session order. Events may update the
+    // session, so take that lock once rather than upgrading concurrent shares.
     const [lease] = await tx.select().from(remoteHermesHubOwners).where(and(eq(remoteHermesHubOwners.connectionId, this.connectionId),
       eq(remoteHermesHubOwners.ownerInstanceId, cached.ownerInstanceId), eq(remoteHermesHubOwners.generation, cached.leaseGeneration),
       eq(remoteHermesHubOwners.socketEpoch, cached.ownerSocketEpoch), sql`${remoteHermesHubOwners.leaseExpiresAt} > now()`)).for('share');
+    const [durable] = await tx.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.id, cached.row.id),
+      eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, cached.row.profile),
+      eq(remoteHermesSessions.runtimeId, runtimeId), eq(remoteHermesSessions.ownershipGeneration, cached.row.ownershipGeneration))).for('update');
     if (!durable || !lease || this.sessions.get(cached.row.id) !== cached || cached.socketEpoch !== this.socket.connectionEpoch) return;
     if (await remoteRecoveryFenceActive(tx, cached.row.id)) { cached.view.uncertain = true; this.changes.emit(cached.row.id); return; }
     cached.eventRevision++;

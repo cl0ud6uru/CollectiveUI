@@ -85,6 +85,15 @@ jobs:
           DATABASE_URL: postgres://postgres:synthetic-fixture-only@127.0.0.1:5432/hermes_fixture
           ENCRYPTION_KEY: synthetic-conformance-only
         run: npm run db:migrate
+      - name: Create isolated native ownership locking database
+        env:
+          PGPASSWORD: synthetic-fixture-only
+        run: psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE collective_remote_lifecycle_test'
+      - name: Require PostgreSQL owner fencing and dispatch lock ordering
+        env:
+          REMOTE_HERMES_LOCK_TEST_URL: postgres://postgres:synthetic-fixture-only@127.0.0.1:5432/collective_remote_lifecycle_test
+          ENCRYPTION_KEY: synthetic-conformance-only
+        run: npx vitest run --project unit tests/unit/remote-hermes-dispatch-locks.test.ts --maxWorkers=1
       - name: Require actual native dashboard conformance without inference or grants
         env:
           HERMES_SOURCE: ${{ github.workspace }}/.remote-hermes-dashboard-source
