@@ -144,6 +144,12 @@ run('reuses a caller transaction in lock order and releases its session/identity
 }, 15_000);
 run('confirmed recovery blocks resume and profile-wide full promotion before any native session send', async () => {
   const { hub, row, received } = await fixture();
+  // The initial capability handshake already acquires a portal lease. Recovery
+  // must preserve that lease and send nothing further, not erase ownership.
+  const owners = await f.db.select().from(remoteHermesHubOwners);
+  expect(owners).toHaveLength(1);
+  expect(owners[0]).toMatchObject({ ownerInstanceId: hub.instanceId, nativeGeneration: null });
+  const methods = [...received];
   await f.db.insert(remoteHermesRecoveries).values({ id: '5ac27952-e0b5-4bde-9d16-37165d90fce9', ownerId: 'owner',
     connectionId: row.connectionId, sessionId: row.id, binding: { ownership: { protocol: 'collective.portal-hub-ownership.v1', ownerId: 'owner',
       connectionId: row.connectionId, instanceId: hub.instanceId, leaseGeneration: 1, sessionId: row.id, profile: row.profile, storedId: row.storedId,
@@ -152,6 +158,6 @@ run('confirmed recovery blocks resume and profile-wide full promotion before any
     state: 'pending', expiresAt: new Date(Date.now() + 60_000) });
   await expect(hub.socket.call('session.resume', { session_id: row.storedId, profile: row.profile })).rejects.toThrow('recovery');
   await expect(hub.socket.call('session.create', { profile: row.profile })).rejects.toThrow('recovery');
-  expect(received.filter(method => method === 'session.resume' || method === 'session.create')).toEqual([]);
-  expect(await f.db.select().from(remoteHermesHubOwners)).toEqual([]);
+  expect(received).toEqual(methods);
+  expect(await f.db.select().from(remoteHermesHubOwners)).toEqual(owners);
 }, 15_000);
