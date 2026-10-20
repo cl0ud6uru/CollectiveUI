@@ -124,8 +124,10 @@ jobs:
           HERMES_DASHBOARD_PYTHON: python
           DATABASE_URL: postgres://postgres:synthetic-fixture-only@127.0.0.1:5432/hermes_fixture
           ENCRYPTION_KEY: synthetic-conformance-only
+          DATABASE_POOL_MAX: '1'
+          REMOTE_HERMES_OWNER_CONFORMANCE: '1'
           REMOTE_HERMES_PORTAL_RECOVERY_CONFORMANCE: '1'
-        run: npx vitest run --project integration tests/integration/remote-hermes-portal-recovery.test.ts --maxWorkers=1
+        run: npx vitest run --project integration tests/integration/remote-hermes-owner-conformance.test.ts tests/integration/remote-hermes-portal-recovery.test.ts --maxWorkers=1
 
   checks:
     name: Typecheck, lint and unit tests

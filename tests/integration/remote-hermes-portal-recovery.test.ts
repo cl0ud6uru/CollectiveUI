@@ -5,6 +5,7 @@ import { remoteHermesConnections, remoteHermesHubOwners, remoteHermesSessions, r
 import { remoteHermesRecoveries } from '@/db/remote-hermes-recovery-schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
+import { HttpError } from '@/lib/authz';
 import type { DashboardSecrets } from '@/lib/remote-hermes/client';
 import { remoteConnectionAAD } from '@/lib/remote-hermes/secrets';
 import { startPinnedDashboard } from '../fixtures/remote-hermes-dashboard';
@@ -21,6 +22,7 @@ let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
 let openNativeSession: typeof import('@/lib/remote-hermes/sessions').openNativeSession;
 let nativeHistory: typeof import('@/lib/remote-hermes/sessions').nativeHistory;
 let submitNativePrompt: typeof import('@/lib/remote-hermes/sessions').submitNativePrompt;
+let nativeControl: typeof import('@/lib/remote-hermes/sessions').nativeControl;
 let nativeRecovery: typeof import('@/lib/remote-hermes/recovery').nativeRecovery;
 let fixture: Awaited<ReturnType<typeof startPinnedDashboard>>, secrets: DashboardSecrets;
 const row = async (id: string) => (await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, id)))[0];
@@ -35,7 +37,7 @@ describe.skipIf(!enabled)('exact-pin composed ownership/drain adapters and produ
     ({ DashboardClient } = await import('@/lib/remote-hermes/client'));
     ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
     ({ nativeHub } = await import('@/lib/remote-hermes/hub'));
-    ({ openNativeSession, nativeHistory, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
+    ({ openNativeSession, nativeHistory, submitNativePrompt, nativeControl } = await import('@/lib/remote-hermes/sessions'));
     ({ nativeRecovery } = await import('@/lib/remote-hermes/recovery'));
   });
   beforeEach(async () => {
@@ -174,8 +176,55 @@ describe.skipIf(!enabled)('exact-pin composed ownership/drain adapters and produ
     expect((await nativeHistory(owner, connection, session.id, 0)).messages.some(message => message.text.includes(text))).toBe(true);
     expect((await metrics()).external_attempts).toBe(0);
   }, 45000);
+  it.each([false, true])('checks pending recovery after its original full native fence advanced on the same socket (lost promotion reply: %s)', async lostPromotionReply => {
+    const session = await openNativeSession(owner, connection, 'default'), hub = nativeHub(owner, connection);
+    await submitNativePrompt(owner, connection, session.id, randomUUID(), 'fixture-drain-hold');
+    await vi.waitFor(async () => {
+      expect((await metrics()).agent_turns).toBe(1);
+      expect((await hub.refresh(await row(session.id))).running).toBe(true);
+    }, { timeout: 10000 });
+    const epoch = hub.socket.connectionEpoch, requestId = randomUUID();
+    const call = hub.socket.call.bind(hub.socket);
+    const lostReply = vi.spyOn(hub.socket, 'call').mockImplementation(async (method, params, timeout) => {
+      const result = await call(method, params, timeout);
+      if (method === 'prompt.submit' && params && typeof params === 'object' && 'queued' in params && params.queued === true)
+        throw new HttpError(504, 'Synthetic lost queue acknowledgement');
+      return result;
+    });
+    try {
+      await expect(nativeControl(owner, connection, session.id, 'queue', { requestId, text: 'queued-must-not-replay' })).rejects.toMatchObject({ status: 504 });
+    } finally { lostReply.mockRestore(); }
+    expect(hub.socket.connectionEpoch).toBe(epoch);
+    expect(await row(session.id)).toMatchObject({ queueRequestId: requestId, queueStatus: 'uncertain' });
+    let intent = await nativeRecovery(owner, connection, { operation: 'prepare', sessionId: session.id });
+    const [prepared] = await db.select().from(remoteHermesRecoveries).where(eq(remoteHermesRecoveries.id, intent.intentId));
+    expect(prepared.binding.ownership.nativeFence).toMatchObject({ phase: 'full' });
+    intent = await nativeRecovery(owner, connection, { operation: 'confirm', sessionId: session.id, intentId: intent.intentId, confirmed: true });
+    expect(intent.state).toBe('pending');
+    const [pending] = await db.select().from(remoteHermesRecoveries).where(eq(remoteHermesRecoveries.id, intent.intentId));
+    expect(pending.claimedOwnership!.nativeFence!.nativeGeneration).toBe(prepared.binding.ownership.nativeFence!.nativeGeneration + 1);
+    expect((await fetch(f.base + '/api/__fixture/control', { method: 'POST', headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ release_recovery_worker: true }) })).ok).toBe(true);
+    const complete = hub.completeRecoveryOwnership.bind(hub);
+    const promotion = vi.spyOn(hub, 'completeRecoveryOwnership');
+    if (lostPromotionReply) promotion.mockImplementationOnce(async (...args) => {
+      await complete(...args);
+      throw new HttpError(504, 'Synthetic lost promotion result');
+    });
+    try {
+      await vi.waitFor(async () => {
+        intent = await nativeRecovery(owner, connection, { operation: 'check', sessionId: session.id, intentId: intent.intentId });
+        expect(intent.state).toBe('applied');
+      }, { timeout: 10000 });
+      if (lostPromotionReply) expect(promotion.mock.calls.length).toBeGreaterThan(1);
+    } finally { promotion.mockRestore(); }
+    expect(await row(session.id)).toMatchObject({ runtimeId: null, queueRequestId: null, queueStatus: null });
+    expect(await nativeControl(owner, connection, session.id, 'queue', { requestId, text: 'queued-must-not-replay' })).toEqual({ accepted: true, duplicate: true });
+    expect((await metrics()).agent_turns).toBe(1);
+    expect(hub.socket.connectionEpoch).toBe(epoch);
+  }, 45000);
   it('rejects unclaimed WebSocket and stdio dispatch/answers while the full owner alone resolves its native protected request', async () => {
     const session = await openNativeSession(owner, connection, 'default'), hub = nativeHub(owner, connection);
+    await openNativeSession(owner, connection, 'fixture-other');
     const auth = new DashboardClient(f.base, fetch, secrets);
     const unclaimed = new DashboardSocket(async () => ({ url: new URL(`${f.base.replace('http:', 'ws:')}/api/ws?ticket=${encodeURIComponent(await auth.websocketTicket())}`), options: {} }), () => {});
     try {

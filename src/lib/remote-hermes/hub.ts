@@ -80,9 +80,11 @@ export class NativeHub {
    * an envelope prevents transaction() from awaiting a remote acknowledgement. */
   private async dispatchBoundary<T>(method: string, params: RpcRecord, dispatch: () => T, tx?: Tx): Promise<{ value: T }> {
     const run = async (q: Tx) => {
-      const connection = method === 'collective.hub_owner.capabilities'
-        ? await this.assertIdentity(q, true)
-        : await this.lockBoundary(q);
+      // Authenticated, read-only negotiation must precede lease election. A new
+      // process cannot prove native takeover support until this handshake ends.
+      const discovery = method === 'client.capabilities' || method === 'collective.hub_owner.capabilities';
+      if (discovery) await q.select().from(settings).where(eq(settings.key, 'remoteHermes')).for('share');
+      const connection = discovery ? await this.assertIdentity(q, true) : await this.lockBoundary(q);
       if (method === 'collective.hub_owner.claim') await this.assertCurrentLease(q);
       if (method === 'session.resume') {
         const [session] = await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId),
@@ -144,10 +146,10 @@ export class NativeHub {
     const fence = this.nativeFences.get(ownership.profile);
     if (!session || session.connectionId !== this.connectionId || session.profile !== ownership.profile ||
         lease.ownerInstanceId !== ownership.instanceId || Number(lease.generation) !== ownership.leaseGeneration ||
-        Number(lease.socketEpoch) !== ownership.portalSocketEpoch || Number(lease.nativeGeneration) !== nativeFence.nativeGeneration ||
-        Number(lease.nativeSocketEpoch) !== nativeFence.socketEpoch || fence?.nativeGeneration !== nativeFence.nativeGeneration ||
+        Number(lease.socketEpoch) !== ownership.portalSocketEpoch || fence?.nativeGeneration !== nativeFence.nativeGeneration ||
         fence?.phase !== 'recovery' || fence.recoveryId !== intent.id || this.socket.connectionEpoch !== ownership.socketEpoch)
       throw new HttpError(409, 'The native recovery ownership changed. Read its receipt before continuing.');
+    await this.assertNativeOwnership(ownership);
     if (method === 'collective.recovery.status') return;
     if (method !== 'collective.recovery.cancel_and_drain') throw new HttpError(403, 'This native recovery operation is not supported.');
     const expectedReservations = [binding.data.admissionRequestId, binding.data.queueRequestId].filter((value): value is string => !!value).sort();
@@ -202,8 +204,8 @@ export class NativeHub {
     const runtime = typeof params.session_id === 'string' ? params.session_id : undefined;
     const q = tx ?? db;
     const [bound] = answerCached ? [answerCached.row] : stored || runtime ? await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile), stored ? eq(remoteHermesSessions.storedId, String(stored)) : or(eq(remoteHermesSessions.runtimeId, String(runtime)), eq(remoteHermesSessions.storedId, String(runtime))))).limit(1) : [];
-    const sessionScoped = !!bound || method === 'session.create';
-    if (!sessionScoped) return;
+    // Native ownership is profile-scoped even before a portal session exists:
+    // projects, schedules and plugins use the same execution fence as sessions.
     const profileSessions = bound ? [bound] : await q.select().from(remoteHermesSessions).where(and(eq(remoteHermesSessions.connectionId, this.connectionId), eq(remoteHermesSessions.profile, profile)));
     for (const session of profileSessions) if (await remoteRecoveryFenceActive(q, session.id))
       throw new HttpError(409, 'Native recovery is in progress for this profile. Ordinary session ownership cannot be promoted.');
@@ -375,7 +377,13 @@ export class NativeHub {
     let lease!: typeof remoteHermesHubOwners.$inferSelect;
     await db.transaction(async tx => {
       await this.lockBoundary(tx);
-      await this.assertCurrentOwnership(tx, snapshot);
+      // A prior attempt may have verified the full claim but lost its result
+      // before the recovery receipt was committed. Retain only that exact next
+      // generation and recovery tuple; never accept another claim as a retry.
+      const retained = this.nativeFences.get(snapshot.profile);
+      const promoted = retained?.phase === 'full' && retained.nativeGeneration === snapshot.nativeFence!.nativeGeneration + 1 &&
+        retained.recoveryId === recoveryId && retained.recoverySessionId === snapshot.runtimeId && retained.recoveryStoredSessionId === snapshot.storedId;
+      await this.assertCurrentOwnership(tx, promoted ? { ...snapshot, nativeFence: retained } : snapshot);
       lease = await this.assertCurrentLease(tx);
     });
     const nativeFence = await this.claimNativeFence(snapshot.profile, lease, 'full', {
@@ -395,10 +403,12 @@ export class NativeHub {
     if (Number(lease.generation) !== snapshot.leaseGeneration || Number(lease.socketEpoch) !== snapshot.portalSocketEpoch ||
         current?.connectionId !== snapshot.connectionId || current.profile !== snapshot.profile || current.storedId !== snapshot.storedId ||
         current.runtimeId !== snapshot.runtimeId || current.revision !== snapshot.sessionRevision || Number(current.ownershipGeneration) !== snapshot.ownershipGeneration ||
-        this.socket.connectionEpoch !== snapshot.socketEpoch ||
-        snapshot.nativeFence && (lease.nativeProtocol !== snapshot.nativeFence.protocol || Number(lease.nativeGeneration) !== snapshot.nativeFence.nativeGeneration ||
-          Number(lease.nativeSocketEpoch) !== snapshot.nativeFence.socketEpoch))
+        this.socket.connectionEpoch !== snapshot.socketEpoch)
       throw new HttpError(409, 'The native Hermes session changed. Confirm the operation again.');
+    // The lease elects this connection's process/socket; its last native claim
+    // columns cannot represent every profile. Validate the profile's exact
+    // verified claim, which native dispatch rechecks against its durable row.
+    if (snapshot.nativeFence) await this.assertNativeOwnership(snapshot);
     return current;
   }
   async assertNativeOwnership(snapshot: RemoteHubOwnershipSnapshot) {
@@ -406,7 +416,8 @@ export class NativeHub {
     if (!snapshot.nativeFence || snapshot.nativeFence.protocol !== NATIVE_HUB_OWNER_PROTOCOL || snapshot.nativeFence.generation !== snapshot.leaseGeneration ||
         snapshot.nativeFence.socketEpoch !== snapshot.portalSocketEpoch || !snapshot.nativeFence.nativeGeneration || current?.generation !== snapshot.leaseGeneration ||
         current.socketEpoch !== snapshot.portalSocketEpoch || current.nativeGeneration !== snapshot.nativeFence.nativeGeneration ||
-        current.phase !== snapshot.nativeFence.phase || current.recoveryId !== snapshot.nativeFence.recoveryId)
+        current.protocol !== snapshot.nativeFence.protocol || current.phase !== snapshot.nativeFence.phase || current.recoveryId !== snapshot.nativeFence.recoveryId ||
+        current.recoverySessionId !== snapshot.nativeFence.recoverySessionId || current.recoveryStoredSessionId !== snapshot.nativeFence.recoveryStoredSessionId)
       throw new HttpError(409, 'This Hermes runtime does not confirm a durable owner fence. Cross-instance recovery is unavailable.');
     return snapshot.nativeFence;
   }

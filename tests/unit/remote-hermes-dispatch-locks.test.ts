@@ -76,6 +76,7 @@ async function fixture() {
 }
 run.each(['dispatch', 'cached view'] as const)('PostgreSQL fences replacement during policy await before %s linearizes', async operation => {
   const { hub, row, input, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
   const entered = gate(); const resume = gate();
   f.pausePolicy = async () => { entered.release(); await resume.promise; };
   const pending = operation === 'dispatch' ? hub.socket.call('projects.list', { profile: 'default' }) : hub.view(row);
@@ -103,6 +104,7 @@ run.each(['dispatch', 'cached view'] as const)('PostgreSQL fences replacement du
 }, 15_000);
 run('PostgreSQL serializes policy revocation through send, then denies new work but allows active recovery', async () => {
   const { hub, row, baseUrl, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
   const entered = gate(); const resume = gate();
   f.pausePolicy = async () => { entered.release(); await resume.promise; };
   const dispatch = hub.socket.call('projects.list', { profile: 'default' }).catch(error => error);
@@ -128,6 +130,7 @@ run('PostgreSQL serializes policy revocation through send, then denies new work 
 }, 15_000);
 run('reuses a caller transaction in lock order and releases its session/identity locks before acknowledgement', async () => {
   const { hub, row, input, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
   const { reply } = await f.db.transaction(async tx => {
     await hub.lockBoundary(tx);
     await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
@@ -144,8 +147,9 @@ run('reuses a caller transaction in lock order and releases its session/identity
 }, 15_000);
 run('confirmed recovery blocks resume and profile-wide full promotion before any native session send', async () => {
   const { hub, row, received } = await fixture();
-  // The initial capability handshake already acquires a portal lease. Recovery
-  // must preserve that lease and send nothing further, not erase ownership.
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
+  // Ownership preparation acquires the portal lease; negotiation alone does not.
+  // Recovery must preserve that lease and send nothing further.
   const owners = await f.db.select().from(remoteHermesHubOwners);
   expect(owners).toHaveLength(1);
   expect(owners[0]).toMatchObject({ ownerInstanceId: hub.instanceId, nativeGeneration: null });
