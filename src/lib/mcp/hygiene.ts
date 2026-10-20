@@ -1,4 +1,5 @@
 import type { Tool } from "ai";
+import { withoutAppReference } from './apps-contract';
 
 /**
  * Characters that hide text from the people reviewing a tool while the model still reads it: Unicode tag
@@ -123,16 +124,16 @@ type ModelOutput = Awaited<ReturnType<NonNullable<Tool["toModelOutput"]>>>;
 
 /** What the model sees for a (capped) result: the same mapping as @ai-sdk/mcp's own tools. */
 export function mcpResultToModelOutput({ output }: { output: unknown }): ModelOutput {
-  const result = output as McpCallResult;
+  const result = withoutAppReference(output) as McpCallResult;
   if (!result || !Array.isArray(result.content)) return { type: "json", value: (result ?? null) as never };
   if (!result.content.length && result.structuredContent !== undefined) return { type: "json", value: result.structuredContent as never };
   return {
     type: "content",
-    value: result.content.map((part) => {
+    value: [...result.content.map((part) => {
       if (part.type === "text" && typeof part.text === "string") return { type: "text" as const, text: part.text };
       if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string")
         return { type: "file" as const, mediaType: part.mimeType, data: { type: "data" as const, data: part.data } };
       return { type: "text" as const, text: JSON.stringify(part) };
-    }),
+    }), ...(result.structuredContent !== undefined ? [{ type: 'text' as const, text: JSON.stringify(result.structuredContent) }] : [])],
   };
 }

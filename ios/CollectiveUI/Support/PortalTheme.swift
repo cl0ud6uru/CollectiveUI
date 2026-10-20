@@ -1,5 +1,9 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
 import UIKit
+#endif
 
 /// Native equivalents of src/app/globals.css. Color is reserved for bot identity and activity.
 enum PortalTheme {
@@ -17,14 +21,26 @@ enum PortalTheme {
     static let warning = adaptive("c2410c", "fbbf24")
     static let success = adaptive("2f7d5e", "4ade80")
     static let danger = adaptive("e02e2a", "f06a66")
+    /// A tool step is running. Same for every bot, so it never reads as a bot's own color.
+    static let hermes = adaptive("16a34a", "22c55e")
 
     static func adaptive(_ light: String, _ dark: String) -> Color {
+        #if os(macOS)
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let value = UInt32(isDark ? dark : light, radix: 16) ?? 0
+            return NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255,
+                           green: CGFloat((value >> 8) & 255) / 255,
+                           blue: CGFloat(value & 255) / 255, alpha: 1)
+        })
+        #else
         Color(uiColor: UIColor { traits in
             let value = UInt32(traits.userInterfaceStyle == .dark ? dark : light, radix: 16) ?? 0
             return UIColor(red: CGFloat((value >> 16) & 255) / 255,
                            green: CGFloat((value >> 8) & 255) / 255,
                            blue: CGFloat(value & 255) / 255, alpha: 1)
         })
+        #endif
     }
 
     /// Matches bubbleTint() on the website, including its contrast-adjusted colors.

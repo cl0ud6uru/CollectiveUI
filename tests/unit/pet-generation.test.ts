@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { PGlite } from "@electric-sql/pglite";
 import type { Principal } from "@/lib/auth/groups";
 
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, reviewHook: null as (() => Promise<void>) | null }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/db", async () => {
   const { PGlite } = await import("@electric-sql/pglite");
@@ -14,13 +14,21 @@ vi.mock("@/db", async () => {
   fixture.client = new PGlite();
   return { db: drizzle(fixture.client, { schema }), schema };
 });
+vi.mock("@/lib/pets/import", async original => {
+  const actual = await original<typeof import("@/lib/pets/import")>();
+  return { ...actual, validateV2Cells: async (...args: Parameters<typeof actual.validateV2Cells>) => {
+    const hook = fixture.reviewHook; fixture.reviewHook = null;
+    if (hook) await hook();
+    return actual.validateV2Cells(...args);
+  } };
+});
 
 import { db, schema } from "@/db";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { setSetting } from "@/lib/settings";
 import { generatePetImage } from "@/lib/llm/providers/openai";
 import { PET_ANIMATIONS } from "@/lib/pets/atlas";
-import { approvePetAppearance, consentPetBuild, createPetGenerationJob, generateAppearance, getPetGenerationJob, retryPetGenerationSlot, runPetGenerationSlot, savePetGenerationPreview } from "@/lib/pets/generation";
+import { approvePetAppearance, assignPetGenerationPreviewPrivately, consentPetBuild, createPetGenerationJob, generateAppearance, getPetGenerationJob, getPetGenerationMemberPageData, petGenerationImage, rebuildPetGenerationPreview, retryPetGenerationSlot, runPetGenerationSlot, savePetGenerationPreview } from "@/lib/pets/generation";
 
 let admin: Principal;
 const configure = async () => {
@@ -38,7 +46,7 @@ beforeAll(async () => {
   }
 }, 45000);
 beforeEach(async () => {
-  await fixture.client!.exec("TRUNCATE users, ai_apps, settings CASCADE");
+  await fixture.client!.exec("TRUNCATE users, groups, ai_apps, settings CASCADE");
   await db.insert(schema.users).values([
     { id: "admin", name: "Admin", upn: "admin@fixture.invalid", authSource: "ldap" },
     { id: "member", name: "Member", upn: "member@fixture.invalid", authSource: "ldap" },
@@ -51,6 +59,51 @@ describe("durable admin pet generation", () => {
   it("keeps generation unavailable when its default-off setting is disabled", async () => {
     await setSetting("petGeneration", { enabled: false, providerConnectionId: null, modelId: "gpt-image-2.5-sunburst", access: "selected", allowedGroupIds: [], allowedUpns: [] });
     await expect(createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("uses the configured selected-group grant with a fresh membership check before paid dispatch", async () => {
+    await db.insert(schema.groups).values({ id: "pet-builders", name: "Pet builders" });
+    await db.insert(schema.groupMembers).values({ groupId: "pet-builders", userId: "member" });
+    await setSetting("petGeneration", { enabled: true, providerConnectionId: "official-openai", modelId: "gpt-image-2.5-sunburst", access: "selected", allowedGroupIds: ["pet-builders"], allowedUpns: [] });
+    const member = (await loadPrincipal("member"))!;
+    const job = await createPetGenerationJob(member, { displayName: "Member pet", description: "A blue helper character." });
+    const page = await getPetGenerationMemberPageData(member);
+    expect(page).toMatchObject({ allowed: true, settings: { enabled: true, providerConnectionId: null }, jobs: [{ id: job.id }] });
+
+    const generator = vi.fn(async () => { throw new Error("must not dispatch after group removal"); }) as unknown as typeof generatePetImage;
+    const revokeGroup = async () => { await db.delete(schema.groupMembers).where(eq(schema.groupMembers.groupId, "pet-builders")); };
+    await expect(generateAppearance(member, job.id, true, undefined, generator, false, revokeGroup)).rejects.toMatchObject({ status: 403 });
+    expect(generator).not.toHaveBeenCalled();
+    expect((await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id)))[0])
+      .toMatchObject({ slotKey: "appearance", status: "failed", errorCode: "authorization_revoked" });
+    await expect(getPetGenerationJob(member, job.id)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("assigns a reviewed generated v2 preview into the member's private pet slot", async () => {
+    await db.insert(schema.groups).values({ id: "pet-builders", name: "Pet builders" });
+    await db.insert(schema.groupMembers).values({ groupId: "pet-builders", userId: "member" });
+    await setSetting("petGeneration", { enabled: true, providerConnectionId: "official-openai", modelId: "gpt-image-2.5-sunburst", access: "selected", allowedGroupIds: ["pet-builders"], allowedUpns: [] });
+    await db.insert(schema.bots).values([
+      { id: "member-helper", ownerId: "member", name: "Member helper" },
+      { id: "shared-helper", ownerId: "member", name: "Shared helper", visibility: "org" },
+    ]);
+    const member = (await loadPrincipal("member"))!;
+    const image = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
+    const job = await createPetGenerationJob(member, { displayName: "Private pet", description: "A blue helper character." });
+    const generator = vi.fn(async () => ({ image })) as unknown as typeof generatePetImage;
+    await generateAppearance(member, job.id, true, undefined, generator);
+    await approvePetAppearance(member, job.id);
+    await consentPetBuild(member, job.id, true);
+    for (const key of [...PET_ANIMATIONS.map(state => state.name), "directions"]) await runPetGenerationSlot(member, job.id, key, undefined, generator);
+    const reviewedPreview = await getPetGenerationJob(member, job.id);
+    await expect(assignPetGenerationPreviewPrivately(member, job.id, "member-helper", { visualReview: false, previewToken: reviewedPreview.previewToken })).rejects.toMatchObject({ status: 400 });
+    await expect(savePetGenerationPreview(member, job.id, { rights: "confirmed", visualReview: true, previewToken: reviewedPreview.previewToken })).rejects.toMatchObject({ status: 403 });
+    await expect(assignPetGenerationPreviewPrivately(member, job.id, "shared-helper", { visualReview: true, previewToken: reviewedPreview.previewToken })).rejects.toMatchObject({ status: 403 });
+    await expect(assignPetGenerationPreviewPrivately(member, job.id, "member-helper", { visualReview: true, previewToken: reviewedPreview.previewToken })).resolves.toMatchObject({ status: "assigned", botId: "member-helper" });
+    const [privatePet] = await db.select().from(schema.botPets).where(eq(schema.botPets.botId, "member-helper"));
+    expect(privatePet).toMatchObject({ userId: "member", mode: "personal", appearance: "custom", enabled: true, custom: { displayName: "Private pet", spriteVersionNumber: 2 } });
+    expect(privatePet.sprite).toEqual((await db.select().from(schema.petGenerationJobs).where(eq(schema.petGenerationJobs.id, job.id)))[0].preview);
+    expect(await db.select().from(schema.petCatalog)).toHaveLength(0);
   });
 
   it("requires staged consent, never replays a slot and validates a complete v2 preview before draft save", async () => {
@@ -73,11 +126,35 @@ describe("durable admin pet generation", () => {
     expect(receipt.slots).toHaveLength(11);
     expect(receipt.slots.every(slot => slot.status === "succeeded" && slot.inputTokens === 10 && slot.outputTokens === 20 && slot.costMicros === null)).toBe(true);
     expect(receipt.slots.every(slot => slot.consentVersion === 1 && slot.consentSummary.length > 20)).toBe(true);
-    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: false })).rejects.toMatchObject({ status: 400 });
-    await expect(savePetGenerationPreview(admin, job.id, { rights: "unconfirmed", visualReview: true })).rejects.toMatchObject({ status: 400 });
-    expect((await savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true })).status).toBe("draft");
-    expect(generator).toHaveBeenCalledTimes(11);
-    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true })).rejects.toMatchObject({ status: 409 });
+    await expect(retryPetGenerationSlot(admin, job.id, "idle", false)).rejects.toMatchObject({ status: 400 });
+    await expect(retryPetGenerationSlot(admin, job.id, "idle", true)).resolves.toEqual({ status: "queued", attempt: 2 });
+    expect((await getPetGenerationJob(admin, job.id)).hasPreview).toBe(false);
+    const replacement = (await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id)))
+      .find(slot => slot.slotKey === "idle" && slot.attempt === 2);
+    expect(replacement?.consentSummary).toContain("successful but unsatisfactory state");
+    expect((await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id)))
+      .find(slot => slot.slotKey === "idle" && slot.attempt === 1)?.status).toBe("succeeded");
+    await runPetGenerationSlot(admin, job.id, "idle", undefined, generator);
+    expect((await getPetGenerationJob(admin, job.id)).hasPreview).toBe(true);
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: false, previewToken: null })).rejects.toMatchObject({ status: 400 });
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "unconfirmed", visualReview: true, previewToken: null })).rejects.toMatchObject({ status: 400 });
+    const reviewedPreview = await getPetGenerationJob(admin, job.id);
+    expect((await savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true, previewToken: reviewedPreview.previewToken })).status).toBe("draft");
+    expect(generator).toHaveBeenCalledTimes(12);
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true, previewToken: reviewedPreview.previewToken })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("accepts a reference-image-only appearance and rejects drafts with neither input", async () => {
+    const reference = await sharp({ create: { width: 64, height: 64, channels: 4, background: { r: 60, g: 120, b: 200, alpha: 1 } } }).png().toBuffer();
+    await expect(createPetGenerationJob(admin, { displayName: "Missing brief", description: "" })).rejects.toMatchObject({ status: 400 });
+    const job = await createPetGenerationJob(admin, { displayName: "Reference pet", description: "", reference });
+    const generator = vi.fn(async (input: { prompt: string; reference?: Buffer }) => ({
+      image: await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 30, g: 80, b: 150, alpha: 1 } } }).png().toBuffer(),
+      prompt: input.prompt, reference: input.reference,
+    }));
+    await generateAppearance(admin, job.id, true, undefined, generator as unknown as typeof generatePetImage);
+    expect(generator.mock.calls[0]?.[0].prompt).toContain("supplied reference image");
+    expect(Buffer.from(generator.mock.calls[0]?.[0].reference ?? [])).toEqual(reference);
   });
 
   it("does not dispatch appearance generation after admin access is revoked following the durable claim", async () => {
@@ -145,6 +222,88 @@ describe("durable admin pet generation", () => {
     await retryPetGenerationSlot(admin, job.id, "idle", true);
     await runPetGenerationSlot(admin, job.id, "idle", undefined, vi.fn(async () => ({ image: generatedImage })) as unknown as typeof generatePetImage);
     expect((await getPetGenerationJob(admin, job.id)).hasPreview).toBe(true);
+  });
+
+  it("recovers a failed nonbillable preview assembly from successful saved slot receipts", async () => {
+    const generatedImage = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
+    const job = await createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." });
+    const generator = vi.fn(async () => ({ image: generatedImage })) as unknown as typeof generatePetImage;
+    await generateAppearance(admin, job.id, true, undefined, generator);
+    await approvePetAppearance(admin, job.id);
+    await consentPetBuild(admin, job.id, true);
+    for (const key of [...PET_ANIMATIONS.map(state => state.name), "directions"]) await runPetGenerationSlot(admin, job.id, key, undefined, generator);
+    const idle = (await db.select().from(schema.petGenerationSlots).where(eq(schema.petGenerationSlots.jobId, job.id))).find(slot => slot.slotKey === "idle")!;
+    await db.update(schema.petGenerationSlots).set({ image: Buffer.from("damaged saved image") }).where(eq(schema.petGenerationSlots.id, idle.id));
+    await expect(rebuildPetGenerationPreview(admin, job.id)).rejects.toMatchObject({ status: 500 });
+    expect(await getPetGenerationJob(admin, job.id)).toMatchObject({ hasPreview: false, previewErrorCode: "assembly_failed" });
+    expect(generator).toHaveBeenCalledTimes(11);
+    await db.update(schema.petGenerationSlots).set({ image: generatedImage }).where(eq(schema.petGenerationSlots.id, idle.id));
+    await expect(rebuildPetGenerationPreview(admin, job.id)).resolves.toMatchObject({ hasPreview: true, previewErrorCode: null });
+    expect(generator).toHaveBeenCalledTimes(11);
+  });
+
+  it("does not commit or save a preview assembled from slot receipts replaced during assembly", async () => {
+    const generatedImage = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
+    const job = await createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." });
+    const generator = vi.fn(async () => ({ image: generatedImage })) as unknown as typeof generatePetImage;
+    await generateAppearance(admin, job.id, true, undefined, generator);
+    await approvePetAppearance(admin, job.id);
+    await consentPetBuild(admin, job.id, true);
+    for (const key of [...PET_ANIMATIONS.map(state => state.name), "directions"]) await runPetGenerationSlot(admin, job.id, key, undefined, generator);
+    await db.update(schema.petGenerationJobs).set({ preview: null }).where(eq(schema.petGenerationJobs.id, job.id));
+
+    await expect(rebuildPetGenerationPreview(admin, job.id, async () => {
+      await retryPetGenerationSlot(admin, job.id, "idle", true);
+    })).resolves.toMatchObject({ hasPreview: false });
+    expect(await getPetGenerationJob(admin, job.id)).toMatchObject({ hasPreview: false, previewErrorCode: null });
+    expect((await getPetGenerationJob(admin, job.id)).slots.find(slot => slot.slotKey === "idle" && slot.isLatest))
+      .toMatchObject({ attempt: 2, status: "queued" });
+    await expect(savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true, previewToken: null })).rejects.toMatchObject({ status: 400 });
+    expect((await db.select().from(schema.petCatalog))).toHaveLength(0);
+  });
+
+  it("rejects paid slot replacement after a catalog draft exists", async () => {
+    const generatedImage = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
+    const job = await createPetGenerationJob(admin, { displayName: "Fixture pet", description: "A blue helper character." });
+    const generator = vi.fn(async () => ({ image: generatedImage })) as unknown as typeof generatePetImage;
+    await generateAppearance(admin, job.id, true, undefined, generator);
+    await approvePetAppearance(admin, job.id);
+    await consentPetBuild(admin, job.id, true);
+    for (const key of [...PET_ANIMATIONS.map(state => state.name), "directions"]) await runPetGenerationSlot(admin, job.id, key, undefined, generator);
+    const reviewedPreview = await getPetGenerationJob(admin, job.id);
+    await savePetGenerationPreview(admin, job.id, { rights: "confirmed", visualReview: true, previewToken: reviewedPreview.previewToken });
+    await expect(retryPetGenerationSlot(admin, job.id, "idle", true)).rejects.toMatchObject({ status: 409 });
+    expect((await getPetGenerationJob(admin, job.id)).hasPreview).toBe(true);
+    expect((await getPetGenerationJob(admin, job.id)).slots.filter(slot => slot.slotKey === "idle")).toHaveLength(1);
+  });
+
+  it("rejects catalog save when replacement artwork lands after the user reviewed the prior preview", async () => {
+    const reviewedImage = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 33, g: 128, b: 200, alpha: 1 } } }).png().toBuffer();
+    const replacementImage = await sharp({ create: { width: 1024, height: 1024, channels: 4, background: { r: 200, g: 33, b: 128, alpha: 1 } } }).png().toBuffer();
+    const job = await createPetGenerationJob(admin, { displayName: "Review race", description: "Synthetic artwork fixture." });
+    const generator = vi.fn(async () => ({ image: reviewedImage })) as unknown as typeof generatePetImage;
+    await generateAppearance(admin, job.id, true, undefined, generator);
+    await approvePetAppearance(admin, job.id);
+    await consentPetBuild(admin, job.id, true);
+    for (const key of [...PET_ANIMATIONS.map(state => state.name), "directions"]) await runPetGenerationSlot(admin, job.id, key, undefined, generator);
+    const reviewedPreview = await getPetGenerationJob(admin, job.id);
+    expect(reviewedPreview.previewToken).toEqual(expect.any(String));
+    await expect(petGenerationImage(admin, job.id, "preview", reviewedPreview.previewToken)).resolves.toBeTruthy();
+
+    fixture.reviewHook = async () => {
+      await retryPetGenerationSlot(admin, job.id, "idle", true);
+      const replacementGenerator = vi.fn(async () => ({ image: replacementImage })) as unknown as typeof generatePetImage;
+      await runPetGenerationSlot(admin, job.id, "idle", undefined, replacementGenerator);
+    };
+    await expect(savePetGenerationPreview(admin, job.id, {
+      rights: "confirmed", visualReview: true, previewToken: reviewedPreview.previewToken,
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(schema.petCatalog)).toHaveLength(0);
+    const currentPreview = await getPetGenerationJob(admin, job.id);
+    expect(currentPreview.hasPreview).toBe(true);
+    expect(currentPreview.previewToken).not.toBe(reviewedPreview.previewToken);
+    await expect(petGenerationImage(admin, job.id, "preview", reviewedPreview.previewToken)).rejects.toMatchObject({ status: 409 });
+    await expect(petGenerationImage(admin, job.id, "preview", currentPreview.previewToken)).resolves.toBeTruthy();
   });
 
   it("marks stale running receipts uncertain after a simulated process restart without replaying them", async () => {

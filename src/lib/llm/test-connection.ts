@@ -17,6 +17,7 @@ export type ConnectionTestInput = {
   secret: AppSecret | undefined;
   model?: string;
   fetch?: typeof fetch;
+  signal?: AbortSignal;
 };
 
 export type ConnectionTestResult = { ok: true; models: string[]; note?: string } | { ok: false; error: string };
@@ -27,8 +28,9 @@ class ListError extends Error {
   }
 }
 
-async function getJson(url: string, headers: Record<string, string>, f: typeof fetch): Promise<unknown> {
-  const res = await f(url, { headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
+async function getJson(url: string, headers: Record<string, string>, f: typeof fetch, signal?: AbortSignal): Promise<unknown> {
+  const timeout = AbortSignal.timeout(10_000);
+  const res = await f(url, { headers, redirect: "error", signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (!res.ok) throw new ListError(res.status);
   return res.json();
 }
@@ -40,17 +42,17 @@ async function listModels(i: ConnectionTestInput, f: typeof fetch): Promise<stri
   const key = apiKey(i.secret);
   switch (i.kind) {
     case "openai-compatible":
-      return ids(await getJson(`${(i.baseUrl ?? "").replace(/\/+$/, "")}/models`, key ? { Authorization: `Bearer ${key}` } : {}, f));
+      return ids(await getJson(`${(i.baseUrl ?? "").replace(/\/+$/, "")}/models`, key ? { Authorization: `Bearer ${key}` } : {}, f, i.signal));
     case "openai": {
       const cfg = i.config as ProviderConfigMap["openai"];
       const headers: Record<string, string> = { Authorization: `Bearer ${key}` };
       if (cfg.organization) headers["OpenAI-Organization"] = cfg.organization;
       if (cfg.project) headers["OpenAI-Project"] = cfg.project;
-      return ids(await getJson(`${i.baseUrl ?? OPENAI_DEFAULT_BASE_URL}/models`, headers, f));
+      return ids(await getJson(`${i.baseUrl ?? OPENAI_DEFAULT_BASE_URL}/models`, headers, f, i.signal));
     }
     case "azure":
       // Lists the resource's models, not its deployments; the probe below checks the deployment.
-      return ids(await getJson(`${i.baseUrl}/models`, { "api-key": key ?? "" }, f));
+      return ids(await getJson(`${i.baseUrl}/models`, { "api-key": key ?? "" }, f, i.signal));
     case "anthropic": {
       const out: string[] = [];
       let after: string | undefined;
@@ -58,7 +60,7 @@ async function listModels(i: ConnectionTestInput, f: typeof fetch): Promise<stri
         const qs = new URLSearchParams({ limit: "1000", ...(after ? { after_id: after } : {}) });
         let body: { data?: { id?: string }[]; has_more?: boolean; last_id?: string };
         try {
-          body = (await getJson(`${i.baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL}/models?${qs}`, { "x-api-key": key ?? "", "anthropic-version": "2023-06-01" }, f)) as typeof body;
+          body = (await getJson(`${i.baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL}/models?${qs}`, { "x-api-key": key ?? "", "anthropic-version": "2023-06-01" }, f, i.signal)) as typeof body;
         } catch (err) {
           // Claude on Microsoft Foundry has no Models API: fall back to a probe.
           if (err instanceof ListError && (err.status === 404 || err.status === 405)) return null;
@@ -89,7 +91,7 @@ async function probe(i: ConnectionTestInput): Promise<void> {
     model: wrapLanguageModel({ model: instance.chat(i.model!), middleware: defaultsMiddleware(i.kind, i.config, i.model!, "probe") }),
     prompt: "Reply with OK.",
     maxRetries: 0,
-    abortSignal: AbortSignal.timeout(20_000),
+    abortSignal: i.signal ? AbortSignal.any([i.signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
   });
 }
 
@@ -98,12 +100,13 @@ async function probe(i: ConnectionTestInput): Promise<void> {
  * with the configured model. Test calls are not recorded in the usage ledger.
  */
 export async function testConnection(i: ConnectionTestInput): Promise<ConnectionTestResult> {
+  i.signal?.throwIfAborted();
   const f = i.fetch ?? globalThis.fetch;
   if (i.kind === "hermes") return testHermes(i);
   try {
     if (i.kind === "openrouter" || (i.kind === "openai-compatible" && isOpenRouterBaseUrl(i.baseUrl))) {
       // /models is public: it cannot prove that a credential works. Never generate text for this check.
-      await getJson(`${OPENROUTER_BASE_URL}/key`, { Authorization: `Bearer ${apiKey(i.secret) ?? ""}` }, f);
+      await getJson(`${OPENROUTER_BASE_URL}/key`, { Authorization: `Bearer ${apiKey(i.secret) ?? ""}` }, f, i.signal);
       return { ok: true, models: [], note: "OpenRouter credential verified. Model access and generation have not been tested." };
     }
     const models = CATALOG[i.kind].test === "list" ? await listModels(i, f) : null;

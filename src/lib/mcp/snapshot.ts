@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { MCPClient } from "@ai-sdk/mcp";
 import type { McpDrift, McpToolAnnotations, McpToolDef } from "./kinds";
+import { appToolMeta } from './apps-contract';
 
 /** Sanity limits for one server's tool list. */
 export const MAX_TOOLS = 500;
@@ -8,13 +9,15 @@ const MAX_PAGES = 50;
 
 const ANNOTATION_KEYS = ["title", "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const;
 
-/** Keeps only the fields the portal uses (drops _meta, icons and anything unknown), so the snapshot stays small. */
+/** Keeps the reviewed descriptor, including validated App routing and visibility; drops unknown metadata. */
 export function toToolDef(raw: unknown): McpToolDef | null {
   if (!raw || typeof raw !== "object") return null;
   const t = raw as Record<string, unknown>;
   if (typeof t.name !== "string" || !t.name) return null;
   const schema = t.inputSchema && typeof t.inputSchema === "object" ? (t.inputSchema as Record<string, unknown>) : {};
   const def: McpToolDef = { name: t.name, inputSchema: { ...schema, type: "object" } };
+  try { const meta = appToolMeta(t._meta); if (meta) def._meta = meta; }
+  catch { return null; } // malformed app-only metadata must never turn a tool model-visible
   if (typeof t.title === "string") def.title = t.title;
   if (typeof t.description === "string") def.description = t.description;
   if (t.outputSchema && typeof t.outputSchema === "object") def.outputSchema = t.outputSchema as Record<string, unknown>;

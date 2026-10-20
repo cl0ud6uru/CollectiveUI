@@ -3,7 +3,8 @@ import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { DashboardClient } from '@/lib/remote-hermes/client';
 import { assertRemoteHermesAdmission, assertRemoteHermesOperation, assertSessionYoloAdmission, dashboardBase, remoteHermesSettingsSchema } from '@/lib/remote-hermes/policy';
-import { dashboardFetch } from '@/lib/remote-hermes/transport';
+import { dashboardAddress, dashboardFetch } from '@/lib/remote-hermes/transport';
+import { websocketAuthentication } from '@/lib/remote-hermes/websocket-auth';
 
 const disabled = { enabled: false, privateGateways: [] };
 describe('personal remote Hermes admission', () => {
@@ -22,6 +23,7 @@ describe('personal remote Hermes admission', () => {
     expect(() => dashboardBase('https://example.com?token=secret')).toThrow();
     expect(() => dashboardBase('file:///etc/passwd')).toThrow();
     expect(remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: ['http://hermes:9119/', 'http://hermes:9119'] }).privateGateways).toEqual(['http://hermes:9119']);
+    expect(remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: [], privateHttpTunnels: ['http://hermes:9119/', 'http://hermes:9119'] }).privateHttpTunnels).toEqual(['http://hermes:9119']);
   });
   it('keeps confirmed session YOLO off for legacy settings and requires both policy gates', () => {
     const legacy = remoteHermesSettingsSchema.parse({ enabled: true, privateGateways: [] });
@@ -33,6 +35,14 @@ describe('personal remote Hermes admission', () => {
 });
 
 describe('remote dashboard transport', () => {
+  it('requires explicit encrypted-tunnel trust for private HTTP except approved loopback', async () => {
+    const lan = 'http://192.168.1.42:9119';
+    const destinationApproved = { enabled: true, privateGateways: [lan] };
+    await expect(dashboardAddress(lan, destinationApproved)).rejects.toThrow('verified encrypted tunnel');
+    await expect(dashboardAddress(lan, { ...destinationApproved, privateHttpTunnels: [lan] })).resolves.toMatchObject({ address: '192.168.1.42' });
+    await expect(dashboardAddress(`${lan}/hermes`, { ...destinationApproved, privateHttpTunnels: [lan] })).rejects.toThrow('approve');
+    await expect(dashboardAddress('http://127.0.0.1:9119', { enabled: true, privateGateways: ['http://127.0.0.1:9119'] })).resolves.toMatchObject({ address: '127.0.0.1' });
+  });
   it('blocks private destinations until explicitly approved, public HTTP and metadata even when approved', async () => {
     await expect(dashboardFetch('http://127.0.0.1:9119', disabled)('http://127.0.0.1:9119/api/status')).rejects.toThrow('approve');
     await expect(dashboardFetch('http://8.8.8.8', disabled)('http://8.8.8.8/api/status')).rejects.toThrow('HTTPS');
@@ -55,6 +65,21 @@ describe('remote dashboard transport', () => {
       await expect(transport(`http://127.0.0.1:${address.port}/outside`)).rejects.toThrow('outside');
       await expect(transport('http://169.254.169.254/secret')).rejects.toThrow('outside');
     } finally { await new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve())); }
+  });
+});
+
+describe('native WebSocket authentication projection', () => {
+  it('sends OAuth tickets in pinned native subprotocols without placing them in the URL', () => {
+    const auth = websocketAuthentication(new URL('wss://hermes.example/api/ws?old=value'), { mode: 'password', accessToken: 'synthetic-access' }, 'synthetic-private-ticket');
+    expect(auth.url.toString()).toBe('wss://hermes.example/api/ws?old=value');
+    expect(auth.protocols).toEqual(['hermes-gateway-v1', 'hermes-gateway-ticket.synthetic-private-ticket']);
+    expect(auth.url.toString()).not.toMatch(/ticket|synthetic-private-ticket/);
+  });
+  it('retains the pinned legacy session-token query contract and rejects unsafe ticket text', () => {
+    const auth = websocketAuthentication(new URL('ws://127.0.0.1/api/ws'), { mode: 'sessionToken', sessionToken: 'synthetic-session-token' });
+    expect(auth.url.searchParams.get('token')).toBe('synthetic-session-token');
+    expect(auth.protocols).toBeUndefined();
+    expect(() => websocketAuthentication(new URL('wss://hermes.example/api/ws'), { mode: 'password', accessToken: 'synthetic-access' }, 'ticket\r\nInjected: true')).toThrow('invalid WebSocket ticket');
   });
 });
 
@@ -88,6 +113,51 @@ function passwordGateway(mismatch = false) {
 }
 
 describe('Hermes native dashboard authentication', () => {
+  it('uses the pinned authenticated PUT contract for config-owned MCP enablement', async () => {
+    const transport = vi.fn(async () => Response.json({ ok: true, name: 'server-name', enabled: false })) as unknown as typeof fetch;
+    const client = new DashboardClient('https://example.com/hermes', transport, { mode: 'sessionToken', sessionToken: 'synthetic-session-token' });
+    await expect(client.setMcpServerEnabled('work', 'server-name', false)).resolves.toEqual({ ok: true, name: 'server-name', enabled: false });
+    const [url, init] = (transport as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://example.com/hermes/api/mcp/servers/server-name/enabled');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ enabled: false, profile: 'work' });
+    expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('synthetic-session-token');
+  });
+  it('rejects mismatched native echo and invalid MCP identities', async () => {
+    const client = new DashboardClient('https://example.com', async () => Response.json({ ok: true, name: 'other', enabled: true }));
+    await expect(client.setMcpServerEnabled('default', 'server', false)).rejects.toThrow('did not confirm');
+    await expect(client.setMcpServerEnabled('default', '../config', false)).rejects.toThrow();
+  });
+  it('uses only the pinned profile-scoped credential pool routes and discards token previews', async () => {
+    const transport = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      if (init.method === 'POST') {
+        expect(url.pathname).toBe('/hermes/api/credentials/pool');
+        expect(url.searchParams.get('profile')).toBe('worker');
+        expect(JSON.parse(String(init.body))).toEqual({ provider: 'openrouter', api_key: 'synthetic-provider-secret', label: 'Account one' });
+        return Response.json({ ok: true, provider: 'openrouter', count: 1 });
+      }
+      expect(url.pathname).toBe('/hermes/api/credentials/pool');
+      expect(url.searchParams.get('profile')).toBe('worker');
+      expect(init.method).toBe('GET');
+      return Response.json({ providers: [{ provider: 'openrouter', entries: [{ index: 1, id: 'opaque-id', label: 'Account one', auth_type: 'api_key', source: 'manual', priority: 0, last_status: 'ready', request_count: 0, token_preview: '****cret', has_refresh: false }] }] });
+    }) as unknown as typeof fetch;
+    const client = new DashboardClient('https://example.com/hermes', transport, { mode: 'sessionToken', sessionToken: 'synthetic-session-token' });
+    await expect(client.addCredentialPoolEntry('worker', 'openrouter', 'synthetic-provider-secret', 'Account one')).resolves.toEqual({ ok: true, provider: 'openrouter', count: 1 });
+    const readback = await client.credentialPool('worker');
+    expect(readback.providers[0]?.entries[0]).toEqual({ index: 1, id: 'opaque-id', label: 'Account one', authType: 'api_key', source: 'manual', priority: 0, lastStatus: 'ready', requestCount: 0, hasRefresh: false });
+    expect(JSON.stringify(readback)).not.toContain('tokenPreview');
+    expect(JSON.stringify(readback)).not.toContain('synthetic-provider-secret');
+    expect(transport).toHaveBeenCalledTimes(2);
+    const [, init] = (transport as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('synthetic-session-token');
+  });
+  it('rejects unsafe provider pool ids before dispatch', async () => {
+    const transport = vi.fn(async () => Response.json({ ok: true, provider: 'openrouter', count: 1 })) as unknown as typeof fetch;
+    const client = new DashboardClient('https://example.com/hermes', transport);
+    await expect(client.addCredentialPoolEntry('worker', '../config', 'secret', 'Account')).rejects.toThrow();
+    expect(transport).not.toHaveBeenCalled();
+  });
   it('uses PKCE with attempt-local cookies and returns tokens without retaining passwords', async () => {
     const { transport, calls } = passwordGateway();
     const result = await new DashboardClient('https://example.com/hermes', transport).passwordLogin('alice', 'temporary-password');

@@ -28,6 +28,8 @@ import { memoryTools } from "./tools/memory";
 import { skillsForBot, skillTool, learnedSkillsForTurn } from "./tools/skills";
 import { nativeSearchFor } from "./native-search";
 import { webTools } from "./tools/web";
+import { adminTools } from "./tools/admin";
+import { authorizeArchitectCall } from "./tools/admin-guard";
 import { workspaceTools } from "./tools/workspace";
 import { workspaceAttachmentTool } from "./tools/workspace-attachment";
 import { integratedAgentBrowserTools } from "@/lib/agent-browser/native-integration";
@@ -190,6 +192,12 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
     if (s) entries.push(s);
   }
 
+  // Installation receipt and fresh actor/session checks, repeated at every dispatch.
+  if ((await getSetting("architectBot")).botId === bot.id) {
+    try { await authorizeArchitectCall(ctx); entries.push(...adminTools(ctx)); }
+    catch { /* Unavailable, non-admin, group and unattended turns receive no admin tools. */ }
+  }
+
   // MCP servers: one access check for all of them. Servers with an accepted tool snapshot connect lazily, on
   // their first tool call; older ones without a snapshot yet connect now, in parallel, so one slow server doesn't
   // hold up the others. A failing server only removes its own tools.
@@ -215,7 +223,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
         throw new HttpError(403, "A service-bot connector grant is unavailable. Ask an admin to review and publish it.");
       const binding = await mcpAuthorityBinding(ctx, s, config, grants, s.identityHeader && caller.subject.kind === "user" ? caller.subject.groups : []);
       bindings.push(binding);
-      return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants } };
+      return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants }, apps: { audience: 'model' as const } };
     };
     const results = await Promise.allSettled(servers.map(async (s) => (s.toolsSnapshot ? mcpTools(s, await opts(s)) : connectedMcpTools(s, await opts(s)))));
     results.forEach((r, i) => {

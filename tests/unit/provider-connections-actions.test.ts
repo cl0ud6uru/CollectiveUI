@@ -6,7 +6,8 @@ import type { SavedProviderKind } from "@/lib/llm/catalog";
 
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-const fixture = vi.hoisted(() => ({ client: null as PGlite | null, allowed: true }));
+const fixture = vi.hoisted(() => ({ client: null as PGlite | null, allowed: true, securityAllowed: true }));
+vi.mock("next/headers", () => ({ headers: async () => new Headers({ origin: "https://portal.fixture.invalid" }) }));
 vi.mock("@/db", async () => {
   const { PGlite } = await import("@electric-sql/pglite");
   const { drizzle } = await import("drizzle-orm/pglite");
@@ -17,6 +18,9 @@ vi.mock("@/db", async () => {
 vi.mock("@/lib/session", () => ({ requireAdmin: async () => {
   if (!fixture.allowed) throw Object.assign(new Error("Admin only"), { status: 403 });
   return { user: { id: "admin" }, isAdmin: true, groupIds: [], canCreateBots: true };
+}, requireSecurityActor: async () => {
+  if (!fixture.securityAllowed) throw Object.assign(new Error("Security session required"), { status: 401 });
+  return { id: "admin", sessionVersion: 0, sessionId: "synthetic-session" };
 } }));
 import { db, schema } from "@/db";
 import { saveApp, testAppConnection } from "@/app/admin/actions";
@@ -26,6 +30,11 @@ import { openProviderCredential } from "@/lib/llm/provider-connections";
 import { providerContextFor, resolveEmbeddingModel, resolveModel } from "@/lib/llm/resolve";
 import { sealAppSecret } from "@/lib/llm/secrets";
 import { serviceConfigHash } from "@/lib/bots/service";
+import { saveArchitectProviderConnectionDraft } from "@/app/admin/provider-draft-actions";
+import { getSetting } from "@/lib/settings";
+import { installArchitectBot } from "@/lib/bots/architect-store";
+import { loadPrincipal } from "@/lib/auth/groups";
+import { prepareArchitectProviderConnection } from "@/lib/admin/architect-connections";
 
 const baseUrl = "https://provider.example/api/v1";
 const modelInput = (provider: SavedProviderKind) => ({ name: "Synthetic model", provider, baseUrl, model: "fixture/model", config: {}, supportsTools: true, supportsVision: false, isPublic: true, enabled: true });
@@ -40,6 +49,8 @@ beforeAll(async () => {
 }, 60000);
 beforeEach(async () => {
   fixture.allowed = true;
+  fixture.securityAllowed = true;
+  vi.stubEnv("AUTH_URL", "https://portal.fixture.invalid");
   vi.stubEnv("ENCRYPTION_KEY", "synthetic-provider-fixture-only");
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("External network forbidden in provider fixture"); }));
   await fixture.client!.exec("TRUNCATE users, ai_apps, provider_connections, settings, groups, audit_log CASCADE");
@@ -47,6 +58,30 @@ beforeEach(async () => {
   await db.insert(schema.groups).values({ id: "audience", name: "Synthetic audience" });
 });
 afterAll(async () => { await fixture.client!.close(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+
+it("accepts an Architect provider key only through the authenticated, same-origin Admin form", async () => {
+  const principal = (await loadPrincipal("admin"))!;
+  await db.insert(schema.aiApps).values({ id: "architect-model", name: "Architect fixture", provider: "openai", model: "fixture/model", supportsTools: true });
+  const installed = await installArchitectBot(principal, { appId: "architect-model" });
+  const [bot] = await db.select().from(schema.bots).where(eq(schema.bots.id, installed.id));
+  const [app] = await db.select().from(schema.aiApps).where(eq(schema.aiApps.id, "architect-model"));
+  await db.insert(schema.conversations).values({ id: "architect-chat", userId: "admin", botId: bot.id, appId: app.id });
+  const draft = await prepareArchitectProviderConnection({ principal, bot, app, conversationId: "architect-chat", depth: 0, background: false, toolSettings: await getSetting("tools") }, principal, { name: "Secure form fixture" });
+  const key = "synthetic-opaque-provider-key-value";
+  fixture.securityAllowed = false;
+  await expect(saveArchitectProviderConnectionDraft(draft.draftId, key)).rejects.toMatchObject({ status: 401 });
+  expect(await db.select().from(schema.providerConnections)).toHaveLength(0);
+  fixture.securityAllowed = true;
+  vi.stubEnv("AUTH_URL", "https://wrong-origin.fixture.invalid");
+  await expect(saveArchitectProviderConnectionDraft(draft.draftId, key)).rejects.toMatchObject({ status: 403 });
+  expect(await db.select().from(schema.providerConnections)).toHaveLength(0);
+  vi.stubEnv("AUTH_URL", "https://portal.fixture.invalid");
+  const result = await saveArchitectProviderConnectionDraft(draft.draftId, key);
+  expect(result).toMatchObject({ status: "verified", name: "Secure form fixture" });
+  expect(JSON.stringify(result)).not.toContain(key);
+  expect(openProviderCredential((await db.select().from(schema.providerConnections))[0])).toBe(key);
+  expect(fetch).not.toHaveBeenCalled();
+});
 
 it.each(["openai", "openai-compatible", "openrouter"] as const)("retains a disabled %s connection for model edits while rejecting new or different attachments", async provider => {
   const target = provider === "openrouter" ? "https://openrouter.ai/api/v1" : baseUrl;

@@ -19,6 +19,7 @@ import { userMayUseChatGPT } from "@/lib/llm/chatgpt/policy";
 import { getSetting } from "@/lib/settings";
 import { isChatModel, HERMES_BOT_ONLY_MESSAGE } from "@/lib/llm/model-policy";
 import { assertServicePublished, canEditBot } from "@/lib/bots/service";
+import { architectBotSql } from "@/lib/bots/architect-policy";
 
 import { HttpError } from "@/lib/http-error";
 export { HttpError } from "@/lib/http-error";
@@ -92,13 +93,16 @@ export async function getAccessibleModel(p: Principal, appId: string, q: DbOrTx 
 // Bots
 // ---------------------------------------------------------------------------
 
-/** `adminSeesAll`: admins can open any bot (oversight), but their own lists show only what they'd normally see. */
+/**
+ * `adminSeesAll`: admins can open any bot (oversight), but their own lists show only what they'd normally see.
+ * The Architect is admin-only whatever its visibility says: hidden from everyone else, listed for every admin.
+ */
 function botVisibleTo(p: Principal, adminSeesAll = true) {
   const privateNative = sql`not exists (select 1 from ai_apps a where a.id = ${bots.appId} and a.provider_config->'docker' is not null and
     (not ${dockerAllowedSql(p)} or ${bots.ownerId} <> ${p.user.id} or ${bots.visibility} <> 'private' or ${bots.executionMode} <> 'caller' or ${bots.coordinatorEligible} or ${bots.isCoordinator}
      or a.provider_config->'docker'->>'ownerId' is distinct from ${p.user.id} or a.provider_config->'docker'->>'botId' is distinct from ${bots.id}))`;
   if (p.isAdmin && adminSeesAll) return privateNative;
-  return and(privateNative, or(
+  const audience = or(
     eq(bots.ownerId, p.user.id),
     eq(bots.visibility, "org"),
     and(
@@ -114,7 +118,8 @@ function botVisibleTo(p: Principal, adminSeesAll = true) {
           )
         : sql`false`),
     ),
-  ));
+  );
+  return p.isAdmin ? and(privateNative, or(architectBotSql(), audience)) : and(privateNative, sql`not (${architectBotSql()})`, audience);
 }
 
 export async function listAccessibleBots(p: Principal, q: DbOrTx = db): Promise<Bot[]> {

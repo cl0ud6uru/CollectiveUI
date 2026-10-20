@@ -16,6 +16,7 @@ export const remoteHermesSettingsSchema = z.object({
   enabled: z.boolean(),
   allowSessionYolo: z.boolean().default(false),
   privateGateways: z.array(z.string().max(2048).transform(dashboardBase)).max(100).transform(v => [...new Set(v)]),
+  privateHttpTunnels: z.array(z.string().max(2048).transform(dashboardBase)).max(100).default([]).transform(v => [...new Set(v)]),
 });
 
 export function assertRemoteHermesAdmission(settings: RemoteHermesSettings) {
