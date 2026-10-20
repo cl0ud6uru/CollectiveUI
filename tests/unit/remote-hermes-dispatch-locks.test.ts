@@ -161,3 +161,31 @@ run('confirmed recovery blocks resume and profile-wide full promotion before any
   expect(received).toEqual(methods);
   expect(await f.db.select().from(remoteHermesHubOwners)).toEqual(owners);
 }, 15_000);
+run('reuses the caller transaction for session ownership preparation before a guarded setter', async () => {
+  const { hub, row, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
+  const nested = vi.spyOn(f.db, 'transaction');
+  try {
+    const { reply } = await f.db.transaction(async tx => {
+      await hub.lockBoundary(tx);
+      await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
+      // A second transaction would wait forever for the owner lock held above
+      // with one pool slot. Fail at the boundary so a regression cleans up.
+      nested.mockImplementationOnce(async () => { throw new Error('Nested ownership transaction'); });
+      return hub.socket.dispatchConnected('config.set', { profile: row.profile, session_id: row.runtimeId,
+        scope: 'session', key: 'model', value: 'synthetic' }, hub.socket.connectionEpoch, 1000, tx);
+    });
+    await reply;
+    expect(received.filter(method => method === 'config.set')).toEqual(['config.set']);
+    expect(nested).toHaveBeenCalledTimes(1);
+  } finally { nested.mockRestore(); }
+}, 15_000);
+run('refuses a guarded setter whose native ownership capability was never prepared', async () => {
+  const { hub, row, received } = await fixture();
+  await expect(f.db.transaction(async tx => {
+    await hub.lockBoundary(tx);
+    return hub.socket.dispatchConnected('config.set', { profile: row.profile, session_id: row.runtimeId,
+      scope: 'session', key: 'model', value: 'synthetic' }, hub.socket.connectionEpoch, 1000, tx);
+  })).rejects.toMatchObject({ status: 409 });
+  expect(received).toEqual(['client.capabilities']);
+}, 15_000);
