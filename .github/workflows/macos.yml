@@ -12,6 +12,7 @@ on:
       - 'ios/CollectiveUI/Demo/**'
       - 'ios/CollectiveUI/Support/**'
       - 'ios/CollectiveUITests/**'
+      - 'ios/scripts/test-parity-contracts.py'
       - '.github/workflows/macos.yml'
   pull_request:
     paths:
@@ -23,6 +24,7 @@ on:
       - 'ios/CollectiveUI/Demo/**'
       - 'ios/CollectiveUI/Support/**'
       - 'ios/CollectiveUITests/**'
+      - 'ios/scripts/test-parity-contracts.py'
       - '.github/workflows/macos.yml'
   workflow_dispatch:
 
