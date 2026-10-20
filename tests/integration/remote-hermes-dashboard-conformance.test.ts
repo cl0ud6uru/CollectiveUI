@@ -56,12 +56,17 @@ describe.skipIf(!enabled)('actual pinned dashboard plus disposable PostgreSQL ad
     await processFixture?.stop(); await pool?.end();
   });
   it('dispatches only one contending queued receipt through actual native transport', async () => {
-    const id = await session(), hub = nativeHub(owner, connection);
+    const id = await session(), hub = nativeHub(owner, connection), before = (await metrics()).agent_turns;
     await submitNativePrompt(owner, connection, id, randomUUID(), 'fixture-hold');
+    // Admission can acknowledge before the deferred native turn and its events
+    // reach the hub. Contend for a queue only after observing the active turn.
+    await vi.waitFor(async () => {
+      expect((await metrics()).agent_turns).toBe(before + 1);
+      expect((await hub.refresh(await row(id))).running).toBe(true);
+    }, { timeout: 5000 });
     const queue = (text: string) => nativeControl(owner, connection, id, 'queue', { requestId: randomUUID(), text }).then(value => ({ value, error: null }), error => ({ value: null, error }));
     const outcomes = await Promise.all([queue('fixture-next-one'), queue('fixture-next-two')]);
-    expect(outcomes.filter(outcome => outcome.error === null)).toHaveLength(1);
-    expect(outcomes.filter(outcome => outcome.error?.status === 409)).toHaveLength(1);
+    expect(outcomes.map(({ error }) => error === null ? 200 : error.status).sort()).toEqual([200, 409]);
     expect((await row(id)).queueStatus).toBe('queued');
     expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, id))).toHaveLength(2);
     await nativeControl(owner, connection, id, 'stop');
