@@ -552,6 +552,11 @@ export class NativeHub {
         cached.view.uncertain ||= view.uncertain;
         return cached.view;
       }
+      // Polling and reconnects must not make an attempted answer eligible for replay.
+      for (const [id, request] of pending) {
+        const previous = cached?.pending.get(id);
+        if (previous?.prompt.method === request.prompt.method) request.prompt.delivery = previous.prompt.delivery;
+      }
       this.sessions.set(row.id, { row: current.saved, view, pending, refreshedAt: Date.now(), eventRevision, socketEpoch,
         ownerInstanceId: current.ownerInstanceId, leaseGeneration: current.leaseGeneration, ownerSocketEpoch: current.ownerSocketEpoch });
       this.changes.emit(row.id);
@@ -599,6 +604,8 @@ export class NativeHub {
     if (frame.id !== undefined && frame.method && frame.method !== 'event') {
       const prompt = promptView(frame.id, frame.method, p);
       if (!prompt) { void this.socket.answer(frame.id, undefined, socketEpoch).catch(() => {}); return; }
+      const previous = cached.pending.get(prompt.id);
+      if (previous?.prompt.method === prompt.method) prompt.delivery = previous.prompt.delivery;
       cached.pending.set(prompt.id, { nativeId: frame.id, prompt, params: p, socketEpoch });
       cached.view.prompts = [...cached.pending.values()].map(v => v.prompt);
       cached.view.running = true;
@@ -660,11 +667,33 @@ export class NativeHub {
     const cached = this.sessions.get(row.id)!;
     const pending = cached.pending.get(requestId);
     if (!pending) throw new HttpError(409, 'This native prompt has expired or was answered elsewhere.');
+    if (pending.prompt.delivery) throw new HttpError(409, 'An answer was already sent or attempted for this prompt. Refresh or inspect the native dashboard; it will not be replayed.');
     const result = answerFor(pending.prompt, input);
-    if (pending.params.fallbackApproval) await this.socket.callConnected('approval.respond', { session_id: cached.row.runtimeId, profile: row.profile, request_id: pending.params.request_id, choice: result.choice }, pending.socketEpoch);
-    else await this.socket.answer(pending.nativeId, result, pending.socketEpoch);
-    cached.pending.delete(requestId); cached.view.prompts = [...cached.pending.values()].map(p => p.prompt);
-    return { answered: true };
+    const mark = (delivery: NonNullable<NativePrompt['delivery']>) => {
+      pending.prompt.delivery = delivery;
+      const latest = this.sessions.get(row.id);
+      const request = latest?.pending.get(requestId);
+      if (request?.prompt.method === pending.prompt.method) request.prompt.delivery = delivery;
+      if (latest) { latest.eventRevision++; this.changes.emit(row.id); }
+    };
+    // Reserve before the first await; a successful write is not native acceptance.
+    mark('sending');
+    try {
+      if (pending.params.fallbackApproval) await this.socket.callConnected('approval.respond', { session_id: cached.row.runtimeId, profile: row.profile, request_id: pending.params.request_id, choice: result.choice }, pending.socketEpoch);
+      else await this.socket.answer(pending.nativeId, result, pending.socketEpoch);
+      mark('sent');
+    } catch (error) {
+      mark('uncertain');
+      await this.refreshAfterPending(row).catch(() => {});
+      throw error;
+    }
+    try {
+      const view = await this.refreshAfterPending(row);
+      return { sent: true, status: view.prompts.some(p => p.id === requestId) ? 'pending' : 'resolved' };
+    } catch {
+      mark('uncertain');
+      return { sent: true, status: 'uncertain' };
+    }
   }
 }
 const globalHubs = globalThis as unknown as { collectiveRemoteHermesHubs?: Map<string, NativeHub> };
