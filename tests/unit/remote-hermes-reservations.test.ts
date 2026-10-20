@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { createHash } from 'node:crypto';
 
 const f = vi.hoisted(() => ({ row: {} as Record<string, unknown>, owner: undefined as Record<string, unknown> | undefined, receipts: [] as Record<string, unknown>[], call: vi.fn(), answer: vi.fn(), frame: (_frame: unknown) => { void _frame; }, lock: Promise.resolve() }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: true, privateGateways: [] }) }));
@@ -81,6 +82,20 @@ beforeEach(() => {
   f.call.mockImplementation(async (method: string) => method === 'session.resume' ? idle : { status: 'streaming' });
 });
 afterEach(() => { nativeHub('owner', 'connection').close(); });
+
+it('reads an exact retained queue receipt without reclaiming a foreign process lease or sending RPCs', async () => {
+  f.owner = { ownerInstanceId: 'previous-process', leaseExpiresAt: new Date(Date.now() + 60_000) };
+  f.receipts.push({ sessionId: 'session', requestId: id1, digest: createHash('sha256').update('queue:Original').digest('hex') });
+  await expect(nativeControl('owner', 'connection', 'session', 'queue', { requestId: id1, text: 'Original' }))
+    .resolves.toEqual({ accepted: true, duplicate: true });
+  await expect(nativeControl('owner', 'connection', 'session', 'queue', { requestId: id1, text: 'Changed' }))
+    .rejects.toThrow('another native operation');
+  await expect(nativeControl('owner', 'connection', 'session', 'queue', { requestId: id2, text: 'New' }))
+    .rejects.toThrow('Another portal instance owns');
+  expect(f.owner.ownerInstanceId).toBe('previous-process');
+  expect(f.receipts).toHaveLength(1);
+  expect(f.call).not.toHaveBeenCalled();
+});
 
 it('single-flights cold snapshots and keeps staged admission closed to a second prompt', async () => {
   const resume = deferred<unknown>(), upload = deferred<unknown>();

@@ -158,6 +158,17 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   const policy = await getSetting('remoteHermes');
   if (['steer', 'command', 'catalog', 'context', 'queue'].includes(operation)) assertRemoteHermesAdmission(policy);
   else if (!policy.enabled && !active(row.status)) throw new HttpError(409, 'This native turn has already finished. New work is disabled.');
+  const queue = operation === 'queue' ? {
+    text: z.string().min(1).max(4000).parse(input.text),
+    requestId: z.string().uuid().parse(input.requestId),
+  } : undefined;
+  const queueDigest = queue ? createHash('sha256').update('queue:').update(queue.text).digest('hex') : undefined;
+  // A retained receipt is a read-only acknowledgement of an earlier admission.
+  // It must remain readable after process loss without claiming the old socket
+  // or contacting native Hermes. New requests still pass the full owner fence.
+  if (queue && await retainedControlReceipt(ownerId, connectionId, sessionId, queue.requestId, queueDigest!)) {
+    return { accepted: true, duplicate: true };
+  }
   const hub = nativeHub(ownerId, connectionId);
   await hub.refresh(row);
   const cached = hub.sessions.get(row.id)!;
@@ -171,10 +182,8 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
   if (operation === 'catalog') return readCatalog();
   if (operation === 'context') return hub.socket.call('session.context_breakdown', params);
   if (operation === 'queue') {
-    const text = z.string().min(1).max(4000).parse(input.text);
-    const requestId = z.string().uuid().parse(input.requestId);
-    const digest = createHash('sha256').update('queue:').update(text).digest('hex');
-    const reservation = await reserveControl(row.id, requestId, digest, false, cached.view.running && !cached.view.queued);
+    const { text, requestId } = queue!;
+    const reservation = await reserveControl(row.id, requestId, queueDigest!, false, cached.view.running && !cached.view.queued);
     if (!reservation) return { accepted: true, duplicate: true };
     cached.row = reservation; cached.view.queuePending = true;
     try {
@@ -261,6 +270,23 @@ export async function nativeControl(ownerId: string, connectionId: string, sessi
     const current = hub.sessions.get(row.id);
     if (updated && current && current.row.admissionRequestId === requestId && updated.revision >= current.row.revision) { current.row = updated; current.view.uncertain = status === 'uncertain'; }
   }
+}
+
+async function retainedControlReceipt(ownerId: string, connectionId: string, sessionId: string, requestId: string, digest: string) {
+  return db.transaction(async tx => {
+    await admission(tx);
+    const [connection] = await tx.select().from(remoteHermesConnections)
+      .where(and(eq(remoteHermesConnections.id, connectionId), eq(remoteHermesConnections.userId, ownerId))).for('share');
+    if (!connection) throw new HttpError(404, 'Native Hermes chat not found.');
+    const [session] = await tx.select().from(remoteHermesSessions)
+      .where(and(eq(remoteHermesSessions.id, sessionId), eq(remoteHermesSessions.connectionId, connectionId))).for('share');
+    if (!session) throw new HttpError(404, 'Native Hermes chat not found.');
+    const [receipt] = await tx.select().from(remoteHermesTurns)
+      .where(and(eq(remoteHermesTurns.sessionId, sessionId), eq(remoteHermesTurns.requestId, requestId)));
+    if (!receipt) return false;
+    if (receipt.digest !== digest) throw new HttpError(409, 'This receipt belongs to another native operation.');
+    return true;
+  });
 }
 
 async function reserveControl(sessionId: string, requestId: string, digest: string, requireIdle: boolean, nativeAllows: boolean) {
