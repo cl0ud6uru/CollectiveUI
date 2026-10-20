@@ -21,8 +21,9 @@ export default async function AdminSandboxesPage() {
     listWorkspaceInstances(),
   ]);
   const setup = await readWorkspaceSetup(settings.allowRunc);
-  let states: SandboxState[] = [];
-  let error: string | null = null;
+  // An empty successful response proves absence; no response proves nothing.
+  let states: SandboxState[] | null = null;
+  let error: string | null = client ? null : "Workspace status is unavailable until portal configuration is complete. Run the setup check, then reload this page to retry the list.";
   if (client) {
     try {
       states = await client.list(15_000);
@@ -34,7 +35,7 @@ export default async function AdminSandboxesPage() {
   const people = ownerIds.length
     ? await db.select({ id: users.id, name: users.name, upn: users.upn, disabled: users.disabled }).from(users).where(inArray(users.id, ownerIds))
     : [];
-  const byRef = new Map(states.map((s) => [s.ref, s]));
+  const byRef = new Map((states ?? []).map((s) => [s.ref, s]));
   const templateVersionIds = [...new Set(instances.flatMap((r) => r.templateVersionId ? [r.templateVersionId] : []))];
   const templateVersions = templateVersionIds.length
     ? await db.select({ id: workspaceTemplateVersions.id, name: workspaceTemplates.name, version: workspaceTemplateVersions.version })
@@ -56,7 +57,7 @@ export default async function AdminSandboxesPage() {
       origin: r.origin,
       templateName: r.templateVersionId ? templateByVersion.get(r.templateVersionId) ?? "Template workspace" : "Legacy personal",
       provisionState: r.provisionState,
-      state: s?.state ?? (error ? "unknown" : "missing"),
+      state: s?.state ?? (states === null ? "unknown" : "missing"),
       runtime: s?.runtime ?? null,
       activeExecs: s?.activeExecs ?? 0,
       drift: !!s?.drift,
@@ -64,7 +65,7 @@ export default async function AdminSandboxesPage() {
       deleteAfter: r.deleteAfter?.toISOString() ?? null,
     };
   });
-  const orphans = states.filter((s) => !known.has(s.ref)).map((s) => ({ ref: s.ref, state: s.state, createdAt: s.createdAt }));
+  const orphans = (states ?? []).filter((s) => !known.has(s.ref)).map((s) => ({ ref: s.ref, state: s.state, createdAt: s.createdAt }));
 
   return (
     <div>

@@ -2,7 +2,7 @@
 
 import { requireAdmin } from "@/lib/session";
 import { findLdapGroupMember } from "@/lib/admin/groups";
-import { saveGroup, type GroupInput } from "@/app/admin/actions";
+import { deleteGroup, saveGroup, type GroupInput } from "@/app/admin/actions";
 import { HttpError } from "@/lib/authz";
 import { z } from "zod";
 
@@ -25,5 +25,12 @@ export async function findLdapUserForGroup(username: string) {
 export async function saveGroupWithFeedback(input: GroupInput) {
   await requireAdmin();
   try { await saveGroup(input); return { ok: true as const }; }
+  catch (err) { return groupFailure(err); }
+}
+
+/** Return expected deletion errors as data so production action masking keeps the handoff guidance. */
+export async function deleteGroupWithFeedback(id: string) {
+  await requireAdmin();
+  try { await deleteGroup(id); return { ok: true as const }; }
   catch (err) { return groupFailure(err); }
 }

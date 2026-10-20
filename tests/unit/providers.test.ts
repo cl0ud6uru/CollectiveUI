@@ -74,6 +74,7 @@ function app(provider: AiApp["provider"], over: Partial<AiApp> & { secret?: stri
     systemPrompt: null,
     temperature: null,
     maxTokens: null,
+    contextWindowTokens: null,
     supportsVision: false,
     supportsTools: true,
     embeddingModel: null,

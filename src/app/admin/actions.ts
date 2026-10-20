@@ -1,5 +1,7 @@
 "use server";
 
+import { changeBotStatus } from "@/lib/admin/bot-status";
+
 import { deletePortalGroup, savePortalGroup, type GroupInput } from "@/lib/admin/groups";
 
 import { nativeSearchSettingsSchema, NATIVE_SEARCH_DEFAULTS } from "@/lib/native-search-policy";
@@ -103,6 +105,7 @@ export async function saveApp(raw: AppInput) {
       systemPrompt: input.systemPrompt,
       temperature: personal || hermes ? null : input.temperature,
       maxTokens: personal || hermes ? null : input.maxTokens,
+      contextWindowTokens: hermes ? null : input.contextWindowTokens,
       supportsVision: hermes ? false : input.supportsVision,
       supportsTools: hermes ? true : input.supportsTools,
       embeddingModel: personal || hermes ? null : input.embeddingModel?.trim() || null,
@@ -276,26 +279,7 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
 // ---------------------------------------------------------------------------
 
 export async function setBotEnabled(botId: string, enabled: boolean) {
-  const p = await requireAdmin();
-  let teamChanged = false;
-  await db.transaction(async tx => {
-    const [bot] = await tx.select().from(bots).where(eq(bots.id, botId)).for('update');
-    if (bot?.hermesTeam) {
-      teamChanged = true;
-      const { authorizeTeam } = await import('@/lib/hermes-team/store');
-      await authorizeTeam(p, botId, 'admin', tx, true);
-    }
-    await tx.update(bots).set({ enabled, revision: sql`${bots.revision} + 1`, publishedRevision: null, publishedConfigHash: null }).where(eq(bots.id, botId));
-    if (bot?.hermesTeam) {
-      const { queueTeamAccessReconciliation } = await import('@/lib/hermes-team/revocation');
-      await queueTeamAccessReconciliation(tx, botId, p.user.id, { reason: 'bot_disabled' });
-    }
-  });
-  if (teamChanged) {
-    const { reconcileTeamAccess } = await import('@/lib/hermes-team/revocation');
-    await reconcileTeamAccess(botId);
-  }
-  await audit(p.user.id, enabled ? "bot.enable" : "bot.disable", botId);
+  await changeBotStatus(await requireAdmin(), { botId, enabled });
   done();
 }
 

@@ -15,10 +15,12 @@ export function m365Tools(ctx: AgentCtx): ToolEntry[] {
       tool: tool({
         description: "Search the user's Outlook mailbox. Returns subject, sender, date and a preview.",
         inputSchema: z.object({ query: z.string(), top: z.number().int().min(1).max(25).optional() }),
-        execute: async ({ query, top }) => {
+        execute: async ({ query, top }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
           const r = await graphFetch<GraphList<{ id: string; subject: string; from?: { emailAddress: { name: string; address: string } }; receivedDateTime: string; bodyPreview: string; webLink: string }>>(
             uid,
             `/me/messages?$search="${encodeURIComponent(query.replace(/"/g, ""))}"&$top=${top ?? 10}&$select=subject,from,receivedDateTime,bodyPreview,webLink`,
+            { signal: abortSignal },
           );
           return {
             messages: r.value.map((m) => ({
@@ -38,10 +40,12 @@ export function m365Tools(ctx: AgentCtx): ToolEntry[] {
       tool: tool({
         description: "List the user's calendar events between two ISO date-times.",
         inputSchema: z.object({ start: z.string(), end: z.string() }),
-        execute: async ({ start, end }) => {
+        execute: async ({ start, end }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
           const r = await graphFetch<GraphList<{ subject: string; start: { dateTime: string }; end: { dateTime: string }; location?: { displayName: string }; organizer?: { emailAddress: { name: string } }; webLink: string }>>(
             uid,
             `/me/calendarView?startDateTime=${encodeURIComponent(start)}&endDateTime=${encodeURIComponent(end)}&$top=50&$select=subject,start,end,location,organizer,webLink&$orderby=start/dateTime`,
+            { signal: abortSignal },
           );
           return {
             events: r.value.map((e) => ({
@@ -62,12 +66,14 @@ export function m365Tools(ctx: AgentCtx): ToolEntry[] {
       tool: tool({
         description: "Search SharePoint and OneDrive files the user can access.",
         inputSchema: z.object({ query: z.string() }),
-        execute: async ({ query }) => {
+        execute: async ({ query }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
           const r = await graphFetch<{ value: { hitsContainers: { hits?: { summary: string; resource: { name?: string; webUrl?: string; lastModifiedDateTime?: string } }[] }[] }[] }>(
             uid,
             "/search/query",
             {
               method: "POST",
+              signal: abortSignal,
               body: JSON.stringify({ requests: [{ entityTypes: ["driveItem", "listItem"], query: { queryString: query }, size: 10 }] }),
             },
           );
@@ -89,9 +95,11 @@ export function m365Tools(ctx: AgentCtx): ToolEntry[] {
           subject: z.string(),
           body: z.string().describe("Plain text body"),
         }),
-        execute: async ({ to, subject, body }) => {
+        execute: async ({ to, subject, body }, { abortSignal }) => {
+          abortSignal?.throwIfAborted();
           await graphFetch(uid, "/me/sendMail", {
             method: "POST",
+            signal: abortSignal,
             body: JSON.stringify({
               message: {
                 subject,
@@ -99,9 +107,6 @@ export function m365Tools(ctx: AgentCtx): ToolEntry[] {
                 toRecipients: to.map((address) => ({ emailAddress: { address } })),
               },
             }),
-          }).catch((e: Error) => {
-            // sendMail returns 202 with an empty body, which graphFetch can't parse as JSON.
-            if (!/JSON/.test(e.message)) throw e;
           });
           return { sent: true, to };
         },

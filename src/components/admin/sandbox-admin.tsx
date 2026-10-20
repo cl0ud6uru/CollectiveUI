@@ -33,6 +33,14 @@ export type SandboxRowView = {
 
 const toLines = (v: string) => v.split(/[\n,;]/).map((x) => x.trim()).filter(Boolean);
 
+/** Use the server's setup snapshot time so the initial browser render agrees with it. */
+export function WorkspaceRetentionBadge({ deleteAfter, asOf }: { deleteAfter: string; asOf: string }) {
+  const pending = new Date(deleteAfter).getTime() <= new Date(asOf).getTime();
+  return <Badge tone={pending ? "red" : "amber"}>
+    {pending ? "Pending cleanup since " : "Scheduled for deletion on "}<AdminTimestamp value={deleteAfter} />
+  </Badge>;
+}
+
 export function SandboxAdmin({
   settings,
   groups,
@@ -165,6 +173,7 @@ export function SandboxAdmin({
         </div>
       </Card>
 
+      <p className="text-xs text-muted">Status reflects the last workspace list response. A deletion deadline schedules cleanup; it does not confirm deletion. Completed deletions remove the registered workspace from this list.</p>
       <Table head={["Person", "State", "Isolation", "Last used", ""]}>
         {rows.map((r) => (
           <tr key={r.id}>
@@ -178,11 +187,11 @@ export function SandboxAdmin({
             </Td>
             <Td>
               <div className="flex flex-wrap gap-1">
-                <Badge tone={r.state === "running" ? "green" : r.state === "unknown" ? "red" : "default"}>{r.state === "missing" ? "not created" : r.state}</Badge>
+                <Badge tone={r.state === "running" ? "green" : r.state === "unknown" ? "red" : "default"}>{r.state === "missing" ? "not present" : r.state === "unknown" ? "status unavailable" : r.state}</Badge>
                 {r.activeExecs > 0 && <Badge tone="blue">{r.activeExecs} running</Badge>}
                 {r.drift && <Badge tone="amber">update pending</Badge>}
                 {r.provisionState === "unavailable" && <Badge tone="red">provision unavailable</Badge>}
-                {r.deleteAfter && <Badge tone="red">deleted {r.deleteAfter.slice(0, 10)}</Badge>}
+                {r.deleteAfter && <WorkspaceRetentionBadge deleteAfter={r.deleteAfter} asOf={setup.checkedAt} />}
               </div>
             </Td>
             <Td className="text-xs text-muted">{r.runtime === "runsc" ? "gVisor" : r.runtime === "runc" ? "standard" : "—"}</Td>

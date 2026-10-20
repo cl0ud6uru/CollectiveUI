@@ -10,7 +10,7 @@ This integration provides a native **remote dashboard workspace**, separate from
 
 ## Available now
 
-- Admin → Settings: **Allow personal remote Hermes connections**, off by default. Public dashboards require HTTPS. Private dashboard bases require explicit approval because requests originate from the portal server. DNS answers are validated and pinned for HTTP and WebSocket connections; metadata destinations and automatic redirects are blocked.
+- Admin → Settings: **Allow personal remote Hermes connections**, off by default. Public dashboards require HTTPS. Private dashboard bases require explicit approval because requests originate from the portal server. Non-loopback private HTTP additionally requires a separate exact-URL attestation that an encrypted tunnel is verified; loopback HTTP uses the private URL approval as its explicit local policy. DNS answers are validated and pinned for HTTP and WebSocket connections; metadata destinations and automatic redirects are blocked.
 - **Allow confirmed session YOLO changes** is a separate administrator gate, off by default. On verified native runtimes, owners can confirm an explicit session on/off change from `/yolo` or Approval mode. The [command documentation](remote-hermes-commands.md) describes effective/inherited bypass, shared-client effects, compatibility and no-replay boundaries. Profile/process policy changes remain unavailable.
 - Settings → Connected accounts: native username/password sign-in and dashboard session-token access. Password sign-in selects the single advertised password provider and exchanges a PKCE authorization code. Cookies remain scoped to the attempt. Passwords are not stored. Access/refresh tokens use row/owner-bound authenticated encryption and never enter UI projections or audit payloads. Sign-in verifies authenticated profile discovery before saving, and token rotation is serialized and committed before later requests can fail.
 - **Open Hermes**: profile selection, native saved conversation browsing, new chats, native history, live assistant/tool output, native usage and context inspection. Local bindings retain both stored and runtime native identities. A connection uses one server-owned dashboard socket, negotiates readiness and server-request support, sends heartbeats and reconnects with session snapshots. The browser polls projected views; no dashboard credential is sent to the browser.
@@ -41,7 +41,7 @@ Apply migrations `0030_remote_hermes_connections`, `0031_remote_hermes_sessions`
 
 These migrations follow the merged Live Activities migration `0029_live_activities`. Disposable databases that applied earlier, unmerged PR34 migration numbers must be rebuilt; a database that retained that preview schema needs a separate migration bridge before using this sequence.
 
-1. Enable personal remote Hermes in Admin → Settings; approve a private dashboard base if required.
+1. Enable personal remote Hermes in Admin → Settings; approve a private dashboard base if required. For non-loopback private HTTP, also attest that the exact base URL traverses a verified encrypted tunnel. Existing HTTP routes are not implicitly treated as trusted from older private URL approvals.
 2. Sign in under Settings → Connected accounts → Remote Hermes.
 3. Select **Open Hermes**, select a profile, then open an existing chat or create one.
 
@@ -78,3 +78,168 @@ Verified fixture identity: `pgvector/pgvector:pg17`, image digest `sha256:ac0853
 - Implement distributed hub ownership before multi-instance deployment; the sidebar roster and paged remote history are now implemented. Native remote chats remain distinct from Runs API conversation records and bot homes.
 
 References reviewed: Vory `622c9b41d1fcb2cee3564a328c11cd72cff7ee18` and Hermes native contracts at `79af3f6cea8067284a7ea5725078578b3f790adb`. No real credentials or private deployment configuration are included.
+
+### Prompt answer delivery (issue #91)
+
+Native JSON-RPC responses do not have a second acknowledgement. The socket waits
+for its write callback (or rejects on write failure, close, or a 30-second deadline)
+and fences the response to the socket epoch that supplied the pending request.
+A successful write means **sent**, not native acceptance. After sending, the hub
+drains any earlier refresh and reads a fresh snapshot. The answer API returns
+`{ sent: true, status: "pending" | "resolved" | "uncertain" }`: `resolved` means the
+native prompt is absent, which can also result from cancellation or another
+client. It does not certify that the protected value was used or an approved
+command executed. `uncertain` means the post-send snapshot failed.
+
+The hub reserves an answer before dispatch and keeps only a delivery marker on
+the pending prompt. Snapshot polling, repeated request frames and reconnection
+preserve that marker while the same request remains open. An attempted answer
+cannot be submitted again through that hub; the UI shows delivery status and
+removes its answer controls. A failed write retains an uncertain marker and
+reconciles without replaying the response. Values are never persisted, hashed,
+added to transcript projections or retained for retry. Allow-once/deny validation
+is unchanged. Approval snapshots that require `approval.respond` use the same
+socket-epoch fence and fresh-snapshot settlement.
+
+These markers are process-local, as are the socket's native request routes. They
+are not distributed answer receipts. A process restart or another portal replica
+can recover an open prompt only through native `session.resume`; this integration
+does not automatically resend any prior answer. Inspect the native dashboard if
+delivery remains uncertain. Stronger exactly-once confirmation across replicas
+requires a verified native receipt contract and the distributed ownership work
+in #96.
+
+Focused regressions cover held write callbacks, write errors, disconnect during
+write, stale socket epochs, concurrent answers, still-open prompts, resolved
+prompts, failed post-send snapshots and marker recovery without protected-value
+retention. Transport tests use real loopback WebSockets; hub tests use synthetic
+native snapshots and database boundaries. No real pinned dashboard compatibility
+or live authentication is established by these tests.
+
+### Owner removal and disconnect (#89)
+
+Settings → Connected accounts → Remote Hermes provides **Remove connection**, even
+when personal remote admission is disabled. The confirmation explains that local
+credentials, conversation links and submission receipts are deleted. Native
+conversations remain on Hermes, and active/queued work can continue there. This
+operation does not interrupt native work or revoke an upstream token/sign-in;
+use verified native account controls separately for that. No upstream revocation
+API is assumed or called.
+
+The server derives the owner from the authenticated principal and checks the
+mutation origin. Preview returns only the count of linked active/queued/uncertain
+portal sessions, not native IDs or credentials. Removal repeats that check under
+policy → owned connection → session locks. Active, waiting, admitting, uncertain
+or reserved queue work requires a separate checkbox confirmation. If work became
+active after an idle preview, the first removal attempt returns a fresh count
+without deleting anything. Counts describe linked portal state, not all work in
+other native clients.
+
+Credential-row deletion, cascading local bindings/receipts and the safe removal audit are atomic. Failed
+transactions, including failed audit inserts, leave the hub usable and local records intact. Only after commit
+does the current process retire its socket/hub; the closed socket reference and
+its authentication URL are released. Existing durable identity checks fence old
+references and other processes before their next dispatch/view. No distributed
+broadcast or recall of already-dispatched operations is claimed. Database/backups
+follow their normal retention policy; this is logical credential deletion, not a
+claim of storage-media zeroization. Reconnecting creates a fresh authorization
+identity and independently discovers retained native conversations.
+
+PGlite regressions execute migrations 0030–0032 and prove owner isolation,
+credential/binding/receipt cascades, all durable active states, activity appearing
+after preview, disabled-admission removal, rollback and post-commit retirement.
+Action tests prove principal/origin binding and honest audit outcomes. A real
+loopback WebSocket test verifies retired socket-reference release and no
+reconnection. Browser/assistive-technology validation and real-dashboard
+revocation are not established by these checks. No real connection was removed.
+
+### Transport trust and authentication URL handling (#99, partial)
+
+Private-address approval permits the portal to route to a dashboard. It does not
+prove encryption, including for LAN, loopback, container or VPN-looking names.
+The connection form and saved HTTP connections now display that HTTP is not
+encrypted, that administrator approval does not encrypt it, and that passwords,
+tokens and protected replies can be exposed unless a separately verified tunnel
+protects the route. The administrator hint makes the same distinction. HTTPS
+remains the public-address requirement and the connection-form example. This
+code change does not edit live policy or an external tunnel configuration.
+
+Invalid base URLs and malformed native sign-in callback URLs now become bounded
+application errors without retaining Node's raw `input` URL property. Unexpected
+socket target/upgrade errors are replaced by a generic error without a raw cause;
+typed policy/authentication errors keep their deliberate messages. No token,
+ticket, authorization code, state, credential or callback URL is logged by these
+paths. Four regressions failed before these changes; eight disclosure/error tests
+now cover private/loopback HTTP warnings, disabled-admission saved connections,
+invalid URL diagnostics, socket-target failures and malformed native callbacks.
+The lifecycle fixture now uses the same typed policy error as production.
+
+WebSocket authentication still uses the verified native ticket path
+for password/OAuth access, and the native session-token query mode for dashboard
+session tokens. No ticket-exchange API for session-token mode is assumed. Because
+an authentication query must reach Hermes, application error sanitization cannot
+remove it from reverse-proxy, tunnel or upstream access logs. Those operators
+must omit query strings and redact `token`, `ticket`, `code`, `state` and
+`code_verifier`, plus Authorization/Cookie headers, from logs and diagnostics.
+Never paste actual upgrade or callback URLs into issues or documentation.
+
+The code now distinguishes destination approval from tunnel trust. Admins can
+record exact private HTTP bases whose separately managed encrypted tunnel they
+have verified. HTTP connections to non-loopback private addresses fail closed
+until both settings approve that same base. Loopback HTTP requires the ordinary
+private URL approval and remains local to the portal host. HTTPS is still used
+for public endpoints and does not require the tunnel attestation. Removing a
+tunnel attestation fences new HTTP requests and new socket admission; an existing
+socket retains only the previously documented active-turn recovery allowance.
+This app setting records an administrator assertion; it neither creates nor
+cryptographically verifies an external tunnel. Existing private HTTP entries
+are not silently promoted, so administrators must review and record trusted
+tunnels before those non-loopback connections can be used after upgrade.
+
+The pinned Hermes contract at `f97608f178d1ffeca59860195ab7da295f7c8e5f`
+supports an authenticated `POST /api/auth/ws-ticket` that returns a one-use,
+30-second ticket for the bearer/OAuth session. The upgrade sends it in the
+`hermes-gateway-ticket.<ticket>` WebSocket subprotocol together with
+`hermes-gateway-v1`, keeping it out of the request URL. The pinned ungated
+legacy session-token WebSocket accepts only `?token=`; the gated path rejects
+that legacy token, and no session-token exchange endpoint exists. That mode is
+therefore retained only for HTTPS, approved loopback, or an explicitly attested
+encrypted tunnel. The remaining query-string exposure applies to that legacy
+mode and to native auth/callback flows that require query credentials.
+
+External proxy, tunnel and upstream access-log configuration still requires
+operator validation. Those systems must omit query strings and redact `token`,
+`ticket`, `code`, `state` and `code_verifier`, plus Authorization, Cookie and
+Sec-WebSocket-Protocol headers (which carry the short-lived OAuth ticket).
+No proxy configuration, live transport policy, credential grant, paid inference
+or production deployment was changed or exercised here. Unit checks prove the
+app's policy gate and URL/header projection, not encrypted transport or external
+log hygiene.
+
+### Disposable native ticket contract proof (#99)
+
+`tests/unit/remote-hermes-ticket-conformance.test.ts` runs the actual clean
+Hermes checkout at `f97608f178d1ffeca59860195ab7da295f7c8e5f` on a random
+loopback port. It uses a disposable home and synthetic password provider;
+non-loopback sockets/DNS and inference agent construction are blocked. The
+native HTTP login, authenticated ticket route, ticket store, WebSocket upgrade
+gate, protocol selection, readiness and capability handling remain real.
+
+Run with an isolated Python environment containing the pinned dashboard's
+required dependencies and an exact clean source checkout (no `.env`):
+
+```sh
+REMOTE_HERMES_TICKET_CONFORMANCE=1 \
+HERMES_SOURCE=/path/to/clean/pinned/hermes \
+HERMES_DASHBOARD_PYTHON=/path/to/isolated/bin/python \
+npx vitest run --configLoader runner --project unit \
+  tests/unit/remote-hermes-ticket-conformance.test.ts --maxWorkers=1
+```
+
+The seven cases establish authenticated minting, credential-free app-generated
+upgrade URLs, selection of only `hermes-gateway-v1`, successful production socket
+capability negotiation, one-use consumption/replay rejection, invalid/ambiguous
+protocol rejection, and refusal of the correct legacy token in gated mode. A
+final metrics check requires zero external network and inference attempts.
+The fixture retains no raw server diagnostics or captures. It does not validate
+external tunnel encryption or proxy log configuration.

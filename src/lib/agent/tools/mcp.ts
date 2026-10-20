@@ -1,3 +1,4 @@
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import type { MCPClient } from "@ai-sdk/mcp";
 import { dynamicTool, jsonSchema, type JSONSchema7 } from "ai";
 import type { BotToolConfig, McpServer } from "@/db/schema";
@@ -14,6 +15,8 @@ import type { McpToolDef } from "@/lib/mcp/kinds";
 import { offeredTools } from "@/lib/mcp/servers";
 import { listAllTools } from "@/lib/mcp/snapshot";
 import { slugify } from "@/lib/utils";
+import { appResource, appToolVisible } from '@/lib/mcp/apps-contract';
+import { appComponentResult, appModelResult } from '@/lib/mcp/apps-result';
 import type { AgentCtx, ToolEntry } from "../types";
 
 const TOOL_NAME_MAX = 64;
@@ -29,6 +32,7 @@ export function modelToolName(server: Pick<McpServer, "name">, tool: string, tak
 }
 
 type Opts = { caller: McpCaller; config: BotToolConfig | null; taken: Set<string>;
+  apps?: { audience: 'model' | 'app'; compatibility?: boolean };
   authority?: { ctx: AgentCtx; binding: string; grants: ServiceGrant[] } };
 export type McpToolset = { entries: ToolEntry[]; close: () => Promise<void> };
 
@@ -123,7 +127,16 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
               options: { signal: abortSignal, timeout: server.timeoutMs },
             });
             if (ctx) await audit(ctx.principal.user.id, "mcp.call.completed", server.id, details);
-            return capResult(redactMcpValue(result as McpCallResult, server), budget);
+            const clean = result.isError === true
+              ? { isError: true, content: [{ type: "text", text: nativeErrorText(new Error()) }] }
+              : redactMcpValue(result as McpCallResult, server);
+            if (opts.apps?.audience === 'app') return appComponentResult(clean, budget);
+            if (opts.apps && authority && appResource(def) && server.toolsSnapshot && !ctx?.background && !ctx?.inGroup && ctx?.depth === 0) {
+              const { captureMcpApp } = await import('@/lib/mcp/apps');
+              return await captureMcpApp({ ctx: authority.ctx, binding: authority.binding, server, def, client, input: (input ?? {}) as Record<string, unknown>,
+                result: clean, authorize: check });
+            }
+            return opts.apps ? appModelResult(clean, budget) : capResult(clean, budget);
           } catch (err) {
             if (ctx) await audit(ctx.principal.user.id, "mcp.call.failed", server.id, details);
             if (abortSignal?.aborted) throw err;
@@ -143,7 +156,7 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
  * fail instead of opening a new connection nobody would close.
  */
 export function mcpTools(server: McpServer, opts: Opts): McpToolset {
-  const defs = selected(offeredTools(server), opts.config);
+  const defs = selected(offeredTools(server), opts.config).filter(def => !opts.apps || appToolVisible(def, opts.apps.audience, opts.apps.compatibility));
   let pending: Promise<MCPClient> | null = null;
   let closed = false;
   const connections = new Set<Promise<MCPClient>>();
@@ -155,7 +168,9 @@ export function mcpTools(server: McpServer, opts: Opts): McpToolset {
     await client.close().catch(() => {});
   };
   const open = (caller: McpCaller) => {
-    const connection = connectMcp(server, caller).then(async (client) => {
+    const connection = connectMcp(server, { ...caller, ...(opts.apps ? { apps: true } : {}),
+      ...(caller.authorize && caller.service ? { authorize: async () => ({ ...await caller.authorize!(), service: caller.service }) } : {}),
+    }).then(async (client) => {
       if (closed) {
         await releaseClient(client);
         throw new McpToolsetClosedError(server.name);
@@ -194,7 +209,7 @@ export async function connectedMcpTools(server: McpServer, opts: Opts): Promise<
   try {
     const all = await listAllTools(client, { timeout: server.timeoutMs });
     const defs = selected(
-      all.filter((t) => server.toolPolicy[t.name]?.enabled !== false),
+      all.filter((t) => server.toolPolicy[t.name]?.enabled !== false && (!opts.apps || appToolVisible(t, opts.apps.audience, opts.apps.compatibility))),
       opts.config,
     );
     let closed = false;

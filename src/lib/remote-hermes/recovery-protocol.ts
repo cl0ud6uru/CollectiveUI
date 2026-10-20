@@ -28,7 +28,7 @@ export async function readNativeDrain(socket: Rpc, input: NativeDrainBinding): P
   await requireCapability(socket);
   return validateReceipt(await socket.call('collective.recovery.status', { recovery_id: binding.recovery_id }), binding);
 }
-async function requireCapability(socket: Rpc) {
+export async function requireCapability(socket: Rpc) {
   try {
     if (capability.safeParse(await socket.call('collective.recovery.capabilities')).success) return;
   } catch (error) {
@@ -41,7 +41,7 @@ function validateBinding(input: NativeDrainBinding) {
   if (new Set(binding.reservation_ids).size !== binding.reservation_ids.length) throw new HttpError(400, 'Recovery reservation identities must be unique.');
   return binding;
 }
-function validateReceipt(raw: unknown, binding: NativeDrainBinding): NativeDrainReceipt {
+export function validateReceipt(raw: unknown, binding: NativeDrainBinding): NativeDrainReceipt {
   const parsed = receiptSchema.safeParse(raw);
   if (!parsed.success) throw new HttpError(502, 'Native recovery returned invalid evidence.');
   const receipt = parsed.data;

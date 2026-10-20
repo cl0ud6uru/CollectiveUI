@@ -94,20 +94,26 @@ export async function changeUserAccess(
   actor: AuthActor,
   userId: string,
   change: { isAdmin?: boolean; disabled?: boolean; revoke?: boolean },
-  options: { database?: DbOrTx; deferTeamReconciliation?: boolean } = {},
+  options: { database?: DbOrTx; deferTeamReconciliation?: boolean; expectedSessionVersion?: number; signal?: AbortSignal } = {},
 ): Promise<string[]> {
   const database = options.database ?? db;
   const teamBotIds = await database.transaction(async tx => {
     await lockAccounts(tx);
     await assertActor(tx, actor);
+    options.signal?.throwIfAborted();
     const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
     const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
-    const [user] = await tx.select().from(users).where(eq(users.id, userId));
+    const [user] = await tx.select().from(users).where(eq(users.id, userId)).for('update');
     if (!user) throw new HttpError(404, "User not found");
+    if (options.expectedSessionVersion !== undefined && user.sessionVersion !== options.expectedSessionVersion)
+      throw new HttpError(409, "User access changed. Read it again and request fresh approval.");
     if (actor.id === userId && (change.isAdmin === false || change.disabled === true)) throw new HttpError(400, "You can't remove your own access here");
     if (user.identityRealm === "local" && user.isAdmin && !user.disabled && (change.isAdmin === false || change.disabled === true)) await ensureLocalAdminRemains(tx, userId);
+    options.signal?.throwIfAborted();
     await tx.update(users).set({ ...(change.isAdmin === undefined ? {} : { isAdmin: change.isAdmin }), ...(change.disabled === undefined ? {} : { disabled: change.disabled }), sessionVersion: sql`${users.sessionVersion} + 1`, authChangedAt: sql`clock_timestamp()` }).where(eq(users.id, userId));
+    options.signal?.throwIfAborted();
     await auditTx(tx, actor.id, change.revoke ? "user.revoke_sessions" : "user.access_changed", userId);
+    options.signal?.throwIfAborted();
     // Even a still-authorized actor must lose grants issued to the old session version.
     return team ? team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actor.id, userId, true) : [];
   });

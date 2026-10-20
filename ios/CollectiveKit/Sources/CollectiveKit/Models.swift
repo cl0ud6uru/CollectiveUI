@@ -268,7 +268,7 @@ public struct ConversationSummary: Decodable, Hashable, Sendable, Identifiable {
 }
 
 /// A model connection ("app"), bot, or group that a chat can target.
-public struct TargetOption: Decodable, Hashable, Sendable, Identifiable {
+public struct TargetOption: Codable, Hashable, Sendable, Identifiable {
     public var kind: String
     public var id: String
     public var name: String

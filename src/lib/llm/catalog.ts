@@ -289,6 +289,7 @@ const common = {
   systemPrompt: z.string().max(20000).nullable().optional(),
   temperature: z.number().min(0).max(2).nullable().optional(),
   maxTokens: z.number().int().min(1).max(1_000_000).nullable().optional(),
+  contextWindowTokens: z.number().int().min(4_096).max(2_000_000).nullable().optional(),
   supportsVision: z.boolean(),
   supportsTools: z.boolean(),
   embeddingModel: z.string().max(200).nullable().optional(),
@@ -324,6 +325,9 @@ export const AppInput = z
     }
     if (speaksResponses(v.provider) && v.maxTokens != null && v.maxTokens < 16) {
       ctx.addIssue({ code: "custom", path: ["maxTokens"], message: "The Responses API needs at least 16 output tokens" });
+    }
+    if (v.contextWindowTokens != null && v.contextWindowTokens < (v.maxTokens ?? 2_048) + 1_024) {
+      ctx.addIssue({ code: "custom", path: ["contextWindowTokens"], message: "The model context window must leave at least 1,024 tokens after the output reserve" });
     }
     if ((v.provider === "bedrock" || v.provider === "vertex-anthropic" || v.provider === "chatgpt" || v.provider === "hermes") && (!MODEL_ID.test(v.model) || v.model.includes(".."))) {
       ctx.addIssue({ code: "custom", path: ["model"], message: "Model id contains characters that aren't allowed" });

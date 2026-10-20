@@ -242,7 +242,17 @@ describe('owner-bound native companion activation', () => {
     if (kind === 'session') await db.update(schema.users).set({ sessionVersion: 1 }).where(eq(schema.users.id, 'alice'));
     if (kind === 'policy') await permitChatGPT({ enabled: false });
     if (kind === 'binding') await importSIWCProfile(alice!, PROFILE);
-    if (kind === 'expiry') await db.update(schema.chatgptCompanionAttempts).set({ createdAt: new Date(Date.now() - 700000), expiresAt: new Date(Date.now() - 100000), recoveryUntil: new Date(Date.now() + 10000) }).where(eq(schema.chatgptCompanionAttempts.id, f.attemptId));
+    if (kind === 'expiry') {
+      let clock = Date.now();
+      // Clock ticks must not make the fixture exceed the database's ten-minute lifetime.
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock++);
+      try {
+        const now = Date.now();
+        await db.update(schema.chatgptCompanionAttempts).set({ createdAt: new Date(now - 700000), expiresAt: new Date(now - 100000), recoveryUntil: new Date(now + 10000) }).where(eq(schema.chatgptCompanionAttempts.id, f.attemptId));
+        const expired = await attempt(f.attemptId);
+        expect(expired.expiresAt.getTime() - expired.createdAt.getTime()).toBe(600000);
+      } finally { nowSpy.mockRestore(); }
+    }
     await expect(receiveCompanion(f.attemptId, f.authorization, f.envelope)).rejects.toThrow();
     expect(fixture.validation).toHaveBeenCalledTimes(kind === 'binding' ? 1 : 0);
   });

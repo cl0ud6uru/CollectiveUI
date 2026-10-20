@@ -12,6 +12,8 @@ struct StoppedReply: Codable, Equatable {
 @MainActor
 @Observable
 final class ConversationState {
+    var isEstablished = false { didSet { saveLater() } }
+    var newChatTarget: TargetOption? { didSet { saveLater() } }
     var text = "" { didSet { saveLater() } }
     var attachments: [ComposerAttachment] = [] { didSet { saveLater() } }
     var stoppedReplies: [StoppedReply] = [] { didSet { saveLater() } }
@@ -26,7 +28,7 @@ final class ConversationState {
     private func saveLater() {
         saveTask?.cancel()
         saveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(for: .milliseconds(200))
             guard !Task.isCancelled else { return }
             self?.flush()
         }
@@ -82,8 +84,12 @@ final class ConversationState {
 /// Drafts are stored separately for each server and credential session. No token is written
 /// into a file or its name. Demo fixtures use their own scope and never restore real drafts.
 @MainActor
+@Observable
 final class ConversationStateStore {
     private struct Saved: Codable {
+        var isEstablished: Bool?
+        var conversationId: String?
+        var newChatTarget: TargetOption?
         var text: String
         var attachments: [ComposerAttachment]
         var stoppedReplies: [StoppedReply]
@@ -91,6 +97,7 @@ final class ConversationStateStore {
         var pendingCommand: PendingCommandAttempt?
         var requiresStatusCheck: Bool?
     }
+    private(set) var recoverableIDs: [String] = []
     private let directory: URL?
     private var states: [String: ConversationState] = [:]
     private var isValid = true
@@ -99,11 +106,27 @@ final class ConversationStateStore {
         if let server, let token, let root {
             directory = root.appendingPathComponent(Self.digest(server.absoluteString + "\0" + token), isDirectory: true)
         } else { directory = nil }
+        if let directory, let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            recoverableIDs = files.compactMap { file in
+                guard let data = try? Data(contentsOf: file), let saved = try? JSONDecoder().decode(Saved.self, from: data),
+                      saved.pendingSubmission != nil || saved.pendingCommand != nil || saved.requiresStatusCheck == true ||
+                      !saved.text.isEmpty || !saved.attachments.isEmpty else { return nil }
+                return saved.conversationId
+            }.sorted()
+        }
     }
 
     nonisolated static var defaultRoot: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("ChatDrafts", isDirectory: true)
+            .appendingPathComponent(draftDirectoryName, isDirectory: true)
+    }
+
+    nonisolated private static var draftDirectoryName: String {
+        #if os(macOS)
+        "io.collectiveui.macos/ChatDrafts"
+        #else
+        "ChatDrafts"
+        #endif
     }
 
     private static func digest(_ value: String) -> String {
@@ -117,6 +140,8 @@ final class ConversationStateStore {
         let state = ConversationState()
         if let file = file(for: conversationId), let data = try? Data(contentsOf: file),
            let saved = try? JSONDecoder().decode(Saved.self, from: data) {
+            state.isEstablished = saved.isEstablished ?? false
+            state.newChatTarget = saved.newChatTarget
             state.text = saved.text
             state.attachments = saved.attachments.map { attachment in
                 var restored = attachment
@@ -129,8 +154,10 @@ final class ConversationStateStore {
             state.requiresStatusCheck = saved.requiresStatusCheck ?? (saved.pendingSubmission != nil)
         }
         state.save = { [weak self, weak state] in
-            guard let self, self.isValid, let state, let file = self.file(for: conversationId), let directory = self.directory else { return }
-            let saved = Saved(text: state.text, attachments: state.attachments, stoppedReplies: state.stoppedReplies,
+            guard let self, self.isValid, let state else { return }
+            self.updateRecoverableID(conversationId, state: state)
+            guard let file = self.file(for: conversationId), let directory = self.directory else { return }
+            let saved = Saved(isEstablished: state.isEstablished, conversationId: conversationId, newChatTarget: state.newChatTarget, text: state.text, attachments: state.attachments, stoppedReplies: state.stoppedReplies,
                 pendingSubmission: state.pendingSubmission, pendingCommand: state.pendingCommand, requiresStatusCheck: state.requiresStatusCheck)
             guard let data = try? JSONEncoder().encode(saved) else { return }
             do {
@@ -139,24 +166,42 @@ final class ConversationStateStore {
                 var values = URLResourceValues()
                 values.isExcludedFromBackup = true
                 try protectedDirectory.setResourceValues(values)
+                #if os(iOS)
                 try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                #else
+                // macOS uses owner-only permissions, with FileVault providing disk encryption.
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+                try data.write(to: file, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+                #endif
             } catch { /* In-memory drafts still survive navigation if storage is unavailable. */ }
         }
         states[conversationId] = state
         return state
     }
 
+    private func updateRecoverableID(_ id: String, state: ConversationState) {
+        let hasDraft = !state.text.isEmpty || !state.attachments.isEmpty || state.pendingSubmission != nil ||
+            state.pendingCommand != nil || state.requiresStatusCheck
+        if hasDraft && !recoverableIDs.contains(id) { recoverableIDs.append(id) }
+        if !hasDraft { recoverableIDs.removeAll { $0 == id } }
+    }
+
     func flush() { states.values.forEach { $0.flush() } }
 
     func remove(_ conversationId: String) {
+        recoverableIDs.removeAll { $0 == conversationId }
         states.removeValue(forKey: conversationId)?.save = nil
         if let file = file(for: conversationId) { try? FileManager.default.removeItem(at: file) }
     }
 
     func clear() {
         isValid = false
+        recoverableIDs = []
         for state in states.values {
             state.save = nil
+            state.isEstablished = false
+            state.newChatTarget = nil
             state.text = ""
             state.attachments = []
             state.stoppedReplies = []

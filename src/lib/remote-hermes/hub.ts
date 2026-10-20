@@ -9,7 +9,8 @@ import { getSetting, type RemoteHermesSettings } from '@/lib/settings';
 import { isPrivateAddress } from '@/lib/agent/tools/web';
 import { registerNativeConnection } from './lifecycle';
 import { remoteAccess } from './store';
-import { dashboardAddress } from './transport';
+import { dashboardAddress, privateHttpTransportTrusted } from './transport';
+import { websocketAuthentication } from './websocket-auth';
 import { DashboardSocket, record, type NativeFrame, type RpcRecord } from './socket';
 import { promptView, sessionView, answerFor, type NativeSessionView, type NativePrompt } from './view';
 
@@ -32,10 +33,10 @@ export class NativeHub {
       this.pinned = { baseUrl: target.baseUrl, address: address.address };
       const url = new URL(target.baseUrl + '/api/ws');
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      if (target.secrets.mode === 'sessionToken') url.searchParams.set('token', target.secrets.sessionToken!);
-      else url.searchParams.set('ticket', await target.client.websocketTicket());
+      const auth = websocketAuthentication(url, target.secrets,
+        target.secrets.mode === 'password' ? await target.client.websocketTicket() : undefined);
       const options: ClientOptions & Pick<RequestOptions, 'lookup'> = { family: address.family, lookup: (_host, _opts, callback) => callback(null, address.address, address.family) };
-      return { url, options };
+      return { ...auth, options };
     }, frame => this.onFrame(frame), state => {
       for (const cached of this.sessions.values()) { cached.view.connection = state; this.changes.emit(cached.row.id); }
     }, async () => {
@@ -79,7 +80,8 @@ export class NativeHub {
     // use dashboardAddress and cannot reconnect to a revoked private destination.
     const address = this.pinned?.baseUrl === connection.baseUrl ? this.pinned :
       { baseUrl: connection.baseUrl, ...(await dashboardAddress(connection.baseUrl, policy)) };
-    const revoked = isPrivateAddress(address.address) && !policy.privateGateways.includes(connection.baseUrl);
+    const revoked = isPrivateAddress(address.address) && (!policy.privateGateways.includes(connection.baseUrl) ||
+      !privateHttpTransportTrusted(connection.baseUrl, address.address, policy));
     if (policy.enabled && !revoked) return;
     // Only an already admitted, durable binding can recover on the old socket.
     // No steering, uploads, queues, commands, setters or inspection are exempt.
@@ -134,7 +136,7 @@ export class NativeHub {
     if (!observed) throw new HttpError(404, 'Native Hermes chat not found.');
     row = observed;
     const eventRevision = this.sessions.get(row.id)?.eventRevision ?? 0;
-    const { result: snapshot, epoch: socketEpoch } = await this.socket.callWithEpoch('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, inline_images: false, close_on_disconnect: false });
+    const { result: snapshot, epoch: socketEpoch } = await this.socket.callWithEpoch('session.resume', { session_id: row.storedId, profile: row.profile, cols: 80, close_on_disconnect: false });
     await this.assertIdentity();
     const runtimeId = typeof snapshot.session_id === 'string' ? snapshot.session_id : '';
     const storedId = typeof snapshot.stored_session_id === 'string' ? snapshot.stored_session_id : row.storedId;
@@ -184,6 +186,11 @@ export class NativeHub {
         cached.view.uncertain ||= view.uncertain;
         return cached.view;
       }
+      // Preserve attempted-answer markers through polling/reconnect; no answer value is cached.
+      for (const [id, request] of pending) {
+        const previous = cached?.pending.get(id);
+        if (previous?.prompt.method === request.prompt.method) request.prompt.delivery = previous.prompt.delivery;
+      }
       this.sessions.set(row.id, { row: current, view, pending, refreshedAt: Date.now(), eventRevision, socketEpoch });
       this.changes.emit(row.id);
       return view;
@@ -215,6 +222,8 @@ export class NativeHub {
     if (frame.id !== undefined && frame.method && frame.method !== 'event') {
       const prompt = promptView(frame.id, frame.method, p);
       if (!prompt) { void this.socket.answer(frame.id).catch(() => {}); return; }
+      const previous = cached.pending.get(prompt.id);
+      if (previous?.prompt.method === prompt.method) prompt.delivery = previous.prompt.delivery;
       cached.pending.set(prompt.id, { nativeId: frame.id, prompt, params: p });
       cached.view.prompts = [...cached.pending.values()].map(v => v.prompt);
       cached.view.running = true;
@@ -267,11 +276,35 @@ export class NativeHub {
     const cached = this.sessions.get(row.id)!;
     const pending = cached.pending.get(requestId);
     if (!pending) throw new HttpError(409, 'This native prompt has expired or was answered elsewhere.');
+    if (pending.prompt.delivery) throw new HttpError(409, 'An answer was already sent or attempted for this prompt. Refresh or inspect the native dashboard; it will not be replayed.');
     const result = answerFor(pending.prompt, input);
-    if (pending.params.fallbackApproval) await this.socket.call('approval.respond', { session_id: cached.row.runtimeId, profile: row.profile, request_id: pending.params.request_id, choice: result.choice });
-    else await this.socket.answer(pending.nativeId, result);
-    cached.pending.delete(requestId); cached.view.prompts = [...cached.pending.values()].map(p => p.prompt);
-    return { answered: true };
+    const mark = (delivery: NonNullable<NativePrompt['delivery']>) => {
+      pending.prompt.delivery = delivery;
+      const latest = this.sessions.get(row.id);
+      const request = latest?.pending.get(requestId);
+      if (request?.prompt.method === pending.prompt.method) request.prompt.delivery = delivery;
+      if (latest) { latest.eventRevision++; this.changes.emit(row.id); }
+    };
+    // Reserve synchronously before sending so concurrent HTTP answers cannot duplicate delivery.
+    mark('sending');
+    try {
+      if (pending.params.fallbackApproval) await this.socket.callConnected('approval.respond', { session_id: cached.row.runtimeId, profile: row.profile, request_id: pending.params.request_id, choice: result.choice }, cached.socketEpoch);
+      else await this.socket.answer(pending.nativeId, result, cached.socketEpoch);
+      mark('sent');
+    } catch (error) {
+      mark('uncertain');
+      // Reconcile without keeping or resending protected values. Preserve the send error.
+      await this.refreshAfterPending(row).catch(() => {});
+      throw error;
+    }
+    try {
+      const view = await this.refreshAfterPending(row);
+      // Absence confirms resolution, not whether this answer caused it (another client may cancel).
+      return { sent: true, status: view.prompts.some(p => p.id === requestId) ? 'pending' : 'resolved' };
+    } catch {
+      mark('uncertain');
+      return { sent: true, status: 'uncertain' };
+    }
   }
 }
 const globalHubs = globalThis as unknown as { collectiveRemoteHermesHubs?: Map<string, NativeHub> };

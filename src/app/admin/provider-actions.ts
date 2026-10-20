@@ -13,6 +13,7 @@ import { CONFIG_SCHEMAS, isSavedProviderKind, normalizeBaseUrl, SAVED_PROVIDER_K
 import { encodeSecretInput, openAppSecret } from "@/lib/llm/secrets";
 import { providerConnectionView, sealProviderCredential } from "@/lib/llm/provider-connections";
 import { carryServicePublications } from "@/lib/bots/service";
+import { updateProviderConnectionMetadata } from "@/lib/admin/provider-connection-write";
 
 const nameSchema = z.string().trim().min(1).max(80);
 const Input = z.object({
@@ -45,10 +46,19 @@ export async function saveProviderConnection(raw: ProviderConnectionInput) {
     if (existing && (existing.provider !== input.provider || existing.baseUrl !== target.baseUrl || existing.organization !== target.organization || existing.project !== target.project))
       throw new HttpError(400, "The API type, endpoint and billing destination cannot be changed. Create a separate provider connection.");
     if (!existing && !secret) throw new HttpError(400, "Enter the API credential for this provider connection.");
-    const values = { name: input.name, enabled: input.enabled, updatedAt: new Date(), ...(secret ? { credentialEnc: sealProviderCredential(id, secret) } : {}) };
-    const [row] = existing
-      ? await tx.update(providerConnections).set(values).where(eq(providerConnections.id, id)).returning()
-      : await tx.insert(providerConnections).values({ id, provider: input.provider, ...values, ...target, credentialEnc: sealProviderCredential(id, secret!), createdBy: p.user.id }).returning();
+    let row;
+    if (existing) {
+      row = await updateProviderConnectionMetadata(tx, existing, { name: input.name, enabled: input.enabled });
+      if (secret) {
+        const [withCredential] = await tx.update(providerConnections).set({ credentialEnc: sealProviderCredential(id, secret) })
+          .where(eq(providerConnections.id, id)).returning();
+        row = withCredential;
+      }
+    } else {
+      const [created] = await tx.insert(providerConnections).values({ id, provider: input.provider, name: input.name, enabled: input.enabled,
+        updatedAt: new Date(), ...target, credentialEnc: sealProviderCredential(id, secret!), createdBy: p.user.id }).returning();
+      row = created;
+    }
     return providerConnectionView(row);
   });
   await audit(p.user.id, input.id ? "provider_connection.update" : "provider_connection.create", id, { rotated: !!input.id && !!secret, enabled: input.enabled });

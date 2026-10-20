@@ -1,4 +1,4 @@
-import { createMCPClient, type MCPClient } from "@ai-sdk/mcp";
+import { createMCPClient, mcpAppClientCapabilities, type MCPClient } from "@ai-sdk/mcp";
 import type { McpServer } from "@/db/schema";
 import { AAD, decryptOptional } from "@/lib/crypto";
 import { redactSecrets } from "@/lib/redact";
@@ -6,6 +6,8 @@ import { identityClaims, openIdentitySecret, signIdentity, type IdentitySubject,
 import { checkMcpUrl } from "./url";
 
 export type McpCaller = { subject: IdentitySubject; botId?: string | null; conversationId?: string | null; service?: ServiceIdentity;
+  /** Only the native Apps path advertises UI support. */
+  apps?: boolean;
   /** Native Team adapters must reauthorize every transport request, including initialize and continuation. */
   authorize?: () => Promise<McpCaller> };
 
@@ -77,6 +79,7 @@ export async function connectMcpWithHeaders(server: McpServer, caller: McpCaller
       ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal,
     }) : send },
     clientName: MCP_CLIENT_NAME,
+    ...(caller.apps ? { capabilities: mcpAppClientCapabilities } : {}),
     initializationOptions: { timeout: server.timeoutMs },
   });
 }

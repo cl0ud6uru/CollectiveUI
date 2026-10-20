@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 import SwiftUI
-import UIKit
 import CollectiveKit
 
 enum AppPhase: Equatable {
@@ -31,7 +30,9 @@ final class AppModel {
     private(set) var token: String? = nil
     private(set) var api: APIClient? = nil
 
+    #if os(iOS)
     var voice: VoiceSessionModel?
+    #endif
 
     var shell: ShellResponse? = nil
     var shellError: String? = nil
@@ -42,9 +43,12 @@ final class AppModel {
     var banner: Banner? = nil
     var isSigningIn: Bool = false
 
+    #if os(iOS)
     let liveActivities = LiveActivityCoordinator()
+    #endif
 
-    private let authenticator: WebAuthenticator
+    private let authenticator: any WebAuthenticating
+    @ObservationIgnored private var authAttempt = UUID()
     /// Custom URLSession for every API client (used by the debug demo mode); nil uses the shared session.
     private let sessionOverride: URLSession?
     private let credentials: any CredentialStore
@@ -56,13 +60,14 @@ final class AppModel {
     private enum Keys {
         static let token = "token"
         static let baseURL = "baseURL"
+        static let signedOut = "nativeSignedOut"
         static let lastServerAddress = "lastServerAddress"
     }
 
     init(credentials: any CredentialStore = KeychainCredentials(), defaults: UserDefaults = .standard,
          draftRoot: URL? = ConversationStateStore.defaultRoot, session: URLSession? = nil,
-         launchDemo: Bool? = nil, resetDemoDrafts: Bool? = nil) {
-        authenticator = WebAuthenticator()
+         launchDemo: Bool? = nil, resetDemoDrafts: Bool? = nil, authenticator: (any WebAuthenticating)? = nil) {
+        self.authenticator = authenticator ?? WebAuthenticator()
         self.credentials = credentials
         self.defaults = defaults
         self.draftRoot = draftRoot
@@ -81,10 +86,16 @@ final class AppModel {
         }
         #endif
         sessionOverride = session
-        let stored = credentials.string(for: Keys.baseURL) ?? defaults.string(forKey: Keys.baseURL)
+        let signedOut = defaults.bool(forKey: Keys.signedOut)
+        let credentialServer = signedOut ? nil : credentials.string(for: Keys.baseURL)
+        let stored = defaults.string(forKey: Keys.baseURL) ?? credentialServer
         if let stored, let url = APIClient.normalizeBaseURL(stored) {
             serverURL = url
-            token = credentials.string(for: Keys.token)
+            // A failed server-address write must not send another server's token here.
+            if !signedOut, let credentialServer,
+               APIClient.normalizeBaseURL(credentialServer) == url {
+                token = credentials.string(for: Keys.token)
+            }
         }
         rebuildConversationStates()
         rebuildClient()
@@ -142,13 +153,16 @@ final class AppModel {
             api = nil
             return
         }
+        #if os(iOS)
         liveActivities.app = self
+        #endif
         // AppModel lives as long as the app, so a strong reference here is fine.
         let model = self
         let clientToken = token
+        let clientGeneration = settingsAccess.generation
         api = APIClient(baseURL: serverURL, token: token, session: sessionOverride, onUnauthorized: {
             Task { @MainActor in
-                guard model.serverURL == serverURL, model.token == clientToken else { return }
+                guard model.settingsAccess.generation == clientGeneration, model.serverURL == serverURL, model.token == clientToken else { return }
                 model.handleUnauthorized()
             }
         })
@@ -169,6 +183,7 @@ final class AppModel {
     }
 
     func useServer(_ url: URL, info: MobileInfo) {
+        invalidateAuthentication()
         conversationStates.clear()
         #if DEBUG
         isDemoSession = url.host?.lowercased() == DemoMode.host
@@ -177,11 +192,14 @@ final class AppModel {
         serverInfo = info
         token = nil
         shell = nil
+        shellError = nil
+        banner = nil
         sessionInfo = nil
         selection = nil
         if !isDemoSession {
             // Demo startup deliberately preserves unrelated real credentials. Never pair
             // an old token with this newly selected server if the app exits before sign-in.
+            defaults.set(true, forKey: Keys.signedOut)
             credentials.remove(Keys.token)
             credentials.set(url.absoluteString, for: Keys.baseURL)
             defaults.set(url.absoluteString, forKey: Keys.baseURL)
@@ -192,14 +210,20 @@ final class AppModel {
     }
 
     func changeServer() {
+        invalidateAuthentication()
         if token != nil, let oldAPI = api {
             Task {
+                #if os(iOS)
                 try? await oldAPI.sendIgnoringResponse("/api/mobile/v1/live-activities", method: "DELETE", body: .object([:]))
+                #endif
                 try? await oldAPI.revokeSession()
             }
         }
+        #if os(iOS)
         liveActivities.resetLogin()
+        #endif
         if !isDemoSession {
+            defaults.set(true, forKey: Keys.signedOut)
             credentials.remove(Keys.baseURL)
             credentials.remove(Keys.token)
             defaults.removeObject(forKey: Keys.baseURL)
@@ -209,6 +233,8 @@ final class AppModel {
         serverInfo = nil
         token = nil
         shell = nil
+        shellError = nil
+        banner = nil
         sessionInfo = nil
         selection = nil
         rebuildConversationStates()
@@ -218,7 +244,9 @@ final class AppModel {
     func loadServerInfoIfNeeded() async {
         guard serverInfo == nil, let serverURL else { return }
         do {
-            serverInfo = try await publicClient(serverURL).mobileInfo()
+            let info = try await publicClient(serverURL).mobileInfo()
+            guard self.serverURL == serverURL else { return }
+            serverInfo = info
         } catch {
             // The sign-in button still works; the info is only cosmetic here.
         }
@@ -227,18 +255,28 @@ final class AppModel {
     // MARK: - Sign in / out
 
     func signIn() async {
-        guard let serverURL, !isSigningIn else { return }
+        guard let serverURL, token == nil, !isSigningIn, !Task.isCancelled else { return }
+        #if DEBUG
+        guard !isDemoSession else {
+            showBanner("This is an offline sign-in preview. Browser sign-in requires a controlled test server.")
+            return
+        }
+        #endif
+        let attempt = UUID()
+        authAttempt = attempt
         isSigningIn = true
-        defer { isSigningIn = false }
+        defer { if authAttempt == attempt { isSigningIn = false } }
 
         do {
             let info = try await publicClient(serverURL).mobileInfo()
+            guard authAttempt == attempt, self.serverURL == serverURL, !Task.isCancelled else { return }
             serverInfo = info
             if !info.enabled {
                 showBanner("Mobile sign-in is turned off on this server. Ask your administrator to set MOBILE_APP_ENABLED=true.", isError: true)
                 return
             }
         } catch {
+            guard authAttempt == attempt, !Task.isCancelled else { return }
             showBanner(error.localizedDescription, isError: true)
             return
         }
@@ -246,17 +284,31 @@ final class AppModel {
         let verifier = PKCE.makeVerifier()
         let challenge = PKCE.challenge(for: verifier)
         let state = PKCE.makeState()
-        let deviceName = UIDevice.current.name
+        let deviceName = WebAuthenticator.deviceName
         guard let authorizeURL = MobileAuth.authorizeURL(baseURL: serverURL, challenge: challenge, state: state, deviceName: deviceName) else {
             showBanner("Couldn't build the sign-in address.", isError: true)
             return
         }
 
         do {
-            let callback = try await authenticator.authenticate(url: authorizeURL, callbackScheme: MobileAuth.callbackScheme)
+            let callback = try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await authenticator.authenticate(url: authorizeURL, callbackScheme: MobileAuth.callbackScheme)
+            } onCancel: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.authAttempt == attempt else { return }
+                    self.authenticator.cancel()
+                }
+            }
+            guard authAttempt == attempt, self.serverURL == serverURL, !Task.isCancelled else { return }
             switch MobileAuth.parseCallback(callback, expectedState: state) {
             case .code(let code):
                 let response = try await publicClient(serverURL).exchangeToken(code: code, codeVerifier: verifier)
+                guard authAttempt == attempt, self.serverURL == serverURL, !Task.isCancelled else {
+                    let abandoned = APIClient(baseURL: serverURL, token: response.token, session: sessionOverride)
+                    Task { try? await abandoned.revokeSession() }
+                    return
+                }
                 completeSignIn(token: response.token)
                 await refreshShell()
             case .denied:
@@ -265,11 +317,18 @@ final class AppModel {
                 showBanner(message, isError: true)
             }
         } catch {
-            if WebAuthenticator.isUserCancellation(error) {
+            guard authAttempt == attempt, !Task.isCancelled else { return }
+            if error.isCancellation || WebAuthenticator.isUserCancellation(error) {
                 return
             }
             showBanner(error.localizedDescription, isError: true)
         }
+    }
+
+    /// Window closure and task cancellation dismiss sign-in without changing server selection.
+    func cancelSignIn() {
+        guard isSigningIn else { return }
+        invalidateAuthentication()
     }
 
     /// Used only after the server's PKCE token exchange succeeded. The current server/session,
@@ -283,9 +342,21 @@ final class AppModel {
         if !isDemoSession {
             credentials.set(newToken, for: Keys.token)
             credentials.set(serverURL.absoluteString, for: Keys.baseURL)
+            guard credentials.string(for: Keys.token) == newToken,
+                  credentials.string(for: Keys.baseURL) == serverURL.absoluteString else {
+                defaults.set(true, forKey: Keys.signedOut)
+                credentials.remove(Keys.token)
+                showBanner("The Keychain couldn't save this session. Unlock your device or Keychain and try signing in again.", isError: true)
+                let issuedSession = APIClient(baseURL: serverURL, token: newToken, session: sessionOverride)
+                Task { try? await issuedSession.revokeSession() }
+                return
+            }
+            defaults.set(false, forKey: Keys.signedOut)
         }
         token = newToken
         shell = nil
+        shellError = nil
+        banner = nil
         sessionInfo = nil
         selection = nil
         rebuildConversationStates()
@@ -293,23 +364,44 @@ final class AppModel {
     }
 
     func signOut() async {
+        let generation = settingsAccess.generation
+        let signingOutAPI = api
+        #if os(iOS)
         await liveActivities.clear(removeRemote: true)
-        if let api, token != nil {
+        #endif
+        guard settingsAccess.generation == generation else { return }
+        // End local access immediately; a slow revocation must not leave chat usable
+        // or clear a replacement session when its response eventually arrives.
+        clearSession()
+        if let signingOutAPI, signingOutAPI.token != nil {
             do {
-                try await api.revokeSession()
+                try await signingOutAPI.revokeSession()
             } catch {
-                // Ignore: the local session is wiped regardless.
+                // The local session is already cleared even if the server is unreachable.
             }
         }
-        clearSession()
+    }
+
+    private func invalidateAuthentication() {
+        authAttempt = UUID()
+        isSigningIn = false
+        authenticator.cancel()
     }
 
     private func clearSession() {
+        invalidateAuthentication()
+        #if os(iOS)
         liveActivities.resetLogin()
-        if !isDemoSession { credentials.remove(Keys.token) }
+        #endif
+        if !isDemoSession {
+            defaults.set(true, forKey: Keys.signedOut)
+            credentials.remove(Keys.token)
+        }
         conversationStates.clear()
         token = nil
         shell = nil
+        shellError = nil
+        banner = nil
         sessionInfo = nil
         selection = nil
         rebuildConversationStates()
@@ -333,7 +425,9 @@ final class AppModel {
             botStatusRequest += 1
             shell = fresh
             shellError = nil
+            #if os(iOS)
             liveActivities.restore()
+            #endif
         } catch {
             guard settingsAccess.generation == generation else { return }
             if error.isUnauthorized || error.isCancellation {
@@ -414,9 +508,11 @@ final class AppModel {
 
     func delete(_ conversation: ConversationSummary) async {
         deselect(conversation.id)
-        await mutateConversation { api in
+        let store = conversationStates
+        if await mutateConversation({ api in
             try await api.deleteConversation(id: conversation.id)
-            conversationStates.remove(conversation.id)
+        }), conversationStates === store {
+            store.remove(conversation.id)
         }
     }
 
@@ -426,22 +522,31 @@ final class AppModel {
         }
     }
 
-    private func mutateConversation(_ operation: (APIClient) async throws -> Void) async {
-        guard let api else { return }
+    @discardableResult
+    private func mutateConversation(_ operation: (APIClient) async throws -> Void) async -> Bool {
+        guard let api, token != nil else { return false }
         do {
             try await operation(api)
         } catch {
+            guard self.api === api else { return false }
             if !error.isUnauthorized && !error.isCancellation {
                 showBanner(error.localizedDescription, isError: true)
             }
+            return false
         }
+        guard self.api === api, !Task.isCancelled else { return false }
         await refreshShell()
+        return self.api === api
     }
 
     #if DEBUG
     /// Demo mode starts signed in against the in-memory demo server (or on the signed-out screens).
     private func configureDemo() {
+        #if os(iOS)
         DemoServer.shared.install(chartPNG: DemoArt.chartPNG(), petV1: DemoArt.petAtlasPNG(version: 1), petV2: DemoArt.petAtlasPNG(version: 2))
+        #elseif os(macOS)
+        DemoServer.shared.install(chartPNG: Data(), petV1: DemoPetArt.atlasPNG(version: 1), petV2: DemoPetArt.atlasPNG(version: 2))
+        #endif
         switch DemoMode.screen {
         case "setup":
             serverURL = nil

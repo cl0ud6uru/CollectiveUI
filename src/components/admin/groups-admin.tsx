@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Loader2, Plus, Trash2, X } from "lucide-react";
-import { deleteGroup, type GroupInput } from "@/app/admin/actions";
-import { findLdapUserForGroup, saveGroupWithFeedback, type LdapGroupMember } from "@/app/admin/groups/ldap-actions";
+import type { GroupInput } from "@/app/admin/actions";
+import { deleteGroupWithFeedback, findLdapUserForGroup, saveGroupWithFeedback, type LdapGroupMember } from "@/app/admin/groups/ldap-actions";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/input";
@@ -24,6 +24,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
   const [pending, start] = useTransition();
   const [ldapUsername, setLdapUsername] = useState("");
   const [ldapMembers, setLdapMembers] = useState<LdapGroupMember[]>([]);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [lookingUp, lookup] = useTransition();
   const mappings = g.mappings ?? [];
 
@@ -126,6 +127,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
               <button aria-label={`Remove ${member.name}`} onClick={() => setLdapMembers(current => current.filter(u => u.upn !== member.upn))} className="text-muted hover:text-danger"><X className="h-4 w-4" /></button>
             </div>)}
           </Field>}
+          {saveError && <p role="alert" className="text-sm text-danger">{saveError}</p>}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={onClose}>
               Cancel
@@ -134,6 +136,7 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
               disabled={pending || lookingUp || !g.name}
               onClick={() =>
                 start(async () => {
+                  setSaveError(null);
                   try {
                     const result = await saveGroupWithFeedback({
                       id: g.id,
@@ -145,12 +148,13 @@ function GroupDialog({ group, known, users, ldapEnabled, onClose }: { group: Par
                       memberIds: g.memberIds ?? [],
                       ldapUsernames: ldapMembers.map(member => member.username),
                     });
-                    if (!result.ok) { toast.error(result.error); return; }
+                    if (!result.ok) { setSaveError(result.error); toast.error(result.error); return; }
                     toast.success("Group saved");
                     onClose();
                     router.refresh();
                   } catch (err) {
-                    toast.error(err instanceof Error ? err.message : "Save failed");
+                    const message = err instanceof Error ? err.message : "Save failed";
+                    setSaveError(message); toast.error(message);
                   }
                 })
               }
@@ -168,18 +172,22 @@ export function GroupsAdmin({ groups, known, users, ldapEnabled = false }: { gro
   const router = useRouter();
   const [edit, setEdit] = useState<Partial<Group> | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const deleteInFlight = useRef(false);
 
   async function remove(group: Group) {
     if (deleteInFlight.current || !confirm(`Delete group ${group.name}?`)) return;
     deleteInFlight.current = true;
     setDeleting(group.id);
+    setDeleteError(null);
     try {
-      await deleteGroup(group.id);
+      const result = await deleteGroupWithFeedback(group.id);
+      if (!result.ok) { setDeleteError(result.error); toast.error(result.error); return; }
       toast.success("Group deleted");
       router.refresh();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not delete group. Try again.");
+      const message = err instanceof Error ? err.message : "Could not delete group. Try again.";
+      setDeleteError(message); toast.error(message);
     } finally {
       deleteInFlight.current = false;
       setDeleting(null);
@@ -192,6 +200,7 @@ export function GroupsAdmin({ groups, known, users, ldapEnabled = false }: { gro
           <Plus className="h-4 w-4" /> New group
         </Button>
       </div>
+      {deleteError && <p role="alert" className="mb-3 text-sm text-danger">{deleteError}</p>}
       <Table head={["Name", "Directory groups", "Individual users", "Permissions", ""]}>
         {groups.map((g) => (
           <tr key={g.id} className="hover:bg-hover/50">

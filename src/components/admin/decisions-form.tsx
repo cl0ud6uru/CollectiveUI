@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { saveDecisionsSettings } from "@/app/admin/decisions-actions";
 import { DECISIONS_NOTICE, type DecisionsSettings } from "@/lib/decisions-policy";
 import { Button } from "@/components/ui/button";
-import { Field, Select } from "@/components/ui/input";
+import { Field, Input, Select } from "@/components/ui/input";
 import { Card } from "./ui";
 
 export function DecisionsForm({ initial, providers }: { initial: DecisionsSettings; providers: { id: string; name: string }[] }) {
@@ -24,6 +24,16 @@ export function DecisionsForm({ initial, providers }: { initial: DecisionsSettin
         });
       }}>
         <p className="text-sm text-muted">{DECISIONS_NOTICE}</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="gpt-6-luna context window" hint="Default 16,384 tokens. Input is conservatively budgeted from request JSON; reserve at least 1,024 tokens after output.">
+            <Input type="number" min={4096} max={2_000_000} step={1} value={value.contextWindowTokens}
+              onChange={e => { setSaved(false); setValue({ ...value, contextWindowTokens: Number(e.target.value) }); }} />
+          </Field>
+          <Field label="gpt-6-luna max output tokens" hint="Default 1,024 tokens. Sent as the request output limit and reserved from the context window.">
+            <Input type="number" min={64} max={1_000_000} step={1} value={value.maxOutputTokens}
+              onChange={e => { setSaved(false); setValue({ ...value, maxOutputTokens: Number(e.target.value) }); }} />
+          </Field>
+        </div>
         <Field label="Decisions API connection">
           <Select aria-label="Decisions API connection" value={value.providerAppId ?? ""} disabled={pending} onChange={e => {
             setSaved(false); setValue({ ...value, providerAppId: e.target.value || null });

@@ -461,6 +461,21 @@ final class DemoServer: @unchecked Sendable {
     private func streamAnswer(conversationId: String, parentId: String, question: String, newTitle: String?) -> DemoResponse {
         counter += 1
         let messageId = "demo-reply-\(counter)"
+        if DemoMode.value(after: "--demo-stream-scenario") == "server-error" {
+            let error = "Something went wrong. Try again. Reference: DEMO-REPLY-001."
+            let chunks: [(JSONValue, TimeInterval)] = [
+                (.object(["type": "start", "messageId": .string(messageId)]), 0.05),
+                (.object(["type": "text-start", "id": "qa-text"]), 0.05),
+                (.object(["type": "text-delta", "id": "qa-text", "delta": "This synthetic reply was interrupted by a server failure."]), 0.05),
+                (.object(["type": "text-end", "id": "qa-text"]), 0.05),
+                (.object(["type": "error", "errorText": .string(error)]), 0.05),
+                (.object(["type": "finish", "finishReason": "error"]), 0.05),
+            ]
+            var reducer = UIMessageStreamReducer(messageId: messageId)
+            for (chunk, _) in chunks { reducer.apply(UIMessageChunk(json: chunk)) }
+            appendRow(conversationId, MessageRow(id: messageId, parentId: parentId, message: reducer.message))
+            return .stream(DemoServer.events(chunks))
+        }
         if let scenario = DemoMode.value(after: "--demo-stream-scenario"), ["long", "delayed"].contains(scenario) {
             return regressionStream(conversationId: conversationId, parentId: parentId, messageId: messageId, scenario: scenario)
         }

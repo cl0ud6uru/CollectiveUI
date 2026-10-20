@@ -1,22 +1,22 @@
 import { AdminHeader, Card, Stat, Table, Td } from "@/components/admin/ui";
 import { requireAdminPage } from "@/lib/session";
-import { usageSummary } from "@/lib/usage";
+import { ADMIN_USAGE_DAYS, ADMIN_USAGE_PERIOD, usageSummary } from "@/lib/usage";
 
 const n = (v: number | string) => Number(v).toLocaleString();
 
 export default async function AdminUsagePage() {
   await requireAdminPage();
-  const { totals, daily, byApp, byUser } = await usageSummary(30);
+  const { totals, daily, byApp, byUser } = await usageSummary(ADMIN_USAGE_DAYS);
   const max = Math.max(1, ...daily.map((d) => Number(d.messages)));
   const fb = Number(totals.thumbs_up) + Number(totals.thumbs_down);
   return (
     <div>
       <AdminHeader
         title="Usage"
-        description="Last 30 days"
+        description={ADMIN_USAGE_PERIOD}
         actions={
           <a href="/api/admin/usage.csv" className="rounded-full border border-border px-4 py-2 text-sm hover:bg-hover">
-            Export CSV
+            Export CSV · {ADMIN_USAGE_PERIOD.toLowerCase()}
           </a>
         }
       />
@@ -58,7 +58,7 @@ export default async function AdminUsagePage() {
                   <Td className="tabular-nums">{n(d.tokens)}</Td>
                 </tr>
               ))}
-              {!daily.length && <tr><Td colSpan={3} className="text-muted">No assistant messages in the last 30 days.</Td></tr>}
+              {!daily.length && <tr><Td colSpan={3} className="text-muted">No assistant messages in the {ADMIN_USAGE_PERIOD.toLowerCase()}.</Td></tr>}
             </Table>
           </div>
         </details>

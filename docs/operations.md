@@ -1,6 +1,6 @@
 # Operating CollectiveUI
 
-[Back to the overview](../README.md) · [Connections](connections.md) · [Local setup](getting-started.md)
+[Back to the overview](../README.md) · [Connections](connections.md) · [Local setup](getting-started.md) · [Native model budgets](native-run-budgets.md)
 
 This pre-release serves one installation/organization. Validate integrations and your complete deployment before relying on it. Never use the development database seed or demo passwords in production.
 
@@ -134,9 +134,21 @@ Enter an **existing local administrator's** username/email and a new hidden pass
 
 You can enable both options at once. Hybrid users are matched by UPN, so either sign-in method reaches the same account. Set `AUTH_ENTRA_ENABLED=false` or `LDAP_ENABLED=false` to turn one off.
 
+Group saves and deletions must retain the acting administrator's effective access. Removing an admin role, direct membership or directory mapping, or deleting the group, is blocked if it would remove that person's final grant. Direct user grants, directory environment grants and other qualifying portal groups remain valid alternatives; local accounts still do not inherit directory environment grants. To hand off administration intentionally, retain another grant first or ask another administrator to perform the change. A blocked save keeps the editor draft and shows the handoff guidance; a blocked deletion keeps the row and shows the same guidance.
+
+The guard re-reads effective access before and after the change inside one transaction. Group mutations share the existing account-mutation advisory lock with direct user-role changes, and lock the acting user's row after Team bot locks to coordinate directory synchronization. Competing group removals therefore cannot both validate against an obsolete remaining grant. Rejection rolls back group fields, memberships, mappings and any LDAP users staged by that save. This protects the actor from accidental self-removal; another authorized administrator can still deliberately change that person's access.
+
 **Bootstrap admins:** set `ADMIN_UPNS` and/or `ADMIN_GROUPS`, separated by semicolons (LDAP DNs contain commas). After that, grant admin rights through groups or on the Users page.
 
+## Usage reports
+
+Admin → Usage and **Export CSV · last 30 days** use the same rolling 30-day period, measured from each request's database time. The download is named `usage-last-30-days.csv`. Records exactly at or before the cutoff are excluded in both views. Reload the dashboard before comparing a later download; new records and the rolling cutoff can change between requests. CSV rows are grouped by day, user, target, purpose and billing source, so aggregate reply and token columns when comparing those totals with the dashboard.
+
 ## Workspaces (sandboxed commands)
+
+Admin → Workspaces reports `status unavailable` when configuration is incomplete or no successful workspace list response exists. Run the setup check and reload to retry the list. Only a successful list can establish that a registered workspace is `not present`; readiness checks alone do not establish presence or absence.
+
+Retention badges use the page's server snapshot time and explicit UTC timestamps. A future deadline is **Scheduled for deletion on …**; a deadline that has arrived is **Pending cleanup since …**, until cleanup succeeds. A deadline never proves deletion. Completed cleanup removes the registered workspace from the list. Reload the page for a current list and retention snapshot.
 
 A workspace is a Docker container per person, run by **sandboxd** (`src/sandboxd/`), the only component of the stock workspace add-on with Docker-socket access. Optional Docker Hermes uses its own separately configured broker. The web app and worker ask it for things over HTTP, signed with `SANDBOXD_SECRET`; it has no database access or model-provider keys, and creates containers from one fixed spec:
 

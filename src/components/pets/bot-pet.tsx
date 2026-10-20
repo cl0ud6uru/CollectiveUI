@@ -81,6 +81,7 @@ export function BotPetSettings({ botId, botName, botAvatar, editor = false }: { 
       {!pet.sharedIdentity && <details className="mt-5 border-t border-border pt-4">
         <summary className="pet-control cursor-pointer rounded-lg py-2 text-sm font-medium">Import your own pet</summary>
         <p className="my-3 text-xs text-muted">One private import per bot; importing replaces and selects it. Community gallery art may have separate rights. Nothing here is published automatically.</p>
+        <Link href="/pets/generation" className="mb-3 inline-block text-sm underline">Create a private Codex Pet with AI assistance</Link>
         {pet.privateImport && <div className="mb-3 rounded-lg bg-surface-2 p-3 text-xs"><p className="break-words font-medium">{pet.privateImport.manifest.displayName}</p><p className="mt-1 break-words">{pet.privateImport.manifest.description}</p><p className="mt-1 break-words">Credit: {pet.privateImport.manifest.credit || "Not supplied"}</p><SavedPetPreview key={pet.privateImport.revision} manifest={pet.privateImport.manifest} src={`${endpoint}/sprite?v=${encodeURIComponent(pet.privateImport.revision)}`} /><button type="button" disabled={pending} className={`${control} mt-2`} onClick={() => void mutate("DELETE")}>Remove imported pet</button></div>}
         <PetUpload endpoint={endpoint} disabled={pending || !loaded} onSaved={(value) => { updatePet(botId, value as PetView); setNotice("Pet imported. Your previous import was replaced."); }} />
       </details>}

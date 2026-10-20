@@ -43,6 +43,13 @@ export type HermesTurnContext = {
 
 /** How long a started tool call is held back, waiting to see whether Hermes flags it (seen: ~180 ms). */
 const HOLD_MS = 400;
+/** Pinned Runs streams use nonnegative integer sequence ids, including zero. */
+function eventSequence(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
+  const sequence = Number(value);
+  return Number.isSafeInteger(sequence) ? sequence : undefined;
+}
+const STREAM_RECONNECTS = 2;
 const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
 /** What a Hermes call open at the end of a run whose events were lost shows (see HermesMapper.closeOpen). */
@@ -312,7 +319,7 @@ export class HermesLanguageModel implements LanguageModelV4 {
       runId = saved.runId;
       mine = byRun.get(runId)!;
       mapper = new HermesMapper(structuredClone(saved.state));
-      tap = () => this.tap(runId, saved.lastEventId);
+      tap = () => saved.statusOnly ? new EventTap(async function* () {}, undefined, true) : this.tap(runId, saved.lastEventId);
     } else if (!run || run.legacy) {
       runId = runIdOfApproval(answers.at(-1)!.approvalId)!;
       mine = [answers.at(-1)!];
@@ -355,6 +362,10 @@ export class HermesLanguageModel implements LanguageModelV4 {
     const { target, interactive } = this.ctx;
     const { runId, mapper } = run;
     let tap = run.tap;
+    let cursor = eventSequence(tap.lastSeq);
+    let replayable = tap.lastSeq === undefined || cursor !== undefined;
+    let reattached = tap.lastSeq !== undefined;
+    let reconnects = 0;
     let parked = false;
     let settled = false;
     const onAbort = () => {
@@ -365,7 +376,7 @@ export class HermesLanguageModel implements LanguageModelV4 {
     // Aborted while the answer was being posted or the run started: the listener above won't fire any more.
     if (signal?.aborted) onAbort();
     const out = (parts: LanguageModelV4StreamPart[]) => parts.forEach(emit);
-    let fromStatus = false;
+    let fromStatus = tap.statusOnly;
     try {
       for (;;) {
         if (signal?.aborted) {
@@ -374,22 +385,44 @@ export class HermesLanguageModel implements LanguageModelV4 {
           return;
         }
         let next: HermesEvent | "idle" | null;
+        let reconnectAllowed = !tap.statusOnly;
         try {
           next = await tap.next(mapper.holding ? HOLD_MS : undefined);
         } catch (err) {
-          // The event stream is gone (older Hermes keeps it for its first subscriber only): use the run's status.
-          if (!(err instanceof HermesError) || err.code !== "not_found") throw err;
+          // Only read-only transport recovery is retried; never admission or approval mutations.
+          if (!(err instanceof HermesError) || !["not_found", "unreachable", "server", "busy"].includes(err.code)) throw err;
+          reconnectAllowed = err.code !== "not_found";
           next = null;
         }
         if (next === "idle") {
           out(mapper.flushHeld());
           continue;
         }
+        if (next !== null) {
+          const sequence = eventSequence(next._seq);
+          if (next.event === 'replay.truncated' || (reattached && sequence === undefined) ||
+              (cursor !== undefined && sequence !== undefined && sequence > cursor + 1)) {
+            // A missing cursor/gap cannot safely reconstruct text or tool pairing.
+            reconnectAllowed = false;
+            next = null;
+          } else if (sequence !== undefined) {
+            // Older/repeated frames must never reach the mapper, especially tool/approval events.
+            if (cursor !== undefined && sequence <= cursor) continue;
+            cursor = sequence;
+          } else replayable = false;
+        }
         if (next === null) {
+          tap.close();
+          if (!signal?.aborted && reconnectAllowed && replayable && cursor !== undefined && reconnects < STREAM_RECONNECTS) {
+            ++reconnects;
+            tap = this.tap(runId, String(cursor));
+            reattached = true;
+            continue;
+          }
           next = await this.settle(runId, signal);
           if (!next) throw new HermesError("not_found", 404, "The run's result isn't available any more.");
           fromStatus = true;
-          tap = new EventTap(async function* () {}, tap.lastSeq); // nothing more to read
+          tap = new EventTap(async function* () {}, undefined, true);
         }
         const step = mapper.onEvent(next);
         if (step.approval && !interactive) {
@@ -407,7 +440,7 @@ export class HermesLanguageModel implements LanguageModelV4 {
             { runId, sessionId: this.ctx.sessionId, target, tap, state: mapper.state, agentRunId: run?.id, segment: run?.segment },
             holdTtlMs(this.ctx.approvalTimeoutSec),
           );
-          run?.saveResumeState({ hermes: { runId, lastEventId: tap.lastSeq, state: structuredClone(mapper.state), segment: run.segment } });
+          run?.saveResumeState({ hermes: { runId, lastEventId: tap.lastSeq, ...(fromStatus ? { statusOnly: true as const } : {}), state: structuredClone(mapper.state), segment: run.segment } });
           out(mapper.finish());
           emit({ type: "finish", finishReason: { unified: "tool-calls", raw: "waiting_for_approval" }, usage: EMPTY_USAGE });
           return;

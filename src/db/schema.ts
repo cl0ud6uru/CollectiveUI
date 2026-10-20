@@ -105,10 +105,31 @@ export const remoteHermesSessions = pgTable('remote_hermes_sessions', {
   revision: integer('revision').notNull().default(0),
   queueRequestId: text('queue_request_id'),
   queueStatus: text('queue_status').$type<'admitting' | 'queued' | 'uncertain'>(),
+  /** Invalidates process-local runtime/cache bindings after an owner-confirmed native recovery. */
+  ownershipGeneration: bigint('ownership_generation', { mode: 'number' }).notNull().default(0),
   createdAt: createdAt(), updatedAt: updatedAt(),
 }, t => [uniqueIndex('remote_hermes_session_native_idx').on(t.connectionId, t.profile, t.storedId),
   check('remote_hermes_session_status_check', sql`${t.status} in ('idle','admitting','running','waiting','uncertain')`),
+  check('remote_hermes_session_ownership_generation_check', sql`${t.ownershipGeneration} >= 0`),
   check('remote_hermes_queue_check', sql`(${t.queueRequestId} is null) = (${t.queueStatus} is null) and (${t.queueStatus} is null or ${t.queueStatus} in ('admitting','queued','uncertain'))`)]);
+
+/** Durable election state for process-local native socket hubs. Native fencing proof is recorded
+ * separately and only after the opt-in native owner adapter acknowledges the exact epoch. */
+export const remoteHermesHubOwners = pgTable('remote_hermes_hub_owners', {
+  connectionId: text('connection_id').primaryKey().references(() => remoteHermesConnections.id, { onDelete: 'cascade' }),
+  ownerInstanceId: text('owner_instance_id').notNull(),
+  generation: bigint('generation', { mode: 'number' }).notNull().default(1),
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }).notNull(),
+  socketEpoch: bigint('socket_epoch', { mode: 'number' }).notNull().default(0),
+  nativeProtocol: text('native_protocol'),
+  nativeGeneration: bigint('native_generation', { mode: 'number' }),
+  nativeSocketEpoch: bigint('native_socket_epoch', { mode: 'number' }),
+  createdAt: createdAt(), updatedAt: updatedAt(),
+}, t => [
+  check('remote_hermes_hub_owner_generation_check', sql`${t.generation} > 0`),
+  check('remote_hermes_hub_owner_socket_epoch_check', sql`${t.socketEpoch} >= 0`),
+  check('remote_hermes_hub_native_fence_check', sql`((${t.nativeProtocol} is null and ${t.nativeGeneration} is null and ${t.nativeSocketEpoch} is null) or (${t.nativeProtocol} = 'collective.native-hub-owner.v1' and ${t.nativeGeneration} > 0 and ${t.nativeSocketEpoch} = ${t.socketEpoch})) is true`),
+]);
 
 /** Write-ahead receipts prevent an HTTP retry from submitting the same prompt twice. No prompt text is stored. */
 export const remoteHermesTurns = pgTable('remote_hermes_turns', {
@@ -378,6 +399,31 @@ export const providerConnections = pgTable("provider_connections", {
   check("provider_connections_compatible_target_check", sql`${t.provider} not in ('openai-compatible', 'openrouter') or (${t.baseUrl} is not null and ${t.organization} is null and ${t.project} is null)`),
 ]);
 
+/** Metadata-only, one-use handoff for an administrator to enter a provider key in the secure Admin form. */
+export const architectProviderConnectionDrafts = pgTable("architect_provider_connection_drafts", {
+  id: id(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  sessionVersion: integer("session_version").notNull(),
+  botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
+  provider: text("provider").$type<import("@/lib/llm/catalog").SavedProviderKind>().notNull(),
+  name: text("name").notNull(),
+  baseUrl: text("base_url"),
+  organization: text("organization"),
+  project: text("project"),
+  createdAt: createdAt(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  connectionId: text("connection_id"),
+}, (t) => [
+  index("architect_provider_drafts_owner_expiry_idx").on(t.userId, t.expiresAt),
+  index("architect_provider_drafts_context_idx").on(t.botId, t.conversationId),
+  check("architect_provider_drafts_session_check", sql`${t.sessionVersion} >= 0`),
+  check("architect_provider_drafts_provider_check", sql`${t.provider} in ('openai', 'openai-compatible', 'openrouter')`),
+  check("architect_provider_drafts_name_check", sql`length(trim(${t.name})) between 1 and 80`),
+  check("architect_provider_drafts_consumed_check", sql`(${t.consumedAt} is null) = (${t.connectionId} is null)`),
+]);
+
 /** Dedicated read-only billing credentials; never an inference connection or bot credential. */
 export const providerBillingAccounts = pgTable("provider_billing_accounts", {
   id: id(),
@@ -426,6 +472,8 @@ export const aiApps = pgTable(
     systemPrompt: text("system_prompt"),
     temperature: real("temperature"),
     maxTokens: integer("max_tokens"),
+    /** Optional model input context window; maxTokens remains the generation reserve. */
+    contextWindowTokens: integer("context_window_tokens"),
     supportsVision: boolean("supports_vision").notNull().default(false),
     supportsTools: boolean("supports_tools").notNull().default(false),
     embeddingModel: text("embedding_model"), // if set, this endpoint can also produce embeddings
@@ -721,6 +769,64 @@ export const petCatalog = pgTable("pet_catalog", {
 }, (t) => [check("pet_catalog_sprite_size", sql`octet_length(${t.sprite}) between 1 and 4194304`),
   check("pet_catalog_sprite_hd_size", sql`${t.spriteHd} is null or octet_length(${t.spriteHd}) between 1 and 12582912`),
   check("pet_catalog_status", sql`${t.status} in ('draft', 'published', 'unpublished')`)]);
+
+/** Durable, private receipts for explicitly consented pet-art generation. A running slot is never replayed on reload. */
+export const petGenerationJobs = pgTable("pet_generation_jobs", {
+  id: text("id").primaryKey().$defaultFn(newId),
+  ownerId: text("owner_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  /** Keep the saved connection ID as historical provenance without blocking credential removal. */
+  providerConnectionId: text("provider_connection_id").notNull(),
+  modelId: text("model_id").notNull(),
+  displayName: text("display_name").notNull(),
+  description: text("description").notNull(),
+  credit: text("credit").notNull().default("AI generated with OpenAI"),
+  reference: petBytes("reference"),
+  appearance: petBytes("appearance"),
+  appearanceState: text("appearance_state").notNull().default("needs_consent"),
+  appearanceAttempt: integer("appearance_attempt").notNull().default(0),
+  appearanceConsentAt: timestamp("appearance_consent_at", { withTimezone: true }),
+  appearanceApprovedAt: timestamp("appearance_approved_at", { withTimezone: true }),
+  appearanceInputTokens: integer("appearance_input_tokens"),
+  appearanceOutputTokens: integer("appearance_output_tokens"),
+  appearanceErrorCode: text("appearance_error_code"),
+  buildConsentAt: timestamp("build_consent_at", { withTimezone: true }),
+  preview: petBytes("preview"),
+  previewErrorCode: text("preview_error_code"),
+  catalogPetId: text("catalog_pet_id").references(() => petCatalog.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [index("pet_generation_jobs_owner_idx").on(t.ownerId, t.createdAt),
+  check("pet_generation_jobs_appearance_state_check", sql`${t.appearanceState} in ('needs_consent', 'queued', 'running', 'succeeded', 'failed', 'uncertain', 'approved')`),
+  check("pet_generation_jobs_reference_size", sql`${t.reference} is null or octet_length(${t.reference}) between 1 and 1048576`),
+  check("pet_generation_jobs_appearance_size", sql`${t.appearance} is null or octet_length(${t.appearance}) between 1 and 4194304`),
+  check("pet_generation_jobs_preview_size", sql`${t.preview} is null or octet_length(${t.preview}) between 1 and 4194304`),
+  check("pet_generation_jobs_usage_nonnegative", sql`(${t.appearanceInputTokens} is null or ${t.appearanceInputTokens} >= 0) and (${t.appearanceOutputTokens} is null or ${t.appearanceOutputTokens} >= 0)`)]);
+
+export const petGenerationSlots = pgTable("pet_generation_slots", {
+  id: text("id").primaryKey().$defaultFn(newId),
+  jobId: text("job_id").notNull().references(() => petGenerationJobs.id, { onDelete: "cascade" }),
+  slotKey: text("slot_key").notNull(),
+  attempt: integer("attempt").notNull().default(1),
+  prompt: text("prompt").notNull(),
+  consentVersion: integer("consent_version").notNull().default(1),
+  consentSummary: text("consent_summary").notNull(),
+  status: text("status").notNull().default("queued"),
+  consentAt: timestamp("consent_at", { withTimezone: true }).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  image: petBytes("image"),
+  inputTokens: integer("input_tokens"),
+  outputTokens: integer("output_tokens"),
+  costMicros: bigint("cost_micros", { mode: "number" }),
+  errorCode: text("error_code"),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+}, (t) => [uniqueIndex("pet_generation_slots_job_slot_attempt_idx").on(t.jobId, t.slotKey, t.attempt),
+  index("pet_generation_slots_job_status_idx").on(t.jobId, t.status),
+  check("pet_generation_slots_status_check", sql`${t.status} in ('queued', 'running', 'succeeded', 'failed', 'uncertain')`),
+  check("pet_generation_slots_consent_version_check", sql`${t.consentVersion} > 0`),
+  check("pet_generation_slots_image_size", sql`${t.image} is null or octet_length(${t.image}) between 1 and 4194304`),
+  check("pet_generation_slots_usage_nonnegative", sql`(${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0)`)]);
 
 export const botPetDefaults = pgTable("bot_pet_defaults", {
   botId: text("bot_id").primaryKey().references(() => bots.id, { onDelete: "cascade" }),
@@ -1069,6 +1175,35 @@ export const usageEvents = pgTable(
     check("usage_events_api_cost_check", sql`(${t.billingSource} = 'org' and ${t.providerKind} not in ('chatgpt', 'hermes') and (${t.billingRoute} is null or ${t.billingRoute} like 'api:%')) or (${t.costMicros} is null and ${t.searchToolCostEstimateMicros} is null)`),
   ],
 );
+
+/** Local native model admission only. Root reply identity survives every delegated turn and continuation. */
+export const nativeRunBudgets = pgTable("native_run_budgets", {
+  rootMessageId: text("root_message_id").primaryKey(),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  policy: jsonb("policy").$type<import("@/lib/llm/run-budget-policy").NativeRunBudgetPolicy>().notNull(),
+  usedTokens: bigint("used_tokens", { mode: "number" }).notNull().default(0),
+  reservedTokens: bigint("reserved_tokens", { mode: "number" }).notNull().default(0),
+  usedCostMicros: bigint("used_cost_micros", { mode: "number" }).notNull().default(0),
+  reservedCostMicros: bigint("reserved_cost_micros", { mode: "number" }).notNull().default(0),
+  exhausted: boolean("exhausted").notNull().default(false),
+  createdAt: createdAt(),
+}, t => [check("native_run_budget_nonnegative", sql`${t.usedTokens} >= 0 and ${t.reservedTokens} >= 0 and ${t.usedCostMicros} >= 0 and ${t.reservedCostMicros} >= 0`)]);
+
+/** Ambiguous dispatches retain their reservation; receipt settlement and release are idempotent. */
+export const nativeRunBudgetAttempts = pgTable("native_run_budget_attempts", {
+  id: text("id").primaryKey(),
+  rootMessageId: text("root_message_id").notNull().references(() => nativeRunBudgets.rootMessageId, { onDelete: "cascade" }),
+  runId: text("run_id"),
+  appId: text("app_id"),
+  provider: text("provider").notNull(), model: text("model").notNull(), purpose: text("purpose").notNull(),
+  state: text("state").$type<"reserved" | "dispatched" | "uncertain" | "settled" | "released">().notNull().default("reserved"),
+  inputReserved: bigint("input_reserved", { mode: "number" }).notNull(),
+  outputReserved: bigint("output_reserved", { mode: "number" }).notNull(),
+  costReservedMicros: bigint("cost_reserved_micros", { mode: "number" }).notNull(),
+  inputTokens: bigint("input_tokens", { mode: "number" }), outputTokens: bigint("output_tokens", { mode: "number" }),
+  costMicros: bigint("cost_micros", { mode: "number" }),
+  createdAt: createdAt(), settledAt: timestamp("settled_at", { withTimezone: true }),
+}, t => [index("native_budget_attempts_root_idx").on(t.rootMessageId), check("native_budget_attempt_nonnegative", sql`${t.inputReserved} >= 0 and ${t.outputReserved} >= 0 and ${t.costReservedMicros} >= 0 and (${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0)`), check("native_budget_attempt_state", sql`${t.state} in ('reserved', 'dispatched', 'uncertain', 'settled', 'released')`)]);
 
 export const mcpServers = pgTable(
   "mcp_servers",
@@ -1832,3 +1967,34 @@ export const codexApprovals = pgTable('codex_approvals', {
   binding: text('binding').notNull(), threadId: text('thread_id').notNull(), turnId: text('turn_id').notNull(),
   decision: text('decision').$type<'decline' | 'cancel'>(), expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 }, t => [index('codex_approvals_run_idx').on(t.runId), check('codex_approval_decision_check', sql`${t.decision} is null or ${t.decision} in ('decline', 'cancel')`)]);
+
+/** Native MCP App data is separate from messages, model history, search, shares and tool audit output. */
+export const mcpAppInstances = pgTable('mcp_app_instances', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  conversationId: text('conversation_id').notNull().references(() => conversations.id, { onDelete: 'cascade' }),
+  botId: text('bot_id').notNull().references(() => bots.id, { onDelete: 'cascade' }),
+  serverId: text('server_id').notNull().references(() => mcpServers.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), definitionHash: text('definition_hash').notNull(),
+  binding: text('binding').notNull(), sessionVersion: integer('session_version').notNull(), runId: text('run_id'),
+  payloadEnc: text('payload_enc').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(), createdAt: createdAt(),
+}, t => [index('mcp_app_instances_conversation_idx').on(t.conversationId),
+  check('mcp_app_instance_payload_bound', sql`octet_length(${t.payloadEnc}) <= 2000000`)]);
+
+/** An approval covers one immutable input; claiming dispatch is atomic and never retried after uncertainty. */
+export const mcpAppActions = pgTable('mcp_app_actions', {
+  id: text('id').primaryKey(),
+  instanceId: text('instance_id').notNull().references(() => mcpAppInstances.id, { onDelete: 'cascade' }),
+  toolName: text('tool_name').notNull(), definitionHash: text('definition_hash').notNull(),
+  input: jsonb('input').$type<Record<string, unknown>>().notNull(),
+  status: text('status').$type<'pending' | 'running' | 'done' | 'denied' | 'error'>().notNull(),
+  resultEnc: text('result_enc'), createdAt: createdAt(),
+}, t => [index('mcp_app_actions_instance_idx').on(t.instanceId),
+  check('mcp_app_action_status_check', sql`${t.status} in ('pending', 'running', 'done', 'denied', 'error')`),
+  check('mcp_app_action_input_bound', sql`octet_length(${t.input}::text) <= 65536`),
+  check('mcp_app_action_result_bound', sql`${t.resultEnc} is null or octet_length(${t.resultEnc}) <= 2000000`)]);
+
+
+// The recovery journal has its own protocol module; re-export it into Drizzle's schema.
+export { remoteHermesRecoveries } from './remote-hermes-recovery-schema';

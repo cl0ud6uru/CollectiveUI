@@ -1,10 +1,12 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "@/db";
-import { groupMappings, groupMembers, groups, users } from "@/db/schema";
+import { db, type Tx } from "@/db";
+import { groupMappings, groupMembers, groups, users, type User } from "@/db/schema";
 import { HttpError } from "@/lib/authz";
 import { teamBotsEnabled } from "@/lib/hermes-team/policy";
 import { ldapEnabled, lookupLdapUser, LdapUnavailableError, logLdapUnavailable } from "@/lib/auth/ldap";
+import { resolvePrincipal } from "@/lib/auth/groups";
+import { lockAccounts } from "@/lib/auth/local";
 
 export const LdapUsername = z.string().trim().min(1).max(254);
 
@@ -31,6 +33,20 @@ export const GroupInput = z.object({
 });
 export type GroupInput = z.infer<typeof GroupInput>;
 
+async function actingAdmin(tx: Tx, actorId: string) {
+  // After the shared account fence and Team bot locks, lock the actor just as directory
+  // synchronization does. Its direct grant/disabled state cannot change during this edit.
+  const [actor] = await tx.select().from(users).where(eq(users.id, actorId)).for("update");
+  if (!actor || actor.disabled || !(await resolvePrincipal(actor, tx)).isAdmin) throw new HttpError(403, "Admin only");
+  return actor;
+}
+
+async function keepActingAdmin(tx: Tx, actor: User) {
+  if (!(await resolvePrincipal(actor, tx)).isAdmin) {
+    throw new HttpError(400, "This change would remove your administrator access. Keep another admin grant for yourself, or ask another administrator to perform an intentional handoff.");
+  }
+}
+
 /** Called after admin authorization; all membership edits commit together. */
 export async function savePortalGroup(raw: GroupInput, actorId: string) {
   const input = GroupInput.parse(raw);
@@ -39,8 +55,12 @@ export async function savePortalGroup(raw: GroupInput, actorId: string) {
   for (const username of new Set(input.ldapUsernames ?? [])) directoryMembers.push(await findLdapGroupMember(username));
   let teamBotIds: string[] = [];
   const groupId = await db.transaction(async tx => {
+    // Shared with direct account access changes; competing removals cannot both
+    // validate against the other's old grant. Keep the existing account → Team order.
+    await lockAccounts(tx);
     const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
     const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
+    const actor = await actingAdmin(tx, actorId);
     const memberIds = input.memberIds === undefined ? undefined : [...new Set(input.memberIds)];
     if (memberIds?.length) {
       const found = await tx.select({ id: users.id }).from(users).where(inArray(users.id, memberIds));
@@ -73,6 +93,7 @@ export async function savePortalGroup(raw: GroupInput, actorId: string) {
       await tx.delete(groupMembers).where(eq(groupMembers.groupId, group.id));
       if (allIds.length) await tx.insert(groupMembers).values(allIds.map(userId => ({ groupId: group.id, userId })));
     }
+    await keepActingAdmin(tx, actor);
     if (team) teamBotIds = await team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actorId);
     return group.id;
   });
@@ -86,9 +107,12 @@ export async function savePortalGroup(raw: GroupInput, actorId: string) {
 /** A cascading group deletion must revoke grants based on its removed membership/mappings. */
 export async function deletePortalGroup(id: string, actorId: string) {
   const teamBotIds = await db.transaction(async tx => {
+    await lockAccounts(tx);
     const team = teamBotsEnabled() ? await import('@/lib/hermes-team/revocation') : undefined;
     const lockedBotIds = team ? await team.lockTeamAccessBots(tx) : [];
+    const actor = await actingAdmin(tx, actorId);
     await tx.delete(groups).where(eq(groups.id, id));
+    await keepActingAdmin(tx, actor);
     return team ? team.queueTeamPrincipalAccessReconciliation(tx, lockedBotIds, actorId) : [];
   });
   if (teamBotIds.length) {

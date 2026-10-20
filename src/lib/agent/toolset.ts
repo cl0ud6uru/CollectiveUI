@@ -6,7 +6,7 @@ import { aiApps, botTools, groups, mcpServers, toolGrants, type Bot, type McpSer
 import { HttpError, listAccessibleMcpServers } from "@/lib/authz";
 import type { McpCaller } from "@/lib/mcp/client";
 import type { IdentitySubject } from "@/lib/mcp/identity";
-import { userFacingMessage } from "@/lib/llm";
+import { nativeErrorText } from "@/lib/llm/native-errors";
 import { isAgentServer } from "@/lib/llm/catalog";
 import { sandboxd } from "@/lib/sandbox/client";
 import { isHardDenied, requiredIsolation, userMayUseWorkspace } from "@/lib/sandbox/policy";
@@ -28,6 +28,8 @@ import { memoryTools } from "./tools/memory";
 import { skillsForBot, skillTool, learnedSkillsForTurn } from "./tools/skills";
 import { nativeSearchFor } from "./native-search";
 import { webTools } from "./tools/web";
+import { adminTools } from "./tools/admin";
+import { authorizeArchitectCall } from "./tools/admin-guard";
 import { workspaceTools } from "./tools/workspace";
 import { workspaceAttachmentTool } from "./tools/workspace-attachment";
 import { integratedAgentBrowserTools } from "@/lib/agent-browser/native-integration";
@@ -176,8 +178,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
           if (t.toolKey.startsWith("mcp:")) mcpServerIds.push(t.toolKey.slice(4));
       }
     } catch (err) {
-      console.error(`[agent] failed to load tool ${t.toolKey}`, err);
-      warnings.push(`Tool "${t.toolKey}" is unavailable right now.`);
+      warnings.push(`Tool "${t.toolKey}" is unavailable right now. ${nativeErrorText(err)}`);
     }
   }
 
@@ -185,11 +186,16 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
     try {
       skills.push(...await learnedSkillsForTurn(ctx));
     } catch (err) {
-      console.error("[agent] learned skills unavailable", err);
-      warnings.push("Learned procedures are unavailable right now.");
+      warnings.push(`Learned procedures are unavailable right now. ${nativeErrorText(err)}`);
     }
     const s = skillTool(ctx, skills);
     if (s) entries.push(s);
+  }
+
+  // Installation receipt and fresh actor/session checks, repeated at every dispatch.
+  if ((await getSetting("architectBot")).botId === bot.id) {
+    try { await authorizeArchitectCall(ctx); entries.push(...adminTools(ctx)); }
+    catch { /* Unavailable, non-admin, group and unattended turns receive no admin tools. */ }
   }
 
   // MCP servers: one access check for all of them. Servers with an accepted tool snapshot connect lazily, on
@@ -217,7 +223,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
         throw new HttpError(403, "A service-bot connector grant is unavailable. Ask an admin to review and publish it.");
       const binding = await mcpAuthorityBinding(ctx, s, config, grants, s.identityHeader && caller.subject.kind === "user" ? caller.subject.groups : []);
       bindings.push(binding);
-      return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants } };
+      return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants }, apps: { audience: 'model' as const } };
     };
     const results = await Promise.allSettled(servers.map(async (s) => (s.toolsSnapshot ? mcpTools(s, await opts(s)) : connectedMcpTools(s, await opts(s)))));
     results.forEach((r, i) => {
@@ -229,8 +235,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
         closers.push(r.value.close);
       } else {
         if (bot.executionMode === "service") throw r.reason;
-        console.error(`[agent] failed to connect MCP server ${servers[i].name}`, r.reason);
-        warnings.push(`"${servers[i].name}" is unavailable right now.`);
+        warnings.push(`"${servers[i].name}" is unavailable right now. ${nativeErrorText(r.reason)}`);
       }
     });
   }
@@ -273,7 +278,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
     const entry = byName.get(toolCall.toolName);
     if (!entry) return undefined;
     try { entry.validateInput?.(toolCall.input); }
-    catch (err) { return { type: "denied", reason: err instanceof Error ? err.message : "Tool scope denied." }; }
+    catch { return { type: "denied", reason: "Tool arguments do not match the reviewed schema or scope. Review the current request before retrying." }; }
     if (entry.name === "workspace_bash") {
       // Refused outright (no Run card), and checked again on every continuation.
       const blocked = isHardDenied(String((toolCall.input as { command?: unknown } | undefined)?.command ?? ""));
@@ -350,7 +355,7 @@ function delegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: Delegati
           const { runDelegation } = await import("@/lib/delegation/execute");
           yield* runDelegation(ctx, delegate.id, task, `${ctx.toolCallPrefix ?? ""}${toolCallId}`, abortSignal, authorizationMode);
         } catch (e) {
-          yield { bot: delegate.name, botId: delegate.id, avatar: delegate.avatar, label: delegate.label, status: "error", steps: [], error: e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The delegated task could not finish." };
+          yield { bot: delegate.name, botId: delegate.id, avatar: delegate.avatar, label: delegate.label, status: "error", steps: [], error: nativeErrorText(e) };
         }
       },
     }),
@@ -371,7 +376,7 @@ function continueDelegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: 
           const { startAsyncDelegation } = await import("@/lib/delegation/async");
           return await startAsyncDelegation(ctx, delegate.id, task, `${ctx.toolCallPrefix ?? ""}${toolCallId}`, authorizationMode, taskId);
         } catch (e) {
-          return { bot: delegate.name, botId: delegate.id, avatar: delegate.avatar, label: delegate.label, status: "error", steps: [], error: e instanceof HttpError ? e.message : userFacingMessage(e) ?? "The related task could not continue." };
+          return { bot: delegate.name, botId: delegate.id, avatar: delegate.avatar, label: delegate.label, status: "error", steps: [], error: nativeErrorText(e) };
         }
       },
     }),
