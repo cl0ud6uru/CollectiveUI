@@ -5,6 +5,7 @@ import { botMcpGrants, bots, groups, mcpServerAccess, mcpServers } from "@/db/sc
 import { eq, isNull } from "drizzle-orm";
 import { cleanDescription } from "@/lib/mcp/hygiene";
 import type { McpToolDef } from "@/lib/mcp/kinds";
+import { requireAdminPage } from "@/lib/session";
 
 const toolView = (t: McpToolDef) => ({
   name: t.name,
@@ -14,6 +15,7 @@ const toolView = (t: McpToolDef) => ({
 });
 
 export default async function AdminMcpPage() {
+  await requireAdminPage();
   const [servers, access, groupRows, grants] = await Promise.all([
     db.select().from(mcpServers).orderBy(mcpServers.name),
     db.select().from(mcpServerAccess),
