@@ -28,10 +28,14 @@ start Docker, use model providers or modify live workspaces.
   A template still bound to another bot remains protected. The owner/account
   locking path caps retained template instances at 32 while permitting current
   version reuse. Configured retention may be zero. No schema migration is needed.
+  Disabled-account reconciliation derives account deadlines only from legacy or
+  currently bound instances; expired unbound retirement dates cannot shorten
+  retention for active bindings. Separate cases cover both a missing account
+  deadline and an already-existing future account deadline.
 
 ## Local checks
 
-All 89 focused manager, recipe, tool, action, rendering and PGlite binding cases
+All 91 focused manager, recipe, tool, action, rendering and PGlite binding cases
 pass together. They cover missing images before reservation/start, actual daemon
 health from configured fixture images, profile/owner isolation, exact Stop
 targeting, provisioning deadlines, failed starts, atomic replacement, shared
@@ -39,6 +43,12 @@ bindings, old-crash backfill, expiry/destruction, cap rejection and reuse at cap
 The actual-helper confinement/lifetime suite separately passes 3/3 in 45.17
 seconds. Full TypeScript checking after Next route generation, targeted ESLint
 and diff checks pass.
+
+A final negative control restored only the earlier disabled-account lifecycle
+source while keeping the new fixture: the expired-orphan cases deleted the bound
+instance and failed their preservation assertions. The corrected reconciliation
+keeps bound data through the account retention date and still deletes the
+expired unbound instance.
 
 The PGlite binding tests use a synthetic sandbox client and replace the owner
 lock wrapper so they can interleave provisioning with a sweep. The production

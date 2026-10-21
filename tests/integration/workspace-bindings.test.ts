@@ -362,15 +362,15 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     await db.update(workspaceInstances).set({ deleteAfter: new Date("2026-10-15T00:00:00Z") }).where(eq(workspaceInstances.ownerUserId, "alice"));
     await sweepSandboxes(new Date("2026-10-10T00:00:00Z"));
     const disabledRows = await db.select().from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, "alice"));
-    expect(disabledRows.every((row) => row.deleteAfter?.getTime() === deleteAfter.getTime())).toBe(true);
+    const { workspaceBotBindings } = await import("@/db/schema");
+    const bound = new Set((await db.select().from(workspaceBotBindings).where(eq(workspaceBotBindings.userId, "alice"))).map(row => row.instanceId));
+    expect(disabledRows.every(row => row.deleteAfter?.getTime() === (row.origin === "legacy_personal" || bound.has(row.id) ? deleteAfter.getTime() : new Date("2026-10-15T00:00:00Z").getTime()))).toBe(true);
 
     await db.update(sandboxes).set({ deleteAfter: null }).where(eq(sandboxes.userId, "alice"));
     await db.update(users).set({ disabled: false }).where(eq(users.id, "alice"));
     await sweepSandboxes(new Date("2026-10-10T00:00:00Z"));
     const enabledRows = await db.select().from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, "alice"));
-    const { workspaceBotBindings } = await import("@/db/schema");
-    const bound = new Set((await db.select().from(workspaceBotBindings).where(eq(workspaceBotBindings.userId, "alice"))).map(row => row.instanceId));
-    expect(enabledRows.every(row => row.origin === "legacy_personal" || bound.has(row.id) ? row.deleteAfter === null : row.deleteAfter?.getTime() === deleteAfter.getTime())).toBe(true);
+    expect(enabledRows.every(row => row.origin === "legacy_personal" || bound.has(row.id) ? row.deleteAfter === null : row.deleteAfter?.getTime() === new Date("2026-10-15T00:00:00Z").getTime())).toBe(true);
   });
 
   it("enforces the owner/instance composite foreign key and returns only owner DTOs", async () => {
@@ -444,5 +444,34 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, bound!.instanceId)))[0].deleteAfter).toBeNull();
     expect(state.audit.mock.calls.some(([, action]) => action === "workspace.destroyed_after_retirement")).toBe(true);
     expect(state.audit.mock.calls.some(([, action]) => action === "workspace.destroyed_after_disable")).toBe(false);
+  });
+
+  it.each([false, true])("does not use an expired unbound retirement deadline to expire a disabled owner's bound templates (existing deadline: %s)", async existingDeadline => {
+    const { db } = await import("@/db"), { workspaceInstances, users } = await import("@/db/schema");
+    const { sweepSandboxes, onUserEnabled } = await import("@/lib/sandbox/lifecycle");
+    const { findSandbox } = await import("@/lib/sandbox/store");
+    const bound = await assignTemplate({ principal: bob, botId: "shared-bot", templateVersionId: "office-v1" });
+    const resolved = await resolveWorkspace({ principal: bob, botId: "shared-bot", createIfMissing: false });
+    expect(await findSandbox("bob")).toBeNull();
+    await db.update(workspaceInstances).set({ deleteAfter: null }).where(eq(workspaceInstances.ownerUserId, "bob"));
+    const now = new Date(), expired = new Date(now.getTime() - 1000), ref = "boborphan".padEnd(20, "0");
+    const accountDeadline = new Date(now.getTime() + (existingDeadline ? 7 : 30) * 86_400_000);
+    if (existingDeadline) await db.update(workspaceInstances).set({ deleteAfter: accountDeadline }).where(eq(workspaceInstances.id, bound.id));
+    await db.insert(workspaceInstances).values({ id: "bob-expired-unbound", ownerUserId: "bob", origin: "template", templateVersionId: "office-v1", sandboxRef: ref,
+      runtimeProfileKey: "knowledge-work-v1", provisionState: "unavailable", deleteAfter: expired });
+    volumes.set(ref, { profileKey: "knowledge-work-v1", files: {} });
+    // An older binary can disable an account without writing the additive template registry.
+    await db.update(users).set({ disabled: true }).where(eq(users.id, "bob"));
+    try {
+      await sweepSandboxes(now);
+      const rows = await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, bound.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].deleteAfter?.getTime()).toBe(accountDeadline.getTime());
+      expect(volumes.get(resolved!.sandboxRef)).toBeDefined();
+      expect(volumes.get(ref)).toBeUndefined();
+    } finally {
+      await db.update(users).set({ disabled: false }).where(eq(users.id, "bob"));
+      await onUserEnabled("bob");
+    }
   });
 });

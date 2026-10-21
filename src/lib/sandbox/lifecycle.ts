@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { DB, DbOrTx } from "@/db";
-import { sandboxes, users, workspaceInstances } from "@/db/schema";
+import { sandboxes, users, workspaceBotBindings, workspaceInstances } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { getSetting } from "@/lib/settings";
 import { withWorkspaceUserLock } from "@/lib/workspaces/locks";
@@ -70,12 +70,20 @@ async function reconcileRetention(ownerUserId: string, query: DbOrTx, deleteAfte
 
   // Preserve an existing legacy deadline, including an already-expired one. If an older binary disabled the
   // account before this registry existed, give every registered ref the same retention deadline.
-  const existing = legacy?.deleteAfter ?? instances.map((row) => row.deleteAfter)
+  const bindings = new Set((await query.select({ instanceId: workspaceBotBindings.instanceId }).from(workspaceBotBindings)
+    .where(eq(workspaceBotBindings.userId, ownerUserId))).map(row => row.instanceId));
+  // Unbound template deadlines describe retirement, not account disable. An already-expired orphan must never
+  // shorten retention for currently bound templates when an older binary disabled an owner with no legacy row.
+  const existing = legacy?.deleteAfter ?? instances.filter(row => row.origin === "legacy_personal" || bindings.has(row.id)).map((row) => row.deleteAfter)
     .filter((value): value is Date => value !== null && value !== undefined)
     .sort((a, b) => a.getTime() - b.getTime())[0];
   const deadline = existing ?? new Date(now.getTime() + deleteAfterDays * 86_400_000);
   await query.update(sandboxes).set({ deleteAfter: deadline }).where(eq(sandboxes.userId, ownerUserId));
-  await query.update(workspaceInstances).set({ deleteAfter: deadline }).where(eq(workspaceInstances.ownerUserId, ownerUserId));
+  await query.update(workspaceInstances).set({ deleteAfter: sql`case
+    when ${workspaceInstances.origin} = 'legacy_personal' or exists (select 1 from ${workspaceBotBindings} where ${workspaceBotBindings.instanceId} = ${workspaceInstances.id})
+    then ${deadline.toISOString()}::timestamptz
+    else coalesce(${workspaceInstances.deleteAfter}, ${deadline.toISOString()}::timestamptz) end`
+  }).where(eq(workspaceInstances.ownerUserId, ownerUserId));
 }
 
 /**

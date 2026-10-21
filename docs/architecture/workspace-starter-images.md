@@ -69,6 +69,8 @@ cleanup on the next sweep). Files persist until that deadline, and unused
 instances count toward the limit until removed. Re-enabling an account clears
 deadlines only for its legacy workspace and currently bound instances, preserving
 unused-template cleanup. A template still bound to another bot is protected.
+An unused template's retirement date never becomes the retention deadline for a
+disabled account's currently bound workspaces.
 
 ## Checks
 
