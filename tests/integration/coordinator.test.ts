@@ -371,7 +371,8 @@ suite("coordinator on disposable Postgres and synthetic local model", () => {
     expect(await discoverDelegates({ ...nested, depth: 2 })).toEqual([]);
     const tool = await entry(ctx, target.id);
     for (let i = 0; i < MAX_DELEGATION_CALLS; i++) expect((await invoke(tool, `Assignment ${i}`)).at(-1)?.status).toBe("done");
-    expect((await invoke(tool)).at(-1)?.error).toMatch(/budget/);
+    expect((await invoke(tool)).at(-1)?.error).toBe("This turn reached its delegated task budget.");
+    expect(await db.select().from(s.delegatedTasks).where(eq(s.delegatedTasks.rootMessageId, ctx.usage!.messageId!))).toHaveLength(MAX_DELEGATION_CALLS);
     expect(MAX_DELEGATION_CALLS).toBe(8);
   });
 

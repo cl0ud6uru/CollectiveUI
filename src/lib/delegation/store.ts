@@ -11,6 +11,7 @@ import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { lockUserRuns } from "@/lib/runs/lock";
 import { snapshotHermesSettings } from "@/lib/runs/hermes-context";
 import { runConfig } from "@/lib/runs/types";
+import { DelegationBudgetError } from "./errors";
 import { canonicalJson } from "@/lib/mcp/snapshot";
 import { checkAncestry, MAX_ROOT_ACTIVE_TASKS, MAX_ROOT_TASKS, MAX_USER_OPEN_ASYNC_TASKS } from "./policy";
 import { assertDelegationEdge } from "./targets";
@@ -128,11 +129,11 @@ export async function admitDelegation(ctx: AgentCtx, receiverId: string, prompt:
       .leftJoin(agentRuns, eq(agentRuns.id, delegatedTasks.childRunId))
       .where(and(eq(delegatedTasks.userId, userId), eq(delegatedTasks.rootMessageId, rootMessageId)));
     if (rootTasks.length >= MAX_ROOT_TASKS || (mode === "sync" && rootTasks.filter(t => t.status === "running").length >= MAX_ROOT_ACTIVE_TASKS))
-      throw new HttpError(429, "This turn reached its delegated task budget.");
+      throw new DelegationBudgetError("root");
     if (mode === "async") {
       const [{ count }] = await tx.select({ count: sql<number>`count(*)::int` }).from(agentRuns)
         .where(and(eq(agentRuns.userId, userId), eq(agentRuns.executionMode, "async_delegate"), inArray(agentRuns.status, ["queued", "running", "waiting", "waiting_tasks"])));
-      if (count >= MAX_USER_OPEN_ASYNC_TASKS) throw new HttpError(429, "You have too many asynchronous tasks in progress.");
+      if (count >= MAX_USER_OPEN_ASYNC_TASKS) throw new DelegationBudgetError("async");
       const [previous] = await tx.select({ id: delegatedTasks.id }).from(delegatedTasks)
         .where(and(eq(delegatedTasks.userId, userId), eq(delegatedTasks.rootMessageId, rootMessageId), eq(delegatedTasks.inputHash, inputHash), eq(delegatedTasks.mode, "async")));
       if (previous) throw new HttpError(409, "This assignment was already started in this turn. Request another attempt in a new user message; earlier actions may have run.");
