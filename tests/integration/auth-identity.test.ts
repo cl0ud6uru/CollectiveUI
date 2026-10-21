@@ -8,8 +8,10 @@ const fixture = vi.hoisted(() => ({ directory: null as LdapUser | null, verified
 vi.mock("@/lib/auth/ldap", async (original) => ({ ...await original<typeof import("@/lib/auth/ldap")>(), readLdapIdentity: fixture.read, authenticateLdapAtBinding: fixture.atBinding }));
 vi.mock("@/lib/auth/ldap-account", () => ({ authenticateLdapPassword: fixture.authenticate }));
 import { db, pool, schema as s } from "@/db";
-import { beginPasswordLogin, finishPasswordLogin, consumeLoginTicket, reauthenticatePassword } from "@/lib/auth/security";
+import { beginPasswordLogin, finishPasswordLogin, consumeLoginTicket, reauthenticatePassword, securitySummary } from "@/lib/auth/security";
 import { recoveryHash } from "@/lib/auth/factors";
+import { randomToken, sha256Hex } from "@/lib/crypto";
+import { lockAccounts } from "@/lib/auth/local";
 
 const run = process.env.AUTH_IDENTITY_POSTGRES_PROOF === "1" ? describe : describe.skip;
 const binding = "synthetic-browser-binding-at-least-20-characters";
@@ -22,6 +24,7 @@ run("LDAP identity repair and account lock scope (disposable PostgreSQL, synthet
     vi.stubEnv("LDAP_ENABLED", "true"); vi.stubEnv("LDAP_URL", "ldaps://fixture.invalid"); vi.stubEnv("AUTH_LOCAL_ENABLED", "true"); vi.stubEnv("AUTH_SECRET", "synthetic-auth-identity-session-secret");
   });
   beforeEach(async () => {
+    vi.stubEnv("LDAP_ENABLED", "true");
     await db.execute("TRUNCATE users, auth_flows, auth_throttle CASCADE");
     const [user] = await db.insert(s.users).values({ id: "alice", upn: "alice@fixture.invalid", name: "Alice", authSource: "ldap" }).returning();
     await db.insert(s.localSecurity).values({ userId: user.id, userHandle: "synthetic-user-handle", ldapDn: oldDn, ldapIdentity: "stable-identity" });
@@ -66,6 +69,43 @@ run("LDAP identity repair and account lock scope (disposable PostgreSQL, synthet
     await db.update(s.localSecurity).set({ ldapDn: null, ldapIdentity: null }).where(eq(s.localSecurity.userId, actor.id));
     await expect(beginPasswordLogin("alice", "synthetic-password", new Headers(), binding, "ldap")).rejects.toThrow();
     expect((await db.select().from(s.localSecurity))[0]).toMatchObject({ ldapDn: null, ldapIdentity: null });
+  });
+  it("does not hold the installation account lock while awaiting LDAP and lets a local ticket finish", async () => {
+    let entered!: () => void, release!: () => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; }), ready = new Promise<void>(resolve => { release = resolve; });
+    fixture.read.mockImplementation(async () => { entered(); await ready; return fixture.directory; });
+    await db.insert(s.users).values({ id: "rescue", upn: "local:rescue", name: "Rescue", identityRealm: "local", authSource: "local", isAdmin: true });
+    await db.insert(s.localCredentials).values({ userId: "rescue", username: "rescue", passwordHash: "synthetic-nonusable-password-hash" });
+    const token = randomToken();
+    await db.insert(s.authFlows).values({ hash: sha256Hex(token), purpose: "login-ticket", bindingHash: sha256Hex(`binding|${binding}`), userId: "rescue", sessionVersion: 0, data: { provider: "local" }, expiresAt: new Date(Date.now() + 60000) });
+    const pending = securitySummary(actor);
+    try {
+      await reading;
+      const probe = await pool.query("SELECT pg_try_advisory_xact_lock(632006, 11) AS acquired");
+      expect(probe.rows[0].acquired).toBe(true);
+      const local = await Promise.race([consumeLoginTicket(token, binding, "local"), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Local ticket waited on LDAP")), 1500))]);
+      expect(local.id).toBe("rescue");
+    } finally { release(); await pending; }
+  });
+
+  it.each(["disabled", "sessionVersion", "ldapIdentity", "ldapDn", "upn", "identityRealm", "authSource", "provider"])("rejects a fresh locked %s change made during LDAP preflight", async mutation => {
+    let entered!: () => void, release!: () => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; }), ready = new Promise<void>(resolve => { release = resolve; });
+    fixture.read.mockImplementation(async () => { entered(); await ready; return fixture.directory; });
+    const pending = securitySummary(actor);
+    const rejected = pending.then(() => false, () => true);
+    try {
+      await reading;
+      await db.transaction(async tx => {
+        await lockAccounts(tx);
+        if (mutation === "ldapIdentity" || mutation === "ldapDn") await tx.update(s.localSecurity).set(mutation === "ldapIdentity" ? { ldapIdentity: "replacement-identity" } : { ldapDn: newDn }).where(eq(s.localSecurity.userId, actor.id));
+        else if (mutation === "provider") vi.stubEnv("LDAP_ENABLED", "false");
+        else await tx.update(s.users).set(mutation === "disabled" ? { disabled: true } : mutation === "sessionVersion" ? { sessionVersion: 1 }
+          : mutation === "upn" ? { upn: "changed@fixture.invalid" } : mutation === "identityRealm" ? { identityRealm: "local", authSource: "local" } : { authSource: "entra" }).where(eq(s.users.id, actor.id));
+      });
+    } finally { release(); }
+    expect(await rejected).toBe(true);
+    expect(await db.select().from(s.authFlows)).toHaveLength(0);
   });
   it("initially binds an unprotected directory account without changing its session version", async () => {
     await db.delete(s.localPasskeys); await db.delete(s.localRecoveryCodes); await db.delete(s.localSecurity);
