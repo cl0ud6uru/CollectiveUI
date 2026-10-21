@@ -1,0 +1,38 @@
+name: Coordinator PostgreSQL proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  coordinator-postgres:
+    name: Coordinator authority and shared task budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: coordinator_fixture
+          POSTGRES_PASSWORD: synthetic-coordinator-only
+          POSTGRES_DB: collective_coordinator_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U coordinator_fixture -d collective_coordinator_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://coordinator_fixture:synthetic-coordinator-only@127.0.0.1:5432/collective_coordinator_test
+      ENCRYPTION_KEY: synthetic-coordinator-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Migrate the disposable coordinator database
+        run: npm run db:migrate
+      - name: Require coordinator authority, nested execution and budget acceptance
+        run: npx vitest run --project integration tests/integration/coordinator.test.ts --maxWorkers=1
