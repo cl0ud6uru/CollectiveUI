@@ -344,6 +344,41 @@ class ComposedHermesWorkspaceTests(unittest.TestCase):
         self.assertIn("error", self.workspace_write(**{**params, "expected_sha256": "0" * 64}))
         self.assertEqual(self.readme.read_bytes(), original)
 
+    def test_native_background_turn_cannot_start_between_idle_check_and_file_read(self):
+        self.claim()
+        params = {"action": "read", "path": "README.md"}
+        entered, release, admitted = threading.Event(), threading.Event(), threading.Event()
+        original_read = self.workspace_module._read
+        responses = []
+
+        def paused_read(*args):
+            entered.set()
+            release.wait(2)
+            return original_read(*args)
+
+        def claim_native_turn():
+            if self.server._notif_claim_turn(self.session):
+                admitted.set()
+
+        self.workspace_module._read = paused_read
+        writer = threading.Thread(target=lambda: responses.append(self.workspace_call(params)))
+        claimer = threading.Thread(target=claim_native_turn)
+        try:
+            writer.start()
+            self.assertTrue(entered.wait(1))
+            claimer.start()
+            raced = admitted.wait(.1)
+        finally:
+            release.set()
+            writer.join(3)
+            if claimer.ident is not None:
+                claimer.join(3)
+            self.workspace_module._read = original_read
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(claimer.is_alive())
+        self.assertFalse(raced, "native notification admission overtook a file read after its idle check")
+        self.assertEqual(responses[0].get("result", {}).get("content"), "synthetic native workspace\n", responses)
+
     def test_native_background_turn_cannot_start_between_idle_check_and_file_replacement(self):
         self.claim()
         params = self.edit_params()
