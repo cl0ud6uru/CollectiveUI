@@ -55,6 +55,8 @@ beforeEach(async () => {
     { id: 'other-admin', name: 'Other admin', upn: 'other-admin@test.invalid', authSource: 'local', identityRealm: 'local', isAdmin: true },
     { id: 'alice', name: 'Alice', upn: 'alice@test.invalid', authSource: 'local', identityRealm: 'local' },
   ]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'alice', enabled: true }]);
   admin = (await loadPrincipal('admin'))!; otherAdmin = (await loadPrincipal('other-admin'))!; alice = (await loadPrincipal('alice'))!; fixture.principal = admin;
   await db.insert(schema.bots).values({ id: 'team', ownerId: 'admin', name: 'Team', visibility: 'groups' });
   await db.insert(schema.botUserAccess).values({ botId: 'team', userId: 'alice' });

@@ -59,6 +59,8 @@ beforeEach(async()=>{
   await db.insert(schema.users).values([{id:'admin',upn:'admin@test.invalid',name:'Admin',isAdmin:true,authSource:'local',identityRealm:'local'},
     {id:'alice',upn:'alice@test.invalid',name:'Alice',authSource:'local',identityRealm:'local'},
     {id:'bob',upn:'bob@test.invalid',name:'Bob',authSource:'local',identityRealm:'local'}]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'alice', enabled: true }, { userId: 'bob', enabled: true }]);
   admin=(await loadPrincipal('admin'))!;alice=(await loadPrincipal('alice'))!;bob=(await loadPrincipal('bob'))!;
   await db.insert(schema.aiApps).values({id:'provider',name:'Synthetic provider',provider:'openai-compatible',baseUrl:'https://provider.test.invalid/v1',model:route.model,credentialMode:'org',apiKeyEnc:sealAppSecret('provider','synthetic-company-secret'),providerConfig:{}});
   route.transportHash=(await candidateWireMetadata(admin,route)).hash;delete personal.transportHash;

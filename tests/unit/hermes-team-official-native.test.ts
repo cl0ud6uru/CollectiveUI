@@ -88,6 +88,8 @@ beforeEach(async () => {
   await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
   await db.insert(schema.users).values([{ id: 'admin', upn: 'admin@test.invalid', name: 'Admin', isAdmin: true, authSource: 'local' as const, identityRealm: 'local' as const },
     ...['alice', 'bob'].map(id => ({ id, upn: `${id}@test.invalid`, name: id, authSource: 'local' as const, identityRealm: 'local' as const }))]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'alice', enabled: true }, { userId: 'bob', enabled: true }]);
   admin = (await loadPrincipal('admin'))!; alice = (await loadPrincipal('alice'))!; bob = (await loadPrincipal('bob'))!;
   await db.insert(schema.aiApps).values({ id: 'company', name: 'Never dispatch this company fallback', provider: 'openai-compatible', model: route.model,
     credentialMode: 'org', baseUrl: 'https://company.test.invalid/v1', apiKeyEnc: sealAppSecret('company', 'synthetic-company-fallback-forbidden') });

@@ -12,7 +12,7 @@ import { BrokerConfig, runtimeKey, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver, 
 import { bindingSchema, type TeamMode, type TeamModelPolicy, type TeamCandidateConfig } from '@/docker-hermes/types';
 import { listenBroker } from '@/docker-hermes/main';
 import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
-import { stopOwnedGroup } from '@/local-hermes/process-group';
+import { stopSyntheticGroup } from '../fixtures/stop-synthetic-group';
 import { LocalError, type LocalController } from '@/local-hermes/controller';
 
 const until = async (fn: () => Promise<boolean>) => {
@@ -36,7 +36,7 @@ class TeamFixtureDriver implements RuntimeDriver {
     if (this.stopFailure) throw new Error('Synthetic unconfirmed stop');
     this.active.delete(owner);
     const children = this.children.get(owner); this.children.delete(owner);
-    if (children) await Promise.all([...children].map(async child => { if (child.pid) await stopOwnedGroup(child.pid); }));
+    if (children) await Promise.all([...children].map(async child => { if (child.pid) await stopSyntheticGroup(child.pid); }));
   }
   async profiles(owner: string) { return this.profilesByOwner.get(owner) ?? []; }
   async create(owner: string, name: string) {
@@ -69,6 +69,7 @@ beforeEach(async () => {
     bridgePath: path.resolve('src/docker-hermes/bridge.py'), namespace: 'cui-team-test',
     image: `nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`, network: 'none', teamBotsEnabled: true });
   driver = new TeamFixtureDriver(root); broker = new DockerBroker(config, driver);
+  for (const actor of ['alice', 'bob', 'carol']) broker.authorize(actor, false);
 });
 afterEach(async () => { driver.stopFailure = false; await broker.close(); await rm(root, { recursive: true, force: true }); vi.restoreAllMocks(); });
 const grant = (actor: string, bot = 'shared-bot', mode: TeamMode = 'member', policy: TeamModelPolicy = 'personal_required') =>
@@ -79,6 +80,53 @@ const ensure = (actor: string, bot = 'shared-bot', mode: TeamMode = 'member') =>
 };
 
 describe('disabled Team Bot broker foundations', () => {
+  it('requires a worker-issued personal runtime lease before granting member mode', () => {
+    expect(() => grant('never-enrolled')).toThrow(/personal.*enrollment|Runtime authorization/i);
+    expect(grant('maintainer', 'shared-bot', 'admin').grantId).toBeTruthy();
+    expect(driver.active.size).toBe(0);
+  });
+  it('cannot revive a revoked personal runtime through a new Team grant', async () => {
+    broker.authorize('alice', false);
+    const binding = await ensure('alice');
+    await broker.revoke('alice');
+    expect(driver.active.has('alice')).toBe(false);
+    expect(() => grant('alice')).toThrow(/personal.*enrollment|Runtime authorization/i);
+    broker.authorize('alice', false); // A fresh worker decision after explicit re-enrollment.
+    expect(await ensure('alice')).toEqual(binding);
+  });
+  it('does not extend personal enrollment authority when a member Team grant renews', async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      broker.authorize('alice', false);
+      await ensure('alice');
+      clock.mockReturnValue(now + 30000);
+      const renewed = grant('alice');
+      clock.mockReturnValue(now + 61000);
+      expect(() => broker.teamBinding('alice', 'shared-bot', 'member', renewed.grantId)).toThrow(/authorization|enrollment/i);
+      await broker.expireLeases();
+      expect(driver.active.has('alice')).toBe(false);
+    } finally { clock.mockRestore(); }
+  });
+  it('expires an idle Team grant without interrupting a personal approval or deleting its renewed lease', async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      broker.authorize('alice', true); broker.enable('alice');
+      await until(async () => (await broker.status('alice')).phase === 'ready');
+      const personal = (await broker.status('alice')).bindings.find(b => b.profile === 'default')!;
+      await ensure('alice');
+      const pair = await broker.forRequest('alice', personal.bindingId);
+      const run = pair.controller.begin(pair.nativeBindingId, { input: 'approve', session_id: 'personal-grant-expiry' }, 'personal-grant-expiry');
+      await until(async () => pair.controller.events(run, 0).events.some(event => event.event === 'approval.request'));
+      const stopping = vi.spyOn(driver, 'stop');
+      clock.mockReturnValue(now + 61000); broker.authorize('alice', true);
+      await broker.expireLeases();
+      expect(stopping).not.toHaveBeenCalled();
+      expect(driver.active.has('alice')).toBe(true);
+      expect(() => pair.controller.holdForSettings()).toThrow();
+      const stored = JSON.parse(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8'));
+      expect(stored.teams['member:shared-bot'].state).not.toBe('revoked');
+    } finally { clock.mockRestore(); }
+  });
   it('prepares the concrete dormant candidate controller without weakening Team native admission or persisting bearer grants',async()=>{
     const binding=await ensure('alice');const authorization=grant('alice');
     const config={teamBotId:'shared-bot',mode:'member',bindingId:binding.bindingId,runId:'synthetic-run',contextId:'synthetic-context',expiresAt:Date.now()+60000,
@@ -109,7 +157,7 @@ describe('disabled Team Bot broker foundations', () => {
     const input = { teamBotId: 'shared-bot', mode: 'member', name: 'Shared bot' };
     const [one, two] = await Promise.all([broker.ensureTeam('alice', input, authorization.grantId), broker.ensureTeam('alice', input, authorization.grantId)]);
     expect(one).toEqual(two); expect(driver.createCount).toBe(1);
-    await broker.close(); broker = new DockerBroker(config, driver);
+    await broker.close(); broker = new DockerBroker(config, driver); broker.authorize('alice', false);
     expect(await ensure('alice')).toEqual(one); expect(driver.createCount).toBe(1); expect(driver.launches).toBe(0);
   });
   it('keeps two users private and puts maintainers in one dedicated admin runtime', async () => {
@@ -182,7 +230,7 @@ describe('disabled Team Bot broker foundations', () => {
     try {
       broker.authorize('alice', true);
       expect(() => broker.teamBinding('alice', 'shared-bot', 'member', authorization.grantId)).toThrow('authorization');
-      await broker.expireLeases(); expect(driver.active.has('alice')).toBe(false);
+      await broker.expireLeases(); expect(driver.active.has('alice')).toBe(true);
     } finally { clock.mockRestore(); }
   });
   it('expires a stale admin tab without revoking another maintainer of the shared working profile', async () => {
@@ -238,6 +286,7 @@ describe('disabled Team Bot broker foundations', () => {
     await broker.revokeTeam('alice', { teamBotId: 'shared-bot', mode: 'member' });
     expect(pair.controller.getRun(run).status).toBe('interrupted');
     expect((await broker.status('alice')).bindings[0]).toEqual(personal);
+    broker.authorize('alice', true); // Fresh enrollment check before explicitly reopening.
     expect(await ensure('alice')).toEqual(team);
     expect((await broker.status('alice')).bindings[0]).toEqual(personal);
   });
@@ -281,6 +330,22 @@ describe('disabled Team Bot broker foundations', () => {
     await failed; await revoke;
     expect(driver.active.has(binding.ownerId)).toBe(false);
     expect((await broker.status(binding.ownerId)).phase).toBe('stopped');
+  });
+  it('interrupts Team maintenance on grant expiry instead of treating its stopped helper as idle', async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const binding = await ensure('alice'), authorization = grant('alice');
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), entry = new Promise<void>(resolve => { entered = resolve; });
+    const extended: RuntimeDriver = driver;
+    extended.inventoryMemberResources = async () => { entered(); await gate; return createTeamResourceSnapshot([]); };
+    extended.reopen = async owner => { driver.active.add(owner); };
+    const inventory = broker.inventoryTeamMemberResources('alice', { teamBotId: 'shared-bot', mode: 'member', trackedPackageIds: [] }, authorization.grantId);
+    const failed = expect(inventory).rejects.toThrow('authorization'); await entry;
+    clock.mockReturnValue(now + 61000); broker.authorize('alice', false);
+    const stopping = vi.spyOn(driver, 'stop'); const expiry = broker.expireLeases();
+    expect(stopping).toHaveBeenCalledWith(binding.ownerId);
+    release(); await failed; await expiry;
+    expect(driver.active.has('alice')).toBe(false);
   });
   it('refuses capture before stopping any profile that has unfinished native work', async () => {
     const binding = await ensure('alice', 'shared-bot', 'admin'), authorization = grant('alice', 'shared-bot', 'admin');
@@ -376,7 +441,7 @@ describe('Team resource maintenance and replay', () => {
     const input = { teamBotId: 'shared-bot', mode: 'member', operationId: 'release-1', plan };
     expect(await broker.applyTeamMemberResources('alice', input, authorization.grantId)).toEqual(complete);
     expect(await broker.applyTeamMemberResources('alice', input, authorization.grantId)).toEqual(complete);
-    await broker.close(); broker = new DockerBroker(config, driver); const fresh = grant('alice');
+    await broker.close(); broker = new DockerBroker(config, driver); broker.authorize('alice', false); const fresh = grant('alice');
     expect(await broker.applyTeamMemberResources('alice', input, fresh.grantId)).toEqual(complete);
     const stored = JSON.parse(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8'));
     expect(stored.resourceOperations['release-1']).toMatchObject({ bindingId: binding.bindingId, planHash: plan.planHash, status: 'complete', receipt: complete });
@@ -425,9 +490,9 @@ describe('Team resource maintenance and replay', () => {
   it('returns completed durable revoke receipts without revoking a new grant, including after broker restart', async () => {
     await ensure('alice'); const input = { teamBotId: 'shared-bot', mode: 'member', requestId: `revoke:${'a'.repeat(64)}`, digest: 'b'.repeat(64) };
     const results = await Promise.all([broker.revokeTeam('alice', input), broker.revokeTeam('alice', input)]); expect(results[0]).toEqual(results[1]);
-    await ensure('alice'); const fresh = grant('alice'); const stop = vi.spyOn(driver, 'stop'); expect(await broker.revokeTeam('alice', input)).toEqual(results[0]);
+    broker.authorize('alice', false); await ensure('alice'); const fresh = grant('alice'); const stop = vi.spyOn(driver, 'stop'); expect(await broker.revokeTeam('alice', input)).toEqual(results[0]);
     expect(stop).not.toHaveBeenCalled(); expect(broker.teamBinding('alice', 'shared-bot', 'member', fresh.grantId)).toBeDefined();
-    await broker.close(); broker = new DockerBroker(config, driver); await ensure('alice'); const afterRestart = grant('alice'); stop.mockClear();
+    await broker.close(); broker = new DockerBroker(config, driver); broker.authorize('alice', false); await ensure('alice'); const afterRestart = grant('alice'); stop.mockClear();
     expect(await broker.revokeTeam('alice', input)).toEqual(results[0]); expect(stop).not.toHaveBeenCalled(); expect(() => broker.teamBinding('alice', 'shared-bot', 'member', afterRestart.grantId)).not.toThrow();
     await expect(broker.revokeTeam('alice', { ...input, digest: 'c'.repeat(64) })).rejects.toThrow('immutable');
     await expect(broker.revokeTeam('alice', { ...input, mode: 'admin', teamBotId: 'another-owner' })).rejects.toThrow('immutable');

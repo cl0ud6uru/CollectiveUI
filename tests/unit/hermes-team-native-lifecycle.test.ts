@@ -120,6 +120,8 @@ beforeEach(async () => {
   await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
   await db.insert(schema.users).values([{ id: 'admin', upn: 'admin@test.invalid', name: 'Admin', isAdmin: true, authSource: 'local', identityRealm: 'local' },
     { id: 'member', upn: 'member@test.invalid', name: 'Member', authSource: 'local', identityRealm: 'local' }]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'member', enabled: true }]);
   admin = (await loadPrincipal('admin'))!;
   await db.insert(schema.aiApps).values({ id: 'provider', name: 'Synthetic provider', provider: 'openai-compatible',
     baseUrl: 'https://provider.test.invalid/v1', model: route.model, credentialMode: 'org',
