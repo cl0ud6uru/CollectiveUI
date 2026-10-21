@@ -40,12 +40,24 @@ objects. The native fixture reports SHA256 digests for the actual workspace
 module, owner module and owner installer; the test compares those with its input
 files and logs the digests.
 
+The final integration runs the current read/write module in the existing
+`remote-hermes-dashboard` PostgreSQL CI job with `DATABASE_POOL_MAX=1`.
+The historical standalone read adapter remains covered by its separate local
+proof; CI uses only the production candidate's tracked source.
+
 ## Results on 2026-10-21
 
 The integration branches compose the published #284 stack and owner-core repair
 `398096de08920bca0b86787c4e9d81b3c41ff5d0` with the respective workspace PR.
 The disposable local database was PostgreSQL 16.14 with pgvector 0.8.1.
 
+- The final normal-merge integration of the approved owner/recovery stack,
+  both workspace source repair histories, current main `c9583566`, and reviewed
+  foundation `dfd42fb7` passed all 23 combined owner, recovery and workspace
+  gateway cases with `DATABASE_POOL_MAX=1` (150.36 seconds). Its combined
+  dispatcher suite passed 12 cases, including both read and write admission
+  races; current endpoint and operations unit suites each passed 12 and 10
+  cases respectively. Runtime workspace and owner bytes remain those below.
 - #264 read adapter plus repair `7fbd842b37bdb6b6a12e4fdc810c9225a573eea7`:
   four gateway cases passed; the two write cases intentionally skipped.
 - #281 write adapter plus repair `c8472318f30a7d3c7672d52f2237607bb41f8ed0`:
