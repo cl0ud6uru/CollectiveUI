@@ -1,16 +1,19 @@
-import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { HttpError } from '@/lib/authz';
 import { remoteAccess } from './store';
 import { dashboardFetch } from './transport';
 import { nativeHub } from './hub';
 import { record } from './socket';
-import { profileName } from './sessions';
+import { ownedNativeSession, profileName } from './sessions';
 
-export const inspectionQuery = z.object({ panel: z.enum(['projects', 'files', 'schedules', 'plugins', 'system']), profile: profileName, path: z.string().max(2048).optional() }).strict();
+export const inspectionQuery = z.object({ panel: z.enum(['projects', 'files', 'schedules', 'plugins', 'system']), profile: profileName, sessionId: z.string().uuid().optional(), workspaceId: z.string().regex(/^[a-f0-9]{32}$/).optional(), action: z.enum(['list', 'read']).optional(), path: z.string().max(1024).optional() }).strict();
 const string = (v: unknown, max = 300) => typeof v === 'string' ? v.slice(0, max) : '';
 const number = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
 const rows = (v: unknown) => Array.isArray(v) ? v.slice(0, 500).map(record) : [];
+function validDirectory(value: string) {
+  return value.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(value) && !value.split('/').some(s => s === '..' || s.startsWith('.') || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|vault(?:\..*)?|config\.ya?ml|auth\.(?:json|ya?ml)|id_(?:rsa|ed25519)(?:\..*)?)$/i.test(s));
+}
 export function projectProjection(value: unknown) {
   const result = record(value);
   return { activeId: string(result.active_id), projects: rows(result.projects).map(p => ({ id: string(p.id), slug: string(p.slug, 200), name: string(p.name), archived: p.archived === true, folders: rows(p.folders).map(f => ({ path: string(f.path, 2048), primary: f.is_primary === true })).filter(f => validDirectory(f.path)) })) };
@@ -34,21 +37,37 @@ export function systemProjection(value: unknown) {
   const resource = (v: unknown) => { const r = record(v); return { total: number(r.total), used: number(r.used), percent: number(r.percent) }; };
   return { version: string(p.hermes_version), architecture: string(p.arch), cpuCount: number(p.cpu_count), cpuPercent: number(p.cpu_percent), uptimeSeconds: number(p.uptime_seconds), memory: resource(p.memory), disk: resource(p.disk) };
 }
-// Hidden paths and common credential/config stores never enter directory projections.
-export function validDirectory(value: string) {
-  return value.startsWith('/') && !/[\\\x00-\x1f\x7f]/.test(value) && !value.split('/').some(s => s === '..' || s.startsWith('.') || /^(?:credentials?(?:\..*)?|secrets?(?:\..*)?|vault(?:\..*)?|config\.ya?ml|auth\.(?:json|ya?ml)|id_(?:rsa|ed25519)(?:\..*)?)$/i.test(s));
-}
-export function directoryProjection(value: unknown, directory: string) {
+// Native file names are relative to the server-approved workspace root. Never project absolute paths.
+export function workspaceFilesProjection(value: unknown) {
   const p = record(value);
-  if (p.error) throw new HttpError(502, 'Hermes could not list this directory.');
-  return rows(p.entries).flatMap(e => {
-    const name = string(e.name, 255), candidate = string(e.path, 2048);
-    if (!name || name.includes('/') || name === '.' || name === '..' || candidate !== path.posix.join(directory, name) || !validDirectory(candidate)) return [];
-    return [{ name, path: candidate, directory: e.isDirectory === true || e.is_directory === true }];
+  if (p.protocol !== 'collective.workspace-files.v1') throw new HttpError(501, 'This Hermes version does not support the native workspace files protocol.');
+  if (p.available !== true) return { available: false, entries: [] as { name: string; path: string; directory: boolean }[] };
+  const workspaceId = string(p.workspace_id, 64), projectName = string(p.project_name, 160);
+  if (!/^[a-f0-9]{32}$/.test(workspaceId) || !projectName) throw new HttpError(502, 'Hermes returned an invalid workspace identity.');
+  const relativePath = (value: unknown) => {
+    if (typeof value !== 'string' || value.length > 1024 || value.startsWith('/') || value.includes('\\') || /[\x00-\x1f\x7f]/.test(value)) return false;
+    return value === '.' || value.split('/').every(part => !!part && part !== '.' && part !== '..' && !part.startsWith('.') && !/(?:secret|credential|token|vault)/i.test(part) && !/^(?:auth\.(?:json|ya?ml)|config\.(?:json|ya?ml)|id_(?:rsa|ed25519)(?:\..*)?|.*\.(?:pem|p12|pfx|key))$/i.test(part));
+  };
+  const path = string(p.path, 1024);
+  if (!relativePath(path)) throw new HttpError(502, 'Hermes returned an invalid workspace path.');
+  const entries = (Array.isArray(p.entries) ? p.entries.slice(0, 100) : []).map(record).flatMap(e => {
+    const name = string(e.name, 255), entryPath = string(e.path, 1024);
+    const expectedPath = path === '.' ? name : `${path}/${name}`;
+    if (!name || name.includes('/') || name.includes('\\') || /[\x00-\x1f\x7f]/.test(name) || name.startsWith('.') || entryPath !== expectedPath || !relativePath(entryPath)) return [];
+    if (e.kind !== 'directory' && e.kind !== 'file') return [];
+    return [{ name, path: entryPath, directory: e.kind === 'directory' }];
   });
+  if (p.action === 'read') {
+    if (typeof p.content !== 'string' || Buffer.byteLength(p.content, 'utf8') > 256 * 1024) throw new HttpError(502, 'Hermes returned an invalid or oversized text file.');
+    const sha256 = string(p.sha256, 64);
+    if (!/^[a-f0-9]{64}$/.test(sha256) || createHash('sha256').update(p.content, 'utf8').digest('hex') !== sha256)
+      throw new HttpError(502, 'Hermes returned an invalid workspace file revision.');
+    return { available: true, workspaceId, projectName, action: 'read', path, content: p.content, sha256, entries: [] };
+  }
+  return { available: true, workspaceId, projectName, action: 'list', path, entries, truncated: p.truncated === true };
 }
 
-/** Only these fixed, read-only dashboard routes are reachable through this service. */
+/** Read native panels through one profile-owned socket; only system metrics use a fixed dashboard route. */
 export async function inspectNative(ownerId: string, connectionId: string, raw: unknown) {
   const input = inspectionQuery.parse(raw);
   const access = await remoteAccess(ownerId, connectionId, 'admission');
@@ -74,18 +93,18 @@ export async function inspectNative(ownerId: string, connectionId: string, raw: 
     return scheduleProjection(value);
   }
   if (input.panel === 'system') return systemProjection(await get('/api/system/stats'));
-  const home = record(await get('/api/fs/default-cwd'));
-  const projects = projectProjection(await rpc('projects.list').catch((e: unknown) => { if (e instanceof HttpError && e.status === 501) return {}; throw e; }));
-  const roots = [...new Set([string(home.cwd, 2048), ...projects.projects.flatMap(p => p.folders.map(f => f.path))].filter(validDirectory).map(p => path.posix.normalize(p)))];
-  if (!roots.length) throw new HttpError(409, 'No visible workspace folders are configured in this Hermes profile.');
-  const directory = input.path ?? roots[0];
-  if (!directory || !validDirectory(directory) || path.posix.normalize(directory) !== directory) throw new HttpError(400, 'Choose a listed workspace directory.');
-  const root = roots.filter(r => directory === r || directory.startsWith(r.replace(/\/$/, '') + '/')).sort((a, b) => b.length - a.length)[0];
-  if (!root) throw new HttpError(403, 'Choose a directory inside a listed workspace.');
-  // Walk each ancestor through native listings. Symlinks and invented directories cannot become browser roots.
-  const parts = path.posix.relative(root, directory).split('/').filter(Boolean);
-  if (parts.length > 12) throw new HttpError(400, 'This directory is too deep to browse.');
-  let current = root;
-  for (const part of parts) { const next = path.posix.join(current, part); const entries = directoryProjection(await get('/api/fs/list', { path: current }), current); if (!entries.some(e => e.path === next && e.directory)) throw new HttpError(403, 'Choose a listed workspace directory.'); current = next; }
-  return { roots, directory, entries: directoryProjection(await get('/api/fs/list', { path: directory }), directory) };
+  if (!input.sessionId) throw new HttpError(409, 'Open a saved native Hermes chat before browsing workspace files.');
+  const row = await ownedNativeSession(ownerId, connectionId, input.sessionId);
+  if (row.profile !== input.profile) throw new HttpError(403, 'Choose the profile of the selected native chat.');
+  const hub = nativeHub(ownerId, connectionId);
+  await hub.refresh(row);
+  const runtimeId = hub.sessions.get(row.id)?.row.runtimeId;
+  if (!runtimeId) throw new HttpError(409, 'Open this native Hermes chat before browsing workspace files.');
+  const action = input.action ?? 'list';
+  if (action === 'read' && !input.path) throw new HttpError(400, 'Choose a listed workspace file.');
+  return workspaceFilesProjection(await hub.socket.call('collective.workspace.files', {
+    profile: row.profile, session_id: runtimeId, action,
+    ...(input.workspaceId ? { workspace_id: input.workspaceId } : {}),
+    ...(input.path ? { path: input.path } : {}),
+  }));
 }

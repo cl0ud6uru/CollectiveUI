@@ -27,7 +27,7 @@ export default async function OperationsPage({ params, searchParams }: PageProps
   if (policy.enabled) { try { profiles = await remoteProfiles(principal.user.id, connectionId); } catch { unavailable = true; } }
   return <PageFrame title={`${connection.name} · Workspace`}><div className="space-y-4">
     <Link className="text-sm underline" href={`/hermes/${connectionId}`}>Back to Hermes chats</Link>
-    <p className="text-sm text-muted-foreground">Browse this connected Hermes dashboard’s projects, directory names, schedules, plugins and resource usage. Profiles select projects and schedules within your dashboard account; plugins and system resources describe the shared Hermes instance.</p>
-    {policy.enabled ? unavailable ? <p role="alert">Could not load Hermes profiles. Check your connection in Settings and reload this page.</p> : <NativeOperations connectionId={connectionId} profiles={profiles} nativeSession={nativeSession} /> : <p>Personal remote Hermes access is disabled. Your saved connections are retained.</p>}
+    <p className="text-sm text-muted-foreground">Browse native Hermes projects, schedules, plugins and resource usage. Small text files can be listed and read within the selected chat’s persisted local project; existing UTF-8 files up to 256 KiB can be edited after digest review and explicit confirmation. Profiles select projects and schedules within your dashboard account; plugins and system resources describe the shared Hermes instance.</p>
+    {policy.enabled ? unavailable ? <p role="alert">Could not load Hermes profiles. Check your connection in Settings and reload this page.</p> : <NativeOperations key={`${connectionId}:${nativeSession?.profile ?? ''}:${nativeSession?.id ?? 'none'}`} connectionId={connectionId} profiles={profiles} nativeSession={nativeSession} /> : <p>Personal remote Hermes access is disabled. Your saved connections are retained.</p>}
   </div></PageFrame>;
 }
