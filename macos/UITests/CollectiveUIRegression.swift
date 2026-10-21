@@ -31,11 +31,12 @@ final class CollectiveUIRegression: XCTestCase {
         app.terminate()
     }
 
-    private func launch(_ conversation: String = "demo-research", scenario: String? = nil, reset: Bool = true, appearance: String? = nil) {
+    private func launch(_ conversation: String = "demo-research", scenario: String? = nil, reset: Bool = true, appearance: String? = nil, hermes: Bool = false) {
         app.launchArguments = ["--demo", "--demo-open", conversation]
         if let scenario { app.launchArguments += ["--demo-stream-scenario", scenario] }
         if reset { app.launchArguments.append("--demo-reset-drafts") }
         if let appearance { app.launchArguments += ["-desktopAppearance", appearance] }
+        if hermes { app.launchArguments.append("--demo-hermes-cancellation") }
         app.launch()
         app.activate()
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
@@ -55,11 +56,76 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertEqual(composer.value as? String, text)
     }
 
-    private func openChat(_ id: String) {
-        let row = app.descendants(matching: .any)["sidebar.chat." + id].firstMatch
+    private func openChat(_ id: String, expectedDraft: String = "") {
+        let identifier = "sidebar.chat." + id
+        let row = app.descendants(matching: .any)[identifier].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let sidebar = app.scrollViews.containing(.any, identifier: identifier).firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 5))
+        // Existence includes rows clipped below the sidebar on a hosted Mac's
+        // 1024-point display. Bring the label inside the viewport before clicking;
+        // XCTest can report the containing outline row disabled or unhittable.
+        for _ in 0..<8 {
+            let viewport = sidebar.frame.insetBy(dx: 4, dy: 8)
+            if viewport.contains(row.frame), row.isHittable { break }
+            let delta: CGFloat = row.frame.midY > viewport.midY ? -240 : 240
+            sidebar.scroll(byDeltaX: 0, deltaY: delta)
+        }
+        XCTAssertTrue(sidebar.frame.insetBy(dx: 4, dy: 8).contains(row.frame),
+            "Selecting \(id) requires a visible row; viewport=\(sidebar.frame); row=\(row.frame)")
+        XCTAssertTrue(row.isHittable)
         row.click()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        // The old and new editors share an identifier. Existence alone can
+        // return before SwiftUI activates the selected conversation's model.
+        let restored = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", expectedDraft), object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [restored], timeout: 5), .completed,
+            "Selecting \(id) must restore its own draft; editor=\(String(describing: composer.value)); row=\(row.debugDescription); viewport=\(sidebar.frame)")
+    }
+
+    private func renderedMessageCount(_ text: String) throws -> Int {
+        // Selectable SwiftUI text can expose both a parent and child static
+        // text with identical content. Count rendered leaves, preserving
+        // distinct rows so a real duplicate submission still fails.
+        func matchingFrames(_ node: any XCUIElementSnapshot) -> [CGRect] {
+            let descendants = node.children.flatMap { matchingFrames($0) }
+            if !descendants.isEmpty { return descendants }
+            guard node.elementType == .staticText,
+                  (node.value as? String ?? node.label) == text else { return [] }
+            return [node.frame]
+        }
+        let frames = matchingFrames(try app.scrollViews["chat.transcript"].snapshot())
+        return frames.reduce(into: [CGRect]()) { unique, frame in
+            if !unique.contains(frame) { unique.append(frame) }
+        }.count
+    }
+
+    func testCommandOutputScrollsAndDismissalKeepsTheNewDraft() {
+        launch()
+        let lines = (1...60).map { "Offline output line \($0)" }.joined(separator: "\n")
+        enterDraft("/new\n" + lines)
+        composer.typeKey(.return, modifierFlags: .command)
+        let output = app.scrollViews["command.result.output"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        XCTAssertLessThan(output.frame.height, 180)
+        XCTAssertTrue(composer.isHittable)
+        output.scroll(byDeltaX: 0, deltaY: -4000)
+        XCTAssertTrue(output.staticTexts.containing(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "Offline output line 60", "Offline output line 60")).firstMatch.exists)
+        enterDraft("Keep this newer unsent draft")
+        app.buttons["command.result.dismiss"].click()
+        XCTAssertFalse(app.buttons["command.result.dismiss"].exists)
+        XCTAssertEqual(composer.value as? String, "Keep this newer unsent draft")
+    }
+
+    func testHermesStatusIsAvailableOnlyThroughAnExplicitCommand() {
+        launch("home-bot-atlas", hermes: true)
+        XCTAssertFalse(app.buttons["Check Hermes Status"].exists)
+        enterDraft("/status")
+        composer.typeKey(.return, modifierFlags: .command)
+        XCTAssertTrue(app.buttons["command.result.dismiss"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Chat status"].exists)
+        XCTAssertFalse(app.buttons["Check Hermes Status"].exists)
     }
 
     func testDraftsSurviveRepeatedNavigationAndRelaunch() {
@@ -71,15 +137,15 @@ final class CollectiveUIRegression: XCTestCase {
         openChat("demo-image")
         enterDraft(second)
         for _ in 0..<3 {
-            openChat("demo-research")
+            openChat("demo-research", expectedDraft: first)
             XCTAssertEqual(composer.value as? String, first)
-            openChat("demo-image")
+            openChat("demo-image", expectedDraft: second)
             XCTAssertEqual(composer.value as? String, second)
         }
         app.terminate()
         launch(reset: false)
         XCTAssertEqual(composer.value as? String, first)
-        openChat("demo-image")
+        openChat("demo-image", expectedDraft: second)
         XCTAssertEqual(composer.value as? String, second)
     }
 
@@ -108,7 +174,7 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.staticTexts["Reply stopped"].waitForExistence(timeout: 5))
     }
 
-    func testEnterSendsOnceAndShiftEnterKeepsNewlineAndNextDraft() {
+    func testEnterSendsOnceAndShiftEnterKeepsNewlineAndNextDraft() throws {
         launch(scenario: "delayed")
         composer.click()
         composer.typeText("Keyboard send first line")
@@ -124,9 +190,7 @@ final class CollectiveUIRegression: XCTestCase {
         composer.typeText("Next draft stays unsent")
         composer.typeKey(.return, modifierFlags: [])
         XCTAssertEqual(composer.value as? String, "Next draft stays unsent")
-        let sent = app.scrollViews["chat.transcript"].staticTexts.matching(
-            NSPredicate(format: "value == %@ OR label == %@", message, message))
-        XCTAssertEqual(sent.count, 1, "One Return press must create exactly one user message")
+        XCTAssertEqual(try renderedMessageCount(message), 1, "One Return press must create exactly one user message")
         app.buttons["chat.stop"].click()
         XCTAssertTrue(app.staticTexts["Reply stopped"].waitForExistence(timeout: 10))
         XCTAssertEqual(composer.value as? String, "Next draft stays unsent")
@@ -143,26 +207,24 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertFalse(approve.exists)
     }
 
-    func testEnterAfterNavigationSendsOnlyTheCurrentChat() {
+    func testEnterAfterNavigationSendsOnlyTheCurrentChat() throws {
         launch(scenario: "delayed")
         let retainedDraft = "Research draft must stay local"
         let submittedDraft = "Send only the selected image chat"
         enterDraft(retainedDraft)
         openChat("demo-image")
         enterDraft(submittedDraft)
-        openChat("demo-research")
+        openChat("demo-research", expectedDraft: retainedDraft)
         XCTAssertEqual(composer.value as? String, retainedDraft)
-        openChat("demo-image")
+        openChat("demo-image", expectedDraft: submittedDraft)
         XCTAssertEqual(composer.value as? String, submittedDraft)
         composer.click()
         composer.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(app.buttons["chat.stop"].waitForExistence(timeout: 5))
-        let sent = app.scrollViews["chat.transcript"].staticTexts.matching(
-            NSPredicate(format: "value == %@ OR label == %@", submittedDraft, submittedDraft))
-        XCTAssertEqual(sent.count, 1)
+        XCTAssertEqual(try renderedMessageCount(submittedDraft), 1)
         app.buttons["chat.stop"].click()
         XCTAssertTrue(app.staticTexts["Reply stopped"].waitForExistence(timeout: 10))
-        openChat("demo-research")
+        openChat("demo-research", expectedDraft: retainedDraft)
         XCTAssertEqual(composer.value as? String, retainedDraft)
         XCTAssertFalse(app.buttons["chat.stop"].exists)
     }
@@ -217,12 +279,22 @@ final class CollectiveUIRegression: XCTestCase {
         launch(appearance: "dark")
         captureWindow("native-after-dark")
         let window = app.windows["main"]
+        let initialFrame = window.frame
+        // A hosted Mac has a 1024-point display. Its fitted initial window can
+        // put the resize edge against the display boundary. Move that edge
+        // on-screen before dragging it, then keep the compact window visible.
+        let titlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 12))
+        titlebar.click(forDuration: 0.5, thenDragTo: titlebar.withOffset(CGVector(dx: -120, dy: 0)))
+        let movedFrame = window.frame
         let rightEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.999, dy: 0.5))
-        rightEdge.press(forDuration: 0.2, thenDragTo: rightEdge.withOffset(CGVector(dx: 760 - window.frame.width, dy: 0)))
+        rightEdge.click(forDuration: 0.5, thenDragTo: rightEdge.withOffset(CGVector(dx: 760 - window.frame.width, dy: 0)))
         let bottomEdge = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.999))
-        bottomEdge.press(forDuration: 0.2, thenDragTo: bottomEdge.withOffset(CGVector(dx: 0, dy: 600 - window.frame.height)))
-        XCTAssertLessThan(window.frame.width, 820)
-        XCTAssertLessThan(window.frame.height, 650)
+        bottomEdge.click(forDuration: 0.5, thenDragTo: bottomEdge.withOffset(CGVector(dx: 0, dy: 600 - window.frame.height)))
+        let compactTitlebar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0)).withOffset(CGVector(dx: 0, dy: 12))
+        compactTitlebar.click(forDuration: 0.5, thenDragTo: compactTitlebar.withOffset(
+            CGVector(dx: 20 - window.frame.minX, dy: 60 - window.frame.minY)))
+        XCTAssertLessThan(window.frame.width, 820, "initial=\(initialFrame); moved=\(movedFrame); resized=\(window.frame)")
+        XCTAssertLessThan(window.frame.height, 650, "initial=\(initialFrame); moved=\(movedFrame); resized=\(window.frame)")
         let draft = (1...20).map { "Draft line \($0): keep this multiline text." }.joined(separator: "\n")
         enterDraft(draft)
         XCTAssertLessThan(composer.frame.height, 180)

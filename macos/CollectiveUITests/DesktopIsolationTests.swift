@@ -8,8 +8,10 @@ final class DesktopIsolationTests: XCTestCase {
         let suite = "DesktopIsolation.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
+        let draftRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: draftRoot) }
         let credentials = MemoryCredentials(["baseURL": "https://fixture.invalid", "token": "first-token"])
-        let app = AppModel(credentials: credentials, defaults: defaults, draftRoot: nil,
+        let app = AppModel(credentials: credentials, defaults: defaults, draftRoot: draftRoot,
             session: FixtureProtocol.session(), launchDemo: false)
         let chat = ChatModel(app: app, conversationId: "conversation", newChatTarget: TargetOption(kind: "app", id: "model", name: "Fixture"))
         chat.composerText = "Draft for first account"

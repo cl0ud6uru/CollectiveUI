@@ -5,24 +5,27 @@ import CollectiveKit
 @MainActor
 final class ChatRecoveryTests: XCTestCase {
     private var app: AppModel!
+    private var draftRoot: URL!
     private var defaults: UserDefaults!
     private var suite: String!
     private var fixture: RecoveryFixture!
 
     override func setUp() async throws {
+        draftRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         suite = "ChatRecovery.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)!
         fixture = RecoveryFixture()
         let transport = fixture!
         FixtureProtocol.handler = { transport.response($0) }
         app = AppModel(credentials: MemoryCredentials(["baseURL": "https://qa.example.invalid", "token": "fixture"]),
-            defaults: defaults, draftRoot: nil, session: FixtureProtocol.session(), launchDemo: false)
+            defaults: defaults, draftRoot: draftRoot, session: FixtureProtocol.session(), launchDemo: false)
     }
 
     override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suite)
         FixtureProtocol.handler = { _ in .init() }
         app = nil
+        try? FileManager.default.removeItem(at: draftRoot)
         fixture = nil
     }
 
@@ -184,6 +187,39 @@ final class ChatRecoveryTests: XCTestCase {
         XCTAssertEqual(Set(fixture.messageIDs).count, 1)
         XCTAssertEqual(model.messages.filter { $0.role == .user }.count, 1)
         XCTAssertEqual(model.composerText, "Next draft must stay separate")
+    }
+
+    func testRetryCannotStartBeforeItsOriginalIdentityIsDurable() async throws {
+        fixture.omitPendingMessage = true
+        let model = chat()
+        model.composerText = "Original immutable request"
+        model.send()
+        await waitUntil { !model.isStreaming && model.canRetryOriginalMessage }
+        let originalBody = fixture.bodies.first
+        let originalID = model.conversationState.pendingSubmission?.messageId
+        model.composerText = "Newer unsent draft"
+        let directory = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: draftRoot, includingPropertiesForKeys: nil).first)
+        let file = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+        let backup = file.appendingPathExtension("last-good")
+        try FileManager.default.moveItem(at: file, to: backup)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        model.retryOriginalMessage()
+        XCTAssertEqual(fixture.postCount, 1)
+        XCTAssertFalse(model.isStreaming)
+        XCTAssertEqual(model.conversationState.pendingSubmission?.messageId, originalID)
+        XCTAssertTrue(model.needsMessageStatusCheck)
+        XCTAssertEqual(model.composerText, "Newer unsent draft")
+        XCTAssertNotNil(model.draftPersistenceMessage)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.moveItem(at: backup, to: file)
+        model.retryDraftPersistence()
+        XCTAssertTrue(model.canRetryOriginalMessage)
+        fixture.omitPendingMessage = false
+        model.retryOriginalMessage()
+        await waitUntil { !model.isStreaming && !model.needsMessageStatusCheck }
+        XCTAssertEqual(fixture.postCount, 2)
+        XCTAssertEqual(fixture.bodies.last, originalBody)
+        XCTAssertEqual(model.composerText, "Newer unsent draft")
     }
 
     func testInterruptedSubmissionSurvivesChatReconstruction() async {

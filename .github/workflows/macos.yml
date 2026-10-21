@@ -1,0 +1,204 @@
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'macos/**'
+      - 'ios/CollectiveKit/**'
+      - 'ios/CollectiveUI/App/**'
+      - 'ios/CollectiveUI/Auth/**'
+      - 'ios/CollectiveUI/Chat/**'
+      - 'ios/CollectiveUI/Demo/**'
+      - 'ios/CollectiveUI/Support/**'
+      - 'ios/CollectiveUITests/**'
+      - 'ios/scripts/test-parity-contracts.py'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'macos/**'
+      - 'ios/CollectiveKit/**'
+      - 'ios/CollectiveUI/App/**'
+      - 'ios/CollectiveUI/Auth/**'
+      - 'ios/CollectiveUI/Chat/**'
+      - 'ios/CollectiveUI/Demo/**'
+      - 'ios/CollectiveUI/Support/**'
+      - 'ios/CollectiveUITests/**'
+      - 'ios/scripts/test-parity-contracts.py'
+      - '.github/workflows/macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per PR/branch; do not repeat the expensive native suites in a matrix.
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tooling:
+    name: Validate macOS CI tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Check native project and shared-source contracts
+        run: |
+          python3 macos/scripts/check-project.py
+          python3 ios/scripts/test-parity-contracts.py
+
+      - name: Validate workflow and embedded shell
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/actionlint.tar.gz"
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  '"$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          # This release predates GitHub's hosted xcode-27 label. Allow only that
+          # additional label in the linter; the job below still uses GitHub hosting.
+          printf 'self-hosted-runner:\n  labels: [xcode-27]\n' > "$RUNNER_TEMP/actionlint.yaml"
+          "$RUNNER_TEMP/actionlint" -config-file "$RUNNER_TEMP/actionlint.yaml" .github/workflows/macos.yml
+
+  native:
+    name: Native macOS builds and offline tests
+    needs: tooling
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Record Apple toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/macos-ci"
+          {
+            sw_vers
+            uname -m
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+            xcrun swift --version
+          } 2>&1 | tee "$RUNNER_TEMP/macos-ci/toolchain.log"
+
+      - name: Test CollectiveKit on macOS
+        timeout-minutes: 10
+        run: |
+          swift test --package-path ios/CollectiveKit \
+            2>&1 | tee "$RUNNER_TEMP/macos-ci/package-tests.log" | tail -150
+
+      - name: Build Debug app and hosted tests once
+        id: debug
+        timeout-minutes: 10
+        run: |
+          xcodebuild build-for-testing \
+            -project macos/CollectiveUI.xcodeproj \
+            -scheme CollectiveUI \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/macos-debug" \
+            COLLECTIVE_BUNDLE_ID=io.collectiveui.macos.polish \
+            CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/macos-ci/debug-build.log" | tail -150
+          test -d "$RUNNER_TEMP/macos-debug/Build/Products/Debug/CollectiveUI.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$RUNNER_TEMP/macos-debug/Build/Products/Debug/CollectiveUI.app/Contents/Info.plist")" \
+            = io.collectiveui.macos.polish
+
+      - name: Build universal Release without distribution signing
+        timeout-minutes: 10
+        run: |
+          xcodebuild build \
+            -project macos/CollectiveUI.xcodeproj \
+            -scheme CollectiveUI \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/macos-release" \
+            COLLECTIVE_BUNDLE_ID=io.collectiveui.macos.polish \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO 'ARCHS=arm64 x86_64' \
+            2>&1 | tee "$RUNNER_TEMP/macos-ci/release-build.log" | tail -150
+          release_binary="$RUNNER_TEMP/macos-release/Build/Products/Release/CollectiveUI.app/Contents/MacOS/CollectiveUI"
+          xcrun lipo "$release_binary" -info \
+            | tee "$RUNNER_TEMP/macos-ci/release-architectures.log"
+          for arch in arm64 x86_64; do
+            grep -Eq "are:.*[[:space:]]${arch}([[:space:]]|$)" \
+              "$RUNNER_TEMP/macos-ci/release-architectures.log"
+          done
+
+      - name: Run hosted fixture tests without rebuilding
+        id: hosted
+        if: ${{ !cancelled() && steps.debug.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          xcodebuild test-without-building \
+            -project macos/CollectiveUI.xcodeproj \
+            -scheme CollectiveUI \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -parallel-testing-enabled NO \
+            -derivedDataPath "$RUNNER_TEMP/macos-debug" \
+            -resultBundlePath "$RUNNER_TEMP/macos-ci/hosted.xcresult" \
+            COLLECTIVE_BUNDLE_ID=io.collectiveui.macos.polish \
+            CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/macos-ci/hosted-tests.log" | tail -150
+
+      # Both suites launch the same isolated app, so UI tests must follow hosted
+      # tests. Reuse Debug's app instead of building a second fixture app.
+      - name: Run offline macOS UI regressions
+        if: ${{ !cancelled() && steps.hosted.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          TEST_RUNNER_COLLECTIVE_MACOS_QA_APP: ${{ runner.temp }}/macos-debug/Build/Products/Debug/CollectiveUI.app
+        run: |
+          xcodebuild test \
+            -project macos/UITests/CollectiveUIRegression.xcodeproj \
+            -scheme CollectiveUIRegression \
+            -destination 'platform=macOS,arch=arm64' \
+            -parallel-testing-enabled NO \
+            -derivedDataPath "$RUNNER_TEMP/macos-ui" \
+            -resultBundlePath "$RUNNER_TEMP/macos-ci/ui.xcresult" \
+            CODE_SIGN_IDENTITY=- \
+            2>&1 | tee "$RUNNER_TEMP/macos-ci/ui-tests.log" | tail -200
+
+      - name: Summarize native test results and failures
+        if: always()
+        timeout-minutes: 5
+        run: |
+          for suite in hosted ui; do
+            bundle="$RUNNER_TEMP/macos-ci/$suite.xcresult"
+            if [ -d "$bundle" ]; then
+              xcrun xcresulttool get test-results summary --path "$bundle" \
+                | tee "$RUNNER_TEMP/macos-ci/$suite-summary.json"
+            fi
+          done
+          for log in "$RUNNER_TEMP"/macos-ci/*.log; do
+            if [ -f "$log" ]; then
+              echo "::group::${log##*/} failure details"
+              grep -nE 'error:|failed -|XCTAssert|Test Case .* failed|Failing tests:' "$log" | head -100 || true
+              echo '::endgroup::'
+            fi
+          done
+      - name: Export offline UI attachments
+        if: always()
+        timeout-minutes: 5
+        run: |
+          if [ -d "$RUNNER_TEMP/macos-ci/ui.xcresult" ]; then
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/macos-ci/ui.xcresult" \
+              --output-path "$RUNNER_TEMP/macos-ci/ui-attachments"
+          fi
+
+      - name: Upload native validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-validation
+          path: ${{ runner.temp }}/macos-ci
+          retention-days: 14
+          if-no-files-found: warn

@@ -7,6 +7,16 @@ def source(path):
     return (ROOT / path).read_text()
 
 class ParityContracts(unittest.TestCase):
+    def test_hermes_status_stays_an_explicit_command_across_clients(self):
+        ios = source('CollectiveUI/Chat/ChatView.swift')
+        mac = (ROOT.parent / 'macos/CollectiveUI/Chat/DesktopRecoveryView.swift').read_text()
+        web = (ROOT.parent / 'src/components/chat/chat.tsx').read_text()
+        for surface in [ios, mac, web]:
+            self.assertNotIn('Check Hermes Status', surface)
+            self.assertNotIn('Check Hermes status', surface)
+        model = source('CollectiveUI/Chat/ChatModel.swift')
+        self.assertIn('executeCommand("/status", preservesDraft: true)', model)
+
     def test_navigation_and_demo_evidence_are_complete(self):
         sidebar = source('CollectiveUI/Views/SidebarView.swift')
         self.assertIn('navigationAction("Home"', sidebar)

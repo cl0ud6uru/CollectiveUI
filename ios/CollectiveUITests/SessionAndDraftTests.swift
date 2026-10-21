@@ -40,6 +40,7 @@ final class SessionAndDraftTests: XCTestCase {
     override func tearDown() async throws {
         defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: root)
+        FixtureProtocol.handler = { _ in .init() }
     }
 
     private func app(token: String = "fixture-a", server: URL? = nil) -> AppModel {
@@ -392,6 +393,338 @@ final class SessionAndDraftTests: XCTestCase {
         _ = restored.reconcileStoppedReplies(in: [user, replacement])
         XCTAssertFalse(restored.showsStoppedPlaceholder(for: replacement))
         XCTAssertFalse(restored.preventsResume(in: [user, replacement]))
+    }
+
+    private func savedDraftFile() throws -> URL {
+        let directory = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).first)
+        return try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first(where: { $0.pathExtension == "json" }))
+    }
+
+    func testWriteFailureIsVisibleAndRetryPreservesTextAndFiles() throws {
+        let model = app()
+        let state = model.conversationStates.state(for: "unsaved")
+        try Data("Temporary storage barrier".utf8).write(to: root)
+        state.text = "Keep this multiline\ndraft"
+        let retainedAttachment = attachment
+        state.attachments = [retainedAttachment]
+        XCTAssertFalse(state.flush())
+        XCTAssertEqual(state.persistenceIssue, .writeFailed)
+        XCTAssertTrue(model.conversationStates.recoverableIDs.contains("unsaved"))
+        XCTAssertEqual(state.text, "Keep this multiline\ndraft")
+        XCTAssertEqual(state.attachments, [retainedAttachment])
+        try FileManager.default.removeItem(at: root)
+        XCTAssertTrue(state.retryPersistence())
+        XCTAssertNil(state.persistenceIssue)
+        let restored = app().conversationStates.state(for: "unsaved")
+        XCTAssertEqual(restored.text, state.text)
+        XCTAssertEqual(restored.attachments, state.attachments)
+    }
+
+    func testDebouncedWriteFailureBecomesObservableWithoutLeavingTheChat() async throws {
+        // Keep the store alive: its save closure intentionally captures it weakly.
+        let model = app()
+        let active = model.conversationStates.state(for: "debounced")
+        try Data("Temporary storage barrier".utf8).write(to: root)
+        active.text = "An unsaved draft"
+        for _ in 0..<100 where active.persistenceIssue == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(active.persistenceIssue, .writeFailed)
+        XCTAssertEqual(active.text, "An unsaved draft")
+    }
+
+    func testSendDoesNotStartTransportOrClearComposerWhenIdentityCannotBeSaved() throws {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        let chat = ChatModel(app: model, conversationId: "blocked-send", newChatTarget: target)
+        chat.composerText = "Original request"
+        let retainedAttachment = attachment
+        chat.attachments = [retainedAttachment]
+        try Data("Temporary storage barrier".utf8).write(to: root)
+        FixtureProtocol.handler = { _ in XCTFail("Failed persistence must prevent all transport"); return .init() }
+        chat.send()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertEqual(chat.composerText, "Original request")
+        XCTAssertEqual(chat.attachments, [retainedAttachment])
+        XCTAssertNotNil(chat.draftPersistenceMessage)
+        XCTAssertFalse(chat.canSend)
+        XCTAssertFalse(chat.needsMessageStatusCheck, "No request was started")
+        try FileManager.default.removeItem(at: root)
+        chat.retryDraftPersistence()
+        XCTAssertNil(chat.draftPersistenceMessage)
+        XCTAssertTrue(chat.canSend, "Retry saving must not send; the user chooses Send afterward")
+    }
+
+    func testRequestIdentityAndAdmissionFenceExistOnDiskBeforeFirstTransport() async throws {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        let chat = ChatModel(app: model, conversationId: "durable-send", newChatTarget: target)
+        chat.composerText = "Original immutable request"
+        let requested = expectation(description: "Offline transport started")
+        let storageRoot = root!
+        FixtureProtocol.handler = { request in
+            guard request.httpMethod == "POST", request.url?.path.hasSuffix("/chat") == true else { return .init(status: 404) }
+            let sent = FixtureProtocol.body(request)
+            do {
+                let directory = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: storageRoot, includingPropertiesForKeys: nil).first)
+                let file = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first)
+                let saved = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: file))
+                XCTAssertEqual(saved["pendingSubmission"]?["messageId"], sent?["message"]?["id"])
+                XCTAssertEqual(saved["pendingSubmission"]?["body"], sent)
+                XCTAssertEqual(saved["requiresStatusCheck"]?.boolValue, true)
+            } catch {
+                XCTFail("Original request was not durable before transport: \(error)")
+            }
+            requested.fulfill()
+            return .init(contentType: "text/event-stream", data: Data(), finish: false)
+        }
+        chat.send()
+        await fulfillment(of: [requested], timeout: 3)
+        chat.composerText = "Newer unsent draft"
+        XCTAssertTrue(chat.conversationState.flush())
+        let restored = app().conversationStates.state(for: "durable-send")
+        XCTAssertEqual(restored.pendingSubmission?.messageId, chat.conversationState.pendingSubmission?.messageId)
+        XCTAssertEqual(restored.pendingSubmission?.text, "Original immutable request")
+        XCTAssertEqual(restored.text, "Newer unsent draft")
+        XCTAssertTrue(restored.requiresStatusCheck)
+        chat.deactivate()
+    }
+
+    func testNilStorageIsExplicitlyUnavailableAndCannotSubmit() {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: nil, session: FixtureProtocol.session(), launchDemo: false)
+        let chat = ChatModel(app: model, conversationId: "no-storage", newChatTarget: target)
+        chat.composerText = "Keep this in memory"
+        XCTAssertEqual(chat.conversationState.persistenceIssue, .unavailable)
+        XCTAssertNotNil(chat.draftPersistenceMessage)
+        XCTAssertFalse(chat.canSend)
+        XCTAssertFalse(chat.conversationState.flush())
+    }
+
+    func testCorruptSavedStateCannotBeOverwrittenOrSubmitted() throws {
+        let first = app()
+        let state = first.conversationStates.state(for: "corrupt")
+        state.text = "Previously saved draft"
+        state.pendingSubmission = PendingChatSubmission(messageId: "original-id", text: "Pending", attachments: [], body: .object(["message": .object(["id": "original-id"])]))
+        state.requiresStatusCheck = true
+        XCTAssertTrue(state.flush())
+        let file = try savedDraftFile()
+        let broken = Data("{broken saved state".utf8)
+        try broken.write(to: file)
+        let relaunched = app()
+        let chat = ChatModel(app: relaunched, conversationId: "corrupt", newChatTarget: target)
+        XCTAssertEqual(chat.conversationState.persistenceIssue, .readFailed)
+        chat.composerText = "New text must remain in memory"
+        XCTAssertFalse(chat.conversationState.flush())
+        XCTAssertFalse(chat.canSend)
+        XCTAssertFalse(chat.canRegenerate)
+        XCTAssertEqual(try Data(contentsOf: file), broken, "Unknown admitted identity must not be overwritten")
+    }
+
+    func testRetryLoadingRestoresRepairedSavedIdentityWithoutDiscardingNewText() throws {
+        let first = app()
+        let state = first.conversationStates.state(for: "repaired")
+        state.text = "Saved draft"
+        state.pendingSubmission = PendingChatSubmission(messageId: "original-id", text: "Pending", attachments: [], body: .object(["message": .object(["id": "original-id"])]))
+        state.requiresStatusCheck = true
+        XCTAssertTrue(state.flush())
+        let file = try savedDraftFile()
+        let good = try Data(contentsOf: file)
+        try Data("{broken".utf8).write(to: file)
+        let relaunched = app()
+        let restored = relaunched.conversationStates.state(for: "repaired")
+        restored.text = "New unsaved text"
+        try good.write(to: file)
+        XCTAssertFalse(restored.retryPersistence(), "Loading must not discard newer in-memory text")
+        XCTAssertEqual(restored.text, "New unsaved text")
+        XCTAssertEqual(try Data(contentsOf: file), good)
+        restored.text = ""
+        XCTAssertTrue(restored.retryPersistence())
+        XCTAssertNil(restored.persistenceIssue)
+        XCTAssertEqual(restored.text, "Saved draft")
+        XCTAssertEqual(restored.pendingSubmission?.messageId, "original-id")
+        XCTAssertTrue(restored.requiresStatusCheck)
+    }
+
+    func testFailedLaterWritePreservesLastDurablePendingIdentity() throws {
+        let first = app()
+        let state = first.conversationStates.state(for: "last-good")
+        state.pendingSubmission = PendingChatSubmission(messageId: "original-id", text: "Pending", attachments: [], body: .object(["message": .object(["id": "original-id"])]))
+        state.requiresStatusCheck = true
+        XCTAssertTrue(state.flush())
+        let file = try savedDraftFile()
+        let backup = file.appendingPathExtension("last-good")
+        try FileManager.default.moveItem(at: file, to: backup)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        state.text = "Newer unsaved draft"
+        XCTAssertFalse(state.flush())
+        XCTAssertEqual(state.persistenceIssue, .writeFailed)
+        XCTAssertEqual(state.pendingSubmission?.messageId, "original-id")
+        XCTAssertTrue(state.requiresStatusCheck)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.moveItem(at: backup, to: file)
+        let relaunched = app().conversationStates.state(for: "last-good")
+        XCTAssertEqual(relaunched.pendingSubmission?.messageId, "original-id")
+        XCTAssertTrue(relaunched.requiresStatusCheck)
+        XCTAssertTrue(state.retryPersistence())
+        XCTAssertEqual(app().conversationStates.state(for: "last-good").text, "Newer unsaved draft")
+    }
+
+    func testFreshCommandKeepsDestinationAndDraftWhenSavingFails() async throws {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        var hermes = TargetOption(kind: "bot", id: "fixture-hermes", name: "Fixture Hermes")
+        hermes.hermes = true
+        let chat = ChatModel(app: model, conversationId: "blocked-command", newChatTarget: hermes)
+        chat.composerText = "/new"
+        try Data("Temporary storage barrier".utf8).write(to: root)
+        FixtureProtocol.handler = { _ in XCTFail("Command must not run without durable destination"); return .init() }
+        chat.send()
+        for _ in 0..<100 where chat.isExecutingCommand { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(chat.isExecutingCommand)
+        XCTAssertEqual(chat.composerText, "/new")
+        XCTAssertNotNil(chat.draftPersistenceMessage)
+        let destination = try XCTUnwrap(chat.conversationState.pendingCommand?.nextId)
+        try FileManager.default.removeItem(at: root)
+        chat.retryDraftPersistence()
+        let restored = app().conversationStates.state(for: "blocked-command")
+        XCTAssertEqual(restored.pendingCommand?.nextId, destination)
+        XCTAssertEqual(restored.text, "/new")
+    }
+
+    func testRegenerateDoesNotMutateHistoryWhenAdmissionFenceCannotBeSaved() throws {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        let chat = ChatModel(app: model, conversationId: "blocked-regenerate", newChatTarget: target)
+        chat.messages = [UIMessage(id: "user", role: .user), UIMessage(id: "assistant", role: .assistant)]
+        let before = chat.messages
+        try Data("Temporary storage barrier".utf8).write(to: root)
+        FixtureProtocol.handler = { _ in XCTFail("Regenerate must not run without its fence"); return .init() }
+        chat.regenerate(assistantMessageId: "assistant")
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(chat.messages, before)
+        XCTAssertNotNil(chat.draftPersistenceMessage)
+    }
+
+    func testFirstAtomicSnapshotCannotRestoreSubmittedDraftAsANewMessage() async throws {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        let chat = ChatModel(app: model, conversationId: "atomic-send", newChatTarget: target)
+        let file = attachment
+        chat.composerText = "Original submitted draft"
+        chat.attachments = [file]
+        let persist = try XCTUnwrap(chat.conversationState.save)
+        var firstSnapshot: Data?
+        var snapshotFile: URL?
+        chat.conversationState.save = {
+            let saved = persist()
+            if saved && firstSnapshot == nil {
+                do {
+                    let url = try self.savedDraftFile()
+                    snapshotFile = url
+                    firstSnapshot = try Data(contentsOf: url)
+                } catch { XCTFail("Could not capture first committed snapshot: \(error)") }
+            }
+            return saved
+        }
+        let originalRequested = expectation(description: "Original offline request started")
+        FixtureProtocol.handler = { request in
+            if request.httpMethod == "POST", request.url?.path.hasSuffix("/chat") == true { originalRequested.fulfill() }
+            return .init(contentType: "text/event-stream", data: Data(), finish: false)
+        }
+        chat.send()
+        await fulfillment(of: [originalRequested], timeout: 3)
+        chat.deactivate()
+        chat.conversationState.save = persist
+        let captured = try XCTUnwrap(firstSnapshot)
+        let originalFile = try XCTUnwrap(snapshotFile)
+        let pending = try XCTUnwrap(chat.conversationState.pendingSubmission)
+        // Reopen from exactly the first atomic save, as if the process stopped
+        // before the later cleared-composer flush. No process or real app is killed.
+        let replicaRoot = root.appendingPathComponent("relaunch", isDirectory: true)
+        let replicaScope = replicaRoot.appendingPathComponent(originalFile.deletingLastPathComponent().lastPathComponent)
+        try FileManager.default.createDirectory(at: replicaScope, withIntermediateDirectories: true)
+        try captured.write(to: replicaScope.appendingPathComponent(originalFile.lastPathComponent))
+        let relaunched = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: replicaRoot, session: FixtureProtocol.session(), launchDemo: false)
+        let reopened = ChatModel(app: relaunched, conversationId: "atomic-send", newChatTarget: target)
+        XCTAssertEqual(reopened.conversationState.pendingSubmission?.messageId, pending.messageId)
+        XCTAssertEqual(reopened.conversationState.pendingSubmission?.attachments, [file])
+        XCTAssertTrue(reopened.needsMessageStatusCheck)
+        XCTAssertEqual(reopened.composerText, "", "Submitted text belongs only to the immutable pending request")
+        XCTAssertTrue(reopened.attachments.isEmpty, "Submitted attachments must not reappear as a new unsent message")
+        let user = try XCTUnwrap(pending.body["message"])
+        let snapshot: JSONValue = .object([
+            "conversationId": "atomic-send", "target": .object(["kind": "app", "id": "qa-model", "name": "QA model"]),
+            "initialRows": .array([.object(["id": .string(pending.messageId), "parentId": .null, "message": user])]),
+            "initialLeafId": .string(pending.messageId), "resume": false,
+        ])
+        let data = try JSONEncoder().encode(snapshot)
+        var posts = 0
+        FixtureProtocol.handler = { request in
+            if request.httpMethod == "POST" { posts += 1 }
+            return .init(data: data)
+        }
+        await reopened.checkMessageStatus()
+        XCTAssertFalse(reopened.needsMessageStatusCheck)
+        XCTAssertNil(reopened.conversationState.pendingSubmission)
+        XCTAssertEqual(reopened.composerText, "")
+        XCTAssertTrue(reopened.attachments.isEmpty)
+        XCTAssertFalse(reopened.canSend, "Acceptance must not turn the original draft into a ready-to-send duplicate")
+        reopened.send()
+        XCTAssertEqual(posts, 0)
+    }
+
+    func testRetainedPendingIdentityOverridesAFalseSavedAdmissionFlag() throws {
+        let original = app()
+        let state = original.conversationStates.state(for: "inconsistent-fence")
+        state.pendingSubmission = PendingChatSubmission(messageId: "original-id", text: "Original", attachments: [],
+            body: .object(["message": .object(["id": "original-id"])]))
+        state.requiresStatusCheck = false
+        state.text = "A newer unsent draft"
+        XCTAssertTrue(state.flush())
+        let relaunched = app()
+        let reopened = ChatModel(app: relaunched, conversationId: "inconsistent-fence", newChatTarget: target)
+        XCTAssertEqual(reopened.conversationState.pendingSubmission?.messageId, "original-id")
+        XCTAssertTrue(reopened.needsMessageStatusCheck, "A retained request identity must fail closed until checked")
+        XCTAssertFalse(reopened.canSend, "A new send must not replace an unresolved original identity")
+        XCTAssertFalse(reopened.canRegenerate)
+        XCTAssertEqual(reopened.composerText, "A newer unsent draft")
+    }
+
+    func testRepeatedSendCannotReplaceTheDurableRequestWithANewerDraft() async throws {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture-a"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        let chat = ChatModel(app: model, conversationId: "single-send", newChatTarget: target)
+        let requested = expectation(description: "One original offline request")
+        requested.assertForOverFulfill = true
+        var posts = 0
+        FixtureProtocol.handler = { request in
+            if request.httpMethod == "POST", request.url?.path.hasSuffix("/chat") == true {
+                posts += 1
+                requested.fulfill()
+            }
+            return .init(contentType: "text/event-stream", data: Data(), finish: false)
+        }
+        chat.composerText = "Original request"
+        chat.send()
+        let originalID = chat.conversationState.pendingSubmission?.messageId
+        chat.composerText = "Newer unsent request"
+        chat.send()
+        chat.send()
+        await fulfillment(of: [requested], timeout: 3)
+        XCTAssertEqual(posts, 1)
+        XCTAssertEqual(chat.conversationState.pendingSubmission?.messageId, originalID)
+        XCTAssertEqual(chat.conversationState.pendingSubmission?.text, "Original request")
+        XCTAssertEqual(chat.composerText, "Newer unsent request")
+        XCTAssertTrue(chat.conversationState.flush())
+        let restored = app().conversationStates.state(for: "single-send")
+        XCTAssertEqual(restored.pendingSubmission?.messageId, originalID)
+        XCTAssertEqual(restored.text, "Newer unsent request")
+        XCTAssertTrue(restored.requiresStatusCheck)
+        chat.deactivate()
     }
 
     #if os(iOS)
