@@ -52,10 +52,31 @@ async function take(token: string, purpose: string, binding: string): Promise<Fl
   if (!flow) fail();
   return flow;
 }
-async function account(tx: Tx, expected: Account, permanent = false) {
+type PreparedAccount = {
+  identityRealm: string; upn: string; authSource: string;
+  ldapDn: string | null; ldapIdentity: string | null; directory?: LdapUser;
+};
+/** Directory I/O precedes every account transaction. The saved binding is only a snapshot until locked compare. */
+async function prepareAccount(expected: Account, verified?: LdapUser): Promise<PreparedAccount> {
+  const [user] = await db.select().from(users).where(eq(users.id, expected.id));
+  if (!user || user.disabled || user.sessionVersion !== expected.sessionVersion) fail();
+  const base = { identityRealm: user.identityRealm, upn: user.upn, authSource: user.authSource, ldapDn: null, ldapIdentity: null };
+  if (user.identityRealm === "local") return base;
+  if (!ldapEnabled()) fail();
+  const [p] = await db.select().from(localSecurity).where(eq(localSecurity.userId, expected.id));
+  if (verified && p?.ldapIdentity && verified.identity !== p.ldapIdentity) fail();
+  let directory = verified;
+  if (p?.ldapDn && p.ldapIdentity) {
+    directory ??= await readLdapIdentity(p.ldapDn, p.ldapIdentity, undefined, user.upn) ?? undefined;
+    if (!directory || directory.identity !== p.ldapIdentity || directory.upn !== user.upn) fail();
+  } else if (user.authSource !== "ldap") fail();
+  return { ...base, ldapDn: p?.ldapDn ?? null, ldapIdentity: p?.ldapIdentity ?? null, directory };
+}
+async function account(tx: Tx, expected: Account, permanent: boolean, prepared: PreparedAccount) {
   const [row] = await tx.select({ user: users, credential: localCredentials }).from(users)
     .leftJoin(localCredentials, eq(localCredentials.userId, users.id)).where(eq(users.id, expected.id));
-  if (!row || row.user.disabled || row.user.sessionVersion !== expected.sessionVersion) fail();
+  if (!row || row.user.disabled || row.user.sessionVersion !== expected.sessionVersion ||
+    row.user.identityRealm !== prepared.identityRealm || row.user.upn !== prepared.upn || row.user.authSource !== prepared.authSource) fail();
   if (row.user.identityRealm === "local") {
     if (!localEnabled() || !row.credential || (row.credential.temporaryExpiresAt && row.credential.temporaryExpiresAt <= new Date()) ||
       (permanent && row.credential.mustChangePassword)) fail();
@@ -63,23 +84,27 @@ async function account(tx: Tx, expected: Account, permanent = false) {
   }
   if (!ldapEnabled()) fail();
   const [p] = await tx.select().from(localSecurity).where(eq(localSecurity.userId, expected.id));
+  // A disable, account rename/realm/provider switch or concurrent binding change cannot bless stale LDAP evidence.
+  if ((p?.ldapDn ?? null) !== prepared.ldapDn || (p?.ldapIdentity ?? null) !== prepared.ldapIdentity) fail();
   if (p?.ldapDn && p.ldapIdentity) {
-    const identity = await readLdapIdentity(p.ldapDn, p.ldapIdentity);
-    if (!identity || identity.upn !== row.user.upn) fail();
+    const identity = prepared.directory;
+    if (!identity || identity.identity !== p.ldapIdentity || identity.upn !== row.user.upn) fail();
+    if (identity.dn !== p.ldapDn) await tx.update(localSecurity).set({ ldapDn: identity.dn }).where(eq(localSecurity.userId, expected.id));
     const synced = await syncUserOnSignIn({ ...identity, source: "ldap", groups: identity.groups.map(g => ({ externalId: g.dn, displayName: g.name })) }, tx);
     if (synced.id !== row.user.id || synced.disabled) fail();
-  } else if (row.user.authSource !== "ldap") fail();
+  } else if (row.user.authSource !== "ldap" || await hasLocalFactors(expected.id, tx)) fail();
   return { user: row.user, credential: null };
 }
 function flowAccount(flow: Flow): Account { if (!flow.userId || flow.sessionVersion === null) fail(); return { id: flow.userId, sessionVersion: flow.sessionVersion }; }
-async function locked<T>(expected: Account, fn: (tx: Tx, row: Awaited<ReturnType<typeof account>>) => Promise<T>, permanent = false) {
+async function locked<T>(expected: Account, fn: (tx: Tx, row: Awaited<ReturnType<typeof account>>) => Promise<T>, permanent = false, verified?: LdapUser) {
+  const prepared = await prepareAccount(expected, verified);
   const result = await db.transaction(async tx => {
     await lockAccounts(tx);
     if (teamBotsEnabled()) {
       const { lockTeamAccessBots } = await import('@/lib/hermes-team/revocation');
       await lockTeamAccessBots(tx);
     }
-    return fn(tx, await account(tx, expected, permanent));
+    return fn(tx, await account(tx, expected, permanent, prepared));
   });
   if (teamBotsEnabled()) {
     const { reconcileTeamActorAccess } = await import('@/lib/hermes-team/revocation');
@@ -138,7 +163,7 @@ export async function beginPasswordLogin(username: string, password: string, hea
     }
     if (!await hasLocalFactors(user.id, tx)) return { mustChangePassword: credential?.mustChangePassword ?? false, ticket: await issue(tx, "login-ticket", binding, user, { provider }, 60) };
     return { flow: await issue(tx, "password-factor", binding, user, { provider }) };
-  });
+  }, false, verified?.identity);
 }
 export async function finishPasswordLogin(token: string, code: string, recovery: boolean, binding: string, provider: FactorProvider = "local") {
   const flow = await take(token, "password-factor", binding), expected = flowAccount(flow);
@@ -230,7 +255,7 @@ export async function reauthenticatePassword(actor: SecurityActor, op: string, p
     // Stored DN avoids ambiguity for directories whose uid filter does not accept a UPN.
     const [p] = await db.select().from(localSecurity).where(eq(localSecurity.userId, actor.id));
     const verified = p?.ldapDn && p.ldapIdentity
-      ? await authenticateLdapAtBinding(p.ldapDn, p.ldapIdentity, password)
+      ? await authenticateLdapAtBinding(p.ldapDn, p.ldapIdentity, password, undefined, user.upn)
       : (await authenticateLdapPassword(user.upn, password, headers))?.identity;
     if (!verified || verified.upn !== user.upn || !verified.identity) fail();
     identity = verified;
@@ -247,7 +272,7 @@ export async function reauthenticatePassword(actor: SecurityActor, op: string, p
     const codes = await replenishFinalRecoveryCode(tx, actor.id, protectedAccount && recovery);
     if (codes) return { codes, signOut: true, recoveryRotated: true };
     return { proof: await issue(tx, `reauth:${op}`, actor.sessionId, actor, { passwordVerified: "true" }) };
-  }, op !== "password");
+  }, op !== "password", identity);
 }
 async function takeReauth(actor: SecurityActor, op: string, token: string) {
   const flow = await take(token, `reauth:${op}`, actor.sessionId);

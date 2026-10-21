@@ -8,7 +8,7 @@ export interface StorageAdapter {
   delete(key: string): Promise<void>;
 }
 
-class LocalDiskStorage implements StorageAdapter {
+export class LocalDiskStorage implements StorageAdapter {
   constructor(private root: string) {}
   private resolve(key: string) {
     if (!/^[A-Za-z0-9/_.-]+$/.test(key) || key.includes("..")) throw new Error("Invalid storage key");
@@ -25,7 +25,12 @@ class LocalDiskStorage implements StorageAdapter {
     return readFile(this.resolve(key));
   }
   async delete(key: string) {
-    await unlink(this.resolve(key)).catch(() => {});
+    try {
+      await unlink(this.resolve(key));
+    } catch (error) {
+      // A missing blob is already deleted. Permission, I/O and other errors must retain the retry record.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 }
 

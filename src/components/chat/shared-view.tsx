@@ -8,6 +8,7 @@ import { continueSharedConversation } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { Button } from "@/components/ui/button";
 import { AssistantMessage, UserMessage } from "./message";
+import { SHARED_ATTACHMENT_NOTICE } from "@/lib/chat/shared-attachments";
 
 export function SharedView({
   token,
@@ -16,6 +17,7 @@ export function SharedView({
   createdAt,
   messages,
   appName,
+  attachmentsOmitted = false,
 }: {
   token: string;
   title: string;
@@ -23,6 +25,7 @@ export function SharedView({
   createdAt: string;
   messages: PortalUIMessage[];
   appName: string;
+  attachmentsOmitted?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -54,6 +57,7 @@ export function SharedView({
           <p className="mt-2 text-sm text-muted">
             Shared by {author} · {new Date(createdAt).toLocaleDateString()}
           </p>
+          {attachmentsOmitted && <p className="mt-3 text-sm text-muted">{SHARED_ATTACHMENT_NOTICE} Continued copies omit them too.</p>}
         </div>
         <div className="space-y-6 pt-8">
           {messages.map((m) =>

@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { liveActivities, mobileAuthCodes, mobileSessions } from "@/db/schema";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { sessionState } from "@/lib/auth/session-state";
-import { mobileEnabled } from "@/lib/auth/config";
+import { isAuthProvider, mobileEnabled, type AuthProvider } from "@/lib/auth/config";
 import { randomToken, sha256Hex } from "@/lib/crypto";
 
 /**
@@ -65,14 +65,17 @@ function sameString(a: string, b: string) {
 }
 
 /** After the person approved in the browser: a short-lived code bound to the PKCE challenge and their current sessions. */
-export async function issueAuthCode(p: Principal, req: AuthorizeRequest, authProvider?: string | null): Promise<string> {
+export async function issueAuthCode(p: Principal, req: AuthorizeRequest, authProvider: AuthProvider): Promise<string> {
+  if (!isAuthProvider(authProvider)) throw new MobileAuthError("Sign in again on the web before approving a device");
+  const state = await sessionState(p.user.id, p.user.sessionVersion, authProvider);
+  if (!state || state.mustChangePassword) throw new MobileAuthError("Sign in again on the web before approving a device");
   const code = randomToken("", 32);
   await db.delete(mobileAuthCodes).where(lt(mobileAuthCodes.expiresAt, new Date()));
   await db.insert(mobileAuthCodes).values({
     hash: sha256Hex(`mobile-code|${code}`),
     userId: p.user.id,
     sessionVersion: p.user.sessionVersion,
-    authProvider: authProvider ?? null,
+    authProvider,
     codeChallenge: req.codeChallenge,
     deviceName: req.deviceName,
     expiresAt: new Date(Date.now() + CODE_TTL_MS),
@@ -91,7 +94,9 @@ export async function exchangeAuthCode(code: unknown, verifier: unknown) {
     .where(and(eq(mobileAuthCodes.hash, sha256Hex(`mobile-code|${code}`)), gt(mobileAuthCodes.expiresAt, new Date())))
     .returning();
   if (!row || !sameString(pkceChallenge(verifier), row.codeChallenge)) throw new MobileAuthError("Invalid or expired sign-in code");
-  const state = await sessionState(row.userId, row.sessionVersion, row.authProvider ?? undefined);
+  // Old codes cannot prove the approving provider. Burning them requires a fresh, attributed web approval.
+  if (!isAuthProvider(row.authProvider)) throw new MobileAuthError("Approve this device again on the web");
+  const state = await sessionState(row.userId, row.sessionVersion, row.authProvider);
   if (!state || state.mustChangePassword) throw new MobileAuthError("Sign in on the web first");
   const principal = await loadPrincipal(row.userId);
   if (!principal) throw new MobileAuthError("Account unavailable");
@@ -128,8 +133,8 @@ export async function mobilePrincipal(token: string): Promise<{ principal: Princ
   const now = new Date();
   const [session] = await db.select().from(mobileSessions)
     .where(and(eq(mobileSessions.tokenHash, sha256Hex(`mobile-token|${token}`)), isNull(mobileSessions.revokedAt), gt(mobileSessions.expiresAt, now)));
-  if (!session) return null;
-  const state = await sessionState(session.userId, session.sessionVersion, session.authProvider ?? undefined);
+  if (!session || !isAuthProvider(session.authProvider)) return null;
+  const state = await sessionState(session.userId, session.sessionVersion, session.authProvider);
   if (!state || state.mustChangePassword) return null;
   const principal = await loadPrincipal(session.userId);
   if (!principal || principal.user.sessionVersion !== session.sessionVersion) return null;

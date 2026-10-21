@@ -19,6 +19,8 @@ export const QUEUES = {
   mcpRefresh: "mcp.refresh",
   /** Hourly: destroy workspaces of people disabled long enough, and orphaned sandboxes (src/lib/sandbox/lifecycle.ts). */
   sandboxCleanup: "sandbox.cleanup",
+  /** Hourly: retry failed attachment removal and retire unreferenced uploads after their draft grace. */
+  attachmentCleanup: "attachment.cleanup",
 } as const;
 
 export type RoutineRunJob = { runId: string };

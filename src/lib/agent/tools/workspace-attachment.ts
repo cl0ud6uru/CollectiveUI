@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { tool } from "ai";
 import { z } from "zod";
 import { db } from "@/db";
@@ -22,7 +22,7 @@ export function workspaceAttachmentTool(ctx: AgentCtx, ws: PortalWorkspace): Too
       async execute({ attachmentId }, { abortSignal }) {
         abortSignal?.throwIfAborted();
         const userId = ctx.principal.user.id;
-        const [attachment] = await db.select().from(attachments).where(and(eq(attachments.id, attachmentId), eq(attachments.userId, userId)));
+        const [attachment] = await db.select().from(attachments).where(and(eq(attachments.id, attachmentId), eq(attachments.userId, userId), isNull(attachments.deletedAt), eq(attachments.uploadComplete, true)));
         const [message] = attachment ? await db.select({ id: messages.id }).from(messages)
           .innerJoin(conversations, eq(conversations.id, messages.conversationId))
           .where(and(eq(messages.conversationId, ctx.conversationId), eq(conversations.userId, userId), eq(messages.role, "user"),

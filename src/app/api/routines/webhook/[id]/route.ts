@@ -1,9 +1,10 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { routineRuns, routines } from "@/db/schema";
+import { routines } from "@/db/schema";
 import { hmacSha256Hex, safeEqual } from "@/lib/crypto";
-import { enqueue, QUEUES } from "@/lib/jobs";
 import { openWebhookSecret } from "@/lib/routines";
+import { queueRoutineRun } from "@/lib/routines/admission";
+import { HttpError } from "@/lib/http-error";
 
 /**
  * Inbound webhook trigger for a routine. Authenticate with either:
@@ -34,9 +35,11 @@ export async function POST(req: Request, ctx: RouteContext<"/api/routines/webhoo
       payload = { text: raw };
     }
   }
-  const [run] = await db.insert(routineRuns).values({ routineId: routine.id, trigger: "webhook", payload, lastEnqueueAt: new Date() }).returning();
-  // Accepted once recorded durably. Returning 503 here would invite a duplicate trigger even though
-  // the sweeper will deliver this queued row (including after a lost queue acknowledgement).
-  await enqueue(QUEUES.routineRun, { runId: run.id }, { singletonKey: run.id });
-  return Response.json({ ok: true, runId: run.id }, { status: 202 });
+  try {
+    const { run } = await queueRoutineRun({ routineId: routine.id, ownerId: routine.ownerId, trigger: "webhook", payload, webhookSecret: routine.webhookSecret });
+    return Response.json({ ok: true, runId: run.id }, { status: 202 });
+  } catch (error) {
+    if (error instanceof HttpError) return Response.json({ error: error.message }, { status: error.status });
+    throw error;
+  }
 }

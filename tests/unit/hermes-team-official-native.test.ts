@@ -88,6 +88,8 @@ beforeEach(async () => {
   await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
   await db.insert(schema.users).values([{ id: 'admin', upn: 'admin@test.invalid', name: 'Admin', isAdmin: true, authSource: 'local' as const, identityRealm: 'local' as const },
     ...['alice', 'bob'].map(id => ({ id, upn: `${id}@test.invalid`, name: id, authSource: 'local' as const, identityRealm: 'local' as const }))]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'alice', enabled: true }, { userId: 'bob', enabled: true }]);
   admin = (await loadPrincipal('admin'))!; alice = (await loadPrincipal('alice'))!; bob = (await loadPrincipal('bob'))!;
   await db.insert(schema.aiApps).values({ id: 'company', name: 'Never dispatch this company fallback', provider: 'openai-compatible', model: route.model,
     credentialMode: 'org', baseUrl: 'https://company.test.invalid/v1', apiKeyEnc: sealAppSecret('company', 'synthetic-company-fallback-forbidden') });
@@ -172,6 +174,8 @@ describe.skipIf(!SOURCE)('actual pinned official Responses native lifecycle, syn
       network: 'internet', teamBotsEnabled: true, teamCandidateRuntimeEnabled: true }), driver);
     const ipc = await listenBroker(broker); vi.stubEnv('DOCKER_HERMES_SOCKET', broker.config.socketPath);
     try {
+      // Each enrolled synthetic owner receives a noncreating worker lease before its Team grant.
+      broker.authorize(ownerId, false);
       const grant = broker.authorizeTeam(ownerId, { teamBotId: 'team', mode: 'member', modelPolicy: 'personal_required' });
       const native = await broker.ensureTeam(ownerId, { teamBotId: 'team', mode: 'member', name: 'Team' }, grant.grantId);
       const home = driver.home(native.ownerId, native.profile), chat = await openTeamConversation(owner, 'team', 'member');

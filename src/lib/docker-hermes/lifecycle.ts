@@ -8,6 +8,7 @@ import { assertDockerCreate, dockerAllowed, isDockerHermes } from './policy';
 import { pairDockerBot } from './store';
 import { cleanupDockerEnrollment, isOwnerLockBusy, lockDockerOwner, pendingDockerCleanup } from './enrollment';
 import type { DockerStatus } from '@/docker-hermes/types';
+import { ownerId } from '@/docker-hermes/types';
 let cleanupCursor = 0;
 // Leases last 60s and renew every 15s. A per-owner lock wait is bounded so one busy owner cannot delay the whole tick.
 const OWNER_LOCK_WAIT_MS = 2000;
@@ -23,7 +24,8 @@ export async function reconcileDockerRuntimes() {
   if (!process.env.DOCKER_HERMES_SOCKET) { await Promise.all(batch.map(retryCleanup)); return; }
   const owners = await dockerControl<string[]>('worker', '/admin/owners', undefined, 3000).catch(() => []);
   // Start healthy checks before at most two short cleanup polls; reserve pool capacity for web/admin.
-  const active = owners.filter(owner => !pending.has(owner)).map(async owner => {
+  // Reserved Team admin runtimes use Team grants, never a human's personal enrollment.
+  const active = owners.filter(owner => ownerId.safeParse(owner).success && !pending.has(owner)).map(async owner => {
     try {
       const result = await db.transaction(async tx => {
         // A lock timeout leaves this transaction before any decision: no lease and no revoke for a busy owner.

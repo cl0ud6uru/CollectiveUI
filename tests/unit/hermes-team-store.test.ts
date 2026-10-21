@@ -56,6 +56,8 @@ beforeEach(async () => {
     { id: 'alice', name: 'Alice', upn: 'alice@test.invalid', authSource: 'local', identityRealm: 'local' },
     { id: 'bob', name: 'Bob', upn: 'bob@test.invalid', authSource: 'local', identityRealm: 'local' },
   ]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'alice', enabled: true }, { userId: 'bob', enabled: true }]);
   admin = (await loadPrincipal('admin'))!; alice = (await loadPrincipal('alice'))!; bob = (await loadPrincipal('bob'))!;
   await db.insert(schema.bots).values({ id: 'team', ownerId: 'admin', name: 'Team', visibility: 'groups' });
   await db.insert(schema.botUserAccess).values([{ botId: 'team', userId: 'alice' }, { botId: 'team', userId: 'bob' }]);
@@ -109,6 +111,7 @@ describe('disabled Team Bot schema and fresh authorization', () => {
     expect((await db.select().from(schema.bots).where(eq(schema.bots.id, 'personal-bot')))[0].hermesTeam).toBe(false);
   });
   it('switches mode into a distinct conversation without changing existing private context', async () => {
+    await db.insert(schema.dockerHermesEnrollments).values({ userId: 'admin', enabled: true });
     await db.insert(schema.botUserAccess).values({ botId: 'team', userId: 'admin' });
     const member = await openTeamConversation(admin, 'team', 'member');
     const working = await openTeamConversation(admin, 'team', 'admin');

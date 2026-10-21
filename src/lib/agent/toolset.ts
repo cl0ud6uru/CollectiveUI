@@ -170,7 +170,9 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
           workspace = await workspaceFor(ctx, settings, warnings, closers);
           if (workspace) {
             entries.push(...workspaceTools(workspace, settings));
-            entries.push(workspaceAttachmentTool(ctx, workspace));
+            // Imports require a file uploaded in this conversation. Delegated
+            // children contain text assignments and cannot relay import approvals.
+            if (ctx.depth === 0) entries.push(workspaceAttachmentTool(ctx, workspace));
             // The command's own limit ends it first; this only catches a lost stream.
             timeouts.workspace_bashMs = (settings.commandTimeoutSec + 30) * 1000;
           }

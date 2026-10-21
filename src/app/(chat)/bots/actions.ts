@@ -32,9 +32,9 @@ import {
 import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers, mayCreateBots } from "@/lib/authz";
 import { chunkText } from "@/lib/files/extract";
 import { newToken } from "@/lib/ids";
-import { enqueue, QUEUES } from "@/lib/jobs";
 import { embedTexts, newUsageScope, restoreUsageAfterRollback, resolveModel, utilityApp, type UsageScope } from "@/lib/llm";
 import { newWebhookSecret, nextCronRun, openWebhookSecret } from "@/lib/routines";
+import { queueRoutineRun } from "@/lib/routines/admission";
 import { requirePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
 import { mcpInputValidator } from "@/lib/mcp/input";
@@ -110,7 +110,8 @@ async function assertCanCreate() {
   return p;
 }
 
-async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>, input: BotInput, botId?: string) {
+async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>, input: BotInput, botId?: string,
+  { omitUnavailableDelegates = false }: { omitUnavailableDelegates?: boolean } = {}) {
   if (input.executionMode === "service" && !p.isAdmin) throw new HttpError(403, "Only admins can configure service bots.");
   if (input.codex) {
     if (input.appId || input.executionMode === 'service' || input.coordinatorEligible || input.isCoordinator || input.tools.length || input.delegateIds.length || input.delegatorIds?.length)
@@ -166,10 +167,16 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
   const delegates: string[] = [];
   for (const id of input.delegateIds) {
     if (id === botId) continue;
-    const delegate = await getAccessibleBot(p, id);
-    await requirePortableEngine(delegate.appId, delegate.hermesTeam);
-    if (delegate.executionMode === "service") throw new HttpError(400, "Service bots cannot be delegates. Open a direct chat instead.");
-    delegates.push(id);
+    try {
+      const delegate = await getAccessibleBot(p, id);
+      await requirePortableEngine(delegate.appId, delegate.hermesTeam);
+      if (delegate.executionMode === "service") throw new HttpError(400, "Service bots cannot be delegates. Open a direct chat instead.");
+      delegates.push(id);
+    } catch (error) {
+      // A copy inherits only delegates usable by its new owner. Explicit editor
+      // selections stay strict, and unexpected database/operational errors propagate.
+      if (!omitUnavailableDelegates || !(error instanceof HttpError) || ![400, 403, 404].includes(error.status)) throw error;
+    }
   }
   const userIds = [...new Set(input.userIds ?? (botId ? (await db.select({ userId: botUserAccess.userId }).from(botUserAccess).where(eq(botUserAccess.botId, botId))).map(a => a.userId) : []))];
   if (input.visibility === "groups" && !input.groupIds.length && !userIds.length) throw new HttpError(400, "Pick at least one group or user");
@@ -406,7 +413,7 @@ export async function addKnowledgeFile(botId: string, attachmentId: string) {
       if (bot.executionMode === "service") throw new HttpError(400, "Service bots do not support knowledge files.");
       // Serialize repeated ordinary uploads without upgrading competing shared bot locks.
       await q.execute(sql`select pg_advisory_xact_lock(hashtext(${`bot-knowledge:${botId}`}))`);
-      const [att] = await q.select().from(attachments).where(and(eq(attachments.id, attachmentId), eq(attachments.userId, fresh.user.id)));
+      const [att] = await q.select().from(attachments).where(and(eq(attachments.id, attachmentId), eq(attachments.userId, fresh.user.id), isNull(attachments.deletedAt), eq(attachments.uploadComplete, true))).for("share");
       if (!att) throw new HttpError(404, "File not found");
       if (!att.extractedText) throw new HttpError(400, `${att.filename} has no readable text`);
       const chunks = chunkText(att.extractedText);
@@ -557,7 +564,7 @@ export async function saveRoutine(raw: z.infer<typeof RoutineInput>) {
     try {
       nextRunAt = nextCronRun(input.cron, input.timezone);
     } catch {
-      throw new HttpError(400, "Invalid cron expression");
+      throw new HttpError(400, "Use a valid five-field cron schedule with times at least five minutes apart and a valid timezone.");
     }
   }
   const values = {
@@ -598,15 +605,8 @@ export async function deleteRoutine(id: string) {
 
 export async function runRoutineNow(id: string) {
   const p = await requirePrincipal();
-  const [r] = await db
-    .select()
-    .from(routines)
-    .where(and(eq(routines.id, id), eq(routines.ownerId, p.user.id)));
-  if (!r) throw new HttpError(404, "Routine not found");
-  const [run] = await db.insert(routineRuns).values({ routineId: r.id, trigger: "manual", lastEnqueueAt: new Date() }).returning();
-  // The queued row is durable; the sweeper retries when immediate admission fails.
-  await enqueue(QUEUES.routineRun, { runId: run.id }, { singletonKey: run.id });
-  revalidatePath(`/bots/${r.botId}`);
+  const { run, botId } = await queueRoutineRun({ routineId: id, ownerId: p.user.id, trigger: "manual" });
+  revalidatePath(`/bots/${botId}`);
   return { runId: run.id };
 }
 
@@ -668,7 +668,7 @@ async function createBotFromSnapshot(snap: BotTemplateSnapshot, opts: { name: st
     delegateIds: opts.delegateIds ?? [],
     executionMode: "caller",
   };
-  const v = await validateBotInput(p, input);
+  const v = await validateBotInput(p, input, undefined, { omitUnavailableDelegates: true });
   const bot = await db.transaction(async (tx) => {
     const [bot] = await tx
       .insert(bots)

@@ -15,7 +15,7 @@ import { randomToken } from "@/lib/crypto";
 import { syncUserOnSignIn } from "@/lib/auth/groups";
 import { fetchEntraGroupsViaGraph, saveEntraTokens } from "@/lib/auth/entra";
 
-import { entraEnabled, ldapEnabled, localEnabled } from "@/lib/auth/config";
+import { entraEnabled, isAuthProvider, ldapEnabled, localEnabled } from "@/lib/auth/config";
 import { authenticateLocal } from "@/lib/auth/local";
 import { allowSecurityRequest } from "@/lib/auth/throttle";
 import { sessionState, absoluteSessionDeadline } from "@/lib/auth/session-state";
@@ -153,6 +153,7 @@ const authConfig: NextAuthConfig = {
       session.user.sessionId = typeof token.authSessionId === "string" ? token.authSessionId : "";
       session.user.sessionVersion = Number(token.sessionVersion ?? 0);
       session.user.mustChangePassword = token.mustChangePassword === true;
+      session.user.authProvider = isAuthProvider(token.authProvider) ? token.authProvider : null;
       return session;
     },
   },
