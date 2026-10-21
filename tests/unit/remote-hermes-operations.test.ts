@@ -68,7 +68,7 @@ describe('native workspace inspection', () => {
   });
   it('falls back to legacy plugin discovery only for unsupported methods, never auth or uncertain failures', async () => {
     f.call.mockRejectedValueOnce(new HttpError(501, 'Unsupported')).mockResolvedValueOnce({ plugins: [{ name: 'Example', version: '1', enabled: true }] });
-    expect(await inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).toEqual({ plugins: [{ name: 'Example', version: '1', status: 'enabled', source: '' }] });
+    expect(await inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).toEqual({ plugins: [{ key: '', name: 'Example', version: '1', status: 'enabled', source: '' }] });
     expect(f.call.mock.calls.map(([method]) => method)).toEqual(['plugins.manage', 'plugins.list']);
     f.call.mockClear(); f.call.mockRejectedValueOnce(new HttpError(401, 'Sign in again'));
     await expect(inspectNative('owner', 'connection', { panel: 'plugins', profile: 'default' })).rejects.toThrow('Sign in again'); expect(f.call).toHaveBeenCalledOnce();
