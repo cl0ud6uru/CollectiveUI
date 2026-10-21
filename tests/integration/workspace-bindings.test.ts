@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,9 +13,11 @@ const state = vi.hoisted(() => ({
   client: null as unknown,
   principals: new Map<string, unknown>(),
   startHook: null as null | (() => Promise<void>),
+  audit: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/audit", () => ({ audit: state.audit }));
 vi.mock("@/db", () => ({ get db() { return state.db; } }));
 vi.mock("@/lib/workspaces/locks", () => ({ withWorkspaceUserLock: async (_userId: string, run: (database: unknown) => Promise<unknown>) => run(state.db) }));
 vi.mock("@/lib/auth/groups", () => ({ loadPrincipal: async (userId: string) => state.principals.get(userId) ?? null }));
@@ -125,7 +127,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     volumes.set(aliceLegacyRef, { profileKey: "legacy", files: { "legacy.txt": "old personal files" } });
   }, 30_000);
 
-  beforeEach(() => { unavailable.profile = null; unavailable.healthProfile = null; state.startHook = null; });
+  beforeEach(() => { unavailable.profile = null; unavailable.healthProfile = null; state.startHook = null; state.audit.mockClear(); });
 
   afterAll(async () => {
     await pg?.close();
@@ -153,11 +155,9 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     const bobResolved = await resolveWorkspace({ principal: bob, botId: "shared-bot", createIfMissing: false });
     expect(bobResolved?.instanceId).toBe(bobInstance.id);
     expect(bobResolved?.sandboxRef).not.toBe(aliceResolved?.sandboxRef);
-    const { ownWorkspaceRefs } = await import("@/lib/sandbox/store");
-    const aliceRefs = await ownWorkspaceRefs("alice");
-    expect(aliceRefs).toContain(aliceLegacyRef);
-    expect(aliceRefs).toContain(aliceResolved!.sandboxRef);
-    expect(aliceRefs).not.toContain(bobResolved!.sandboxRef);
+    const { findWorkspaceInstance } = await import("@/lib/sandbox/store");
+    expect((await findWorkspaceInstance("alice", aliceInstance.id))?.sandboxRef).toBe(aliceResolved!.sandboxRef);
+    expect(await findWorkspaceInstance("alice", bobInstance.id)).toBeNull();
 
     const secondAliceBot = await assignTemplate({ principal: alice, botId: "alice-bot", templateVersionId: "office-v1" });
     expect(secondAliceBot.id).not.toBe(aliceInstance.id);
@@ -188,6 +188,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     const [reservation] = await db.select().from(workspaceInstances)
       .where(and(eq(workspaceInstances.ownerUserId, "bob"), eq(workspaceInstances.provisionState, "provisioning")));
     expect(reservation?.provisionState).toBe("provisioning");
+    expect(reservation?.deleteAfter).toBeInstanceOf(Date);
 
     const { sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
     const sweep = await sweepSandboxes(new Date());
@@ -252,6 +253,9 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     expect(current?.sandboxRef).not.toBe(oldRef);
     expect(replacement.templateVersionId).toBe("office-v2");
     expect(volumes.get(oldRef)?.files["project.txt"]).toBe("kept across replacement");
+    const { db } = await import("@/db"), { workspaceInstances } = await import("@/db/schema");
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, first!.instanceId)))[0].deleteAfter).toBeInstanceOf(Date);
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, replacement.id)))[0].deleteAfter).toBeNull();
   });
 
   it("recovers after a committed reservation and process restart without switching or sharing the old binding", async () => {
@@ -311,6 +315,11 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     expect(after?.instanceId).toBe(current?.instanceId);
     expect(after?.templateVersionId).toBe("office-v2");
     expect(volumes.get(current!.sandboxRef)?.files["safe.txt"]).toBe("still bound");
+    const { db } = await import("@/db"), { workspaceInstances } = await import("@/db/schema");
+    const failed = await db.select().from(workspaceInstances).where(and(eq(workspaceInstances.ownerUserId, "alice"), eq(workspaceInstances.provisionState, "unavailable"), eq(workspaceInstances.templateVersionId, "dotnet-v1")));
+    expect(failed.length).toBeGreaterThan(0);
+    expect(failed.every(row => row.deleteAfter instanceof Date)).toBe(true);
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, current!.instanceId)))[0].deleteAfter).toBeNull();
   });
 
   it("keeps the migrated legacy ref and files for unbound bots and never provisions on read", async () => {
@@ -359,7 +368,9 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     await db.update(users).set({ disabled: false }).where(eq(users.id, "alice"));
     await sweepSandboxes(new Date("2026-10-10T00:00:00Z"));
     const enabledRows = await db.select().from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, "alice"));
-    expect(enabledRows.every((row) => row.deleteAfter === null)).toBe(true);
+    const { workspaceBotBindings } = await import("@/db/schema");
+    const bound = new Set((await db.select().from(workspaceBotBindings).where(eq(workspaceBotBindings.userId, "alice"))).map(row => row.instanceId));
+    expect(enabledRows.every(row => row.origin === "legacy_personal" || bound.has(row.id) ? row.deleteAfter === null : row.deleteAfter?.getTime() === deleteAfter.getTime())).toBe(true);
   });
 
   it("enforces the owner/instance composite foreign key and returns only owner DTOs", async () => {
@@ -370,5 +381,68 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     const bobInstances = await listOwnInstances(bob);
     expect(bobInstances.every((instance) => !("sandboxRef" in instance) && !("runtimeProfileKey" in instance))).toBe(true);
     expect(bobInstances.some((instance) => instance.id === aliceResolved!.instanceId)).toBe(false);
+  });
+
+  it("does not retire an old instance still bound to another bot", async () => {
+    const { db } = await import("@/db"), { workspaceInstances, workspaceBotBindings } = await import("@/db/schema");
+    await pg.exec("INSERT INTO bots VALUES ('retention-shared-bot','alice')");
+    const old = await resolveWorkspace({ principal: alice, botId: "shared-bot", createIfMissing: false });
+    await db.insert(workspaceBotBindings).values({ userId: "alice", botId: "retention-shared-bot", instanceId: old!.instanceId });
+    await assignTemplate({ principal: alice, botId: "shared-bot", templateVersionId: "office-v1" });
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, old!.instanceId)))[0].deleteAfter).toBeNull();
+  });
+
+  it("caps retained template reservations while allowing the current binding to be reused", async () => {
+    const { db } = await import("@/db"), { workspaceInstances } = await import("@/db/schema");
+    const { MAX_TEMPLATE_INSTANCES_PER_OWNER } = await import("@/lib/workspaces/instances");
+    await pg.exec("INSERT INTO bots VALUES ('alice-cap-bot','alice')");
+    state.allowed.add("alice:alice-cap-bot");
+    const rows = await db.select().from(workspaceInstances).where(and(eq(workspaceInstances.ownerUserId, "alice"), eq(workspaceInstances.origin, "template")));
+    const fillers = Array.from({ length: MAX_TEMPLATE_INSTANCES_PER_OWNER - rows.length }, (_, n) => ({
+      id: `cap-fixture-${n}`, ownerUserId: "alice", origin: "template" as const, templateVersionId: "office-v1",
+      sandboxRef: `cap${n.toString(36)}`.padEnd(20, "0"), runtimeProfileKey: "knowledge-work-v1", provisionState: "unavailable" as const,
+    }));
+    if (fillers.length) await db.insert(workspaceInstances).values(fillers);
+    const daemon = state.client as ReturnType<typeof fakeDaemon>, starts = daemon.start.mock.calls.length;
+    try {
+      await expect(assignTemplate({ principal: alice, botId: "alice-cap-bot", templateVersionId: "office-v1" })).rejects.toMatchObject({ status: 409 });
+      expect(daemon.start.mock.calls).toHaveLength(starts);
+      expect(await db.select().from(workspaceInstances).where(and(eq(workspaceInstances.ownerUserId, "alice"), eq(workspaceInstances.origin, "template")))).toHaveLength(MAX_TEMPLATE_INSTANCES_PER_OWNER);
+      const current = await resolveWorkspace({ principal: alice, botId: "shared-bot", createIfMissing: false });
+      expect((await assignTemplate({ principal: alice, botId: "shared-bot", templateVersionId: current!.templateVersionId! })).id).toBe(current!.instanceId);
+    } finally {
+      if (fillers.length) await db.delete(workspaceInstances).where(inArray(workspaceInstances.id, fillers.map(row => row.id)));
+    }
+  });
+
+  it("preserves unbound deadlines on re-enable, backfills old crashes, and destroys only expired unbound templates", async () => {
+    const { db } = await import("@/db"), { workspaceInstances } = await import("@/db/schema");
+    const { onUserEnabled, sweepSandboxes } = await import("@/lib/sandbox/lifecycle");
+    const now = new Date(), expired = new Date(now.getTime() - 1000);
+    const orphanRef = "expiredtemplate00000", crashRef = "crashedtemplate00000";
+    await db.insert(workspaceInstances).values([
+      { id: "expired-unbound", ownerUserId: "alice", origin: "template", templateVersionId: "office-v1", sandboxRef: orphanRef, runtimeProfileKey: "knowledge-work-v1", provisionState: "unavailable", deleteAfter: expired },
+      { id: "old-crashed-unbound", ownerUserId: "alice", origin: "template", templateVersionId: "office-v1", sandboxRef: crashRef, runtimeProfileKey: "knowledge-work-v1", provisionState: "provisioning", deleteAfter: null },
+    ]);
+    volumes.set(orphanRef, { profileKey: "knowledge-work-v1", files: { "old.txt": "retained until deadline" } });
+    volumes.set(crashRef, { profileKey: "knowledge-work-v1", files: { "partial.txt": "crash reservation" } });
+    const bound = await resolveWorkspace({ principal: alice, botId: "shared-bot", createIfMissing: false });
+    await db.update(workspaceInstances).set({ deleteAfter: expired }).where(eq(workspaceInstances.id, bound!.instanceId));
+    await onUserEnabled("alice");
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, "expired-unbound")))[0].deleteAfter?.getTime()).toBe(expired.getTime());
+    const daemon = state.client as ReturnType<typeof fakeDaemon>;
+    await sweepSandboxes(now);
+    expect(daemon.destroy).toHaveBeenCalledWith(orphanRef);
+    expect(daemon.destroy).not.toHaveBeenCalledWith(crashRef);
+    expect(daemon.destroy).not.toHaveBeenCalledWith(bound!.sandboxRef);
+    expect(volumes.get(bound!.sandboxRef)).toBeDefined();
+    expect(await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, "expired-unbound"))).toHaveLength(0);
+    const [crashed] = await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, "old-crashed-unbound"));
+    expect(crashed.deleteAfter?.getTime()).toBe(now.getTime() + 30 * 86_400_000);
+    await sweepSandboxes(new Date(now.getTime() + 1000));
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, crashed.id)))[0].deleteAfter?.getTime()).toBe(crashed.deleteAfter?.getTime());
+    expect((await db.select().from(workspaceInstances).where(eq(workspaceInstances.id, bound!.instanceId)))[0].deleteAfter).toBeNull();
+    expect(state.audit.mock.calls.some(([, action]) => action === "workspace.destroyed_after_retirement")).toBe(true);
+    expect(state.audit.mock.calls.some(([, action]) => action === "workspace.destroyed_after_disable")).toBe(false);
   });
 });

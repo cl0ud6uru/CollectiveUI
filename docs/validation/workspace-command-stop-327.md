@@ -23,5 +23,5 @@ synthetic workspace clients and no Docker or model provider.
 
 The equivalent iOS/macOS generic terminal cards have no individual workspace
 command Stop action; their existing turn cancellation remains unchanged. They
-continue to consume the same output text and ignore the additional routing
-metadata. No native client source or UI was edited for this web command control.
+continue to consume the same generic output and retain the additional fields in
+raw action details. No native client source or UI was edited for this web command control.

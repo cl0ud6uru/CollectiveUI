@@ -53,6 +53,23 @@ daemon health reports leave template assignment unavailable while legacy
 workspaces continue to work. Sandbox startup rechecks the daemon's configured
 image and preserves existing profile labels, limits and network isolation.
 
+## Instance retention
+
+Each owner can retain at most 32 template instances, including current bindings,
+provisioning reservations and failed or replaced instances. The legacy personal
+workspace is independent of that limit. Reusing the currently bound version does
+not create a reservation and remains available at the limit.
+
+New reservations persist a cleanup deadline before sandbox creation. A successful
+assignment clears that instance's deadline and schedules any previous unbound
+template instances in the same transaction. Failed starts retain their deadline;
+the hourly sweep also backfills old unbound/crashed instances. Deadlines use the
+administrator's existing `deleteAfterDays` policy (default 30 days; zero means
+cleanup on the next sweep). Files persist until that deadline, and unused
+instances count toward the limit until removed. Re-enabling an account clears
+deadlines only for its legacy workspace and currently bound instances, preserving
+unused-template cleanup. A template still bound to another bot is protected.
+
 ## Checks
 
 `node tests/browser/admin-primary-contrast.mjs` renders the actual starter-catalog and Office Bot controls with production CSS in light and dark themes. Synthetic held actions verify pending labels, unavailable-model labels and disabled single-submit behavior without changing settings or starting a workspace.

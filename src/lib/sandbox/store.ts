@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, eq, isNotNull, lt } from "drizzle-orm";
+import { and, eq, isNotNull, lt, or, sql } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
 import { workspaceBotBindings, workspaceInstances, sandboxes, type SandboxRow, type WorkspaceInstanceRow } from "@/db/schema";
 import { newId } from "@/lib/ids";
@@ -78,15 +78,6 @@ export async function findSandbox(userId: string, query: DbOrTx = db): Promise<S
   return row ?? null;
 }
 
-/** Command cancellation may target any retained instance, including one just replaced by a new binding. */
-export async function ownWorkspaceRefs(userId: string, query: DbOrTx = db): Promise<string[]> {
-  const [legacy, instances] = await Promise.all([
-    query.select({ ref: sandboxes.ref }).from(sandboxes).where(eq(sandboxes.userId, userId)),
-    query.select({ ref: workspaceInstances.sandboxRef }).from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, userId)),
-  ]);
-  return [...new Set([...legacy, ...instances].map(row => row.ref))];
-}
-
 export async function touchSandbox(userId: string) {
   const now = new Date();
   await db.update(sandboxes).set({ lastUsedAt: now }).where(eq(sandboxes.userId, userId));
@@ -121,7 +112,20 @@ export async function markDeleteAfter(userId: string, days: number, query: DbOrT
 
 export async function clearDeleteAfter(userId: string, query: DbOrTx = db) {
   await query.update(sandboxes).set({ deleteAfter: null }).where(eq(sandboxes.userId, userId));
-  await query.update(workspaceInstances).set({ deleteAfter: null }).where(eq(workspaceInstances.ownerUserId, userId));
+  // Enabling an account preserves retirement deadlines for unused template instances.
+  await query.update(workspaceInstances).set({ deleteAfter: null }).where(and(
+    eq(workspaceInstances.ownerUserId, userId),
+    or(eq(workspaceInstances.origin, "legacy_personal"), sql`exists (select 1 from ${workspaceBotBindings} where ${workspaceBotBindings.instanceId} = ${workspaceInstances.id})`),
+  ));
+}
+
+/** With the owner lock held, persist cleanup for failed/replaced/crashed templates without extending old deadlines. */
+export async function retireUnboundTemplateInstances(userId: string, days: number, query: DbOrTx = db, now = new Date()) {
+  const deadline = new Date(now.getTime() + days * 86_400_000);
+  await query.update(workspaceInstances).set({ deleteAfter: sql`coalesce(${workspaceInstances.deleteAfter}, ${deadline.toISOString()}::timestamptz)` }).where(and(
+    eq(workspaceInstances.ownerUserId, userId), eq(workspaceInstances.origin, "template"),
+    sql`not exists (select 1 from ${workspaceBotBindings} where ${workspaceBotBindings.instanceId} = ${workspaceInstances.id})`,
+  ));
 }
 
 export function listSandboxRows() {
