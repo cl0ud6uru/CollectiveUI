@@ -8,6 +8,21 @@ import { cn } from "@/lib/utils";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 
+/** Tool execution can finish normally while its structured result reports a failure. */
+export function toolFailureText(part: AnyToolPart): string | null {
+  if (part.state === "output-error") return part.errorText || "The tool failed.";
+  if (part.state !== "output-available" || (part as { preliminary?: boolean }).preliminary) return null;
+  const output = part.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const result = output as Record<string, unknown>;
+  if (result.ok !== false && result.isError !== true && result.status !== "error") return null;
+  for (const key of ["message", "error", "stderr"]) {
+    const value = result[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "The tool failed.";
+}
+
 /** "35s", "2m 5s", "1h 3m". */
 export function formatDuration(ms: number): string {
   const s = Math.max(1, Math.round(ms / 1000));
@@ -110,7 +125,7 @@ export function RunningTicker({ toolCallId, command }: { toolCallId: string; com
 type StepState = "done" | "active" | "failed" | "denied";
 
 function stepState(p: AnyToolPart): StepState {
-  if (p.state === "output-error") return "failed";
+  if (toolFailureText(p) !== null) return "failed";
   if (p.state === "output-denied" || (p.state === "approval-responded" && p.approval?.approved === false)) return "denied";
   return stepRunning(p) ? "active" : "done";
 }

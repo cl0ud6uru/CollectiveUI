@@ -63,7 +63,7 @@ struct ToolPartView: View {
             .buttonStyle(.plain)
 
             // A failure's reason stays on the card; the expanded details keep the full text.
-            if part.phase == .failed, !isExpanded, let errorText = part.errorText, !errorText.isEmpty {
+            if part.phase == .failed, !isExpanded, let errorText = part.failureText {
                 Text(errorText)
                     .font(.caption)
                     .foregroundStyle(PortalTheme.danger)
@@ -199,7 +199,7 @@ struct ToolPartView: View {
         if let output = part.output {
             DetailBlock(title: "Output", text: ToolPartView.truncate(output.prettyPrinted()))
         }
-        if let errorText = part.errorText {
+        if let errorText = part.failureText {
             DetailBlock(title: "Error", text: ToolPartView.truncate(errorText))
         }
         if let reason = part.approval?.reason, !reason.isEmpty {

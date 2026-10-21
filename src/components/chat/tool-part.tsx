@@ -45,7 +45,7 @@ import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 import { useWorkspaceFileOpener } from "./workspace-context";
 import { toolDoneLabel } from "./tool-result-label";
-import { commandLine, RailDot, RunningTicker } from "./steps";
+import { commandLine, RailDot, RunningTicker, toolFailureText } from "./steps";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -350,7 +350,8 @@ export function ToolPartView({
   }
 
   const running = part.state === "input-streaming" || part.state === "input-available" || part.state === "approval-responded";
-  const failed = part.state === "output-error";
+  const failureText = toolFailureText(part);
+  const failed = failureText !== null;
   const denied = part.state === "output-denied";
   const output = part.state === "output-available" ? part.output : undefined;
   const memoryResult = output && typeof output === "object" ? output as { status?: string; recordType?: string; recallStatus?: string; deleted?: boolean } : undefined;
@@ -382,7 +383,7 @@ export function ToolPartView({
       </button>
       {active && <div className="mt-1 pl-6"><RunningTicker toolCallId={part.toolCallId} command={commandLine(part.input)} /></div>}
       {/* A failure's reason stays on the step; the expanded details keep the full text. */}
-      {failed && !open && !!part.errorText && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{part.errorText}</p>}
+      {failed && !open && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{failureText}</p>}
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
       {!readOnly && appInstanceId(output) && <McpAppHost key={appInstanceId(output)!} id={appInstanceId(output)!} />}
       {artifact && <div className="mt-2 flex flex-wrap gap-2">
@@ -399,7 +400,7 @@ export function ToolPartView({
               <Json value={withoutAppReference(output)} />
             </>
           )}
-          {failed && <Json value={part.errorText} />}
+          {failed && <Json value={failureText} />}
         </div>
       )}
     </div>

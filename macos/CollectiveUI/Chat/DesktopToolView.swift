@@ -24,7 +24,7 @@ struct DesktopToolView: View {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
             // A failure's reason stays on the card; Action Details keeps the full text.
-            if part.phase == .failed, let error = part.errorText, !error.isEmpty {
+            if part.phase == .failed, let error = part.failureText {
                 Text(error).font(.callout).foregroundStyle(PortalTheme.danger).lineLimit(4).textSelection(.enabled)
             }
             if part.phase == .awaitingApproval, let input = part.input {
@@ -33,7 +33,7 @@ struct DesktopToolView: View {
             DisclosureGroup("Action Details") {
                 if part.phase != .awaitingApproval, let input = part.input { detail("Input", input.prettyPrinted()) }
                 if let output = part.output { detail("Output", output.prettyPrinted()) }
-                if let error = part.errorText { detail("Error", error) }
+                if let error = part.failureText { detail("Error", error) }
                 if let reason = part.approval?.reason { detail("Reason", reason) }
             }
             if part.phase == .awaitingApproval, let approval = part.approval {
