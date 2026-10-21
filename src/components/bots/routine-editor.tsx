@@ -9,13 +9,14 @@ import { deleteRoutine, runRoutineNow, saveRoutine } from "@/app/(chat)/bots/act
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import type { EditableTriggerType, TriggerType } from "@/lib/triggers/types";
 import { buildCron, cronToText, parseCron, type Frequency } from "@/lib/cron-text";
 
 export type RoutineRow = {
   id: string;
   name: string;
   prompt: string;
-  triggerType: "cron" | "webhook";
+  triggerType: TriggerType;
   cron: string | null;
   timezone: string;
   enabled: boolean;
@@ -44,7 +45,14 @@ export function RunStatusIcon({ status }: { status: string }) {
 }
 
 export function scheduleText(r: Pick<RoutineRow, "triggerType" | "cron">) {
-  return r.triggerType === "webhook" ? "When the webhook is called" : cronToText(r.cron);
+  switch (r.triggerType) {
+    case "webhook":
+      return "When the webhook is called";
+    case "event":
+      return "When an integration event arrives";
+    case "cron":
+      return cronToText(r.cron);
+  }
 }
 
 /** Grok Bot-style routine sheet: Active toggle, Test run, instruction, friendly "When to run", run history. */
@@ -70,7 +78,7 @@ export function RoutineEditor({
   const [prompt, setPrompt] = useState(routine?.prompt ?? "");
   const [enabled, setEnabled] = useState(routine?.enabled ?? true);
   const [notifyEmail, setNotifyEmail] = useState(routine?.notifyEmail ?? false);
-  const [triggerType, setTriggerType] = useState<"cron" | "webhook">(routine?.triggerType ?? "cron");
+  const [triggerType, setTriggerType] = useState<EditableTriggerType>(routine?.triggerType === "webhook" ? "webhook" : "cron");
   const [timezone, setTimezone] = useState(routine?.timezone ?? tzDefault);
   const [sched, setSched] = useState(() => parseCron(routine?.cron ?? "0 9 * * 1-5"));
   const [pending, start] = useTransition();
@@ -182,7 +190,7 @@ export function RoutineEditor({
             <div>
               <div className="mb-1.5 text-sm text-muted">When to run</div>
               <div className="space-y-3 rounded-2xl border border-border p-3">
-                <Select value={triggerType} onChange={(e) => setTriggerType(e.target.value as "cron" | "webhook")} aria-label="Trigger">
+                <Select value={triggerType} onChange={(e) => setTriggerType(e.target.value as EditableTriggerType)} aria-label="Trigger">
                   <option value="cron">On a schedule</option>
                   <option value="webhook">When another system calls a webhook</option>
                 </Select>
