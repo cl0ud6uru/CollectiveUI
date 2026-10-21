@@ -11,16 +11,29 @@ struct DesktopToolView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(part.title ?? part.toolName, systemImage: part.phase == .awaitingApproval ? "shield.lefthalf.filled" : "wrench.and.screwdriver")
-                .font(.headline)
-            Text(status).font(.caption).foregroundStyle(.secondary)
+            Label {
+                Text(part.title ?? part.toolName)
+            } icon: {
+                Image(systemName: part.phase == .awaitingApproval ? "shield.lefthalf.filled" : ToolKind(toolName: part.toolName).symbol)
+                    .foregroundStyle(part.isRunningStep ? PortalTheme.hermes : Color.primary)
+            }
+            .font(.headline)
+            if part.isRunningStep {
+                RunningTicker(toolCallId: part.toolCallId, command: ToolStep.commandLine(part.input))
+            } else {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+            // A failure's reason stays on the card; Action Details keeps the full text.
+            if part.phase == .failed, let error = part.failureText {
+                Text(error).font(.callout).foregroundStyle(PortalTheme.danger).lineLimit(4).textSelection(.enabled)
+            }
             if part.phase == .awaitingApproval, let input = part.input {
                 Text(input.prettyPrinted()).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
             }
             DisclosureGroup("Action Details") {
                 if part.phase != .awaitingApproval, let input = part.input { detail("Input", input.prettyPrinted()) }
                 if let output = part.output { detail("Output", output.prettyPrinted()) }
-                if let error = part.errorText { detail("Error", error) }
+                if let error = part.failureText { detail("Error", error) }
                 if let reason = part.approval?.reason { detail("Reason", reason) }
             }
             if part.phase == .awaitingApproval, let approval = part.approval {
@@ -40,6 +53,16 @@ struct DesktopToolView: View {
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            if part.isRunningStep {
+                RunningStroke(cornerRadius: 12)
+            } else if part.phase == .failed {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(PortalTheme.danger.opacity(0.6), lineWidth: 1)
+            }
+        }
+        .onChange(of: part.isRunningStep) { _, running in
+            if !running { ToolRunClock.finish(part.toolCallId) }
+        }
         .alert("Deny this action?", isPresented: $showDeny) {
             TextField("Reason (optional)", text: $reason)
             Button("Deny", role: .destructive) {

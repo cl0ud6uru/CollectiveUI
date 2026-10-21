@@ -27,6 +27,7 @@ suite("ordinary model routing and legacy Hermes history", () => {
   let branding: Awaited<ReturnType<typeof m.getSetting<"branding">>>;
   const appIds: string[] = [];
   beforeAll(async () => {
+    vi.stubEnv("AUTH_URL", "http://localhost");
     m = await load();
     const id = `routing-${m.newId()}`;
     const [user] = await m.db.insert(m.schema.users).values({ id, upn: `${id}@isolated.test`, name: id, authSource: "ldap" }).returning();
@@ -43,7 +44,7 @@ suite("ordinary model routing and legacy Hermes history", () => {
     if (branding) await m.setSetting("branding", branding);
     await m.db.delete(m.schema.users).where(eq(m.schema.users.id, p.user.id));
     await m.db.delete(m.schema.aiApps).where(inArray(m.schema.aiApps.id, appIds));
-    await m.pool.end();
+    await m.pool.end(); vi.unstubAllEnvs();
   });
   it("offers models to ordinary users and admins while retaining all connections for bot configuration", async () => {
     for (const principal of [p, { ...p, isAdmin: false }]) {
@@ -100,7 +101,7 @@ suite("ordinary model routing and legacy Hermes history", () => {
       { conversationId: convId, regenerate: true, parentId: messageId },
       { conversationId: convId, message: { id: m.newId(), role: "assistant", parts: [] } },
     ]) {
-      const res = await POST(new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify(payload) }));
+      const res = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json" }, body: JSON.stringify(payload) }));
       expect(res.status).toBe(400);
       expect((await res.json()).error).toContain("agent backend for bots");
     }

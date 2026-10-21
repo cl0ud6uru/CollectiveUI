@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "sonner";
 import { continueSharedConversation } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { Button } from "@/components/ui/button";
@@ -35,8 +36,13 @@ export function SharedView({
           disabled={busy}
           onClick={async () => {
             setBusy(true);
-            const id = await continueSharedConversation(token);
-            router.push(`/c/${id}`);
+            try {
+              const id = await continueSharedConversation(token);
+              router.push(`/c/${id}`);
+            } catch (err) {
+              setBusy(false);
+              toast.error(err instanceof Error ? err.message : "Could not continue this conversation");
+            }
           }}
         >
           Continue this conversation

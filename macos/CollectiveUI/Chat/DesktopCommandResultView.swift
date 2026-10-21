@@ -28,6 +28,6 @@ struct DesktopCommandResultView: View {
         }
         .padding(12)
         .background(PortalTheme.surfaceSecondary, in: .rect(cornerRadius: 12))
-        .accessibilityIdentifier("command.result")
+        // A stack identifier propagates to its native controls and replaces their distinct identifiers.
     }
 }

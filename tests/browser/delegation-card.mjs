@@ -216,7 +216,7 @@ try {
     expect(decisions.at(-1)).toEqual({ runId: 'run-1', approvalId: 'approval-1', approved: false });
 
     await page.goto(`${origin}/?multiple=1&long=1`);
-    await page.getByRole('button', { name: '2 steps', exact: true }).click();
+    // Delegated tasks stand alone (never folded into the step chip), so both cards show without expanding anything.
     const toggles = page.getByRole('button', { name: /Expand .+ response/ });
     await expect(toggles).toHaveCount(2);
     const ids = await toggles.evaluateAll(elements => elements.map(el => el.getAttribute('aria-controls')));

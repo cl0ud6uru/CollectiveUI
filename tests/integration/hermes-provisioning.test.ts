@@ -51,6 +51,7 @@ suite("Hermes durable provisioning (disposable PostgreSQL and synthetic transpor
     return other;
   }
   beforeAll(async () => {
+    vi.stubEnv("AUTH_URL", "http://localhost");
     if (new URL(process.env.DATABASE_URL!).pathname !== "/collective_profiles_test") throw new Error("Named disposable database required");
     for (const name of ["admin", "alice", "bob"]) {
       const id = newId(); ids.push(id);
@@ -76,7 +77,7 @@ suite("Hermes durable provisioning (disposable PostgreSQL and synthetic transpor
     await db.delete(hermesConnections).where(inArray(hermesConnections.userId, ids));
     await db.delete(users).where(inArray(users.id, ids));
     await db.delete(aiApps).where(inArray(aiApps.id, apps));
-    await pool.end();
+    await pool.end(); vi.unstubAllEnvs();
   });
   it("rejects ordinary administration and isolates a shared bot for two users", async () => {
     await expect(registerConnection(alice, {})).rejects.toMatchObject({ status: 403 });
@@ -377,16 +378,17 @@ suite("Hermes durable provisioning (disposable PostgreSQL and synthetic transpor
     await insertMessage(conv.id, user, null); await insertMessage(conv.id, answer, user.id); await setConnectionEnabled(admin, connection, false);
     let responseBody: Record<string, unknown> = {};
     const chat = new Chat({ id: conv.id, messages: [user, answer], transport: new DefaultChatTransport({ api: "http://localhost/api/chat", fetch: async (_url, init) => {
-      const response = await POST(new Request("http://localhost/api/chat", init)); responseBody = await response.clone().json(); return response;
+      const request = new Request("http://localhost/api/chat", init); request.headers.set("Origin", "http://localhost");
+      const response = await POST(request); responseBody = await response.clone().json(); return response;
     }, prepareSendMessagesRequest: ({ messages }) => ({ body: { conversationId: conv.id, regenerate: true, parentId: messages.at(-1)!.id } }) }) });
     await chat.regenerate({ messageId: answer.id });
     expect(responseBody.error).toContain("disabled"); expect(responseBody).not.toHaveProperty("unsavedMessageId"); expect(responseBody).not.toHaveProperty("unsaved");
     expect(chat.messages.at(-1)?.id).toBe(user.id);
     const draft = { ...user, id: newId() };
-    const refused = await POST(new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify({ conversationId: conv.id, message: draft, parentId: answer.id }) }));
+    const refused = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conv.id, message: draft, parentId: answer.id }) }));
     expect(await refused.json()).toMatchObject({ unsavedMessageId: draft.id });
     for (const payload of [{ regenerate: true, parentId: newId() }, { regenerate: true, parentId: answer.id }, { message: user }]) {
-      const res = await POST(new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify({ conversationId: conv.id, ...payload }) }));
+      const res = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conv.id, ...payload }) }));
       expect(await res.json()).not.toHaveProperty("unsavedMessageId");
     }
     expect(await db.select().from(messages).where(eq(messages.conversationId, conv.id))).toHaveLength(2);

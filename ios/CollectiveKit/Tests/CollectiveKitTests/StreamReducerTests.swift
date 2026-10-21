@@ -108,6 +108,31 @@ final class StreamReducerTests: XCTestCase {
         XCTAssertEqual(done.output?["results"]?.arrayValue?.count, 2)
     }
 
+    func testStructuredToolFailuresStayFailedAfterStreaming() {
+        let cases: [(JSONValue, String)] = [
+            (.object(["status": .string("error"), "ok": .bool(false), "message": .string("Command timed out")]), "Command timed out"),
+            (.object(["status": .string("done"), "ok": .bool(false), "exitCode": .number(1), "stderr": .string("Assertion failed")]), "Assertion failed"),
+            (.object(["ok": .bool(false), "message": .string("Outside the workspace")]), "Outside the workspace"),
+            (.object(["isError": .bool(true)]), "The tool failed."),
+        ]
+        for (output, expectedText) in cases {
+            let tool = ToolPart(toolCallId: "failure", toolName: "workspace_bash", state: "output-available", output: output)
+            XCTAssertEqual(tool.phase, .failed)
+            XCTAssertEqual(tool.failureText, expectedText)
+            var pending = tool
+            pending.preliminary = true
+            XCTAssertEqual(pending.phase, .running)
+            XCTAssertNil(pending.failureText)
+        }
+        let successful = ToolPart(toolCallId: "ok", toolName: "workspace_bash", state: "output-available",
+                                  output: .object(["status": .string("done"), "ok": .bool(true)]))
+        XCTAssertEqual(successful.phase, .completed)
+        XCTAssertNil(successful.failureText)
+        let nested = ToolPart(toolCallId: "nested", toolName: "workspace_read", state: "output-available",
+                              output: .object(["results": .array([.object(["ok": .bool(false)])])]))
+        XCTAssertEqual(nested.phase, .completed)
+    }
+
     func testDynamicToolAndErrors() {
         var reducer = UIMessageStreamReducer(messageId: "m")
         _ = apply(&reducer, [

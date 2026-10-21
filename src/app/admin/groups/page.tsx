@@ -4,8 +4,10 @@ import { db } from "@/db";
 import { groupMappings, groupMembers, groups, users } from "@/db/schema";
 import { knownExternalGroups } from "@/lib/auth/groups";
 import { ldapEnabled } from "@/lib/auth/config";
+import { requireAdminPage } from "@/lib/session";
 
 export default async function AdminGroupsPage() {
+  await requireAdminPage();
   const [groupRows, mappings, known, members, userRows] = await Promise.all([
     db.select().from(groups).orderBy(groups.name),
     db.select().from(groupMappings),

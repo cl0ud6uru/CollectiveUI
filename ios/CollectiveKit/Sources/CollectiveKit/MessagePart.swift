@@ -127,6 +127,21 @@ public struct ToolPart: Hashable, Sendable {
         return type == "dynamic-tool"
     }
 
+    /// A tool can complete transport successfully while its result reports failure.
+    public var failureText: String? {
+        if state == "output-error" { return errorText.flatMap { $0.isEmpty ? nil : $0 } ?? "The tool failed." }
+        guard state == "output-available", preliminary != true,
+              let result = output?.objectValue,
+              result["ok"]?.boolValue == false || result["isError"]?.boolValue == true || result["status"]?.stringValue == "error"
+        else { return nil }
+        for key in ["message", "error", "stderr"] {
+            if let text = result[key]?.stringValue, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+        }
+        return "The tool failed."
+    }
+
     public var phase: ToolPhase {
         switch state {
         case "approval-requested":
@@ -134,7 +149,7 @@ public struct ToolPart: Hashable, Sendable {
         case "approval-responded":
             return .approvalResponded
         case "output-available":
-            return preliminary == true ? .running : .completed
+            return preliminary == true ? .running : failureText == nil ? .completed : .failed
         case "output-error":
             return .failed
         case "output-denied":

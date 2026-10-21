@@ -5,6 +5,8 @@ import { ldapEnabled } from "@/lib/auth/config";
 import { auth } from "@/auth";
 import { SecurityForm } from "@/app/account/security/security-form";
 import { signOutAction } from "@/components/sidebar/sign-out";
+import { SecurityError } from "@/lib/auth/factors";
+import { LdapUnavailableError } from "@/lib/auth/ldap";
 import { securitySummary } from "@/lib/auth/security";
 import { MobileDevices } from "@/components/settings/mobile-devices";
 import { requirePagePrincipal, requireSecurityActor } from "@/lib/session";
@@ -16,6 +18,12 @@ export async function SecurityPanel() {
   const [profile] = local ? [] : await db.select({ identity: localSecurity.ldapIdentity }).from(localSecurity).where(eq(localSecurity.userId, principal.user.id));
   const ldap = !local && ldapEnabled() && (principal.user.authSource === "ldap" || !!profile?.identity);
   const session = local || ldap ? await auth() : null;
+  // A directory outage or a stale LDAP binding must not take down the rest of Settings.
+  const summary = session?.user.sessionId ? await securitySummary(await requireSecurityActor()).catch((err) => {
+    if (!(err instanceof LdapUnavailableError || err instanceof SecurityError)) throw err;
+    console.error("[settings] security summary unavailable", err.message);
+    return null;
+  }) : null;
 
   return <section className="space-y-5" aria-labelledby="security-heading">
     <h2 id="security-heading" className="text-xl font-semibold">Security</h2>
@@ -26,7 +34,10 @@ export async function SecurityPanel() {
     </div> : !session?.user.sessionId ? <div className="space-y-3 rounded-xl border border-border p-4 text-sm">
       <p>Sign out and sign in again to manage passkeys, your authenticator app and password.</p>
       <form action={signOutAction}><button className="min-h-11 underline">Sign out</button></form>
-    </div> : <SecurityForm initial={await securitySummary(await requireSecurityActor())} />}
+    </div> : summary ? <SecurityForm initial={summary} /> : <div className="space-y-3 rounded-xl border border-border p-4 text-sm" role="alert">
+      <p>Your sign-in methods can&apos;t be loaded right now because the company directory didn&apos;t respond or no longer matches this account.</p>
+      <p className="text-muted">Try again later. If this keeps happening, ask an administrator to check your directory account.</p>
+    </div>}
     <MobileDevices />
   </section>;
 }

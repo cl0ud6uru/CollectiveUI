@@ -8,7 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = [
     'App/AppModel.swift', 'Auth/KeychainStore.swift', 'Auth/WebAuthenticator.swift',
-    'Chat/ChatModel.swift', 'Chat/ConversationState.swift', 'Chat/PendingChatSubmission.swift',
+    'Chat/ChatModel.swift', 'Chat/ConversationState.swift', 'Chat/PendingChatSubmission.swift', 'Chat/ToolSteps.swift',
     'Demo/DemoMode.swift', 'Demo/DemoServer.swift', 'Demo/DemoFixtures.swift', 'Demo/DemoURLProtocol.swift',
     'Support/AvatarView.swift', 'Support/BotIdentityView.swift', 'Support/BotArtwork.swift',
     'Support/BotArtworkCache.swift', 'Support/PortalTheme.swift',

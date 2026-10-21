@@ -6,17 +6,24 @@ import { newId } from "@/lib/ids";
 import { HttpError } from "@/lib/authz";
 import { errorResponse, requirePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
+import { effectiveUploadMaxMb } from "@/lib/files/upload-limits";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 const BLOCKED = /\.(exe|dll|bat|cmd|msi|scr|com|vbs|js\.map)$/i;
 
 export async function POST(req: Request) {
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req, "multipart/form-data");
     const limits = await getSetting("limits");
-    const form = await req.formData();
+    const uploadMaxMb = effectiveUploadMaxMb(limits.uploadMaxMb);
+    // A body cut off by the proxy's buffer limit fails to parse; report it as too large rather than an internal error.
+    const form = await req.formData().catch(() => {
+      throw new HttpError(413, `The upload was too large or incomplete. Files must be ${uploadMaxMb} MB or smaller.`);
+    });
     const file = form.get("file");
     if (!(file instanceof File)) throw new HttpError(400, "No file");
-    if (file.size > limits.uploadMaxMb * 1024 * 1024) throw new HttpError(413, `Files must be under ${limits.uploadMaxMb} MB`);
+    if (file.size > uploadMaxMb * 1024 * 1024) throw new HttpError(413, `Files must be ${uploadMaxMb} MB or smaller.`);
     if (BLOCKED.test(file.name)) throw new HttpError(415, "This file type is not allowed");
 
     const data = Buffer.from(await file.arrayBuffer());
