@@ -13,7 +13,10 @@ export async function POST(req: Request) {
   try {
     const p = await requirePrincipal();
     const limits = await getSetting("limits");
-    const form = await req.formData();
+    // A body cut off by the proxy's buffer limit fails to parse; report it as too large rather than an internal error.
+    const form = await req.formData().catch(() => {
+      throw new HttpError(413, `The upload was too large or incomplete. Files must be under ${limits.uploadMaxMb} MB.`);
+    });
     const file = form.get("file");
     if (!(file instanceof File)) throw new HttpError(400, "No file");
     if (file.size > limits.uploadMaxMb * 1024 * 1024) throw new HttpError(413, `Files must be under ${limits.uploadMaxMb} MB`);

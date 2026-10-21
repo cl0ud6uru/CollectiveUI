@@ -30,6 +30,9 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["pg", "ldapts", "pg-boss", "unpdf", "mammoth", "google-auth-library", "gaxios"],
   experimental: {
     serverActions: { bodySizeLimit: "30mb" },
+    // proxy.ts buffers request bodies and silently truncates past this (default 10 MB), which broke uploads between
+    // 10 MB and the 20 MB default upload limit (Hermes accepts 25 MB). Keep in step with the largest upload route.
+    proxyClientMaxBodySize: "30mb",
   },
   outputFileTracingIncludes: { "/api/files": packageClosure(["mammoth", "unpdf"]) },
   poweredByHeader: false,
