@@ -83,4 +83,18 @@ suite("usage completion on disposable PostgreSQL with no live provider calls", (
     expect(budget.reservedTokens).toBeGreaterThan(0);
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
+
+  it("keeps an interrupted unknown-counter Hermes call visible without relabeling its model or funding", async () => {
+    const ctx: UsageContext = { purpose: "chat", providerKind: "hermes", model: "profile-alias", billingSource: "hermes", billingRoute: "unknown:hermes",
+      userId: owner, conversationId: chatId, appId: backend.id, scope: newUsageScope({ messageId: "hermes-reply" }) };
+    const model = wrapLanguageModel({ model: new MockLanguageModelV4({ doStream: async () => ({ stream: new ReadableStream({ start(controller) { controller.enqueue({ type: "text-delta", id: "t", delta: "partial" }); } }) }) }),
+      middleware: usageMiddleware(ctx, { skipUnknown: true }) });
+    const result = await model.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "Synthetic Hermes only" }] }] });
+    const reader = result.stream.getReader(); await reader.read(); await reader.cancel();
+    await Promise.all(ctx.scope!.pending);
+    expect(await ledger()).toMatchObject([{ completionStatus: "incomplete", inputTokens: null, outputTokens: null, model: "unreported",
+      providerKind: "hermes", billingSource: "hermes", billingRoute: "unknown:hermes", costMicros: null, searchToolCostEstimateMicros: null }]);
+    expect(await ledger()).toHaveLength(1);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
 });

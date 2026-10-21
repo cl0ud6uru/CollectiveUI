@@ -47,13 +47,13 @@ export function defaultsMiddleware(kind: EnabledKind, config: AnyProviderConfig,
  * request is identical with or without this middleware. Missing provider counters remain null.
  */
 /**
- * Records every call's usage. `skipUnknown`: calls that report no token counts aren't recorded (a Hermes turn paused
- * for approval; its run reports the whole usage when it finishes).
+ * `skipUnknown` omits clean finishes without counters (a Hermes approval pause;
+ * its run reports whole-turn usage later). Interrupted streams still leave evidence.
  */
 export function usageMiddleware(ctx: UsageContext, opts: { skipUnknown?: boolean } = {}): LanguageModelMiddleware {
   const record = (usage: ProviderUsage | undefined, metadata?: unknown, completionStatus: "complete" | "incomplete" = "complete") => {
     const tokens = mapUsage(usage);
-    if (opts.skipUnknown && tokens.inputTokens === null && tokens.outputTokens === null) return Promise.resolve();
+    if (opts.skipUnknown && completionStatus === "complete" && tokens.inputTokens === null && tokens.outputTokens === null) return Promise.resolve();
     const reported = (metadata as { hermes?: { model?: unknown } } | undefined)?.hermes?.model;
     // A Hermes route/default is not necessarily the runtime it chose. Never label that fallback as reported usage.
     const model = ctx.providerKind === "hermes"

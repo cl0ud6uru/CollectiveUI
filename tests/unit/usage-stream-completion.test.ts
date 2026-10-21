@@ -66,13 +66,26 @@ describe("usage stream terminal accounting", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ completionStatus: "complete", inputTokens: 11 });
   });
-  it("preserves unknown Hermes identity and its intentional skipUnknown pause policy", async () => {
+  it("preserves unknown Hermes identity and omits only clean unknown-counter pauses", async () => {
     const ctx = context({ providerKind: "hermes", model: "profile-alias", billingSource: "hermes", billingRoute: "unknown:hermes" });
     await drain((await model([], ctx).doStream(params)).stream);
     expect(rows).toMatchObject([{ model: "unreported", completionStatus: "incomplete", inputTokens: null, outputTokens: null, costMicros: null }]);
     rows.length = 0;
-    await drain((await model([], ctx, true).doStream(params)).stream);
+    await drain((await model([{ type: "finish", finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage: { inputTokens: {}, outputTokens: {} } }], ctx, true).doStream(params)).stream);
     expect(rows).toHaveLength(0);
+  });
+  it.each(["close", "error", "cancel"] as const)("records an unknown-counter Hermes %s despite skipUnknown", async terminal => {
+    const ctx = context({ providerKind: "hermes", model: "profile-alias", billingSource: "hermes", billingRoute: "unknown:hermes" });
+    const source = terminal === "close" ? new ReadableStream({ start(controller) { controller.close(); } })
+      : terminal === "error" ? new ReadableStream({ start(controller) { controller.error(new Error("synthetic Hermes drop")); } })
+      : new ReadableStream({ start(controller) { controller.enqueue({ type: "text-delta", id: "t", delta: "partial" }); } });
+    const result = await model(source, ctx, true).doStream(params);
+    if (terminal === "error") await expect(drain(result.stream)).rejects.toThrow("synthetic Hermes drop");
+    else if (terminal === "cancel") { const reader = result.stream.getReader(); await reader.read(); await reader.cancel(); }
+    else await drain(result.stream);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ model: "unreported", completionStatus: "incomplete", inputTokens: null, outputTokens: null,
+      providerKind: "hermes", billingSource: "hermes", billingRoute: "unknown:hermes", costMicros: null, searchToolCostEstimateMicros: null });
   });
   it("keeps subscription attribution and null API costs on interruption", async () => {
     await drain((await model([], context({ providerKind: "chatgpt", billingSource: "chatgpt_plan", billingRoute: "subscription:chatgpt", credentialId: "personal-binding" })).doStream(params)).stream);
