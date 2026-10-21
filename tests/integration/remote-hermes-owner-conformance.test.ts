@@ -73,7 +73,16 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     await vi.waitFor(async () => expect((await oldHub.refresh(await row(session.id))).running).toBe(false), { timeout: 10_000 });
     const saved = await row(session.id), oldLease = await lease();
     const native = await oldHub.socket.call('collective.hub_owner.current', { profile: 'default' });
-    expect(await oldHub.socket.call('session.close', { profile: saved.profile, session_id: saved.runtimeId })).toMatchObject({ closed: true });
+    await expect(oldHub.socket.call('session.close', { profile: saved.profile, session_id: saved.runtimeId })).resolves.toMatchObject({ closed: true });
+    // Native close signals pollers to stop, but their tracked threads can outlive
+    // its reply. This idle-takeover proof must first establish actual quiescence.
+    await vi.waitFor(async () => {
+      const workers = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+        headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_workers: true }) });
+      expect(workers.ok).toBe(true);
+      expect(await workers.json()).toMatchObject({ default: 0 });
+    }, { timeout: 10_000 });
     oldHub.close();
     const blocked = new NativeHub(owner, connection, randomUUID()); successors.push(blocked);
     // Negotiation must never steal a live lease or dispatch a native resume.
@@ -83,7 +92,7 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     await db.update(remoteHermesHubOwners).set({ leaseExpiresAt: new Date(Date.now() - 1000) }).where(eq(remoteHermesHubOwners.connectionId, connection));
     const successor = new NativeHub(owner, connection, randomUUID()); successors.push(successor);
     expect(successor.socket.connectionEpoch).toBe(0);
-    expect(await successor[operation](saved)).toMatchObject({ id: saved.id, profile: saved.profile, running: false });
+    await expect(successor[operation](saved)).resolves.toMatchObject({ id: saved.id, profile: saved.profile, running: false });
     expect(await lease()).toMatchObject({ ownerInstanceId: successor.instanceId, generation: Number(oldLease.generation) + 1 });
     expect(await successor.socket.call('collective.hub_owner.current', { profile: saved.profile })).toMatchObject({
       portal_instance_id: successor.instanceId, native_generation: Number(native.native_generation) + 1, phase: 'full', transport_bound: true,
