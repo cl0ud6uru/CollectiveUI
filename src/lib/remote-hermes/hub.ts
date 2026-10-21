@@ -489,7 +489,10 @@ export class NativeHub {
       if (cached) { cached.view.uncertain = true; return cached.view; }
       throw new HttpError(409, 'Native recovery is in progress. Check its saved receipt before refreshing this conversation.');
     }
-    await this.validate(row);
+    // A cold process must negotiate native takeover before enforcing its lease.
+    // The resume below prepares ownership and authorizes under the usual locks;
+    // do not elect or claim separately outside this single-flight operation.
+    await this.assertIdentity();
     this.touch();
     const inFlight = this.refreshing.get(row.id);
     if (inFlight) return inFlight;
@@ -500,7 +503,11 @@ export class NativeHub {
       this.sessions.delete(evict.row.id);
     }
     // Register before starting work: cold opens have no cached entry yet.
-    const operation = Promise.resolve().then(() => this.refreshInner(row));
+    const operation = Promise.resolve().then(async () => {
+      const view = await this.refreshInner(row);
+      await this.validate(row);
+      return view;
+    });
     this.refreshing.set(row.id, operation);
     try { return await operation; } finally { this.refreshing.delete(row.id); }
   }
@@ -593,6 +600,9 @@ export class NativeHub {
     });
   }
   async view(row: Session) {
+    // No cached value exists to authorize yet. Refresh negotiates ownership on
+    // the socket before the lease-bound snapshot/cache checks can run.
+    if (!this.sessions.has(row.id)) return this.refresh(row);
     const { value } = await this.dispatchBoundary('session.resume', { session_id: row.storedId, profile: row.profile }, () => {
       this.touch();
       const cached = this.sessions.get(row.id);
