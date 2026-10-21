@@ -607,14 +607,17 @@ export async function runRoutineNow(id: string) {
   return { runId: run.id };
 }
 
-/** Snapshot of a bot's shareable configuration (no conversations, memory, knowledge files or secrets). */
-async function snapshotBot(botId: string): Promise<BotTemplateSnapshot> {
+/**
+ * Snapshot of a bot's shareable configuration (no conversations, memory, knowledge files or secrets). Routines are
+ * private to the person who created them, so only `routineOwnerId`'s own routines on the bot are included.
+ */
+async function snapshotBot(botId: string, routineOwnerId: string): Promise<BotTemplateSnapshot> {
   const [bot] = await db.select().from(bots).where(eq(bots.id, botId));
   if (!bot) throw new HttpError(404, "Bot not found");
   const [tools, botSkills, botRoutines] = await Promise.all([
     db.select().from(botTools).where(eq(botTools.botId, bot.id)),
     db.select().from(skills).where(eq(skills.botId, bot.id)),
-    db.select().from(routines).where(and(eq(routines.botId, bot.id), eq(routines.ownerId, bot.ownerId))),
+    db.select().from(routines).where(and(eq(routines.botId, bot.id), eq(routines.ownerId, routineOwnerId))),
   ]);
   return {
     name: bot.name,
@@ -702,7 +705,7 @@ export async function duplicateBot(botId: string) {
   const p = await requirePrincipal();
   const src = await getAccessibleBot(p, botId);
   await requirePortableEngine(src.appId, src.hermesTeam);
-  const snap = await snapshotBot(src.id);
+  const snap = await snapshotBot(src.id, p.user.id);
   const delegates = await db.select().from(botDelegates).where(eq(botDelegates.botId, src.id));
   return createBotFromSnapshot(snap, {
     name: `${src.name} copy`,
@@ -740,7 +743,7 @@ export async function createBotTemplate(botId: string) {
   const existing = await getBotTemplate(botId);
   if (existing) return existing;
   const token = newToken();
-  await db.insert(botTemplates).values({ id: token, botId, createdBy: p.user.id, snapshot: await snapshotBot(botId) });
+  await db.insert(botTemplates).values({ id: token, botId, createdBy: p.user.id, snapshot: await snapshotBot(botId, p.user.id) });
   return { token, updatedAt: new Date().toISOString() };
 }
 
@@ -751,7 +754,7 @@ export async function updateBotTemplate(botId: string) {
   await requirePortableEngine(bot.appId, bot.hermesTeam);
   const res = await db
     .update(botTemplates)
-    .set({ snapshot: await snapshotBot(botId), updatedAt: new Date() })
+    .set({ snapshot: await snapshotBot(botId, p.user.id), updatedAt: new Date() })
     .where(and(eq(botTemplates.botId, botId), isNull(botTemplates.revokedAt)))
     .returning({ id: botTemplates.id });
   if (!res.length) throw new HttpError(404, "No template link for this bot");

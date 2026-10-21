@@ -144,6 +144,20 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
       expect(await db.select().from(s.botTools).where(eq(s.botTools.botId, id))).toEqual([]);
     }
   });
+  it("copies carry only the copier's own routines, never the bot owner's", async () => {
+    const shared = (await createBot({ ...input("caller"), tools: [] })).id;
+    await db.insert(s.routines).values([
+      { ownerId: admin.user.id, botId: shared, name: "Owner private", prompt: "Owner secret prompt", triggerType: "cron", cron: "0 9 * * *" },
+      { ownerId: user.user.id, botId: shared, name: "Copier own", prompt: "Copier prompt", triggerType: "cron", cron: "0 9 * * *" },
+    ]);
+    const routinesOf = async (id: string) => (await db.select().from(s.routines).where(eq(s.routines.botId, id))).map(r => r.name);
+    session.principal = user;
+    expect(await routinesOf((await duplicateBot(shared)).id)).toEqual(["Copier own"]);
+    const template = await createBotTemplate(shared).catch(() => null);
+    expect(template).toBeNull(); // only editors may publish templates
+    session.principal = admin;
+    expect(await routinesOf((await duplicateBot(shared)).id)).toEqual(["Owner private"]);
+  });
   it("keeps a pending approval verifiable when the person chooses Always allow", async () => {
     const callerBot = await getUsableBot(admin, (await createBot(input("caller"))).id);
     const ts = await tools({ principal: admin, bot: callerBot });
