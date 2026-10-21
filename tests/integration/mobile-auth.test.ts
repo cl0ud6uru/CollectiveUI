@@ -52,17 +52,17 @@ run("native app tokens (real Postgres)", () => {
 
   async function signIn() {
     const { exchangeAuthCode, issueAuthCode } = await import("@/lib/auth/mobile");
-    return exchangeAuthCode(await issueAuthCode(alice, req), verifier);
+    return exchangeAuthCode(await issueAuthCode(alice, req, "ldap"), verifier);
   }
 
   it("redeems a code once, only with its PKCE verifier, and stores only hashes", async () => {
     const { db, schema } = await import("@/db");
     const { exchangeAuthCode, issueAuthCode } = await import("@/lib/auth/mobile");
-    const code = await issueAuthCode(alice, req);
+    const code = await issueAuthCode(alice, req, "ldap");
     await expect(exchangeAuthCode(code, "x".repeat(43))).rejects.toThrow(/Invalid or expired/);
     await expect(exchangeAuthCode(code, verifier)).rejects.toThrow(/Invalid or expired/); // burned by the failed attempt
 
-    const second = await issueAuthCode(alice, req);
+    const second = await issueAuthCode(alice, req, "ldap");
     const { token, expiresAt, principal } = await exchangeAuthCode(second, verifier);
     expect(token).toMatch(/^cui_m_/);
     expect(principal.user.id).toBe(alice.user.id);
@@ -76,10 +76,10 @@ run("native app tokens (real Postgres)", () => {
   it("rejects expired codes and codes while the app is turned off", async () => {
     const { db, schema } = await import("@/db");
     const { exchangeAuthCode, issueAuthCode } = await import("@/lib/auth/mobile");
-    const code = await issueAuthCode(alice, req);
+    const code = await issueAuthCode(alice, req, "ldap");
     await db.update(schema.mobileAuthCodes).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(schema.mobileAuthCodes.userId, alice.user.id));
     await expect(exchangeAuthCode(code, verifier)).rejects.toThrow(/Invalid or expired/);
-    const fresh = await issueAuthCode(alice, req);
+    const fresh = await issueAuthCode(alice, req, "ldap");
     vi.stubEnv("MOBILE_APP_ENABLED", "false");
     await expect(exchangeAuthCode(fresh, verifier)).rejects.toThrow(/turned off/);
   });

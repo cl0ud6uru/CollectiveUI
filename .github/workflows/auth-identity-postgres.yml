@@ -1,0 +1,40 @@
+name: Auth identity PostgreSQL proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  auth-identity-postgres:
+    name: LDAP identity, account lock and mobile provider regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: fixture_auth
+          POSTGRES_PASSWORD: synthetic-auth-only
+          POSTGRES_DB: collective_auth_identity_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fixture_auth -d collective_auth_identity_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Check the destructive fixture guard and synthetic LDAP resolution
+        run: npx vitest run --project unit tests/unit/auth-identity-disposable-database.test.ts tests/unit/ldap-failures.test.ts tests/unit/ldap-admin-lookup.test.ts tests/unit/auth-callbacks.test.ts --maxWorkers=1
+      - name: Migrate only the disposable fixture and require real PostgreSQL locks with a one-connection pool
+        env:
+          AUTH_IDENTITY_POSTGRES_PROOF: '1'
+          AUTH_IDENTITY_POSTGRES_TEST_URL: postgres://fixture_auth:synthetic-auth-only@127.0.0.1:5432/collective_auth_identity_test
+          DATABASE_URL: postgres://fixture_auth:synthetic-auth-only@127.0.0.1:5432/collective_auth_identity_test
+          DATABASE_POOL_MAX: '1'
+        run: npx vitest run --project integration tests/integration/auth-identity.test.ts tests/integration/mobile-auth.test.ts --maxWorkers=1
