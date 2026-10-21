@@ -153,6 +153,11 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     const bobResolved = await resolveWorkspace({ principal: bob, botId: "shared-bot", createIfMissing: false });
     expect(bobResolved?.instanceId).toBe(bobInstance.id);
     expect(bobResolved?.sandboxRef).not.toBe(aliceResolved?.sandboxRef);
+    const { ownWorkspaceRefs } = await import("@/lib/sandbox/store");
+    const aliceRefs = await ownWorkspaceRefs("alice");
+    expect(aliceRefs).toContain(aliceLegacyRef);
+    expect(aliceRefs).toContain(aliceResolved!.sandboxRef);
+    expect(aliceRefs).not.toContain(bobResolved!.sandboxRef);
 
     const secondAliceBot = await assignTemplate({ principal: alice, botId: "alice-bot", templateVersionId: "office-v1" });
     expect(secondAliceBot.id).not.toBe(aliceInstance.id);

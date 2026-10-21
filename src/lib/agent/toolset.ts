@@ -167,7 +167,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
           const settings = await getSetting("sandbox");
           workspace = await workspaceFor(ctx, settings, warnings, closers);
           if (workspace) {
-            entries.push(...workspaceTools(workspace, settings));
+            entries.push(...workspaceTools(workspace, settings, ctx.toolCallPrefix));
             entries.push(workspaceAttachmentTool(ctx, workspace));
             // The command's own limit ends it first; this only catches a lost stream.
             timeouts.workspace_bashMs = (settings.commandTimeoutSec + 30) * 1000;

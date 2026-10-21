@@ -200,6 +200,18 @@ describe("workspace_list and workspace_grep", () => {
 });
 
 describe("workspace_bash", () => {
+  it("namespaces repeated provider call IDs exactly as the group stream and Stop button do", async () => {
+    const { ws, script, execs } = fakeWorkspace();
+    script.exit = { t: "exit", code: 0, reason: "exited", ms: 1, dropped: 0 };
+    for (const prefix of ["speaker-a:", "speaker-b:"]) {
+      const tool = workspaceTools(ws, SETTINGS, prefix).find(entry => entry.name === "workspace_bash")!.tool;
+      const result = await tool.execute!({ command: "printf fixture" } as never, opts("same-provider-id"));
+      for await (const _ of result as AsyncIterable<unknown>) { void _; }
+    }
+    expect(execs.map(exec => exec.execId)).toEqual([execIdForToolCall("speaker-a:same-provider-id"), execIdForToolCall("speaker-b:same-provider-id")]);
+    expect(execs[0].execId).not.toBe(execs[1].execId);
+  });
+
   it("streams a throttled preview, then a final result with exit code, cleaned output and duration", async () => {
     const { ws, script, execs } = fakeWorkspace();
     script.frames = [

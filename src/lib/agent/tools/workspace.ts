@@ -46,7 +46,7 @@ export type BashOutput =
 
 const tail = (s: string, n: number) => (s.length > n ? `…${s.slice(s.length - n)}` : s);
 
-export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEntry[] {
+export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings, toolCallPrefix = ""): ToolEntry[] {
   const budget = Math.max(4096, s.outputKb * 1024);
   const half = Math.floor(budget / 2);
   const readBudget = Math.min(256 * 1024, Math.max(64 * 1024, budget * 4));
@@ -90,7 +90,7 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEnt
             cwd,
             timeoutMs: (timeout_seconds ?? maxTimeout) * 1000,
             signal: abortSignal,
-            execId: execIdForToolCall(toolCallId),
+            execId: execIdForToolCall(`${toolCallPrefix}${toolCallId}`),
             onFrame: (f) => {
               if (f.t === "out" || f.t === "err") {
                 const chunk = Buffer.from(f.d, "base64");

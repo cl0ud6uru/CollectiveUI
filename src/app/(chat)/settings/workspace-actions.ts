@@ -5,7 +5,7 @@ import { execIdForToolCall } from "@/lib/agent/tools/workspace";
 import { HttpError } from "@/lib/authz";
 import { audit } from "@/lib/audit";
 import { SandboxError, sandboxd } from "@/lib/sandbox/client";
-import { findSandbox, findWorkspaceInstance } from "@/lib/sandbox/store";
+import { findSandbox, findWorkspaceInstance, ownWorkspaceRefs } from "@/lib/sandbox/store";
 import { db, schema } from "@/db";
 import { and, eq } from "drizzle-orm";
 import { workspaceView } from "@/lib/sandbox/view";
@@ -59,13 +59,20 @@ export async function resetWorkspace(confirm: string) {
   });
 }
 
-/** The Stop button on a running command: kills it in this person's own workspace (no-op if it already ended). */
+/** Stop only this person's command; refs come from the owned registry, including template instances. */
 export async function stopWorkspaceCommand(toolCallId: string) {
   return friendly(async () => {
-    if (typeof toolCallId !== "string" || toolCallId.length > 200) throw new HttpError(400, "Invalid tool call");
-    const { client, ref } = await own();
-    if (!ref) return false;
-    return (await client.kill(ref, execIdForToolCall(toolCallId))).killed;
+    if (typeof toolCallId !== "string" || !toolCallId.length || toolCallId.length > 512) throw new HttpError(400, "Invalid tool call");
+    const p = await requirePrincipal(), client = sandboxd();
+    if (!client) throw new HttpError(503, "Workspace service is unavailable");
+    const execId = execIdForToolCall(toolCallId);
+    let failure: unknown;
+    for (const ref of await ownWorkspaceRefs(p.user.id)) {
+      try { if ((await client.kill(ref, execId)).killed) return true; }
+      catch (error) { failure ??= error; }
+    }
+    if (failure) throw failure;
+    throw new HttpError(409, "This command has already ended or could not be found in your workspaces.");
   });
 }
 

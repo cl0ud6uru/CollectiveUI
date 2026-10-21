@@ -78,6 +78,15 @@ export async function findSandbox(userId: string, query: DbOrTx = db): Promise<S
   return row ?? null;
 }
 
+/** Command cancellation may target any retained instance, including one just replaced by a new binding. */
+export async function ownWorkspaceRefs(userId: string, query: DbOrTx = db): Promise<string[]> {
+  const [legacy, instances] = await Promise.all([
+    query.select({ ref: sandboxes.ref }).from(sandboxes).where(eq(sandboxes.userId, userId)),
+    query.select({ ref: workspaceInstances.sandboxRef }).from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, userId)),
+  ]);
+  return [...new Set([...legacy, ...instances].map(row => row.ref))];
+}
+
 export async function touchSandbox(userId: string) {
   const now = new Date();
   await db.update(sandboxes).set({ lastUsedAt: now }).where(eq(sandboxes.userId, userId));
