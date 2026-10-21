@@ -28,6 +28,10 @@ def manifest(version):
 
 
 class LocalOperator(deploy.Operator):
+    def compose(self, manifest, *args, **kwargs):
+        # Let Compose merge the fixture-only network policy with the stock network definitions.
+        return super().compose(manifest, "-f", str(self.directory / "docker-compose.fixture.json"), *args, **kwargs)
+
     def command(self, arguments, *, manifest=None, **kwargs):
         if manifest:
             manifest = dict(manifest, images=LOCAL_IMAGES)
@@ -43,21 +47,25 @@ class LocalOperator(deploy.Operator):
         return super().preflight(dict(release, images=LOCAL_IMAGES))
 
 
+def prepare_fixture(directory):
+    compose = (ROOT / "docker-compose.release.yml").read_text()
+    # The core fixture has no ingress, broker, external network or existing installation volumes.
+    compose = compose.replace('    ports:\n      - "${WEB_BIND:-0.0.0.0}:${PORT:-3000}:3000"\n', '')
+    (directory / "docker-compose.release.yml").write_text(compose)
+    (directory / "docker-compose.fixture.json").write_text(json.dumps({"networks": {"default": {"internal": True}}}))
+    (directory / "certs").mkdir()
+    (directory / ".env").write_text(
+        "POSTGRES_PASSWORD=synthetic-deploy-fixture-only\nAUTH_SECRET=synthetic-deploy-fixture-only\n"
+        "ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+        "AUTH_URL=http://localhost:3000\nAUTH_LOCAL_ENABLED=true\nAUTH_ENTRA_ENABLED=false\nLDAP_ENABLED=false\n")
+
+
 def main():
     os.umask(0o077)
     project = "collective-deploy-fixture-" + str(os.getpid()) + "-" + str(time.time_ns())
     with tempfile.TemporaryDirectory(prefix="collective-deploy-fixture-") as temporary:
         directory = Path(temporary)
-        compose = (ROOT / "docker-compose.release.yml").read_text()
-        # The isolated fixture has no ingress, broker, external network or existing installation volumes.
-        compose = compose.replace('    ports:\n      - "${WEB_BIND:-0.0.0.0}:${PORT:-3000}:3000"\n', '')
-        compose += "\nnetworks:\n  default:\n    internal: true\n"
-        (directory / "docker-compose.release.yml").write_text(compose)
-        (directory / "certs").mkdir()
-        (directory / ".env").write_text(
-            "POSTGRES_PASSWORD=synthetic-deploy-fixture-only\nAUTH_SECRET=synthetic-deploy-fixture-only\n"
-            "ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
-            "AUTH_URL=http://localhost:3000\nAUTH_LOCAL_ENABLED=true\nAUTH_ENTRA_ENABLED=false\nLDAP_ENABLED=false\n")
+        prepare_fixture(directory)
         operator = LocalOperator(directory, project, "synthetic-fixture", timeout=180)
         original, target = manifest(None), manifest("v0.0.1")
         try:

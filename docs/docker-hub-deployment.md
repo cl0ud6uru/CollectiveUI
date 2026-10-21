@@ -1,5 +1,7 @@
 # Deploying published CollectiveUI images
 
+Optional native web MCP widgets need the separate cookieless HTTPS sandbox and an explicit `mcp-apps` profile. See [Docker widget setup, upgrades and diagnostics](architecture/mcp-apps.md#docker-setup-and-upgrades). This requires a worker image containing the sandbox script; older published images do not suffice. Enabling it changes runtime configuration and must be reconciled separately from the updater's recorded `.env`/Compose identity. The core updater does not recreate this optional service; update it explicitly with the same reviewed worker image reference.
+
 This optional path runs the core web, worker and PostgreSQL stack on **Linux amd64** without building application images on the VM. It uses public Docker Hub repositories and ordinary GitHub-hosted Ubuntu runners. The existing source-build Compose path remains available. Workspace, personal Codex, sandboxd and Hermes runtime images/add-ons remain separate operator installations; this updater supports only the stock core stack and its named volumes.
 
 ## Release owner setup checklist
