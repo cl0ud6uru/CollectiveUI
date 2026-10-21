@@ -174,6 +174,8 @@ describe.skipIf(!SOURCE)('actual pinned official Responses native lifecycle, syn
       network: 'internet', teamBotsEnabled: true, teamCandidateRuntimeEnabled: true }), driver);
     const ipc = await listenBroker(broker); vi.stubEnv('DOCKER_HERMES_SOCKET', broker.config.socketPath);
     try {
+      // Each enrolled synthetic owner receives a noncreating worker lease before its Team grant.
+      broker.authorize(ownerId, false);
       const grant = broker.authorizeTeam(ownerId, { teamBotId: 'team', mode: 'member', modelPolicy: 'personal_required' });
       const native = await broker.ensureTeam(ownerId, { teamBotId: 'team', mode: 'member', name: 'Team' }, grant.grantId);
       const home = driver.home(native.ownerId, native.profile), chat = await openTeamConversation(owner, 'team', 'member');

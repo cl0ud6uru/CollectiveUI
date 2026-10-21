@@ -339,6 +339,8 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
       expect(JSON.stringify(shared)).not.toContain('Private working note');
       const member = (await loadPrincipal('member'))!;
       const memberProfile = await reserveTeamProfile(member, 'team', 'member');
+      // The enrolled fixture owner also needs the worker's noncreating personal-runtime lease.
+      broker.authorize('member', false);
       const memberGrant = broker.authorizeTeam('member', { teamBotId: 'team', mode: 'member', modelPolicy: 'admin_provided' });
       const memberNative = await broker.ensureTeam('member', { teamBotId: 'team', mode: 'member', name: 'Team' }, memberGrant.grantId);
       const memberName = memberNative.profile;
@@ -541,6 +543,8 @@ describe.skipIf(!SOURCE)('actual pinned native Team conversational lifecycle, sy
     const ipc = await listenBroker(broker); vi.stubEnv('DOCKER_HERMES_SOCKET', broker.config.socketPath);
     let drain: Promise<unknown> | undefined;
     try {
+      // Enrollment does not itself issue a broker lease; emulate the trusted worker explicitly.
+      broker.authorize('member', false);
       const grant = broker.authorizeTeam('member', { teamBotId: 'team', mode: 'member', modelPolicy: 'admin_provided' });
       const native = await broker.ensureTeam('member', { teamBotId: 'team', mode: 'member', name: 'Team' }, grant.grantId);
       const profile = await reserveTeamProfile(member, 'team', 'member');
