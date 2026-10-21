@@ -285,7 +285,7 @@ export function BotBuilder({
     setDrafting(true);
     setDraftError("");
     try {
-      const result = await draftBotFromDescription(idea);
+      const result = await draftBotFromDescription(idea, botId);
       // The description and form stay as they were, so fixing the cause and retrying needs no retyping.
       if (!result.ok) {
         setDraftError(result.error);

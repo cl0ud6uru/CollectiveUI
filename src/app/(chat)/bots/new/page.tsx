@@ -3,10 +3,14 @@ import { PageFrame } from "@/components/page-frame";
 import { loadBuilderData } from "@/lib/bots/builder-data";
 import { newId } from "@/lib/ids";
 import { randomBlob } from "@/components/bots/bot-avatar";
+import { redirect } from "next/navigation";
+import { mayCreateBots } from "@/lib/authz";
 import { requirePagePrincipal } from "@/lib/session";
+import { getSetting } from "@/lib/settings";
 
 export default async function NewBotPage() {
   const p = await requirePagePrincipal();
+  if (!mayCreateBots(p, (await getSetting("tools")).botCreation)) redirect("/bots");
   const data = await loadBuilderData(p);
   const firstToolApp = data.apps.find((a) => !a.agentServer && a.supportsTools) ?? data.apps.find((a) => !a.agentServer);
   return (
