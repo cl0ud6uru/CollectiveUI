@@ -8,8 +8,8 @@ const Page = z.object({ data: z.array(z.object({ start_time: z.number().int(), e
 })) })), has_more: z.boolean(), next_page: z.string().nullable() });
 const Limit = z.object({ object: z.enum(['organization.spend_limit', 'project.spend_limit']), threshold_amount: z.number().finite().nonnegative(),
   currency: z.string().regex(/^[a-zA-Z]{3}$/), interval: z.literal('month'), enforcement: z.object({ status: z.string().min(1).max(80) }) });
-const emptyLimit = (status: ReadStatus): SpendLimit => ({ status, amount: null, currency: null, enforcement: null });
-class ReadError extends Error { constructor(public status: ReadStatus) { super(status); } }
+const emptyLimit = (status: ReadStatus, httpStatus?: number): SpendLimit => ({ status, amount: null, currency: null, enforcement: null, ...(httpStatus ? { httpStatus } : {}) });
+class ReadError extends Error { constructor(public status: ReadStatus, public httpStatus?: number) { super(status); } }
 export function utcMonth(now: Date) {
   return { month: now.toISOString().slice(0, 7), start: Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000), through: Math.floor(now.getTime() / 1000) };
 }
@@ -23,7 +23,7 @@ export async function readOpenAISpending(organization: string, key: string, proj
         method: 'GET', headers: { Authorization: `Bearer ${key}`, 'OpenAI-Organization': organization },
         cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) throw new ReadError(response.status === 401 || response.status === 403 ? 'permission_denied' : 'unavailable');
+      if (!response.ok) throw new ReadError(response.status === 401 || response.status === 403 ? 'permission_denied' : response.status === 405 || response.status === 501 ? 'unsupported' : 'unavailable', response.status);
       // Bound parsing of costs pages. Do not consume arbitrarily large provider errors or responses.
       const reader = response.body?.getReader(); if (!reader) throw new ReadError('unknown');
       const chunks: Uint8Array[] = []; let size = 0;
@@ -44,7 +44,7 @@ export async function readOpenAISpending(organization: string, key: string, proj
       const expected = path === 'spend_limit' ? 'organization.spend_limit' : 'project.spend_limit';
       if (parsed.data.object !== expected) return emptyLimit('unknown');
       return { status: 'known', amount: parsed.data.threshold_amount / 100, currency: parsed.data.currency.toUpperCase(), enforcement: parsed.data.enforcement.status };
-    } catch (error) { return emptyLimit(error instanceof ReadError ? error.status : 'unknown'); }
+    } catch (error) { return emptyLimit(error instanceof ReadError ? error.status : 'unknown', error instanceof ReadError ? error.httpStatus : undefined); }
   };
   const costs = async (grouped: boolean) => {
     const daily: DailySpend[] = []; const sums = new Map<string, number>(); const projects = new Map<string | null, Map<string, number>>();

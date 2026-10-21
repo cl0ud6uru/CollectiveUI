@@ -47,7 +47,8 @@ export function LearningCard({ row }: { row: LearningView }) {
         {row.content.boundaries && <p><strong>Boundaries: </strong>{row.content.boundaries}</p>}
       </>}
       <p className="text-xs text-muted">{row.kind === "preference" ? "Personal preference, included in this bot’s memory." : `Loaded ${row.useCount} ${row.useCount === 1 ? "time" : "times"}${row.lastUsedAt ? ` · last loaded ${new Date(row.lastUsedAt).toLocaleDateString()}` : ""}.`}</p>
-      <p className="text-muted"><strong>Evidence: </strong>{row.verification}</p>
+      <p className="text-muted"><strong>Model evidence notes: </strong>{row.verification}</p>
+      {row.status === "pending" && row.scope === "bot" && row.canManage && <p className="text-xs text-muted">Review for private values, supported steps and action boundaries before sharing. Successful tool calls do not prove the whole procedure or grant authorization.</p>}
       {row.canManage && <div className="flex flex-wrap gap-2">
         <Button variant="outline" size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, pinned: !row.pinned })}>{row.pinned ? "Unpin" : "Pin"}</Button>
         {row.status === "pending" && <Button size="sm" disabled={pending} onClick={() => mutate({ id: row.id, version: row.version, status: "active" })}>Approve</Button>}

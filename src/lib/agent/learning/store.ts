@@ -67,12 +67,21 @@ async function manageableLearning(p: Principal, id: string, tx: Tx) {
   return row;
 }
 
+/** Wait for authorization plus both DB locks, then observe Stop before the caller can write. */
+export async function afterLearningMutationLock<T>(locked: Promise<T>, abortSignal?: AbortSignal): Promise<T> {
+  const value = await locked;
+  abortSignal?.throwIfAborted();
+  return value;
+}
+
 /** Every human change is a new revision. A stale browser cannot overwrite a newer lesson. */
 export async function changeLearning(p: Principal, id: string, expectedVersion: number, change: {
   status?: LessonStatus; content?: LessonContent; restoreVersion?: number; pinned?: boolean;
-}) {
+}, abortSignal?: AbortSignal) {
   return db.transaction(async tx => {
-    const row = await manageableLearning(p, id, tx);
+    // `manageableLearning` can wait on both the bot fence and the row lock. A Stop
+    // received while it waits must be observed before any state or revision write.
+    const row = await afterLearningMutationLock(manageableLearning(p, id, tx), abortSignal);
     if (row.version !== expectedVersion) throw new HttpError(409, "This learning changed. Refresh before trying again.");
     let content = change.content ?? row.content;
     let kind = row.kind;
@@ -87,8 +96,10 @@ export async function changeLearning(p: Principal, id: string, expectedVersion: 
     let status = change.status ?? row.status;
     if (row.status === "pending" && change.status === "archived") {
       const [approved] = await tx.select().from(botLearningRevisions).where(and(eq(botLearningRevisions.learningId, row.id), eq(botLearningRevisions.status, "active"))).orderBy(desc(botLearningRevisions.version)).limit(1);
+      abortSignal?.throwIfAborted();
       if (approved) { kind = approved.kind; content = approved.content; verification = approved.verification; status = "active"; }
     }
+    abortSignal?.throwIfAborted();
     const [next] = await tx.update(botLearnings).set({ kind, content, verification, pinned: change.pinned ?? row.pinned, status, version: row.version + 1, updatedAt: new Date() }).where(eq(botLearnings.id, id)).returning();
     await recordLearningRevision(tx, next);
     return next.botId;

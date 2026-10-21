@@ -153,7 +153,7 @@ test('starter setup explains blocked routes, clears incompatible models and open
   await page.setViewportSize({ width: 1360, height: 900 });
   expect(unsupportedCodexRequests).toBe(0);
   scenario = 'offline'; await page.reload();
-  await expect(page.getByText('Offline · access blocked', { exact: true })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Internet access is off.' })).toBeVisible();
   await expect(page.getByText('Not tested', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Sign in with OpenAI', exact: true })).toBeDisabled();
   await expect(page.locator('#codex-start-blocker')).toContainText('runtime is offline');
@@ -232,6 +232,11 @@ test('interrupted save reloads committed state without resending credentials or 
   const [bot] = (await pool.query("SELECT id FROM bots WHERE owner_id=(SELECT id FROM users WHERE upn='local:docker-hermes-alice') AND name='Hermes'")).rows;
   const url = `/bots/${bot.id}/settings`, api = `**/api/bots/${bot.id}/native/settings`;
   await page.goto(url); await expect(page.getByLabel('Model ID', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('New API key', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save profile settings', exact: true })).toBeDisabled();
+  await page.getByLabel('API key', { exact: true }).click();
+  await page.getByRole('option', { name: 'Keep current state (no profile key saved)', exact: true }).click();
+  await expect(page.getByLabel('New API key', { exact: true })).toHaveCount(0);
   await page.getByLabel('Model ID', { exact: true }).fill('interrupted-fixture-model');
   let commit!: () => void, release!: () => void, saves = 0, tests = 0;
   const committed = new Promise<void>(resolve => { commit = resolve; });
@@ -245,6 +250,7 @@ test('interrupted save reloads committed state without resending credentials or 
     const response = await route.fetch(); expect(response.status()).toBe(200); commit();
     await resume; await route.fulfill({ response }).catch(() => {});
   });
+  await expect(page.getByRole('button', { name: 'Save profile settings', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Save profile settings', exact: true }).click(); await committed;
   const reload = page.reload(); release(); await reload;
   await expect(page.getByLabel('Model ID', { exact: true })).toHaveValue('interrupted-fixture-model');

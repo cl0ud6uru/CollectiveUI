@@ -7,7 +7,7 @@ import { z } from "zod";
 import { type ProviderKind } from "./kinds";
 
 /** Kinds that run on company credentials: an admin enters the key or service account (for Hermes, a profile's API key). */
-export const ENABLED_KINDS = ["openai-compatible", "openai", "azure", "anthropic", "bedrock", "vertex-anthropic", "hermes"] as const;
+export const ENABLED_KINDS = ["openai-compatible", "openrouter", "openai", "azure", "anthropic", "bedrock", "vertex-anthropic", "hermes"] as const;
 export type EnabledKind = (typeof ENABLED_KINDS)[number];
 export const isEnabledKind = (k: string): k is EnabledKind => (ENABLED_KINDS as readonly string[]).includes(k);
 
@@ -16,10 +16,11 @@ export const APP_PROVIDERS = [...ENABLED_KINDS, "chatgpt"] as const;
 export type AppProvider = (typeof APP_PROVIDERS)[number];
 export const isAppProvider = (k: string): k is AppProvider => (APP_PROVIDERS as readonly string[]).includes(k);
 
-export const SAVED_PROVIDER_KINDS = ["openai", "openai-compatible"] as const;
+export const SAVED_PROVIDER_KINDS = ["openai", "openai-compatible", "openrouter"] as const;
 export type SavedProviderKind = (typeof SAVED_PROVIDER_KINDS)[number];
 export const isSavedProviderKind = (kind: string): kind is SavedProviderKind => (SAVED_PROVIDER_KINDS as readonly string[]).includes(kind);
 export const SAVED_PROVIDER_LABELS: Record<SavedProviderKind, string> = {
+  openrouter: "OpenRouter · Chat Completions API",
   openai: "OpenAI · Responses API",
   "openai-compatible": "OpenAI-compatible · Chat Completions API",
 };
@@ -38,6 +39,7 @@ const store = z.boolean().default(false);
 
 export const CONFIG_SCHEMAS = {
   "openai-compatible": z.object({}),
+  openrouter: z.object({}),
   openai: z.object({
     organization: z.string().trim().max(100).optional(),
     project: z.string().trim().max(100).optional(),
@@ -144,6 +146,15 @@ export function isAnthropicFamily(kind: string, config: unknown, model: string):
 const AZURE_HOST = /\.(openai\.azure\.com|cognitiveservices\.azure\.com|services\.ai\.azure\.com)$/;
 const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])$/;
 
+export type CatalogModel = { id: string; name: string; supportsTools: boolean; supportsVision: boolean };
+export type ModelCatalogResult = { ok: true; models: CatalogModel[] } | { ok: false; error: string };
+
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+export function isOpenRouterBaseUrl(raw: string | null | undefined): boolean {
+  return raw?.trim().replace(/\/+$/, "") === OPENROUTER_BASE_URL;
+}
+
 type BaseUrlResult = { ok: true; value: string | null } | { ok: false; error: string };
 
 /**
@@ -163,6 +174,15 @@ export function normalizeBaseUrl(kind: EnabledKind, raw: string | null | undefin
     } catch {
       return { ok: false, error: "Base URL is not a valid URL" };
     }
+  }
+  if (kind === "openrouter") {
+    if (!input || isOpenRouterBaseUrl(input)) return { ok: true, value: OPENROUTER_BASE_URL };
+    return { ok: false, error: `OpenRouter uses ${OPENROUTER_BASE_URL}. Use OpenAI-compatible for a custom endpoint.` };
+  }
+  if (kind === "openai" && input) {
+    try {
+      if (new URL(input).hostname === "openrouter.ai") return { ok: false, error: `Select OpenRouter for this endpoint and use ${OPENROUTER_BASE_URL}. OpenAI uses the Responses API.` };
+    } catch { /* Invalid URLs are handled below. */ }
   }
   if (kind === "openai-compatible") {
     if (!input) return { ok: false, error: "Base URL is required" };
@@ -236,6 +256,8 @@ export function endpointLabel(kind: string, baseUrl: string | null, config: unkn
   if (kind === "hermes") return `${baseUrl ?? ""} · ${c.profile ? `profile ${c.profile}` : "default profile"}`;
   if (baseUrl) return baseUrl;
   switch (kind) {
+    case "openrouter":
+      return OPENROUTER_BASE_URL;
     case "openai":
       return "api.openai.com";
     case "anthropic":
@@ -267,6 +289,7 @@ const common = {
   systemPrompt: z.string().max(20000).nullable().optional(),
   temperature: z.number().min(0).max(2).nullable().optional(),
   maxTokens: z.number().int().min(1).max(1_000_000).nullable().optional(),
+  contextWindowTokens: z.number().int().min(4_096).max(2_000_000).nullable().optional(),
   supportsVision: z.boolean(),
   supportsTools: z.boolean(),
   embeddingModel: z.string().max(200).nullable().optional(),
@@ -280,6 +303,7 @@ const common = {
 
 export const AppInput = z
   .discriminatedUnion("provider", [
+    z.object({ provider: z.literal("openrouter"), config: CONFIG_SCHEMAS.openrouter.default({}), ...common }),
     z.object({ provider: z.literal("openai-compatible"), config: CONFIG_SCHEMAS["openai-compatible"].default({}), ...common }),
     z.object({ provider: z.literal("openai"), config: CONFIG_SCHEMAS.openai.default({ store: false, reasoning: false }), ...common }),
     z.object({ provider: z.literal("azure"), config: CONFIG_SCHEMAS.azure.default({ store: false, reasoning: false }), ...common }),
@@ -291,7 +315,7 @@ export const AppInput = z
   ])
   .superRefine((v, ctx) => {
     if (v.providerConnectionId && !isSavedProviderKind(v.provider)) {
-      ctx.addIssue({ code: "custom", path: ["providerConnectionId"], message: "Saved provider connections support OpenAI and OpenAI-compatible API models only" });
+      ctx.addIssue({ code: "custom", path: ["providerConnectionId"], message: "Saved provider connections support OpenAI, OpenRouter and OpenAI-compatible API models only" });
     }
     if (v.embeddingModel?.trim() && !supportsEmbeddings(v.provider)) {
       ctx.addIssue({ code: "custom", path: ["embeddingModel"], message: `${CATALOG[v.provider].label} doesn't provide embeddings` });
@@ -301,6 +325,9 @@ export const AppInput = z
     }
     if (speaksResponses(v.provider) && v.maxTokens != null && v.maxTokens < 16) {
       ctx.addIssue({ code: "custom", path: ["maxTokens"], message: "The Responses API needs at least 16 output tokens" });
+    }
+    if (v.contextWindowTokens != null && v.contextWindowTokens < (v.maxTokens ?? 2_048) + 1_024) {
+      ctx.addIssue({ code: "custom", path: ["contextWindowTokens"], message: "The model context window must leave at least 1,024 tokens after the output reserve" });
     }
     if ((v.provider === "bedrock" || v.provider === "vertex-anthropic" || v.provider === "chatgpt" || v.provider === "hermes") && (!MODEL_ID.test(v.model) || v.model.includes(".."))) {
       ctx.addIssue({ code: "custom", path: ["model"], message: "Model id contains characters that aren't allowed" });
@@ -352,6 +379,17 @@ const storeField: ConfigField = {
 };
 
 export const CATALOG: Record<AppProvider, CatalogEntry> = {
+  openrouter: {
+    label: "OpenRouter",
+    description: "OpenRouter models through the Chat Completions API with an OpenRouter API key",
+    baseUrl: { mode: "optional", placeholder: OPENROUTER_BASE_URL, hint: `Defaults to ${OPENROUTER_BASE_URL}. Do not append /chat/completions.` },
+    modelLabel: "Model",
+    modelPlaceholder: "provider/model",
+    secrets: [{ key: "apiKey", label: "API key", placeholder: "sk-or-…" }],
+    config: [],
+    defaultConfig: {},
+    test: "list",
+  },
   "openai-compatible": {
     label: "OpenAI-compatible",
     description: "Any endpoint with /v1/chat/completions: vLLM, LiteLLM, Ollama, your own service…",
@@ -545,6 +583,6 @@ export type ProviderConnectionView = {
 
 /** Billing selectors belong to the saved credential; protocol-specific model flags stay on the model. */
 export function savedProviderConfig(connection: Pick<ProviderConnectionView, "provider" | "organization" | "project">, config: unknown): AnyProviderConfig {
-  if (connection.provider === "openai-compatible") return CONFIG_SCHEMAS["openai-compatible"].parse(config);
+  if (connection.provider !== "openai") return CONFIG_SCHEMAS[connection.provider].parse(config);
   return { ...CONFIG_SCHEMAS.openai.parse(config), organization: connection.organization ?? undefined, project: connection.project ?? undefined };
 }

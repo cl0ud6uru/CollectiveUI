@@ -2,11 +2,13 @@
 
 <a id="ai-portal"></a>
 
-**A self-hosted AI workspace. Choose what runs your bots.**
+**Self-hosted, open-source alternative to Grok Bot and OpenAI Dots, with Hermes integration. Bring your own models, agent harnesses, and sandboxes.**
 
-CollectiveUI brings AI conversations and task-focused bots into one web app, with a choice of engine behind each bot. Use CollectiveUI’s built-in engine with a connected model, or connect a Hermes backend with its own tools, memory, skills and model. A separately gated Codex preview is described below; it is not currently a generally available engine.
+CollectiveUI brings AI conversations and task-focused bots into one web app, with a choice of engine behind each bot. Use CollectiveUI’s built-in engine with a connected model, or connect a **Hermes backend** with its own tools, memory, skills and model. Hermes supports manually connected profiles, with optional managed and personal Docker modes that require operator setup; see [Hermes setup and limits](#choose-the-engine-behind-each-bot). A separately gated Codex preview is described below; it is not currently a generally available engine.
 
 Use it for yourself or a team, with an administrator choosing the available connections, tools and access rules.
+
+The goal is control over your assistant infrastructure, including supported bot engines and operator-configured sandboxes. The Grok Bot and OpenAI Dots comparison describes the project's purpose, without implying feature parity or affiliation with xAI or OpenAI. Engine and sandbox availability depends on setup and the [current limitations](#current-limitations).
 
 Already have an invitation or a link from your team? Open that site and sign in. You only need the setup instructions below if you are running your own installation.
 
@@ -14,34 +16,15 @@ Already have an invitation or a link from your team? Open that site and sign in.
 
 ## A quick look
 
-The workspace and voice captures below were refreshed on 2026-10-12 from the current UI components in isolated browser fixtures. Their data, backend responses and voice connection are simulated; no live provider, microphone or user account was used. [Screenshot provenance and reproduction](docs/images/README.md).
+These screenshots show the deployed web app in Firefox on 2026-10-15. They are cropped to focus on the interface and exclude account and conversation data. [Capture notes and artwork notices](docs/images/README.md).
 
-![Current workspace browser showing a CSV preview, file tree and download controls beside a synthetic chat.](docs/screenshots/workspace-browser/desktop-files.png)
+![The deployed new-chat screen with an empty centered composer, attachment button, Tools and command controls.](docs/images/live-app/new-chat.png)
 
-*Browse, upload and download your workspace files, or run commands from its Terminal view. The surrounding chat is fixture content.*
+*Start a model conversation from the centered composer, with attachments and chat controls close at hand.*
 
-![Current fullscreen voice interface with the bot's original 2D icon, captions, mute and end controls.](docs/images/current-voice/voice-desktop.png)
+<img src="docs/images/live-app/bot-avatars.png" alt="The deployed New bot avatar picker showing the original icon, Moss, Ember and available catalog companions." width="420">
 
-*Voice uses the bot's original icon by default; the optional 3D avatar is configurable.*
-
-<details>
-<summary>Earlier full-stack demo captures (2026-10-02)</summary>
-
-These captures use synthetic demo data and the included mock model. They show the earlier interface, not the quality of a live AI provider. Only original artwork shipped with CollectiveUI is shown.
-
-![CollectiveUI chat showing a mock reply with a table, code and math, alongside the bot's activity panel.](docs/images/chat.png)
-
-*Keep a conversation, its bot and recent activity together.*
-
-![The Bots page with demo assistant cards, short descriptions and links to start chatting.](docs/images/bots.png)
-
-*Choose an assistant for a job, or create your own when your administrator allows it.*
-
-![Pet avatar settings showing the original icon and built-in Moss and Ember artwork.](docs/images/avatars.png)
-
-*Give bots a recognizable identity with the built-in pets or artwork your administrator has approved.*
-
-</details>
+*Choose a recognizable bot appearance. Available catalog artwork depends on your administrator's published selections.*
 
 ## What you can do
 
@@ -73,10 +56,6 @@ For general use, the supported engines are **Native · CollectiveUI** with a **M
 
 Admins configure both types of connection under **Admin → Connections**. [Supported providers and setup](docs/connections.md) · [Model and backend behavior](docs/features/models-and-agent-backends.md).
 
-![Admin Connections showing Mock GPT under Models and two saved Hermes demo profiles under Agent backends, each marked bot-only.](docs/images/hermes-backends.png)
-
-*Admin → Connections in the 2026-10-02 demo capture. Synthetic settings; no live Hermes connection was tested.*
-
 A normal **caller bot** uses the signed-in person's permitted tools. An **admin-managed service bot** exposes a narrowly reviewed set of MCP capabilities to its audience without giving everyone direct access to the connector. Service bots currently work only in direct chats; they do not run in groups, delegation or routines. Writes always require approval, and the upstream service must enforce the configured scope. [Service-bot setup and permissions](docs/service-bots.md).
 
 **Hermes is optional.** Manually connected Hermes bots share their configured profile's memory and skills with everyone who can use that bot. Managed Hermes can provision a separate profile for each user and bot, but requires operator-provided process/filesystem isolation, protected management access, loopback forwarding and credentials. CollectiveUI does not create that infrastructure. Managed mode currently supports direct bot chats only. Existing Hermes conversations created without a bot remain readable but cannot continue; start a new conversation with the intended bot. [Hermes setup and limits](docs/connections.md#hermes-agent-bots-from-your-hermes-profiles) · [Managed profile prerequisites](docs/architecture/hermes-profile-provisioning.md).
@@ -85,9 +64,9 @@ A normal **caller bot** uses the signed-in person's permitted tools. An **admin-
 
 ## Sign-in and access
 
-![The local-account sign-in page, with a built-in Moss companion and empty username and password fields.](docs/images/sign-in.png)
+![The deployed CollectiveUI sign-in page with empty local-account fields, a passkey option and the configured Hermes companion.](docs/images/live-app/sign-in.png)
 
-*The 2026-10-02 sign-in capture. The screen can use your installation’s name, introduction and approved artwork.*
+*Sign in with a local account or passkey. Branding and artwork depend on the installation; see the [artwork notices](docs/images/README.md#artwork-notices).*
 
 Run with **local accounts**, **Microsoft Entra ID** single sign-on, **Active Directory over LDAP(S)**, or a combination. Local accounts need no directory or email service: the operator creates the first admin, and admins create other accounts. There is no public signup. Local and directory accounts remain separate even when their email addresses match.
 
@@ -171,6 +150,7 @@ See the [development status and backlog](TODO.md), [service-bot restrictions](do
 | Deploy, update, back up or recover an installation | [Operator guide](docs/operations.md) |
 | Deploy published images without building on the VM | [Docker Hub deployment and updates](docs/docker-hub-deployment.md) |
 | Connect models, MCP tools or Hermes | [Connection guide](docs/connections.md) |
+| Render bundled widgets in native web chats | [MCP Apps support and exact limits](docs/architecture/mcp-apps.md) |
 | Set up an optional coordinator or The Queen starter | [Default coordinator](docs/features/default-coordinator.md) |
 | Configure narrowly scoped shared capabilities | [Service bots](docs/service-bots.md) |
 | Manage pet artwork and identity permissions | [Pet avatars](docs/features/bot-companions.md) |
@@ -226,3 +206,5 @@ CollectiveUI is available under the [MIT License](LICENSE). Third-party dependen
 ### OpenAI native web search
 
 Optional hosted search is available for verified official OpenAI API models, with admin limits, bot defaults, per-chat Off/Auto controls, citations and separate call accounting. It defaults off and does not use ChatGPT subscription credentials. See [setup, policy and fixture validation](docs/operations/openai-native-search.md).
+
+See [The Architect](docs/features/the-architect.md) for the admin assistant and its supported phases.

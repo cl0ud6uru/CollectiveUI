@@ -99,7 +99,7 @@ const server = createServer(async (req, res) => {
       connectionView.backends.codex = { state: 'connected' };
       return json(res, connectionView);
     }
-    if (request.action === 'disconnect') {
+    if (request.action === 'disconnect-native') {
       connectionView.credential = null;
       connectionView.backends.native = { state: 'not_connected' };
       connectionView.backends.codex = { state: 'not_connected' };
@@ -139,7 +139,7 @@ async function noOverflow(page, widths = [320, 390, 768, 1280]) {
 async function openAccount(page) {
   await page.goto(origin);
   await expect(page.getByRole('heading', { name: 'ChatGPT account', exact: true })).toBeVisible();
-  await expect(page.getByText('Legacy Codex connection cleanup', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Stock Codex', exact: true })).toBeVisible();
 }
 
 try {
@@ -160,24 +160,11 @@ try {
 
   await reset();
   await openAccount(page);
-  await expect(page.getByText('Stock Codex:', { exact: false })).toBeVisible();
   await expect(page.getByText('Local sign-in app ready', { exact: true })).toBeVisible();
   await expect(page.getByText(/Open the installed ChatGPT sign-in app/i)).toBeVisible();
-  const consent = page.getByLabel('I authorize this installation to prepare my private Codex runtime. ChatGPT plan usage is authorized separately when I sign in.');
-  const prepare = page.getByRole('button', { name: 'Prepare private runtime', exact: true });
-  await expect(consent).not.toBeChecked();
-  await expect(prepare).toBeDisabled();
-  await consent.check();
-  await expect(prepare).toBeEnabled();
-  await prepare.click();
-  await expect(page.getByText('Prepared', { exact: true })).toBeVisible();
-  await expect(page.locator('p').filter({ hasText: 'Stock Codex:' })).toContainText('not_connected');
-  const prepareCalls = connectionActions.filter(call => call.action === 'prepare-runtime');
-  expect(prepareCalls).toEqual([{ action: 'prepare-runtime', body: { action: 'prepare-runtime', accepted: true, consentVersion: 1 } }]);
-  expect(JSON.stringify(prepareCalls)).not.toMatch(/owner|accessToken|credential|token/i);
   await noOverflow(page);
 
-  // Sign-in needs its own explicit consent; optional runtime consent stays separate.
+  // Native sign-in requires independent explicit consent.
   const connectConsent = page.getByLabel('I authorize this installation to use my ChatGPT account for Native CollectiveUI.');
   const connectButton = page.getByRole('button', { name: 'Connect ChatGPT', exact: true });
   await expect(connectButton).toBeDisabled();
@@ -222,7 +209,7 @@ try {
   await reset(completedView);
   await openAccount(page);
   await expect(page.getByText('Connected', { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Disconnect Native ChatGPT', exact: true })).toBeVisible();
 
   const staleCompleteView = initialView();
   staleCompleteView.signIn = { state: 'complete', expiresAt: new Date(Date.now() + 120000).toISOString() };
@@ -245,19 +232,6 @@ try {
   expect(connectionActions.filter(call => call.action === 'begin-sign-in')).toHaveLength(2);
   await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
 
-  await reset();
-  failPrepareOnce = true;
-  await openAccount(page);
-  await page.getByLabel('I authorize this installation to prepare my private Codex runtime. ChatGPT plan usage is authorized separately when I sign in.').check();
-  await page.getByRole('button', { name: 'Prepare private runtime', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Synthetic broker preparation failure.');
-  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
-  await expect(page.getByLabel('I authorize this installation to prepare my private Codex runtime. ChatGPT plan usage is authorized separately when I sign in.')).toBeChecked();
-  await expect(page.getByRole('button', { name: 'Prepare private runtime', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: 'Prepare private runtime', exact: true }).click();
-  await expect(page.getByText('Prepared', { exact: true })).toBeVisible();
-  expect(connectionActions.filter(call => call.action === 'prepare-runtime')).toHaveLength(2);
-
   const connectedView = initialView();
   connectedView.credential = { email: 'alice@example.test', planType: 'plus', status: 'active', migrationRequired: false };
   connectedView.backends.native = { state: 'connected' };
@@ -265,19 +239,14 @@ try {
   connectedView.setup.runtime = { state: 'ready', selfEnrollment: true, enrolled: true, runtimeState: 'running' };
   await reset(connectedView);
   await openAccount(page);
-  await expect(page.getByText('Prepared', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Prepare private runtime', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Enable stock Codex', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Enable stock Codex', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Disconnect Native ChatGPT', exact: true })).toBeVisible();
   page.on('dialog', dialog => dialog.accept());
-  await page.getByRole('button', { name: 'Enable stock Codex', exact: true }).click();
-  await expect(page.locator('p').filter({ hasText: 'Stock Codex:' })).toHaveText('Stock Codex: connected');
-  await page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Disconnect ChatGPT', exact: true })).toHaveCount(0);
-  await expect(page.locator('p').filter({ hasText: 'Native CollectiveUI:' })).toHaveText('Native CollectiveUI: not_connected');
-  expect(connectionActions.map(call => call.action)).toEqual(['sync-token', 'disconnect']);
-  expect(connectionActions[0].body).toEqual({ action: 'sync-token' });
-  expect(connectionActions[1].body).toEqual({ action: 'disconnect' });
+  await page.getByRole('button', { name: 'Disconnect Native ChatGPT', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Disconnect Native ChatGPT', exact: true })).toHaveCount(0);
+  expect(connectionActions.map(call => call.action)).toEqual(['disconnect-native']);
+  expect(connectionActions[0].body).toEqual({ action: 'disconnect-native' });
   await noOverflow(page);
 
   await reset();
@@ -287,7 +256,7 @@ try {
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'ChatGPT account', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Prepare private runtime', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Connect ChatGPT', exact: true })).toBeDisabled();
 
   await reset();
   await page.goto(`${origin}/approval`);
@@ -306,7 +275,7 @@ try {
   expect(approvalActions).toEqual([{ id: 'approval-deny', decision: 'decline', body: '' }, { id: 'approval-stop', decision: 'cancel', body: '' }]);
   await noOverflow(page);
   expect(pageErrors).toEqual([]);
-  console.log('PASS Unified ChatGPT and stock Codex setup: separate runtime/sign-in consent, exact safe launch payload, stubbed companion URI handoff, sanitized waiting/cancel/complete states, disabled-companion installer link, retry after broker/account failures, connected controls, fixed approval headers, and 320/390/768/1280 layouts. Synthetic endpoints only.');
+  console.log('PASS Independent Native CollectiveUI sign-in: explicit native consent, exact safe launch payload, stubbed companion URI handoff, sanitized waiting/cancel/complete states, disabled-companion installer link, retry after account failures, separate native disconnect controls, fixed approval headers, and 320/390/768/1280 layouts. Synthetic endpoints only.');
 } finally {
   if (browser) await browser.close();
   await new Promise(resolve => server.close(resolve));

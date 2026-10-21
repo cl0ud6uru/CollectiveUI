@@ -9,7 +9,7 @@ export function codexRuntimeApp(bot: Bot, policy: CodexPolicy): AiApp {
   return { id: `codex:${bot.id}:${revision}`, name: bot.name, description: null, icon: bot.avatar, kind: 'runtime',
     provider: policy.funding === 'api' ? 'openai' : 'chatgpt', providerConfig: { codexHarness: true, ...policy },
     credentialMode: 'user', baseUrl: null, apiKeyEnc: null, providerConnectionId: null, model: policy.model,
-    systemPrompt: null, temperature: null, maxTokens: null, supportsVision: false, supportsTools: false,
+    systemPrompt: null, temperature: null, maxTokens: null, contextWindowTokens: null, supportsVision: false, supportsTools: false,
     embeddingModel: null, isPublic: false, enabled: true, sortOrder: 0, createdAt: now, updatedAt: now };
 }
 export const isCodexApp = (app: Pick<AiApp, 'providerConfig'>) => app.providerConfig?.codexHarness === true;

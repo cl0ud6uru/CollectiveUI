@@ -1,6 +1,6 @@
 # Plan: Generalized event-trigger framework for routines
 
-Status: draft for review (branch `feat/event-trigger-framework`, base `origin/main` @ e71527c). No code yet.
+Status: types/schema checkpoint for review. The additive schema and shared types are implemented; ingestion, dispatch, connections, providers, event editing, rate limits, and retention remain follow-up work. This checkpoint does not activate event routines.
 
 ## 1. Current state
 
@@ -150,7 +150,7 @@ Notes:
 
 ## 6. Migration and backwards compatibility
 
-- Migration `0058_event_triggers.sql` is additive only. It adds the `trigger_config`, `trigger_provider`, and `trigger_connection_id` columns and the partial index; adds `routine_runs.trigger_event_id` with the unique index; and creates the `trigger_connections` and `trigger_events` tables. `trigger_type` is plain `text`, so widening the union is a TS-only change with no enum ALTER. Optionally add a CHECK constraint `trigger_type in ('cron','webhook','event')`.
+- Migration `0067_event_triggers.sql` is additive only. It adds the `trigger_config`, `trigger_provider`, and `trigger_connection_id` columns and the partial index; adds `routine_runs.trigger_event_id` with the unique index; and creates the `trigger_connections` and `trigger_events` tables. `trigger_type` is plain `text`, so widening the union is a TS-only change with no enum ALTER. Optionally add a CHECK constraint `trigger_type in ('cron','webhook','event')`.
 - Existing cron and webhook rows are left as-is: `trigger_config` stays NULL. Cron keeps the `cron`/`timezone`/`nextRunAt` columns and `scheduleDueRoutines` is unchanged. The webhook keeps `/api/routines/webhook/[id]` and its secret, so external callers see no URL or secret change.
 - An optional later backfill writes `{kind:"cron",...}` / `{kind:"webhook"}` into `trigger_config` for uniform reads. The columns stay authoritative until a deliberate cleanup PR.
 - Templates (`schema.ts:768-774`, `actions.ts:661,708-712`): event routines are exported **without** `connectionId`/`channelIds`, and on import they become `enabled:false` with "connect Slack to activate". Unknown `triggerType` values in old template snapshots don't arise, since old snapshots are only cron/webhook.
@@ -159,7 +159,7 @@ Notes:
 
 ## 7. PR breakdown
 
-1. **Types and schema (no behavior change):** `TriggerType` and `RoutineRunTrigger` shared types replace the scattered unions, plus migration 0057, drizzle schema, and zod `TriggerConfig`. The UI `switch` refactor of the ternaries is included.
+1. **Types and schema (no behavior change):** `TriggerType` and `RoutineRunTrigger` shared types replace the scattered unions, plus migration 0067, drizzle schema, and zod `TriggerConfig`. The UI `switch` refactor of the ternaries is included.
 2. **Framework core:** `src/lib/triggers/{types,registry,dispatch}.ts`, `QUEUES.triggerDispatch`, the worker handler, the sweeper clause, idempotent run insert, and rate limit. Unit tests use a fake provider (matches, dedupe, fan-out, and a lost-enqueue recovery test).
 3. **Public ingress route:** `/api/triggers/[provider]` + `PUBLIC_PREFIXES`, body cap, handshake/verify/parse, and `trigger_events` insert. Tested with the fake provider.
 4. **Connections:** the `trigger_connections` CRUD server actions, the encryption AAD, and a minimal "Integrations" settings list (connect and disconnect).

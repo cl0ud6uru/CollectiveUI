@@ -1,0 +1,1 @@
+ALTER TABLE "pet_generation_jobs" ADD COLUMN "preview_error_code" text;

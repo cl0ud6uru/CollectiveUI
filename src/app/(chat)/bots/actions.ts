@@ -2,7 +2,6 @@
 
 import { CodexPolicySchema, CODEX_DIRECT_ONLY } from '@/lib/codex/config';
 import { codexPolicy } from '@/lib/codex/store';
-import { codexBotConfigs } from '@/db/schema';
 
 import { isDockerHermes } from "@/lib/docker-hermes/policy";
 
@@ -14,7 +13,6 @@ import { db, type DbOrTx, type Tx } from "@/db";
 import {
   aiApps,
   attachments,
-  botAccess,
   botUserAccess,
   users,
   botDelegates,
@@ -62,6 +60,8 @@ import { isManagedHermes } from "@/lib/hermes-provisioning/config";
 import { isLocalHermes } from "@/lib/local-hermes/config";
 import { EDITABLE_TRIGGER_TYPES } from "@/lib/triggers/types";
 import { saveBotNavigation } from "@/lib/bots/navigation-store";
+import { isInstalledArchitect } from "@/lib/bots/architect-store";
+import { persistBotUpdate, saveBotRelations } from "@/lib/bots/persist";
 
 async function localEngine(appId: string | null, q: DbOrTx = db) {
   if (!appId) return false;
@@ -218,23 +218,8 @@ export async function createBot(raw: BotInput) {
   return { id: bot.id };
 }
 
-async function saveRelations(tx: Tx, botId: string, input: BotInput, v: { tools: BotInput["tools"]; delegates: string[]; userIds: string[] }) {
-  if (input.codex) await tx.insert(codexBotConfigs).values({ botId, policy: input.codex }).onConflictDoUpdate({ target: codexBotConfigs.botId, set: { policy: input.codex } });
-  else await tx.delete(codexBotConfigs).where(eq(codexBotConfigs.botId, botId));
-  await tx.delete(botTools).where(eq(botTools.botId, botId));
-  if (v.tools.length)
-    await tx.insert(botTools).values(v.tools.map((t) => ({ botId, toolKey: t.key, approval: t.approval, config: t.config ?? null })));
-  await tx.delete(botDelegates).where(eq(botDelegates.botId, botId));
-  if (v.delegates.length) await tx.insert(botDelegates).values(v.delegates.map((d) => ({ botId, delegateBotId: d })));
-  await tx.delete(botAccess).where(eq(botAccess.botId, botId));
-  if (input.visibility === "groups" && input.groupIds.length)
-    await tx.insert(botAccess).values([...new Set(input.groupIds)].map((groupId) => ({ botId, groupId })));
-  // Older editors omit userIds; do not overwrite their existing grants.
-  if (input.visibility !== "groups" || input.userIds !== undefined) {
-    await tx.delete(botUserAccess).where(eq(botUserAccess.botId, botId));
-    if (input.visibility === "groups" && v.userIds.length)
-      await tx.insert(botUserAccess).values(v.userIds.map(userId => ({ botId, userId })));
-  }
+async function saveRelations(tx: Tx, botId: string, input: BotInput, v: { tools: BotInput["tools"]; delegates: string[]; userIds: string[]; maxSteps: number }) {
+  await saveBotRelations(tx, botId, input, v);
 }
 
 export async function updateBot(botId: string, raw: BotInput) {
@@ -259,31 +244,8 @@ export async function updateBot(botId: string, raw: BotInput) {
       if ((input.executionMode ?? current.executionMode) !== "caller" || !app?.enabled || app.provider === "hermes" || !app.supportsTools)
         throw new HttpError(400, "Coordinators require a native caller bot with a tool-capable model.");
     }
-    const changed = await tx
-      .update(bots)
-      .set({
-        name: input.name,
-        avatar: input.avatar || randomBlob(),
-        label: input.label || null,
-        description: input.description,
-        instructions: input.instructions,
-        boundaries: input.boundaries,
-        appId: input.codex ? null : input.appId,
-        visibility: input.visibility,
-        maxSteps: v.maxSteps,
-        starters: input.starters.filter(Boolean),
-        executionMode: input.executionMode ?? current.executionMode,
-        coordinatorEligible: input.coordinatorEligible ?? current.coordinatorEligible,
-        isCoordinator: input.isCoordinator ?? current.isCoordinator,
-        revision: current.revision + 1,
-        publishedRevision: null,
-        publishedConfigHash: null,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(bots.id, botId), p.isAdmin ? undefined : eq(bots.ownerId, p.user.id)))
-      .returning({ id: bots.id });
-    if (!changed.length) throw new HttpError(404, "Bot not found or no longer editable");
-    await saveRelations(tx, botId, input, v);
+    const changed = await persistBotUpdate(tx, current, { ...input, avatar: input.avatar || randomBlob() }, v);
+    if (!changed) throw new HttpError(404, "Bot not found or no longer editable");
     await tx.update(botMcpGrants).set({ revokedAt: new Date() }).where(and(eq(botMcpGrants.botId, botId), isNull(botMcpGrants.revokedAt)));
     if (current.hermesTeam) {
       teamChanged = true;
@@ -298,6 +260,20 @@ export async function updateBot(botId: string, raw: BotInput) {
 
   revalidatePath("/", "layout");
   return { id: botId };
+}
+
+/** Expected editor validation failures must cross the Server Action boundary as data. */
+export async function saveBotFromBuilder(botId: string | null, raw: BotInput) {
+  try {
+    await requirePrincipal();
+    // Creation policy and edit access are also checked by the delegated actions, including inside their transactions.
+    const result = botId ? await updateBot(botId, raw) : await createBot(raw);
+    return { ok: true as const, id: result.id };
+  } catch (error) {
+    if (error instanceof HttpError && error.status < 500) return { ok: false as const, error: error.message };
+    if (error instanceof z.ZodError) return { ok: false as const, error: error.issues[0]?.message ?? "Check the bot settings and try again." };
+    throw error;
+  }
 }
 
 export async function deleteBot(botId: string) {
@@ -752,9 +728,15 @@ export async function getBotTemplate(botId: string) {
   return t ? { token: t.id, updatedAt: t.updatedAt.toISOString() } : null;
 }
 
+/** The Architect is admin-only: a template link would show its profile to anyone signed in. */
+async function assertTemplateSource(botId: string) {
+  if (await isInstalledArchitect(botId)) throw new HttpError(400, "The Architect can't be shared as a template.");
+}
+
 export async function createBotTemplate(botId: string) {
   const p = await requirePrincipal();
   const bot = await getEditableBot(p, botId);
+  await assertTemplateSource(bot.id);
   await requirePortableEngine(bot.appId, bot.hermesTeam);
   const existing = await getBotTemplate(botId);
   if (existing) return existing;
@@ -766,6 +748,7 @@ export async function createBotTemplate(botId: string) {
 export async function updateBotTemplate(botId: string) {
   const p = await requirePrincipal();
   const bot = await getEditableBot(p, botId);
+  await assertTemplateSource(bot.id);
   await requirePortableEngine(bot.appId, bot.hermesTeam);
   const res = await db
     .update(botTemplates)
@@ -792,7 +775,7 @@ export async function addBotFromTemplate(token: string) {
     .select()
     .from(botTemplates)
     .where(and(eq(botTemplates.id, token), isNull(botTemplates.revokedAt)));
-  if (!t) throw new HttpError(404, "This template link is no longer available");
+  if (!t || await isInstalledArchitect(t.botId)) throw new HttpError(404, "This template link is no longer available");
   const [src] = await db.select({ appId: bots.appId, executionMode: bots.executionMode }).from(bots).where(eq(bots.id, t.botId));
   const snapshot = src?.executionMode === "service" ? { ...t.snapshot, tools: [], skills: [], routines: [] } : t.snapshot;
   return createBotFromSnapshot(snapshot, { name: snapshot.name, preferredAppId: src?.appId });

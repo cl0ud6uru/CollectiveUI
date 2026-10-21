@@ -13,9 +13,13 @@ struct KeychainCredentials: CredentialStore {
     func remove(_ account: String) { KeychainStore.remove(account) }
 }
 
-/// Minimal generic-password Keychain wrapper. Items are only available on this device after first unlock.
+/// Device-local generic passwords. iOS uses after-first-unlock protection; macOS uses the login Keychain.
 enum KeychainStore {
+    #if os(macOS)
+    private static var service: String { Bundle.main.bundleIdentifier ?? "io.collectiveui.macos" }
+    #else
     private static let service = "io.collectiveui.app"
+    #endif
 
     static func set(_ value: String, for account: String) {
         let base: [String: Any] = [
@@ -26,7 +30,10 @@ enum KeychainStore {
         _ = SecItemDelete(base as CFDictionary)
         var attributes = base
         attributes[kSecValueData as String] = Data(value.utf8)
+        #if os(iOS)
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        #endif
+        attributes[kSecAttrSynchronizable as String] = false
         _ = SecItemAdd(attributes as CFDictionary, nil)
     }
 

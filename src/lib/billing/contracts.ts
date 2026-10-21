@@ -1,6 +1,6 @@
 /** Client-safe, normalized provider facts; no credential or raw provider response. */
-export type ReadStatus = 'known' | 'unset' | 'permission_denied' | 'unavailable' | 'unknown';
-export type SpendLimit = { status: ReadStatus; amount: number | null; currency: string | null; enforcement: string | null };
+export type ReadStatus = 'known' | 'unset' | 'permission_denied' | 'unsupported' | 'unavailable' | 'unknown';
+export type SpendLimit = { status: ReadStatus; amount: number | null; currency: string | null; enforcement: string | null; httpStatus?: number };
 export type Money = { value: number; currency: string };
 export type DailySpend = { start: number; end: number; amounts: Money[] };
 export type SpendingSnapshot = {
@@ -14,8 +14,21 @@ export type BillingAccountView = {
   snapshot: SpendingSnapshot | null; lastAttemptAt: string | null; lastError: string | null;
 };
 export const STALE_AFTER_MS = 15 * 60_000;
+export const BILLING_REFRESH_INTERVAL_MS = 5 * 60_000;
+export const BILLING_REFRESH_COOLDOWN_MS = 60_000;
 export function snapshotStale(snapshot: SpendingSnapshot, now = Date.now()) {
-  return now - Date.parse(snapshot.refreshedAt) > STALE_AFTER_MS || snapshot.month !== new Date(now).toISOString().slice(0, 7);
+  const refreshedAt = Date.parse(snapshot.refreshedAt);
+  return !Number.isFinite(refreshedAt) || now - refreshedAt > STALE_AFTER_MS || snapshot.month !== new Date(now).toISOString().slice(0, 7);
+}
+export function limitDescription(limit: SpendLimit | undefined) {
+  if (!limit) return 'No limit was read for this project. Remaining allowance cannot be calculated.';
+  if (limit.status === 'known') return `Provider enforcement: ${limit.enforcement ?? 'unknown'}`;
+  if (limit.status === 'permission_denied') return 'OpenAI denied access to this limit. Costs can still be available separately.';
+  if (limit.status === 'unsupported') return 'OpenAI does not support this limit endpoint for this account.';
+  if (limit.status === 'unset') return 'OpenAI returned no configured limit. This does not establish unlimited spending.';
+  if (limit.httpStatus === 404) return 'OpenAI did not expose this limit for this account (HTTP 404). This does not mean no limit is set.';
+  if (limit.status === 'unavailable') return 'The limit request failed or is unavailable from OpenAI. A successful costs refresh does not establish a limit.';
+  return 'No recognized monthly limit was returned by OpenAI. Remaining allowance cannot be calculated.';
 }
 export function remaining(limit: SpendLimit, amounts: Money[], known: boolean): Money | null {
   if (!known || limit.status !== 'known' || limit.amount === null || !limit.currency) return null;

@@ -1,8 +1,32 @@
 # Documentation screenshots
 
-## Current component captures — 2026-10-12
+## Live app captures — 2026-10-15
 
-The README's workspace and voice images, and the sidebar captures linked here, were generated from the current production components using the checked-in isolated browser fixtures. These are component previews with synthetic data and simulated endpoints, not a deployed full-stack installation. No live account, provider, Docker workspace, microphone or paid inference was used. PNGs are direct Playwright captures, without retouching or compositing.
+The README and user-facing guides use actual deployed CollectiveUI screens captured through the user's existing Firefox installation. The authenticated views use empty or unsaved states; the sign-in screen was opened separately in a private window with empty credentials. No application code, DOM, response data or artwork was changed for these captures. No message, model request, voice session, sign-in or configuration save was submitted.
+
+Firefox's Responsive Design Mode exported lossless PNGs at **1440 × 900**, device pixel ratio 1, in the app's existing dark appearance. The selected assets are crops of those exports, with metadata removed. They contain no overlays, blurring, replacement text, compositing or generated UI.
+
+| File | Deployed view and framing |
+| --- | --- |
+| [New chat](live-app/new-chat.png) | **1368 × 828**. Empty model-chat composer. The personal navigation rail and account/provider header are outside the crop. |
+| [Bot avatars](live-app/bot-avatars.png) | **566 × 700**. The avatar section of the unsaved **New bot → Configure** form, including the original icon and available catalog options. Navigation, model configuration and the empty preview pane are outside the crop. |
+| [Sign in](live-app/sign-in.png) | **1440 × 828**. Public sign-in screen with blank local-account fields and the passkey option. Browser chrome and the installation's credit footer are outside the crop; artwork notices remain linked below. |
+
+Each selected image was visually inspected at its native size and independently reviewed for privacy. PNG metadata was checked for identifying fields. Browser chrome, personal navigation, conversations, notifications, account names, credentials, balances, private endpoints and file previews are excluded. Raw exports and intermediate images stay outside the repository and are not publication assets.
+
+These captures document the visible deployed interface, not model quality, provider connectivity, voice operation or a claim that every feature on the repository's current branch is deployed. Historical fixture screenshots remain below as QA evidence.
+
+### Artwork notices
+
+The sign-in and avatar images show catalog artwork already present in the deployed installation. Their inclusion does not change the artwork's license or assert ownership or endorsement. See the existing [Hermes](../../assets/pets/hermes/README.md), [Hermes Assimilated](../../assets/pets/hermes-assimilated/README.md), [Nimbus](../../assets/pets/nimbus/README.md) and [catalog notices](../../assets/pets/README.md). Hermes and Hermes Assimilated, including their reproduction in screenshots, are excluded from the application's MIT license; their existing provenance and permission limitations still apply.
+
+### Future live refreshes
+
+Use an explicitly authorized live session and genuinely empty or unsaved states. Avoid personal sidebars, saved conversations, provider administration, file previews and account details. Do not make paid requests or change saved data to stage a capture. Export the actual browser viewport, crop only at clean boundaries, strip metadata and inspect every final pixel at native size. Obtain an independent privacy review and the owner's approval before any screenshot is committed or published. Keep raw captures outside Git, including intermediate commits. Skip a view if a clean capture is not possible.
+
+## Historical component captures — 2026-10-12
+
+The workspace, voice and sidebar QA images linked here were generated from the production components at that time using the checked-in isolated browser fixtures. These are historical component previews with synthetic data and simulated endpoints, not a deployed full-stack installation. No live account, provider, Docker workspace, microphone or paid inference was used. PNGs are direct Playwright captures, without retouching or compositing.
 
 | Capture | View and fixture boundary |
 | --- | --- |
@@ -42,7 +66,7 @@ The local instance used a separate disposable `collective_readme_demo` database,
 
 The operator CLI created a local demo administrator; `db:seed` supplied Mock GPT and the initial bot. Additional bot names/descriptions and branding are synthetic database fixtures. The chat reply was produced by sending `Show me a demo of tables, code and math.` through the actual app to its shipped scripted mock provider. It is not a real-model quality example. Moss, Ember and the sign-in shapes are original shipped CollectiveUI art; no private imports, user photos or third-party gallery art were used.
 
-For future refreshes, follow the [local setup](../getting-started.md), keep fixtures in a disposable database, use a synthetic account, and retain the mock-provider disclosure. Capture through the actual app, inspect every image for rendering problems and private information, and keep the assets here so repository Markdown works without external attachments. Do not point screenshot tooling at a real installation.
+To reproduce these historical demo captures, follow the [local setup](../getting-started.md), keep fixtures in a disposable database, use a synthetic account, and retain the mock-provider disclosure. Do not point the fixture scripts at a real installation. Public live captures follow the separate review process above.
 
 ## Hermes backend configuration capture
 

@@ -46,7 +46,7 @@ export type ResumeState = {
    * can be stopped), and in full at each approval pause: `segment` is the pause's portal segment, which tells a stream
    * held by a worker at that pause apart from one held at an earlier pause.
    */
-  hermes?: { runId: string; lastEventId?: string; state?: MapperState; segment?: number };
+  hermes?: { runId: string; lastEventId?: string; statusOnly?: true; state?: MapperState; segment?: number };
 };
 
 /** Automatic continuations retain unattended policy; only an explicit approval response changes it. */

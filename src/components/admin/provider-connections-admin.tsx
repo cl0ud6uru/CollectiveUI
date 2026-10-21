@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { saveProviderConnection, deleteProviderConnection, type ProviderConnectionInput } from "@/app/admin/provider-actions";
-import { normalizeBaseUrl, SAVED_PROVIDER_KINDS, SAVED_PROVIDER_LABELS, type ProviderConnectionView, type SavedProviderKind } from "@/lib/llm/catalog";
+import { OPENROUTER_BASE_URL, normalizeBaseUrl, SAVED_PROVIDER_KINDS, SAVED_PROVIDER_LABELS, type ProviderConnectionView, type SavedProviderKind } from "@/lib/llm/catalog";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/input";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -26,13 +26,14 @@ function ConnectionEditor({ connection, onClose }: { connection: ProviderConnect
       <div className="space-y-4">
         <Field label="Connection name"><Input aria-label="Connection name" value={form.name} onChange={e => set("name", e.target.value)} placeholder="Engineering OpenAI project" /></Field>
         <Field label="Provider API type" hint="API type, endpoint and billing selectors cannot be changed after saving. Create another connection for another destination.">
-          <Select aria-label="Provider API type" value={provider} disabled={!!connection} onChange={e => setForm(x => ({ ...x, provider: e.target.value as SavedProviderKind, baseUrl: null, organization: null, project: null, apiKey: "" }))}>
+          <Select aria-label="Provider API type" value={provider} disabled={!!connection} onChange={e => setForm(x => ({ ...x, provider: e.target.value as SavedProviderKind, baseUrl: e.target.value === "openrouter" ? OPENROUTER_BASE_URL : null, organization: null, project: null, apiKey: "" }))}>
             {SAVED_PROVIDER_KINDS.map(kind => <option key={kind} value={kind}>{SAVED_PROVIDER_LABELS[kind]}</option>)}
           </Select>
         </Field>
-        <Field label="API base URL" hint={urlError ?? (provider === "openai-compatible" ? "Required API base URL, for example https://provider.example/v1. The application adds /chat/completions and /models." : "Leave blank for OpenAI. Enter a base URL without /responses, /chat/completions or /models.")}>
-          <Input aria-label="Provider endpoint" aria-invalid={!!urlError} value={form.baseUrl ?? ""} onChange={e => set("baseUrl", e.target.value)} disabled={!!connection} placeholder={provider === "openai" ? "https://api.openai.com/v1 (default)" : "https://provider.example/v1"} />
+        <Field label="API base URL" hint={urlError ?? (provider === "openrouter" ? `OpenRouter Chat Completions. Use ${OPENROUTER_BASE_URL}; the application adds /chat/completions.` : provider === "openai-compatible" ? "Required API base URL, for example https://provider.example/v1. The application adds /chat/completions and /models." : "Leave blank for OpenAI. Enter a base URL without /responses, /chat/completions or /models.")}>
+          <Input aria-label="Provider endpoint" aria-invalid={!!urlError} value={form.baseUrl ?? ""} onChange={e => set("baseUrl", e.target.value)} disabled={!!connection} placeholder={provider === "openrouter" ? OPENROUTER_BASE_URL : provider === "openai" ? "https://api.openai.com/v1 (default)" : "https://provider.example/v1"} />
         </Field>
+        {urlError && <p role="alert" className="text-sm text-danger">{urlError}{connection ? " This saved destination is locked. Create a separate provider connection with the correct API type and base URL, then select it on the model." : ""}</p>}
         {provider === "openai" && <>
         <Field label="Organization ID"><Input aria-label="Provider organization" value={form.organization ?? ""} onChange={e => set("organization", e.target.value)} disabled={!!connection} /></Field>
         <Field label="Project ID"><Input aria-label="Provider project" value={form.project ?? ""} onChange={e => set("project", e.target.value)} disabled={!!connection} /></Field>
@@ -64,13 +65,13 @@ export function ProviderConnectionsAdmin({ connections }: { connections: Provide
   return <section className="mb-8 space-y-4" aria-labelledby="saved-providers-heading">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 id="saved-providers-heading" className="text-lg font-semibold">Saved provider credentials</h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted">Save named OpenAI Responses or OpenAI-compatible Chat Completions credentials for reuse across models. Choose them in Add model connection → Saved provider connection. Only administrators manage credentials; model audiences remain separate. Personal ChatGPT plans and Hermes backends keep their own authentication.</p></div>
+        <p className="mt-1 max-w-2xl text-sm text-muted">Save named OpenAI Responses, OpenRouter or OpenAI-compatible Chat Completions credentials for reuse across models. Choose them in Add model connection → Saved provider connection. Only administrators manage credentials; model audiences remain separate. Personal ChatGPT plans and Hermes backends keep their own authentication.</p></div>
       <Button onClick={() => setEdit("new")}>Add provider connection</Button>
     </div>
     {connections.map(c => <div key={c.id} className="rounded-xl border border-border p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1"><button className="break-words font-medium underline" onClick={() => setEdit(c)}>{c.name}</button>{!c.enabled && <span className="ml-2 text-sm text-danger">Disabled</span>}
-          <p className="break-words text-xs text-muted">{SAVED_PROVIDER_LABELS[c.provider]} · Created by {c.creatorName ?? "a former administrator"} · {c.baseUrl ?? "OpenAI default endpoint"}{c.provider === "openai" && <> · Organization: {c.organization ?? "key default"} · Project: {c.project ?? "key default"}</>}</p></div>
+          <p className="break-words text-xs text-muted">{SAVED_PROVIDER_LABELS[c.provider]} · Created by {c.creatorName ?? "a former administrator"} · {c.baseUrl ?? (c.provider === "openrouter" ? OPENROUTER_BASE_URL : "OpenAI default endpoint")}{c.provider === "openai" && <> · Organization: {c.organization ?? "key default"} · Project: {c.project ?? "key default"}</>}</p></div>
         <Button variant="outline" disabled={c.models.length > 0} title={c.models.length ? "Reassign or delete dependent models first" : undefined} onClick={async () => {
           if (!confirm(`Delete provider connection ${c.name}?`)) return;
           try { await deleteProviderConnection(c.id); router.refresh(); } catch { toast.error("Could not delete. Check dependent models and administrator access."); }
@@ -78,7 +79,7 @@ export function ProviderConnectionsAdmin({ connections }: { connections: Provide
       </div>
       <p className="mt-2 text-sm">Used by: {c.models.map(m => m.name).join(", ") || "No models yet"}</p>
     </div>)}
-    {!connections.length && <p className="text-sm text-muted">No reusable credentials yet. Add one here, or migrate an existing OpenAI or OpenAI-compatible model using its edit dialog.</p>}
+    {!connections.length && <p className="text-sm text-muted">No reusable credentials yet. Add one here, or migrate an existing OpenAI, OpenRouter or OpenAI-compatible model using its edit dialog.</p>}
     {edit && <ConnectionEditor key={edit === "new" ? "new" : edit.id} connection={edit === "new" ? null : edit} onClose={() => setEdit(null)} />}
   </section>;
 }

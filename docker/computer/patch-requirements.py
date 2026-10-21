@@ -19,12 +19,15 @@ SIWC_SOCKET = "/codex-home/.collective-codex-siwc.sock"
 def validate_siwc_requirements(text: str) -> None:
     try:
         config = tomllib.loads(text)
-        provider_name = config.get("model_provider")
-        provider = config.get("model_providers", {}).get(provider_name, {})
+        # The trusted supervisor selects native ChatGPT or SIWC at runtime.
+        # Validate the SIWC definition even when native mode is the default.
+        provider_name = config.get("model_provider", "openai")
+        provider = config.get("model_providers", {}).get("openai_chatgpt_plan", {})
         permissions = config.get("permissions", {}).get("filesystem", {})
         shell = config.get("shell_environment_policy", {})
         valid = (
-            provider.get("env_key") == "ACCESS_TOKEN"
+            provider_name in ("openai", "openai_chatgpt_plan")
+            and provider.get("env_key") == "ACCESS_TOKEN"
             and provider.get("base_url") == "https://api.openai.com/v1"
             and provider.get("wire_api") == "responses"
             and provider.get("requires_openai_auth") is False

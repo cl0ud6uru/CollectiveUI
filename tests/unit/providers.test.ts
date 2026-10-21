@@ -74,6 +74,7 @@ function app(provider: AiApp["provider"], over: Partial<AiApp> & { secret?: stri
     systemPrompt: null,
     temperature: null,
     maxTokens: null,
+    contextWindowTokens: null,
     supportsVision: false,
     supportsTools: true,
     embeddingModel: null,
@@ -240,6 +241,13 @@ describe("OpenAI-compatible stays byte-identical", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     setUsageWriter(null);
+  });
+
+  it("sends OpenRouter IDs to Chat Completions with the fixed base URL and explicit key", async () => {
+    const a = app("openrouter", { secret: "synthetic-openrouter", model: "vendor/model", baseUrl: null });
+    await run(a);
+    expect(calls.at(-1)).toMatchObject({ url: "https://openrouter.ai/api/v1/chat/completions", headers: { authorization: "Bearer synthetic-openrouter" } });
+    expect(JSON.parse(calls.at(-1)!.body)).toMatchObject({ model: "vendor/model", messages: [{ role: "user", content: "hi" }] });
   });
 
   it("sends the same request as the original single provider", async () => {

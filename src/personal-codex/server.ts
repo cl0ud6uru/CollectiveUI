@@ -33,12 +33,12 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
   const loginMarker = (owner: string) => join(dirname(socketPath), `codex-login-${runtimeKey(owner)}.pending`);
   const clearMarker = (owner: string) => unlink(loginMarker(owner)).catch(() => {});
   const hasMarker = async (owner: string) => !!await lstat(loginMarker(owner)).catch(() => null);
-  const sessions = new Map<string, { client: CodexClient; login?: ReturnType<typeof pendingLogin.parse>; until?: number; completed: Set<string>; verified: boolean }>();
+  const sessions = new Map<string, { client: CodexClient; login?: ReturnType<typeof pendingLogin.parse>; until?: number; completed: Map<string, { success: boolean; receivedAt: number }>; expiry?: ReturnType<typeof setTimeout>; outcome?: 'expired' | 'failed'; verified: boolean }>();
   // Non-secret fingerprint is deliberately ephemeral; a broker restart requires a fresh sync.
   const tokenBindings = new Map<string, string>();
   const tokenGenerations = new Map<string, number>();
   const ownerBridges = new Map<string, Set<WebSocket>>();
-  const usesSIWC = () => driver instanceof SbxPersonalCodexDriver || driver.config.siwcSandboxVerified === true;
+  const usesSIWC = () => driver.config.authenticationMode === 'siwc' || driver instanceof SbxPersonalCodexDriver;
   const invalidateTokenBinding = (owner: string) => {
     tokenBindings.delete(owner);
     tokenGenerations.set(owner, (tokenGenerations.get(owner) ?? 0) + 1);
@@ -115,15 +115,21 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
         try { client = await CodexClient.connect(runtime(owner)); break; } catch { await new Promise(r => setTimeout(r, 200)); }
       }
       if (!client) throw new Error('Runtime did not become ready');
-      session = { client, completed: new Set(), verified: false }; sessions.set(owner, session);
-      client.onFailure(() => { if (sessions.get(owner)?.client === client) sessions.delete(owner); });
+      if (!usesSIWC()) {
+        try {
+          // Refuse adopting a surviving companion process as a native credential runtime.
+          z.object({ config: z.object({ model_provider: z.literal('openai'), forced_login_method: z.literal('chatgpt') }) })
+            .parse(await client.request('config/read', { includeLayers: false, cwd: '/home/agent/workspace' }));
+        } catch { client.close(); throw new Error('Native ChatGPT provider configuration is unavailable.'); }
+      }
+      session = { client, completed: new Map(), verified: false }; sessions.set(owner, session);
+      client.onFailure(() => { if (sessions.get(owner)?.client === client) { clearTimeout(session?.expiry); sessions.delete(owner); } });
       client.onNotification(e => {
         if (e.method !== 'account/login/completed') return;
         const completed = z.object({ loginId: z.string().nullable(), success: z.boolean() }).safeParse(e.params);
         if (!completed.success || !completed.data.loginId) return;
-        session!.completed.add(completed.data.loginId);
-        if (session!.completed.size > 32) session!.completed.delete(session!.completed.values().next().value!);
-        if (session!.login?.loginId === completed.data.loginId) { session!.login = undefined; void clearMarker(owner); }
+        session!.completed.set(completed.data.loginId, { success: completed.data.success, receivedAt: Date.now() });
+        if (session!.completed.size > 32) session!.completed.delete(session!.completed.keys().next().value!);
       });
     }
     if (requireExecution && !session.verified) {
@@ -136,25 +142,34 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
       } catch { throw new Error('Native sandbox probe failed; runtime cannot be connected.'); }
       session.verified = true;
     }
-    if (session.until && session.until <= Date.now() && session.login) {
-      await session.client.request('account/login/cancel', { loginId: session.login.loginId }); session.login = undefined; await clearMarker(owner);
+    const completion = session.login && session.completed.get(session.login.loginId);
+    if (completion && (!session.until || completion.receivedAt <= session.until)) {
+      session.outcome = completion.success ? undefined : 'failed';
+      clearTimeout(session.expiry); session.expiry = undefined;
+      session.login = undefined; session.until = undefined; await clearMarker(owner);
+    } else if (session.until && session.until <= Date.now() && session.login) {
+      await session.client.request('account/login/cancel', { loginId: session.login.loginId });
+      // Revoke a grant that may complete as expiry cancellation is acknowledged.
+      await session.client.request('account/logout', {});
+      clearTimeout(session.expiry); session.expiry = undefined;
+      session.login = undefined; session.until = undefined; session.outcome = 'expired'; await clearMarker(owner);
     }
     return session;
   }
-  async function status(owner: string): Promise<BrokerStatus> {
+  async function status(owner: string, refreshToken = false): Promise<BrokerStatus> {
     const c = await driver.inspect(owner);
     // An ephemeral binding cannot remain trusted after a runtime has stopped or disappeared.
     if (!c || !c.State.Running) invalidateTokenBinding(owner);
-    const capability = driver.config.siwcSandboxVerified ? { siwc: await siwcStatus(owner) } : {};
+    const capability = usesSIWC() ? { siwc: await siwcStatus(owner) } : {};
     if (!c) return { state: 'not_started', ...capability };
     if (!c.State.Running) return { state: 'stopped', ...capability };
     // In SIWC mode, runtime readiness is the credential binding, not native account/read fields.
-    if (driver.config.siwcSandboxVerified) return { state: 'running', ...capability };
+    if (usesSIWC()) return { state: 'running', ...capability };
     const session = await accountClient(owner, false);
     // Explicit projection strips all unexpected fields; never relay raw errors or auth material.
-    const account = nativeAccount.parse(await session.client.request('account/read', { refreshToken: false }));
+    const account = nativeAccount.parse(await session.client.request('account/read', { refreshToken }));
     if (!session.login && account.account && account.workspaceRouting) await clearMarker(owner);
-    return { state: 'running', account, ...(session.login ? { login: session.login } : await hasMarker(owner) ? { loginUncertain: true } : {}), ...capability };
+    return { state: 'running', account, ...(session.login ? { login: { ...session.login, expiresAt: new Date(session.until!).toISOString() } } : await hasMarker(owner) ? { loginUncertain: true } : session.outcome ? { loginOutcome: session.outcome } : {}), ...capability };
   }
   const server = createServer((req, res) => {
     const reply = (value: unknown, code = 200) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -210,8 +225,8 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
         const chunks: Buffer[] = []; let size = 0;
         for await (const chunk of req) { size += chunk.length; if (size > 17_000) throw new Error('Invalid credential request'); chunks.push(Buffer.from(chunk)); }
         sync = tokenSyncRequest.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      } else if (!preparing && req.headers['content-length'] && req.headers['content-length'] !== '0') return reply({ error: 'Unexpected body' }, 400);
-      if (!(action === 'status' && req.method === 'GET') && !(['prepare', 'connect', 'cancel', 'disconnect', 'start', 'sync-token'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
+      } else if (!preparing && (req.headers['transfer-encoding'] || req.headers['content-length'] && req.headers['content-length'] !== '0')) return reply({ error: 'Unexpected body' }, 400);
+      if (!(action === 'status' && req.method === 'GET') && !(['prepare', 'connect', 'cancel', 'disconnect', 'start', 'refresh', 'sync-token'].includes(action ?? '') && req.method === 'POST')) return reply({ error: 'Unknown action' }, 404);
       const prior = queue.get(owner) ?? Promise.resolve();
       const operation = async () => {
         if (action === 'prepare' && consent) {
@@ -219,7 +234,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
           const readiness = await enrollmentReadiness(dockerDriver, owner);
           if (readiness.state !== 'ready') return readiness;
           // Preparation is infrastructure-only: an existing trusted connection is idempotent.
-          if (dockerDriver.admitted(owner) && tokenBindings.has(owner) && readiness.runtimeState === 'running') return readiness;
+          if (dockerDriver.admitted(owner) && (!usesSIWC() || tokenBindings.has(owner)) && readiness.runtimeState === 'running') return readiness;
           invalidateTokenBinding(owner);
           await enrollment.record(owner, consent);
           dockerDriver.admit(owner);
@@ -229,7 +244,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
           try {
             return await computer.agentOperation(owner, async () => {
               entered = true;
-              try { await driver.ensure(owner); await driver.clearToken(owner); }
+              try { await driver.ensure(owner); if (usesSIWC()) await driver.clearToken(owner); }
               catch {
                 await enrollment.rollback(owner);
                 throw new Error('Runtime preparation unconfirmed');
@@ -260,18 +275,18 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
             await clearMarker(owner);
             return status(owner);
           }
-          if (!current || (!current.State.Running && driver.config.siwcSandboxVerified)) { await clearMarker(owner); return status(owner); }
+          if (!current || (!current.State.Running && usesSIWC())) { await clearMarker(owner); return status(owner); }
           // Clear retained SIWC tokens even if admission was disabled since the last synchronization.
           // SIWC has no native account identity; clearing must never depend on account/logout.
-          try {
-            await driver.startRetained(owner);
-            await driver.clearToken(owner);
-          } finally {
-            sessions.get(owner)?.client.close(); sessions.delete(owner);
+          await driver.startRetained(owner);
+          if (usesSIWC()) {
+            try { await driver.clearToken(owner); }
+            finally { sessions.get(owner)?.client.close(); sessions.delete(owner); }
+            await clearMarker(owner); return status(owner);
           }
-          if (driver.config.siwcSandboxVerified) { await clearMarker(owner); return status(owner); }
         }
         if (action === 'connect') {
+          if (usesSIWC()) throw new Error('Native sign-in is unavailable in companion mode.');
           const current = await driver.inspect(owner);
           if (!current || !current.State.Running) invalidateTokenBinding(owner);
           await driver.ensure(owner);
@@ -282,6 +297,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
           await driver.startRetained(owner);
         }
         if (action === 'sync-token' && sync) {
+          if (!usesSIWC() || !await siwcVerified(owner)) throw new Error('Token synchronization is unavailable.');
           if (sync.credentialBinding !== tokenFingerprint(sync.accessToken)) throw new Error('Credential binding is invalid.');
           invalidateTokenBinding(owner);
           await driver.ensure(owner);
@@ -297,19 +313,40 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
             if (await hasMarker(owner)) throw new Error('Previous login dispatch is uncertain. Cancel before retrying.');
             // Non-secret durable uncertainty fence precedes native login. Lost replies are not replayed.
             await writeFile(loginMarker(owner), 'pending native device sign-in\n', { mode: 0o600, flag: 'wx' });
+            session.outcome = undefined;
             session.login = pendingLogin.parse(await session.client.request('account/login/start', { type: 'chatgptDeviceCode' }, 15000));
             session.until = Date.now() + 15 * 60 * 1000;
-            if (session.completed.has(session.login.loginId)) { session.login = undefined; await clearMarker(owner); }
+            if (session.completed.has(session.login.loginId)) {
+              session.outcome = session.completed.get(session.login.loginId)!.success ? undefined : 'failed';
+              session.login = undefined; session.until = undefined; await clearMarker(owner);
+            } else {
+              const loginId = session.login.loginId;
+              session.expiry = setTimeout(() => {
+                const prior = queue.get(owner) ?? Promise.resolve();
+                const expiration = prior.catch(() => {}).then(async () => {
+                  if (sessions.get(owner) !== session || session.login?.loginId !== loginId) return;
+                  await computer.agentOperation(owner, () => accountClient(owner, false));
+                });
+                queue.set(owner, expiration);
+                void expiration.catch(() => {}).finally(() => { if (queue.get(owner) === expiration) queue.delete(owner); });
+              }, 15 * 60 * 1000);
+              session.expiry.unref();
+            }
           }
         } else if (action === 'cancel' || action === 'disconnect') {
+          const retained = await driver.inspect(owner);
+          if (!retained) { await clearMarker(owner); return status(owner); }
+          if (!retained.State.Running) await driver.startRetained(owner);
           const session = await accountClient(owner, false);
           if (session.login) { await session.client.request('account/login/cancel', { loginId: session.login.loginId }); session.login = undefined; }
           // Explicit cancel/disconnect revokes any grant completed concurrently with cancellation.
           // Completion may already have removed both the in-memory login and durable marker.
           await session.client.request('account/logout', {});
+          clearTimeout(session.expiry); session.expiry = undefined;
+          session.until = undefined; session.outcome = undefined;
           await clearMarker(owner);
         }
-        return status(owner);
+        return status(owner, action === 'refresh');
       };
       const next = prior.catch(() => {}).then(async () => {
         // Invalidate before waiting for an asynchronous computer bridge or account
@@ -319,7 +356,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
         // the computer fence, then holds the fence around all runtime mutations.
         if (action === 'prepare') return operation();
         // SIWC status reads only host metadata and must remain available during human takeover.
-        if (action === 'status' && driver.config.siwcSandboxVerified) return status(owner);
+        if (action === 'status' && usesSIWC()) return status(owner);
         return computer.agentOperation(owner, operation, { revokePaused: action === 'disconnect' });
       });
       queue.set(owner, next);
@@ -329,7 +366,7 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
         ? { code: error.code, error: error.message }
         : { code: 'operation_failed', error: 'The sandbox operation could not be confirmed. Refresh its status before retrying.' },
       error instanceof SandboxAdminError ? error.status : 503);
-      return reply({ error: isTokenSync && !driver.config.siwcSandboxVerified
+      return reply({ error: isTokenSync && (!usesSIWC() || !driver.config.siwcSandboxVerified)
       ? 'Personal Codex token sharing is unavailable until an operator verifies the stock sandbox shell environment and /proc isolation proof.'
       : 'Personal Codex operation failed. Reload before retrying. Runtime data is retained.' }, 503);
     });
@@ -377,5 +414,5 @@ export async function startPersonalBroker(driver: PersonalCodexRuntimeDriver, en
     ? await driver.adminKnownOwners() : driver.admittedOwners?.() ?? driver.config.owners);
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
   await chmod(socketPath, 0o660);
-  return { server, close: async () => { for (const session of sessions.values()) session.client.close(); for (const ws of wss.clients) ws.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); } };
+  return { server, close: async () => { for (const session of sessions.values()) { clearTimeout(session.expiry); session.client.close(); } for (const ws of wss.clients) ws.terminate(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }

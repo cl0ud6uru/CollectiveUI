@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import reportedEnvironment from '../fixtures/personal-codex/docker-29.1.3-inspect-env.json';
 const policy = vi.hoisted(() => ({ load: vi.fn() }));
 vi.mock('@/personal-codex/sandbox-policy.mjs', () => ({ sandboxPolicy: policy.load }));
 beforeEach(() => { policy.load.mockReset().mockResolvedValue({ create: ['no-new-privileges:true'], inspect: ['no-new-privileges:true'] }); });
-import { BrokerConfig, PersonalCodexDriver, runtimeKey } from '@/personal-codex/docker';
+import { BrokerConfig, PersonalCodexDriver, dockerEnv, runtimeKey } from '@/personal-codex/docker';
 
 const OWNER = 'member-101';
 const OTHER_OWNER = 'member-202';
@@ -114,17 +116,20 @@ class FakeDockerDriver extends PersonalCodexDriver {
       const owner = this.config.owners.find(candidate => this.name(candidate) === name)!;
       if (owner === OWNER) {
         this.container = containerFixture(owner);
+        this.container.Config.Env = [...reportedEnvironment];
+        this.container.State.Running = false;
         this.container.Config.Image = this.config.image;
         if (this.config.sandboxProfile) {
           this.container.AppArmorProfile = this.config.sandboxProfile;
           this.container.HostConfig.SecurityOpt = ['no-new-privileges:true', 'apparmor=collectiveui-sandbox-v1', 'seccomp={"defaultAction":"SCMP_ACT_ERRNO"}'];
         }
       }
-      else this.otherContainers.set(name, { ...containerFixture(owner), Config: { ...containerFixture(owner).Config, Image: this.config.image } });
+      else this.otherContainers.set(name, { ...containerFixture(owner), State: { Running: false }, Config: { ...containerFixture(owner).Config, Image: this.config.image, Env: [...reportedEnvironment] } });
       return 'container-id';
     }
     if (args[0] === 'start') {
-      if (this.container) this.container.State.Running = true;
+      const container = args[1] === this.name(OWNER) ? this.container : this.otherContainers.get(args[1]);
+      if (container) container.State.Running = true;
       return '';
     }
     if (args[0] === 'inspect') {
@@ -155,6 +160,82 @@ class FakeDockerDriver extends PersonalCodexDriver {
 const unavailable = /configuration or storage needs operator reconciliation/i;
 
 describe('personal Codex Docker isolation', () => {
+  it.each([[], ['NODE_VERSION'], ['YARN_VERSION'], ['NODE_VERSION', 'YARN_VERSION']].map(markers => ({ markers })))('accepts only the optional known unset markers: $markers', async ({ markers }) => {
+    const driver = new FakeDockerDriver();
+    driver.container = containerFixture();
+    driver.container.Config.Env.push(...markers);
+    driver.container.State.Running = false;
+    driver.seedVolumes();
+    expect((await driver.inspect(OWNER))?.State.Running).toBe(false);
+    await driver.startRetained(OWNER);
+    expect(driver.calls.filter(args => args[0] === 'start')).toEqual([['start', driver.name(OWNER)]]);
+    expect(driver.calls.some(args => args[0] === 'create')).toBe(false);
+    expect(dockerEnv).not.toHaveProperty('NODE_VERSION');
+    expect(dockerEnv).not.toHaveProperty('YARN_VERSION');
+    driver.expectNoDestructiveOrExpansiveDockerCalls();
+  });
+
+  it('replays the reported Docker 29.1.3 environment through create, inspect and retained recovery', async () => {
+    const driver = new FakeDockerDriver();
+    await driver.ensure(OWNER);
+    expect(driver.container?.Config.Env).toEqual(reportedEnvironment);
+    expect(driver.calls.filter(args => args[0] === 'start')).toEqual([['start', driver.name(OWNER)]]);
+    const reads = driver.calls.filter(args => args[0] === 'inspect').length;
+    await driver.ensure(OWNER);
+    expect(driver.calls.filter(args => args[0] === 'inspect').length).toBeGreaterThan(reads);
+    expect(driver.calls.filter(args => args[0] === 'create')).toHaveLength(1);
+    expect(driver.calls.filter(args => args[0] === 'start')).toHaveLength(1);
+    driver.expectNoDestructiveOrExpansiveDockerCalls();
+  });
+
+  it.skipIf(!process.env.PERSONAL_CODEX_INSPECT_ENV_FIXTURE)('validates a real Docker create inspection environment', async () => {
+    const driver = new FakeDockerDriver();
+    driver.container = containerFixture();
+    driver.container.Config.Env = JSON.parse(readFileSync(process.env.PERSONAL_CODEX_INSPECT_ENV_FIXTURE!, 'utf8'));
+    driver.container.State.Running = false;
+    driver.seedVolumes();
+    expect((await driver.inspect(OWNER))?.State.Running).toBe(false);
+    await driver.ensure(OWNER);
+    expect(driver.calls.filter(args => args[0] === 'start')).toEqual([['start', driver.name(OWNER)]]);
+    expect(driver.calls.some(args => args[0] === 'create')).toBe(false);
+    driver.expectNoDestructiveOrExpansiveDockerCalls();
+  });
+
+  it.each([
+    'NODE_VERSION=22.0.0', 'YARN_VERSION=1.22.0', 'NODE_VERSION=', 'YARN_VERSION=',
+    'EXTRA', 'EXTRA=value', 'ACCESS_TOKEN', 'ACCESS_TOKEN=synthetic-token',
+    'OPENAI_API_KEY=synthetic-key', 'NODE_VERSION', 'YARN_VERSION',
+    'PATH=/usr/local/bin:/usr/bin:/bin',
+  ])('rejects extra/assigned/duplicate environment entry %s even alongside known unset markers', async entry => {
+    const driver = new FakeDockerDriver();
+    driver.container = containerFixture();
+    driver.container.Config.Env = [...reportedEnvironment, entry];
+    driver.container.State.Running = false;
+    driver.seedVolumes();
+    await expect(driver.inspect(OWNER)).rejects.toThrow(unavailable);
+    await expect(driver.ensure(OWNER)).rejects.toThrow(unavailable);
+    await expect(driver.startRetained(OWNER)).rejects.toThrow(unavailable);
+    expect(driver.calls.some(args => args[0] === 'create' || args[0] === 'start')).toBe(false);
+    driver.expectNoDestructiveOrExpansiveDockerCalls();
+  });
+
+  it.each(reportedEnvironment.filter(entry => entry.includes('=')))('still requires the exact assigned value %s', async entry => {
+    for (const environment of [reportedEnvironment.filter(value => value !== entry), reportedEnvironment.map(value => value === entry ? `${entry.split('=')[0]}=unexpected` : value)]) {
+      const driver = new FakeDockerDriver();
+      driver.container = containerFixture();
+      driver.container.Config.Env = environment;
+      driver.seedVolumes();
+      await expect(driver.inspect(OWNER)).rejects.toThrow(unavailable);
+    }
+  });
+
+  it.each([null, {}, [null]])('rejects malformed inspection environments: %j', async environment => {
+    const driver = new FakeDockerDriver();
+    driver.container = containerFixture();
+    driver.container.Config.Env = environment as unknown as string[];
+    driver.seedVolumes();
+    await expect(driver.inspect(OWNER)).rejects.toThrow(unavailable);
+  });
   it('uses the complete local image ID and validates both the image and created container identity', async () => {
     const driver = new FakeDockerDriver([OWNER], undefined, LOCAL_IMAGE);
     await driver.ensure(OWNER);

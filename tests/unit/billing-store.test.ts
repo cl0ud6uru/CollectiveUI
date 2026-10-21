@@ -28,6 +28,18 @@ beforeAll(async () => {
 }, 45000);
 afterAll(async () => { await client.close(); });
 describe('billing storage and authorization on real SQL', () => {
+  it('keeps the server cooldown authoritative immediately before and exactly at 60 seconds', async () => {
+    const one = await saveBillingAccount(admin, { name: 'Boundary', organization: 'org-boundary', enabled: true, showHealthBar: false, adminKey: 'sk-admin-synthetic-boundary' });
+    const fetcher = vi.fn(mockProvider);
+    await refreshBillingAccount(admin, one.id, now, fetcher as typeof fetch);
+    const calls = fetcher.mock.calls.length;
+    await expect(refreshBillingAccount(admin, one.id, new Date(now.getTime() + 59_999), fetcher as typeof fetch)).rejects.toMatchObject({ status: 429 });
+    expect(fetcher).toHaveBeenCalledTimes(calls);
+    const boundary = new Date(now.getTime() + 60_000);
+    const refreshed = await refreshBillingAccount(admin, one.id, boundary, fetcher as typeof fetch);
+    expect(refreshed.find(row => row.id === one.id)?.lastAttemptAt).toBe(boundary.toISOString());
+    expect(fetcher.mock.calls.length).toBeGreaterThan(calls);
+  });
   it('upgrades historical activity without reassigning or deleting subscription tokens; DB rejects dollar leakage', async () => {
     expect((await client.query('SELECT id, input_tokens, cost_micros, search_tool_cost_estimate_micros, billing_source FROM usage_events')).rows).toEqual([{id:'prior-plan',input_tokens:77,cost_micros:null,search_tool_cost_estimate_micros:null,billing_source:'chatgpt_plan'}]);
     await expect(client.exec("UPDATE usage_events SET cost_micros=12 WHERE id='prior-plan'")).rejects.toThrow();
@@ -41,9 +53,10 @@ describe('billing storage and authorization on real SQL', () => {
     const one=await saveBillingAccount(admin,{name:'One',organization:'org-one',enabled:false,showHealthBar:false,adminKey:'sk-admin-fixture-one'});
     const two=await saveBillingAccount(admin,{name:'Two',organization:'org-two',enabled:false,showHealthBar:false,adminKey:'sk-admin-fixture-two'});
     const rows=await client.query<{id:string;organization:string;admin_key_enc:string}>('SELECT * FROM provider_billing_accounts');
-    expect(rows.rows[0].admin_key_enc).not.toContain('sk-admin-fixture');
-    expect(decrypt(rows.rows[0].admin_key_enc,billingAad(one.id,'org-one'))).toBe('sk-admin-fixture-one');
-    expect(()=>decrypt(rows.rows[0].admin_key_enc,billingAad(two.id,'org-two'))).toThrow();
+    const encrypted = rows.rows.find(row => row.id === one.id)!.admin_key_enc;
+    expect(encrypted).not.toContain('sk-admin-fixture');
+    expect(decrypt(encrypted,billingAad(one.id,'org-one'))).toBe('sk-admin-fixture-one');
+    expect(()=>decrypt(encrypted,billingAad(two.id,'org-two'))).toThrow();
     expect(()=>decrypt(encrypt('fixture','provider_connections.secret_enc|other'),billingAad(one.id,'org-one'))).toThrow();
     expect(JSON.stringify(await listBillingAccounts(admin))).not.toMatch(/adminKey|admin_key|sk-admin|v2\./);
     await expect(saveBillingAccount(admin,{id:one.id,name:'One',organization:'org-two',enabled:false,showHealthBar:false})).rejects.toMatchObject({status:400});
@@ -57,8 +70,13 @@ describe('billing storage and authorization on real SQL', () => {
     await expect(refreshBillingAccount(admin,one.id,now,mockProvider as typeof fetch)).rejects.toMatchObject({status:429});
     const failed=await refreshBillingAccount(admin,one.id,new Date(now.getTime()+61000),(async()=>Response.json({error:'sk-admin-fixture-secret'}, {status:403})) as typeof fetch);
     expect(failed.find(a=>a.id===one.id)?.snapshot).toEqual(snapshot);expect(failed.find(a=>a.id===one.id)?.lastError).toContain('permission denied');expect(JSON.stringify(failed)).not.toContain('sk-admin-fixture-secret');
+    const recoveredAt = new Date(now.getTime()+122000);
+    const recovered = (await refreshBillingAccount(admin,one.id,recoveredAt,(async input => String(input).includes('/costs?') ? mockProvider(input) : Response.json({}, {status:404})) as typeof fetch)).find(a=>a.id===one.id)!;
+    expect(recovered.lastError).toBeNull();
+    expect(recovered.snapshot?.refreshedAt).toBe(recoveredAt.toISOString());
+    expect(recovered.snapshot?.organizationLimit).toMatchObject({status:'unavailable',httpStatus:404});
     let changed=false;
-    await refreshBillingAccount(admin,one.id,new Date(now.getTime()+122000),(async input=>{
+    await refreshBillingAccount(admin,one.id,new Date(now.getTime()+183000),(async input=>{
       if(!changed){changed=true;await saveBillingAccount(admin,{id:one.id,name:one.name,organization:one.organization,enabled:false,showHealthBar:false,adminKey:'sk-admin-fixture-new'});}
       return mockProvider(input);
     }) as typeof fetch);

@@ -9,6 +9,7 @@ import { botTemplates, users } from "@/db/schema";
 import { BUILTIN_TOOLS } from "@/lib/agent/types";
 import { cronToText } from "@/lib/cron-text";
 import { requirePagePrincipal } from "@/lib/session";
+import { isInstalledArchitect } from "@/lib/bots/architect-store";
 
 /** Template preview (sign-in required, so links stay inside the organization). */
 export default async function TemplatePage(props: PageProps<"/templates/[token]">) {
@@ -19,7 +20,8 @@ export default async function TemplatePage(props: PageProps<"/templates/[token]"
     .from(botTemplates)
     .innerJoin(users, eq(users.id, botTemplates.createdBy))
     .where(and(eq(botTemplates.id, token), isNull(botTemplates.revokedAt)));
-  if (!t) notFound();
+  // The Architect is admin-only; an older link to it never shows its profile.
+  if (!t || await isInstalledArchitect(t.t.botId)) notFound();
   const s = t.t.snapshot;
   const toolLabel = (k: string) => BUILTIN_TOOLS.find((b) => b.key === k)?.label ?? (k.startsWith("mcp:") ? "Company connector (MCP)" : k);
 

@@ -411,8 +411,71 @@
     {
       "idx": 58,
       "version": "7",
-      "when": 1792007643390,
-      "tag": "0058_event_triggers",
+      "when": 1792030249732,
+      "tag": "0058_openrouter_models",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792051010059,
+      "tag": "0059_agent_context_budget",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1792053407331,
+      "tag": "0060_native_run_budgets",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792054836867,
+      "tag": "0061_pet_generation_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1792059355171,
+      "tag": "0062_remote_hermes_hub_ownership",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792059357800,
+      "tag": "0063_remote_hermes_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1792060395448,
+      "tag": "0064_pet_generation_preview_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1792061535138,
+      "tag": "0065_architect_provider_connection_drafts",
+      "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1792062000000,
+      "tag": "0066_mcp_apps",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792616431932,
+      "tag": "0067_event_triggers",
       "breakpoints": true
     }
   ]

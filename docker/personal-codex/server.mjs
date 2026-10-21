@@ -140,16 +140,21 @@ const codexArgs = ['-c', 'projects={"/home/agent/workspace"={trust_level="untrus
   '-c', 'web_search="disabled"', '-c', 'features.shell_tool=true', '-c', 'features.multi_agent=false',
   '-c', 'features.multi_agent_v2=false', '-c', 'features.plugins=false', '-c', 'features.plugin_hooks=false',
   '-c', 'features.enable_mcp_apps=false', '-c', 'features.image_generation=false',
+  '-c', 'shell_environment_policy.inherit="none"', '-c', 'shell_environment_policy.filters.ACCESS_TOKEN="exclude"',
+  'app-server', '--listen', stdio || stdioToken ? 'stdio://' : 'ws://127.0.0.1:4500'];
+// An env-token provider is selected only for an explicitly synchronized SIWC token.
+// Without that token, stock Codex manages ChatGPT device credentials and refreshes.
+const siwcProviderArgs = [
   '-c', 'model_provider="openai_chatgpt_plan"', '-c', 'model_providers.openai_chatgpt_plan.name="ChatGPT plan"',
   '-c', 'model_providers.openai_chatgpt_plan.base_url="https://api.openai.com/v1"',
   '-c', 'model_providers.openai_chatgpt_plan.env_key="ACCESS_TOKEN"',
   '-c', 'model_providers.openai_chatgpt_plan.wire_api="responses"',
   '-c', 'model_providers.openai_chatgpt_plan.requires_openai_auth=false',
   '-c', 'model_providers.openai_chatgpt_plan.supports_websockets=false',
-  '-c', 'shell_environment_policy.inherit="none"', '-c', 'shell_environment_policy.filters.ACCESS_TOKEN="exclude"',
-  'app-server', '--listen', stdio || stdioToken ? 'stdio://' : 'ws://127.0.0.1:4500'];
+];
 let accessToken = initialToken?.accessToken;
 let child;
+const childCloses = new WeakMap();
 let restarting = false;
 let stopping = false;
 function childEnvironment() {
@@ -164,25 +169,28 @@ function childEnvironment() {
   };
 }
 function startAppServer() {
-  child = spawn('codex', codexArgs, {
+  const args = accessToken ? [...siwcProviderArgs, ...codexArgs] : ['-c', 'model_provider="openai"', '-c', 'forced_login_method="chatgpt"', ...codexArgs];
+  const current = spawn('codex', args, {
     stdio: stdio || stdioToken ? 'inherit' : 'ignore',
     env: childEnvironment(),
     // The desktop proxy owns an isolated process group around this wrapper and
     // every descendant; direct stock mode gives codex its own group for rotations.
     detached: process.platform !== 'win32' && !stdio && !stdioToken,
   });
-  child.once('error', () => { if (!stopping) process.exit(1); });
-  child.on('exit', code => { if (!restarting && !stopping) process.exit(code ?? 1); });
+  child = current;
+  childCloses.set(current, new Promise(resolve => current.once('close', resolve)));
+  current.once('error', () => { if (child === current && !stopping) process.exit(1); });
+  current.on('exit', code => { if (child === current && !restarting && !stopping) process.exit(code ?? 1); });
 }
-function signalChild(signal) {
-  if (!child) return;
+function signalChild(target, signal) {
+  if (!target) return;
   try {
     if (process.platform === 'win32' || stdio || stdioToken) {
-      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+      if (target.exitCode === null && target.signalCode === null) target.kill(signal);
     }
-    else process.kill(-child.pid, signal);
+    else process.kill(-target.pid, signal);
   }
-  catch (error) { if (error.code !== 'ESRCH') child.kill(signal); }
+  catch (error) { if (error.code !== 'ESRCH') target.kill(signal); }
 }
 async function processGroupMembers(pgid) {
   const entries = await readdir('/proc');
@@ -207,16 +215,18 @@ async function waitForGroupExit(target, timeoutMs) {
 async function stopChildTree() {
   const prior = child;
   if (!prior) return;
-  signalChild('SIGTERM');
+  signalChild(prior, 'SIGTERM');
   if (stdio || stdioToken || process.platform === 'win32') {
-    if (prior.exitCode === null && prior.signalCode === null)
-      await new Promise(resolve => prior.once('exit', resolve));
+    await childCloses.get(prior);
     return;
   }
   if (!(await waitForGroupExit(prior, 3500))) {
-    signalChild('SIGKILL');
+    signalChild(prior, 'SIGKILL');
     if (!(await waitForGroupExit(prior, 2000))) throw new Error('app-server process tree did not stop');
   }
+  // /proc can report a vanished group before Node delivers exit/close. Drain
+  // that child's lifecycle before the replacement starts and rotation ends.
+  await childCloses.get(prior);
 }
 async function replaceToken(nextToken) {
   restarting = true;
@@ -229,8 +239,8 @@ async function replaceToken(nextToken) {
 
 if (stdio || stdioToken) {
   startAppServer();
-  process.on('SIGTERM', () => { stopping = true; signalChild('SIGTERM'); });
-  process.on('SIGINT', () => { stopping = true; signalChild('SIGINT'); });
+  process.on('SIGTERM', () => { stopping = true; signalChild(child, 'SIGTERM'); });
+  process.on('SIGINT', () => { stopping = true; signalChild(child, 'SIGINT'); });
 } else {
   const tokenServer = createServer({ allowHalfOpen: true }, socket => {
     const chunks = [];
@@ -277,7 +287,7 @@ if (stdio || stdioToken) {
     if (stopping) return;
     stopping = true;
     tokenServer.close(() => { try { unlinkSync(TOKEN_SOCKET); } catch {} });
-    signalChild(signal);
+    signalChild(child, signal);
   };
   process.on('SIGTERM', () => { void stop('SIGTERM'); });
   process.on('SIGINT', () => { void stop('SIGINT'); });

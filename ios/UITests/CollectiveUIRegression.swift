@@ -292,18 +292,29 @@ final class CollectiveUIRegression: XCTestCase {
     }
 
     func testStatusRecoveryClearsTheErrorAndAttentionHeader() {
-        launch("home-bot-atlas", extra: ["--demo-stream-scenario", "recovery"])
+        launch("home-bot-atlas", extra: ["--demo-hermes-cancellation", "--demo-stream-scenario", "recovery"])
         enterDraft("Recover the offline Hermes fixture")
         tap(app.buttons["Send"])
         let check = app.buttons["Check message status"]
         XCTAssertTrue(check.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Needs attention") == true)
         app.textViews["chatComposer"].typeText("Next draft remains separate")
         XCTAssertFalse(app.buttons["Send"].isEnabled)
+        // History plus the software keyboard can put the recovery control below
+        // the viewport. Reveal it as a reader would; never tap an offscreen frame.
+        let transcript = app.scrollViews["chat.transcript"]
+        XCTAssertTrue(transcript.exists)
+        for _ in 0..<4 where !check.isHittable { transcript.swipeUp() }
+        let visible = expectation(for: NSPredicate { _, _ in
+            check.exists && check.isHittable && transcript.frame.contains(check.frame)
+        }, evaluatedWith: check)
+        wait(for: [visible], timeout: 5)
         capture("recovery-01-unconfirmed-error")
         tap(check)
         XCTAssertTrue(app.staticTexts["Recovered offline reply. Your message was saved once."].waitForExistence(timeout: 10))
         XCTAssertFalse(check.exists)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         XCTAssertFalse(app.staticTexts["Couldn't confirm the message status. Check again before sending another message."].exists)
         XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "Next draft remains separate")
@@ -357,9 +368,10 @@ final class CollectiveUIRegression: XCTestCase {
         capture("commands-02-result")
     }
 
-    func testUnconfirmedHermesCancellationStatusPreservesResetDraft() {
+    func testUnconfirmedHermesCancellationKeepsDraftWithoutStatusButton() {
         launch("home-bot-atlas", extra: ["--demo-hermes-cancellation"])
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "No files or prompt were sent")).firstMatch.exists)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         enterDraft("/reset")
         // Typing the initial slash opens the native command popover. Dismiss
         // that modal before interacting with the composer behind it.
@@ -371,25 +383,47 @@ final class CollectiveUIRegression: XCTestCase {
         let warning = app.staticTexts["Hermes cancellation is not confirmed. Use /stop to retry or /status to check before continuing. Your draft has been kept."]
         XCTAssertTrue(warning.waitForExistence(timeout: 10))
         XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
-        let check = app.buttons["Check Hermes status"]
-        let fullyVisible = NSPredicate { _, _ in
-            check.exists && check.isEnabled && self.app.scrollViews["chat.transcript"].frame.contains(check.frame)
-        }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
-            "The full status target must fit above the composer with the keyboard visible")
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
+        XCTAssertFalse(app.staticTexts["Chat status"].exists, "An error must not submit a status command automatically")
+        XCTAssertTrue(send.isEnabled)
         capture("hermes-cancellation-01-reset-kept")
-        XCTAssertTrue(check.isHittable)
-        XCTAssertGreaterThanOrEqual(check.frame.height, 44)
-        tap(check)
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(app.textViews["chatComposer"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
+        XCTAssertFalse(app.staticTexts["Chat status"].exists)
+    }
+
+    func testExplicitHermesStatusAndStreamingDoNotAddStatusButton() {
+        launch("home-bot-atlas", extra: ["--demo-hermes-cancellation", "--demo-stream-scenario", "long"])
+        enterDraft("/status")
+        tap(app.buttons["Close commands"])
+        XCTAssertFalse(app.staticTexts["Chat status"].exists)
+        tap(app.buttons["Send"])
         XCTAssertTrue(app.staticTexts["Portal reply: failed (stop requested)."].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Cancellation requested; upstream identity is not recorded yet. Retry /stop after the worker settles."].exists)
-        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "/reset")
-        XCTAssertFalse(warning.exists)
-        XCTAssertTrue(check.exists, "Status inspection stays available while cancellation remains unconfirmed")
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: fullyVisible, object: check)], timeout: 5), .completed,
-            "The status target remains fully visible after the result grows")
-        XCTAssertTrue(check.isEnabled)
+        XCTAssertEqual(app.textViews["chatComposer"].value as? String, "")
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
         capture("hermes-cancellation-02-unconfirmed-status")
+        enterDraft("How is home assistant looking today?")
+        tap(app.buttons["Send"])
+        let stop = app.buttons["Stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 10))
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Working") == true)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
+        XCTAssertTrue(app.buttons["Chat options"].exists)
+        XCTAssertTrue(app.buttons["Start voice"].exists)
+        capture("hermes-status-03-streaming-without-button")
+        tap(stop)
+        let stopped = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: stop)
+        wait(for: [stopped], timeout: 10)
+        XCTAssertTrue((app.buttons["Bot details"].value as? String)?.contains("Ready") == true)
+        // An empty, idle composer hides Send; typing a new draft reveals it.
+        enterDraft("Next request after stopping")
+        XCTAssertTrue(app.buttons["Send"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Send"].isEnabled)
+        XCTAssertFalse(app.buttons["Check Hermes status"].exists)
     }
 
     // Also run on the dedicated iPad after simctl ui content_size sets the largest
@@ -601,52 +635,26 @@ final class CollectiveUIRegression: XCTestCase {
         capture("visible-return-newline")
     }
 
-    func testSignInLabelContrastsWithItsFillInDarkTheme() {
-        assertSignInContrast(appearance: "dark")
+    func testOfflineSignInPreviewRemainsDisabledInDarkTheme() {
+        assertOfflineSignInPreview(appearance: "dark")
     }
 
-    func testSignInLabelContrastsWithItsFillInLightTheme() {
-        assertSignInContrast(appearance: "light")
+    func testOfflineSignInPreviewRemainsDisabledInLightTheme() {
+        assertOfflineSignInPreview(appearance: "light")
     }
 
-    private func assertSignInContrast(appearance: String) {
+    private func assertOfflineSignInPreview(appearance: String) {
         app.launchArguments = ["--demo", "--demo-screen", "signin", "--demo-appearance", appearance]
         app.launch()
         let button = app.buttons["Sign in"]
         XCTAssertTrue(button.waitForExistence(timeout: 10))
         XCTAssertTrue(button.isHittable)
+        XCTAssertEqual(button.label, "Sign in")
+        XCTAssertFalse(button.isEnabled, "Offline previews must never open browser authorization")
+        XCTAssertTrue(app.buttons["Change server"].isEnabled)
         settle(0.5)
         capture("signin-" + appearance)
-        assertContrastingLabel(in: button)
-    }
-
-    private func assertContrastingLabel(in button: XCUIElement) {
-        guard let cgImage = UIImage(data: app.screenshot().pngRepresentation)?.cgImage else {
-            return XCTFail("Couldn't inspect sign-in screenshot")
-        }
-        let width = cgImage.width, height = cgImage.height
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(data: &pixels, width: width, height: height, bitsPerComponent: 8,
-                                      bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-            return XCTFail("Couldn't decode sign-in screenshot")
-        }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let scaleX = CGFloat(width) / app.frame.width
-        let scaleY = CGFloat(height) / app.frame.height
-        let interior = button.frame.insetBy(dx: 48, dy: 10)
-        var darkPixels = 0, lightPixels = 0
-        for y in Int(interior.minY * scaleY)..<Int(interior.maxY * scaleY) {
-            for x in Int(interior.minX * scaleX)..<Int(interior.maxX * scaleX) {
-                guard x >= 0, x < width, y >= 0, y < height else { continue }
-                let offset = (y * width + x) * 4
-                let value = (0.2126 * Double(pixels[offset]) + 0.7152 * Double(pixels[offset + 1])
-                             + 0.0722 * Double(pixels[offset + 2])) / 255
-                if value < 0.2 { darkPixels += 1 }
-                if value > 0.75 { lightPixels += 1 }
-            }
-        }
-        XCTAssertGreaterThan(darkPixels, 20, "Sign-in button must include readable dark/light contrast")
-        XCTAssertGreaterThan(lightPixels, 20, "Sign-in button must include readable dark/light contrast")
+        // Native disabled controls use system-dimmed colors. Enabled sign-in ink
+        // and label contrast remain covered by the hosted appearance tests.
     }
 }

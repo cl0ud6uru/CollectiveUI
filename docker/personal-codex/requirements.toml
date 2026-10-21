@@ -1,7 +1,8 @@
 # Immutable managed requirements; installed in the reviewed image, outside writable volumes.
 allowed_login_methods = ["chatgpt"]
 cli_auth_credentials_store = "file"
-model_provider = "openai_chatgpt_plan"
+# Native mode uses stock Codex's managed ChatGPT provider. The optional SIWC
+# provider is selected by the trusted supervisor only while its token is present.
 model_providers.openai_chatgpt_plan.name = "ChatGPT plan"
 model_providers.openai_chatgpt_plan.base_url = "https://api.openai.com/v1"
 model_providers.openai_chatgpt_plan.env_key = "ACCESS_TOKEN"

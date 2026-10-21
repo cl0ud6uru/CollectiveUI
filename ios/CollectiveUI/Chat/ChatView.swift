@@ -297,21 +297,19 @@ struct ChatView: View {
 
                 if let result = model.commandResult {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(result.title).font(.subheadline.weight(.semibold))
+                        HStack(alignment: .top) {
+                            Text(result.title).font(.subheadline.weight(.semibold))
+                            Spacer(minLength: 8)
+                            Button("Dismiss command result", systemImage: "xmark", action: model.dismissCommandResult)
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.plain)
+                        }
                         ForEach(result.lines.enumerated(), id: \.offset) { line in Text(line.element).font(.subheadline) }
                     }
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14).background(PortalTheme.botBubble, in: RoundedRectangle(cornerRadius: 18))
                 }
                 if let error = model.commandError { InlineErrorView(text: error) }
-                if model.target?.hermes == true && (model.commandError != nil || model.commandResult != nil || model.needsMessageStatusCheck || model.hasDetachedReply) {
-                    Button { model.checkHermesStatus() } label: {
-                        Text("Check Hermes status").frame(minHeight: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!model.canCheckHermesStatus)
-                    .accessibilityHint("Checks the server reply and cancellation state while keeping your draft.")
-                }
                 if model.isExecutingCommand { ProgressView("Running command…").font(.footnote) }
                 if let inlineError = model.inlineError {
                     InlineErrorView(text: inlineError)

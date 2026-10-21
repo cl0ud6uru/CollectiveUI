@@ -24,6 +24,9 @@ import { getChatGPTAuth } from "./chatgpt/store";
 import { ProviderConfigError, ProviderUnavailableError } from "./errors";
 import type { BillingSource, ModelPurpose, ProviderKind } from "./kinds";
 import { defaultsMiddleware, usageMiddleware } from "./middleware";
+import { nativeBudgetApplies } from "./run-budget-store";
+import { nativeRunBudgetMiddleware } from "./run-budget-middleware";
+import { NativeRunBudgetError } from "./run-budget-policy";
 import { chatgpt, PROVIDERS, type ChatModel, type EmbedModel, type ProviderContext } from "./providers";
 import { checkHermesUrl, HermesLanguageModel, hermesTarget, stopRun as stopHermesRunOn, type HermesTarget } from "./providers/hermes";
 import { activeProviderConnection, connectionConfig, openProviderCredential } from "./provider-connections";
@@ -123,7 +126,7 @@ export function capabilitiesFor(app: AppRow): ModelCapabilities {
   if (kind === "hermes") return { instructionStyle: "legacy", embeddings: false, responses: false };
   const config = readProviderConfig(enabledKindOf(app), app.providerConfig) as { promptCaching?: boolean } | null;
   const instructionStyle: InstructionStyle =
-    kind === "openai-compatible" ? "legacy" : isAnthropicFamily(kind, config, app.model) && config?.promptCaching !== false ? "anthropic-cache" : "stable-first";
+    (kind === "openai-compatible" || kind === "openrouter") ? "legacy" : isAnthropicFamily(kind, config, app.model) && config?.promptCaching !== false ? "anthropic-cache" : "stable-first";
   return { instructionStyle, embeddings: supportsEmbeddings(kind), responses: speaksResponses(kind) };
 }
 
@@ -154,6 +157,9 @@ function usageContext(
  * ledger. OpenAI-compatible apps send exactly the same requests as before the registry existed.
  */
 export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promise<ResolvedModel> {
+  if (opts.usage?.rootBudgetId && (app.provider === "hermes" || app.provider === "chatgpt" || isCodexApp(app)) && await nativeBudgetApplies(opts.usage.rootBudgetId)) {
+    throw new NativeRunBudgetError("This runtime has no supported native company budget contract. No billing fallback was selected.");
+  }
   if (isCodexApp(app)) throw new ProviderUnavailableError('Codex requires its native app-server run; provider fallback is disabled.');
   const candidate=opts.run?.teamCandidate;
   if(candidate){
@@ -175,9 +181,10 @@ export async function resolveModel(app: AiApp, opts: ResolveModelOptions): Promi
   }
   const instance = await PROVIDERS[ctx.kind].create(ctx);
   const usage = { ...usageContext(app, opts, app.model), ...ctx.usageAttribution };
-  const middleware = [usageMiddleware(usage)];
+  if (opts.nativeSearch && opts.usage?.rootBudgetId && await nativeBudgetApplies(opts.usage.rootBudgetId)) throw new NativeRunBudgetError("Hosted provider tools have no supported native budget fee contract. No provider request was sent.");
+  const middleware = [usageMiddleware(usage), nativeRunBudgetMiddleware(usage)];
   if (opts.nativeSearch) middleware.unshift(nativeSearchMiddleware(usage, opts.nativeSearch));
-  if (ctx.kind !== "openai-compatible") middleware.unshift(defaultsMiddleware(ctx.kind, ctx.config, app.model, opts.purpose));
+  if (ctx.kind !== "openai-compatible" && ctx.kind !== "openrouter") middleware.unshift(defaultsMiddleware(ctx.kind, ctx.config, app.model, opts.purpose));
   return {
     model: wrapLanguageModel({ model: instance.chat(app.model), middleware }),
     billing: { source: "org", appId: app.id, providerKind: app.provider, modelId: app.model, credentialId: null },

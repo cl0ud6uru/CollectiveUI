@@ -170,7 +170,8 @@ export async function readDockerSandboxes(): Promise<SandboxAdminPageData> {
   try { snapshot = await brokerRequest<SandboxAdminSnapshot>('/admin/snapshot', SnapshotSchema); }
   catch (error) {
     const reason = error instanceof HttpError ? error.message : 'The SBX broker is unavailable.';
-    snapshot = unavailableAdminSnapshot(reason, process.env.PERSONAL_CODEX_SOCKET ? 'sbx' : 'unconfigured');
+    // A configured socket does not establish which backend (if any) is listening.
+    snapshot = unavailableAdminSnapshot(reason);
   }
   const people = await db.select({ id: users.id, name: users.name, email: users.email, upn: users.upn, disabled: users.disabled })
     .from(users).orderBy(users.name).limit(1000);

@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import ImageIO
 import CollectiveKit
 
@@ -14,13 +13,15 @@ struct BotIdentityView: View {
     let icon: String?
     var size: CGFloat = 28
     var activity: BotActivity = .idle
-    @State private var atlas: UIImage?
+    @State private var atlas: CGImage?
     @State private var atlasRows = 9
+    @State private var loadedKey: String?
 
     private var pet: PetAppearance? { botId.flatMap { app.shell?.pets[$0] } }
     private var spriteURL: String? { botId.flatMap { pet?.avatarPath(for: $0) } }
     private var loadKey: String {
-        [app.serverURL?.absoluteString ?? "", app.shell?.user?.id ?? "", spriteURL ?? "", String(pet?.spriteVersionNumber ?? 0)].joined(separator: "|")
+        [app.settingsAccess.generation.uuidString, spriteURL ?? "",
+         String(pet?.spriteVersionNumber ?? 0), String(size * displayScale)].joined(separator: "|")
     }
     private var animates: Bool {
         size > 32 && !reduceMotion && scenePhase == .active && pet?.motion != "still" && activity != .unavailable
@@ -31,13 +32,13 @@ struct BotIdentityView: View {
             if let pet, pet.enabled, pet.appearance == "moss" || pet.appearance == "ember" {
                 SeedlingView(ember: pet.appearance == "ember")
                     .frame(width: size, height: size * 104 / 96)
-            } else if let atlas, spriteURL != nil {
+            } else if let atlas, loadedKey == loadKey, spriteURL != nil {
                 TimelineView(.animation(minimumInterval: activity.duration / Double(activity.frameCount), paused: !animates)) { context in
                     let frame = animates ? Int(context.date.timeIntervalSinceReferenceDate / activity.duration * Double(activity.frameCount)) % activity.frameCount : 0
                     let height = size * 208 / 192
                     Canvas { context, canvasSize in
                         context.clip(to: Path(CGRect(origin: .zero, size: canvasSize)))
-                        context.draw(Image(uiImage: atlas), in: CGRect(
+                        context.draw(Image(decorative: atlas, scale: 1), in: CGRect(
                             x: -CGFloat(frame) * size, y: -CGFloat(activity.atlasRow) * height,
                             width: size * 8, height: height * CGFloat(atlasRows)
                         ))
@@ -50,37 +51,21 @@ struct BotIdentityView: View {
         // layout, accessibility frame, or hit region into nearby controls.
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .accessibilityIdentifier("bot.identity." + (botId ?? "model"))
         .task(id: loadKey) { await loadAtlas() }
     }
 
     private func loadAtlas() async {
         atlas = nil
+        loadedKey = nil
         guard let spriteURL, let api = app.api else { return }
-        for attempt in 0..<2 {
-            do {
-                let data = try await api.loadData(from: spriteURL)
-                guard !Task.isCancelled, data.count <= 4 * 1024 * 1024,
-                      let source = CGImageSourceCreateWithData(data as CFData, nil),
-                      let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                      let width = properties[kCGImagePropertyPixelWidth] as? Int,
-                      let height = properties[kCGImagePropertyPixelHeight] as? Int,
-                      width == 1536, [1872, 2288].contains(height) else { return }
-                let rows = height / 208
-                guard pet?.spriteVersionNumber == nil || rows == (pet?.spriteVersionNumber == 2 ? 11 : 9) else { return }
-                let longestSide = max(size * 8, size * 208 / 192 * CGFloat(rows)) * displayScale
-                guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceThumbnailMaxPixelSize: Int(longestSide),
-                    kCGImageSourceShouldCacheImmediately: true,
-                ] as CFDictionary) else { return }
-                atlasRows = rows
-                atlas = UIImage(cgImage: thumbnail)
-                return
-            } catch {
-                if Task.isCancelled || error.isCancellation || error.isUnauthorized { return }
-                if attempt == 0 { try? await Task.sleep(for: .milliseconds(500)) }
-            }
-        }
+        let key = loadKey
+        let artwork = await BotArtworkCache.shared.load(path: spriteURL, key: key,
+            version: pet?.spriteVersionNumber, cellSize: size * displayScale, api: api)
+        guard !Task.isCancelled, app.api === api, key == loadKey, let artwork else { return }
+        atlasRows = artwork.rows
+        atlas = artwork.image
+        loadedKey = key
     }
 
 }

@@ -2,7 +2,7 @@ import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  refresh: vi.fn(), deleteApp: vi.fn(), deleteGroup: vi.fn(), testAppConnection: vi.fn(),
+  refresh: vi.fn(), deleteApp: vi.fn(), deleteGroup: vi.fn(), saveGroup: vi.fn(), testAppConnection: vi.fn(), listOpenRouterModels: vi.fn(),
   error: vi.fn(), success: vi.fn(), slots: [] as unknown[], cursor: 0,
 }));
 vi.mock("react", async importOriginal => ({
@@ -23,12 +23,14 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }
 vi.mock("sonner", () => ({ toast: { error: mocks.error, success: mocks.success } }));
 vi.mock("@/app/admin/actions", () => ({ deleteApp: mocks.deleteApp, deleteGroup: mocks.deleteGroup, testAppConnection: mocks.testAppConnection, saveApp: vi.fn() }));
 vi.mock("@/app/admin/provider-actions", () => ({ migrateAppProviderConnection: vi.fn() }));
-vi.mock("@/app/admin/groups/ldap-actions", () => ({ findLdapUserForGroup: vi.fn(), saveGroupWithFeedback: vi.fn() }));
+// Next replaces this Server Action import with a client reference. Vitest needs the same boundary mocked.
+vi.mock("@/app/admin/model-catalog-actions", () => ({ listOpenRouterModels: mocks.listOpenRouterModels }));
+vi.mock("@/app/admin/groups/ldap-actions", () => ({ deleteGroupWithFeedback: mocks.deleteGroup, findLdapUserForGroup: vi.fn(), saveGroupWithFeedback: mocks.saveGroup }));
 
 import { AppsAdmin, type AppRow } from "@/components/admin/apps-admin";
 import { GroupsAdmin } from "@/components/admin/groups-admin";
 
-type NodeProps = { children?: ReactNode; "aria-label"?: string; onClick?: () => Promise<void> | void; disabled?: boolean; app?: unknown; connections?: unknown };
+type NodeProps = { children?: ReactNode; "aria-label"?: string; onClick?: () => Promise<void> | void; disabled?: boolean; app?: unknown; connections?: unknown; role?: string; group?: unknown; onClose?: () => void };
 function find(node: ReactNode, predicate: (node: ReactElement<NodeProps>) => boolean): ReactElement<NodeProps> | undefined {
   if (Array.isArray(node)) {
     for (const child of node) { const found = find(child, predicate); if (found) return found; }
@@ -52,7 +54,10 @@ const button = (tree: ReactNode, label: string) => {
 };
 
 beforeEach(() => { vi.clearAllMocks(); mocks.slots = []; mocks.cursor = 0; vi.stubGlobal("confirm", vi.fn(() => true)); });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  expect(mocks.listOpenRouterModels).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
+});
 
 describe("admin delete feedback", () => {
   for (const [name, component, label, action] of [
@@ -73,7 +78,7 @@ describe("admin delete feedback", () => {
       expect(mocks.refresh).not.toHaveBeenCalled();
       const retry = button(render(component), label);
       expect(retry.props.disabled).toBe(false);
-      action.mockResolvedValueOnce(undefined);
+      action.mockResolvedValueOnce(name === "group" ? { ok: true } : undefined);
       await retry.props.onClick!();
       expect(mocks.refresh).toHaveBeenCalledTimes(1);
       expect(mocks.success).toHaveBeenCalledTimes(1);
@@ -89,6 +94,30 @@ describe("admin delete feedback", () => {
     expect(edit.type).toBe("button");
     edit.props.onClick!();
     expect(mocks.slots[0]).toEqual(group);
+  });
+  it("keeps a blocked group deletion retryable and displays its handoff guidance", async () => {
+    const message = "This change would remove your administrator access. Ask another administrator to perform an intentional handoff.";
+    mocks.deleteGroup.mockResolvedValueOnce({ ok: false, error: message });
+    await button(render(groups), "Delete Engineering").props.onClick!();
+    expect(mocks.error).toHaveBeenCalledWith(message);
+    expect(mocks.success).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(button(render(groups), "Delete Engineering").props.disabled).toBe(false);
+    expect(find(render(groups), node => node.props.role === "alert")?.props.children).toBe(message);
+  });
+  it("keeps a blocked group edit open with persistent handoff guidance", async () => {
+    button(render(groups), "Edit Engineering").props.onClick!();
+    const dialog = find(render(groups), node => "group" in node.props)!;
+    const Dialog = dialog.type as (props: typeof dialog.props) => ReactNode;
+    const close = vi.fn(); mocks.slots = [];
+    const renderDialog = () => render(() => Dialog({ ...dialog.props, onClose: close }));
+    const message = "Ask another administrator to perform an intentional handoff.";
+    mocks.saveGroup.mockResolvedValueOnce({ ok: false, error: message });
+    const save = find(renderDialog(), node => node.props.children === "Save")!;
+    await save.props.onClick!();
+    expect(find(renderDialog(), node => node.props.role === "alert")?.props.children).toBe(message);
+    expect(close).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });
 

@@ -13,7 +13,7 @@ import { AckSchema, CompanionHostIdSchema, CustodySchema, EnvelopeSchema, Snapsh
 import { applySIWCProfileLocked, changeUnifiedAccount } from './account';
 import { requireCompanionConfiguration, COMPANION_PROTOCOL } from './companion-config';
 import { cancelCompanionAttemptsLocked, openCompanionStates } from './companion-state';
-import { clearPersonalCodexAuthenticationLocked } from './invalidation';
+import { clearSIWCCodexAuthenticationLocked } from './invalidation';
 import { accountSetupEligibility, prepareAccountRuntime, runtimeConsent } from './onboarding';
 import { openCredentialSecret, revokeCredentialSecret } from './store';
 import { SIWCCredentialSchema, validateSIWCCredential } from './siwc';
@@ -189,7 +189,7 @@ export async function receiveCompanion(attemptId: string, authorization: string 
       if (attempt.state !== 'receiving' || attempt.custodyHash !== claimed.attempt.custodyHash) throw failure();
       const current = await credentialBinding(principal.user.id, tx);
       const [retained] = await tx.select().from(personalCodexAccounts).where(eq(personalCodexAccounts.userId, principal.user.id));
-      if (current.row || retained) await clearPersonalCodexAuthenticationLocked(principal.user.id, tx);
+      if (current.row || retained) await clearSIWCCodexAuthenticationLocked(principal.user.id, tx);
       const result = await applySIWCProfileLocked(principal, profile, identity, tx);
       await tx.update(chatgptCompanionAttempts).set({ state: 'complete', updatedAt: new Date() }).where(eq(chatgptCompanionAttempts.id, attempt.id));
       await tx.insert(auditLog).values({ actorId: principal.user.id, action: 'chatgpt.companion.complete', target: principal.user.id, details: { enableCodex: attempt.enableCodex } });
