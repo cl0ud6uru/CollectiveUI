@@ -1,5 +1,5 @@
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@/sandboxd/config";
 import { type ContainerInfo, type Docker } from "@/sandboxd/docker";
 import { Manager } from "@/sandboxd/manager";
@@ -13,8 +13,8 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture(maxRunning = 1) {
-  const config = loadConfig({ SANDBOXD_SECRET: "a".repeat(64), SANDBOXD_RUNTIME: "runc", SANDBOXD_MAX_RUNNING: String(maxRunning) });
+function fixture(maxRunning = 1, images: Record<string, string> = Object.fromEntries(Object.keys(WORKSPACE_PROFILES).map(key => [key, TEMPLATE_PROFILE_TEST_IMAGE]))) {
+  const config = loadConfig({ SANDBOXD_SECRET: "a".repeat(64), SANDBOXD_RUNTIME: "runc", SANDBOXD_MAX_RUNNING: String(maxRunning), SANDBOXD_PROFILE_IMAGES: JSON.stringify(images) });
   const containers = new Map<string, ContainerInfo>();
   const volumes = new Map<string, { Name: string; Labels: Record<string, string> | null; content?: string }>();
   const stops: string[] = [];
@@ -101,14 +101,27 @@ function fixture(maxRunning = 1) {
 const flush = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
 
 const TEMPLATE_PROFILE_TEST_IMAGE = `sha256:${"a".repeat(64)}`;
-beforeEach(() => {
-  for (const profile of Object.values(WORKSPACE_PROFILES)) profile.imageRef = TEMPLATE_PROFILE_TEST_IMAGE;
-});
-afterEach(() => {
-  for (const profile of Object.values(WORKSPACE_PROFILES)) profile.imageRef = null;
-});
-
 describe("sandbox admission capacity (fixture Docker only)", () => {
+  it("installs only configured immutable template images and reports actual daemon availability", async () => {
+    const f = fixture(1, { "knowledge-work-v1": TEMPLATE_PROFILE_TEST_IMAGE });
+    await f.manager.init();
+    expect((await f.manager.health()).profiles).toEqual([
+      { key: "knowledge-work-v1", installed: true, imageId: TEMPLATE_PROFILE_TEST_IMAGE },
+      { key: "dotnet-linux-v1", installed: false, imageId: null },
+    ]);
+    await f.manager.ensure(ref(14), "any", undefined, false, "knowledge-work-v1");
+    await expect(f.manager.ensure(ref(15), "any", undefined, false, "dotnet-linux-v1")).rejects.toMatchObject({ code: "image_missing" });
+    vi.spyOn(f.docker, "imageInspect").mockResolvedValue(null);
+    expect((await f.manager.health()).profiles?.every(profile => !profile.installed && profile.imageId === null)).toBe(true);
+  });
+
+  it("rejects unknown, legacy, mutable and malformed template image configuration at startup", () => {
+    for (const raw of ['[]', 'null', 'bad json', '{"legacy":"sha256:abc"}', '{"__proto__":"sha256:abc"}', '{"knowledge-work-v1":"image:latest"}']) {
+      expect(() => loadConfig({ SANDBOXD_SECRET: "a".repeat(64), SANDBOXD_PROFILE_IMAGES: raw })).toThrow(/SANDBOXD_PROFILE_IMAGES/);
+    }
+    expect(Object.keys(loadConfig({ SANDBOXD_SECRET: "a".repeat(64) }).profileImages)).toEqual([]);
+  });
+
   it("rejects fractional capacity so admission always has an integer ceiling", () => {
     expect(() => fixture(1.5)).toThrow("SANDBOXD_MAX_RUNNING must be a whole number");
   });
@@ -172,8 +185,7 @@ describe("sandbox admission capacity (fixture Docker only)", () => {
   });
 
   it("does not admit a template profile until an immutable image ID is recorded", async () => {
-    WORKSPACE_PROFILES["knowledge-work-v1"].imageRef = null;
-    const f = fixture(); await f.manager.init();
+    const f = fixture(1, {}); await f.manager.init();
     await expect(f.manager.ensure(ref(14), "any", undefined, false, "knowledge-work-v1")).rejects.toMatchObject({ code: "image_missing" });
     expect(f.volumes.has(volumeName(ref(14)))).toBe(false);
     expect(f.containers.has(containerName(ref(14)))).toBe(false);

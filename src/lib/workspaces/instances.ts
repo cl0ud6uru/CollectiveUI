@@ -71,6 +71,9 @@ export async function assignTemplate(input: {
   const client = sandboxd();
   if (!client) throw new HttpError(503, "Workspace service is unavailable");
   const userId = input.principal.user.id;
+  // The portal process has no daemon image configuration. Availability comes from its authenticated health report;
+  // start() still resolves the immutable image on the daemon, so a removed image or restart fails closed.
+  const installedProfiles = (await client.health()).profiles;
   return withWorkspaceUserLock(userId, async (lockedDb: DB) => {
     const reservation = await lockedDb.transaction(async (tx) => {
       const principal = await freshPrincipalForAssignment(tx, input.principal);
@@ -100,7 +103,7 @@ export async function assignTemplate(input: {
         throw new HttpError(404, "That published workspace template is unavailable.");
       }
       let admitted: ReturnType<typeof admitWorkspaceRecipe>;
-      try { admitted = admitWorkspaceRecipe(version.recipe); }
+      try { admitted = admitWorkspaceRecipe(version.recipe, installedProfiles); }
       catch (err) {
         if (err instanceof WorkspaceRecipePolicyError && err.code === "image_missing") throw new SandboxError("image_missing", err.message);
         if (err instanceof WorkspaceRecipePolicyError) throw new HttpError(409, err.message);

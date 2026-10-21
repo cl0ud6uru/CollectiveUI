@@ -35,9 +35,10 @@ vi.mock("@/lib/sandbox/client", async (importOriginal) => ({
 
 type Volume = { profileKey: string; files: Record<string, string> };
 
-function fakeDaemon(volumes: Map<string, Volume>, unavailable: { profile: string | null }) {
+function fakeDaemon(volumes: Map<string, Volume>, unavailable: { profile: string | null; healthProfile: string | null }) {
   const running = new Set<string>();
   return {
+    health: vi.fn(async () => ({ profiles: ["knowledge-work-v1", "dotnet-linux-v1"].map(key => ({ key, installed: key !== unavailable.healthProfile, imageId: `sha256:${"a".repeat(64)}` })) })),
     start: vi.fn(async (ref: string, _isolation: string, profileKey = "legacy") => {
       if (unavailable.profile === profileKey) {
         const { SandboxError } = await import("@/lib/sandbox/client");
@@ -67,7 +68,7 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
   let resolveWorkspace: typeof import("@/lib/workspaces/instances")["resolveWorkspace"];
   let listOwnInstances: typeof import("@/lib/workspaces/instances")["listOwnInstances"];
   const volumes = new Map<string, Volume>();
-  const unavailable = { profile: null as string | null };
+  const unavailable = { profile: null as string | null, healthProfile: null as string | null };
   const aliceLegacyRef = "legacyabcdefghijklmn"; // 20 lower-case characters
   const alice = { user: { id: "alice", upn: "alice@example.invalid", name: "Alice", disabled: false, sessionVersion: 1 }, groupIds: [], isAdmin: false } as never;
   const bob = { user: { id: "bob", upn: "bob@example.invalid", name: "Bob", disabled: false, sessionVersion: 1 }, groupIds: [], isAdmin: false } as never;
@@ -114,9 +115,6 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
       { id: "office", slug: "knowledge-work", name: "Knowledge Work", description: "Office" },
       { id: "dotnet", slug: "dotnet-linux", name: ".NET Linux", description: "Offline SDK" },
     ]);
-    const { WORKSPACE_PROFILES } = await import("@/sandboxd/profiles");
-    WORKSPACE_PROFILES["knowledge-work-v1"].imageRef = `sha256:${"a".repeat(64)}`;
-    WORKSPACE_PROFILES["dotnet-linux-v1"].imageRef = `sha256:${"b".repeat(64)}`;
     const officeRecipe = { schemaVersion: 1, runtimeProfileKey: "knowledge-work-v1", seedBundleKey: "knowledge-work-v1", networkPolicy: "none", capabilities: { shell: true, officeHeadless: true, dotnet: false, agentBrowserView: false } } as const;
     const dotnetRecipe = { schemaVersion: 1, runtimeProfileKey: "dotnet-linux-v1", seedBundleKey: "dotnet-linux-v1", networkPolicy: "none", capabilities: { shell: true, officeHeadless: false, dotnet: true, agentBrowserView: false } } as const;
     await db.insert(workspaceTemplateVersions).values([
@@ -127,14 +125,22 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
     volumes.set(aliceLegacyRef, { profileKey: "legacy", files: { "legacy.txt": "old personal files" } });
   }, 30_000);
 
-  beforeEach(() => { unavailable.profile = null; state.startHook = null; });
+  beforeEach(() => { unavailable.profile = null; unavailable.healthProfile = null; state.startHook = null; });
 
   afterAll(async () => {
-    const { WORKSPACE_PROFILES } = await import("@/sandboxd/profiles");
-    WORKSPACE_PROFILES["knowledge-work-v1"].imageRef = null;
-    WORKSPACE_PROFILES["dotnet-linux-v1"].imageRef = null;
     await pg?.close();
     if (folder) await rm(folder, { recursive: true, force: true });
+  });
+
+  it("rejects a missing daemon profile before creating a reservation or starting a sandbox", async () => {
+    unavailable.healthProfile = "knowledge-work-v1";
+    const daemon = state.client as ReturnType<typeof fakeDaemon>;
+    const starts = daemon.start.mock.calls.length;
+    const { db } = await import("@/db"), { workspaceInstances } = await import("@/db/schema");
+    const count = (await db.select().from(workspaceInstances)).length;
+    await expect(assignTemplate({ principal: alice, botId: "shared-bot", templateVersionId: "office-v1" })).rejects.toMatchObject({ code: "image_missing" });
+    expect(daemon.start.mock.calls).toHaveLength(starts);
+    expect(await db.select().from(workspaceInstances)).toHaveLength(count);
   });
 
   it("keeps each shared-bot user and each same-user bot on a different ref", async () => {
@@ -267,8 +273,6 @@ describe("workspace bindings (isolated PostgreSQL + fake sandbox client)", () =>
 
     // Reload the module to model a fresh server process with no reservation state retained in memory.
     vi.resetModules();
-    const { WORKSPACE_PROFILES } = await import("@/sandboxd/profiles");
-    WORKSPACE_PROFILES["knowledge-work-v1"].imageRef = `sha256:${"a".repeat(64)}`;
     const restarted = await import("@/lib/workspaces/instances");
     assignTemplate = restarted.assignTemplate;
     resolveWorkspace = restarted.resolveWorkspace;

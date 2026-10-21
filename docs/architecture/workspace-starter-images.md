@@ -33,7 +33,25 @@ The output includes Docker image IDs (`sha256:…`), which are immutable referen
 scripts/build-workspace-template-images.sh --record-image-refs
 ```
 
-The checked-in manifest marks each `imageRef` as `build_required` until a successful local build is explicitly recorded. A profile with a null image reference is not ready for admission. For a single image, pass `--only knowledge-work` or `--only dotnet-linux`, with `--record-image-refs` only when that reviewed profile is ready to update. Review the manifest diff and retain its version when rebuilding identical inputs; increment the profile version when changing seed content, capabilities, SDK/package inputs or helper behavior. Local image IDs are not registry references and are not pushed or published by this workflow; the target host must build or load the reviewed image before a profile can be admitted.
+The manifest's `imageRefStatus` distinguishes a recorded local build from one still requiring a build. For a single image, pass `--only knowledge-work` or `--only dotnet-linux`, with `--record-image-refs` only when that reviewed profile is ready to update. Review the manifest diff and retain its version when rebuilding identical inputs; increment the profile version when changing seed content, capabilities, SDK/package inputs or helper behavior. Local image IDs are not registry references and are not pushed or published by this workflow; the target host must build or load the reviewed image before a profile can be admitted.
+
+## Install profiles in sandboxd
+
+The manifest records build evidence; it does not configure the running daemon. Set
+`SANDBOXD_PROFILE_IMAGES` in sandboxd's own environment to a JSON object mapping
+`knowledge-work-v1` and/or `dotnet-linux-v1` to the full `sha256:` image IDs
+installed on that Docker host, then restart sandboxd through the normal operator
+process. The optional Compose sandbox overlay passes this setting only to
+sandboxd. The legacy `SANDBOXD_IMAGE` setting is independent.
+
+Unknown profile keys, mutable tags and incomplete IDs fail configuration parsing.
+`GET /v1/health` reports each supported template profile's `installed` state and
+verified image ID. The portal uses that authenticated report for assignment;
+its static profile definitions validate recipe capabilities and starter bundles,
+and never act as a second image installation registry. Missing profiles or older
+daemon health reports leave template assignment unavailable while legacy
+workspaces continue to work. Sandbox startup rechecks the daemon's configured
+image and preserves existing profile labels, limits and network isolation.
 
 ## Checks
 
