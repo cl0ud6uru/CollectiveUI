@@ -84,3 +84,12 @@ The attachment, method-not-found and stop regression tests were run red before
 the corresponding source changes. Restoring pre-fix `sessions.ts` afterwards
 produced 11 failed tests; restoring the patch made the focused suite pass. This
 is not a claim of live native-server or real PostgreSQL execution.
+
+## Optional native evidence adapter
+
+The explicit, versioned [native cancel-and-drain adapter](remote-hermes-native-drain-protocol.md)
+is a separate opt-in source patch against the reviewed pin. Its pending/terminal
+receipt contract and strict client advance the missing native evidence layer. It
+is not deployed or called by this default recovery path, and it does not clear
+local reservations. The owner confirmation and revision-checked recovery
+transaction remain implementation work.
