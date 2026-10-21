@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { routineRuns, routines } from "@/db/schema";
+import { agentRuns, conversations, routineRuns, routines } from "@/db/schema";
 import { HttpError } from "@/lib/http-error";
 import { enqueue, QUEUES } from "@/lib/jobs";
 
@@ -14,10 +14,30 @@ export async function lockRoutineAdmission(tx: Tx, ownerId: string) {
 
 /** Caller holds the owner admission lock and has claimed/locked the current routine. */
 export async function insertRoutineRunTx(tx: Tx, routine: { id: string; ownerId: string }, trigger: "manual" | "webhook" | "schedule", payload?: unknown) {
-  const owned = await tx.select({ id: routineRuns.id }).from(routineRuns)
-    .innerJoin(routines, eq(routineRuns.routineId, routines.id))
-    .where(and(eq(routines.ownerId, routine.ownerId), inArray(routineRuns.status, active))).limit(MAX_ACTIVE_ROUTINE_RUNS_PER_USER);
-  if (owned.length >= MAX_ACTIVE_ROUTINE_RUNS_PER_USER) return null;
+  // Deleting a routine cascades its run rows but retains their agent work with a
+  // null routineRunId. One statement sees either side of that cascade in the
+  // same snapshot; two counts could miss work deleted between the statements.
+  const owned = await tx.execute(sql`
+    select id from (
+      select ${routineRuns.id} as id
+      from ${routineRuns}
+      inner join ${routines} on ${routineRuns.routineId} = ${routines.id}
+      where ${routines.ownerId} = ${routine.ownerId}
+        and ${routineRuns.status} in ('queued', 'running')
+      union all
+      select ${agentRuns.id} as id
+      from ${agentRuns}
+      inner join ${conversations} on ${agentRuns.conversationId} = ${conversations.id}
+      where ${agentRuns.userId} = ${routine.ownerId}
+        and ${conversations.userId} = ${routine.ownerId}
+        and ${conversations.source} = 'routine'
+        and ${agentRuns.background} = true
+        and ${agentRuns.routineRunId} is null
+        and ${agentRuns.status} in ('queued', 'running')
+    ) active_routine_work
+    limit ${MAX_ACTIVE_ROUTINE_RUNS_PER_USER}
+  `);
+  if (owned.rows.length >= MAX_ACTIVE_ROUTINE_RUNS_PER_USER) return null;
   if (trigger === "schedule") {
     const [pending] = await tx.select({ id: routineRuns.id }).from(routineRuns)
       .where(and(eq(routineRuns.routineId, routine.id), inArray(routineRuns.status, active))).limit(1);
