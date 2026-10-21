@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "sonner";
 import { continueSharedConversation } from "@/app/(chat)/actions";
 import type { PortalUIMessage } from "@/lib/chat/store";
 import { Button } from "@/components/ui/button";
 import { AssistantMessage, UserMessage } from "./message";
+import { SHARED_ATTACHMENT_NOTICE } from "@/lib/chat/shared-attachments";
 
 export function SharedView({
   token,
@@ -15,6 +17,7 @@ export function SharedView({
   createdAt,
   messages,
   appName,
+  attachmentsOmitted = false,
 }: {
   token: string;
   title: string;
@@ -22,6 +25,7 @@ export function SharedView({
   createdAt: string;
   messages: PortalUIMessage[];
   appName: string;
+  attachmentsOmitted?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -35,8 +39,13 @@ export function SharedView({
           disabled={busy}
           onClick={async () => {
             setBusy(true);
-            const id = await continueSharedConversation(token);
-            router.push(`/c/${id}`);
+            try {
+              const id = await continueSharedConversation(token);
+              router.push(`/c/${id}`);
+            } catch (err) {
+              setBusy(false);
+              toast.error(err instanceof Error ? err.message : "Could not continue this conversation");
+            }
           }}
         >
           Continue this conversation
@@ -48,6 +57,7 @@ export function SharedView({
           <p className="mt-2 text-sm text-muted">
             Shared by {author} · {new Date(createdAt).toLocaleDateString()}
           </p>
+          {attachmentsOmitted && <p className="mt-3 text-sm text-muted">{SHARED_ATTACHMENT_NOTICE} Continued copies omit them too.</p>}
         </div>
         <div className="space-y-6 pt-8">
           {messages.map((m) =>

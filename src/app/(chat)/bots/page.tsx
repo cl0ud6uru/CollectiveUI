@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { PageFrame } from "@/components/page-frame";
 import { BotGrid } from "@/components/bots/bot-grid";
-import { listAccessibleBots } from "@/lib/authz";
+import { listAccessibleBots, mayCreateBots } from "@/lib/authz";
 import { requirePagePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
 
@@ -10,7 +10,7 @@ export default async function BotsPage() {
   const p = await requirePagePrincipal();
   const bots = await listAccessibleBots(p);
   const t = await getSetting("tools");
-  const canCreate = t.botCreation === "everyone" || (t.botCreation === "groups" ? p.canCreateBots : p.isAdmin);
+  const canCreate = mayCreateBots(p, t.botCreation);
   const mine = bots.filter((b) => b.ownerId === p.user.id);
   const others = bots.filter((b) => b.ownerId !== p.user.id);
   const toCard = (b: (typeof bots)[number]) => ({ id: b.id, name: b.name, avatar: b.avatar, label: b.label, description: b.description, visibility: b.visibility });

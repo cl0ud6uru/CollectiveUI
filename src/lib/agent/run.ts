@@ -202,7 +202,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       tools: toolset.tools,
       toolApproval: toolset.approval,
       experimental_toolApprovalSecret: toolApprovalSecret(delegated && nativeEligible
-        ? `${toolset.approvalBinding ?? ""}:${delegated.task.id}:${opts.run!.id}:${authority}` : toolset.approvalBinding),
+        ? `${toolset.approvalSigningBinding ?? ""}:${delegated.task.id}:${opts.run!.id}:${authority}` : toolset.approvalSigningBinding),
       stopWhen: [isStepCount(maxSteps), () => !!native?.taskIds.length],
       ...(native ? { onStepEnd: () => { native.stepsUsed++; } } : {}),
       temperature: app.temperature ?? undefined,

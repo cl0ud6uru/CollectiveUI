@@ -19,6 +19,7 @@ import { runHost } from "@/lib/runs/host";
 import { runListener } from "@/lib/runs/listener";
 import { sweepRuns } from "@/lib/runs/sweeper";
 import { runConfig } from "@/lib/runs/types";
+import { sweepAttachments } from "@/lib/files/lifecycle";
 import { sweepSandboxes } from "@/lib/sandbox/lifecycle";
 import { rewrapAllSecrets } from "@/lib/secrets-rewrap";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
@@ -134,6 +135,12 @@ async function main() {
     if (r.expired || r.orphans) console.log(`[worker] workspaces: ${r.expired} destroyed after disable, ${r.orphans} orphans removed`);
   });
   await boss.schedule(QUEUES.sandboxCleanup, process.env.SANDBOX_CLEANUP_CRON ?? "23 * * * *");
+
+  await boss.work(QUEUES.attachmentCleanup, { batchSize: 1 }, async () => {
+    const r = await sweepAttachments();
+    if (r.deleted || r.failed) console.log(`[worker] attachments: ${r.deleted} deleted, ${r.failed} deferred`);
+  });
+  await boss.schedule(QUEUES.attachmentCleanup, "37 * * * *");
 
   const tick = async () => {
     try {

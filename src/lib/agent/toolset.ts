@@ -47,6 +47,8 @@ export type Toolset = {
   delegates: Bot[];
   approval: (opts: { toolCall: { toolName: string; input?: unknown } }) => ReturnType<typeof resolveApproval> | { type: "denied" | "user-approval"; reason: string };
   approvalBinding?: string;
+  /** Signs tool approvals: `approvalBinding` without remembered "Always allow" grants (see mcpAuthorityBinding). */
+  approvalSigningBinding?: string;
   close: () => Promise<void>;
   warnings: string[];
   /** The person's workspace, when this bot has workspace tools (its description goes into the instructions). */
@@ -130,7 +132,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   const mcpServerIds: string[] = [];
   let workspace: PortalWorkspace | null = null;
   const timeouts: Record<string, number> = {};
-  const bindings: string[] = [];
+  const bindings: string[] = [], signingBindings: string[] = [];
 
   const web = webTools(ctx);
   for (const t of configured) {
@@ -221,8 +223,10 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
       const grants = serviceGrants.filter((g) => g.serverId === s.id);
       if (bot.executionMode === "service" && (!s.toolsSnapshot || !["enabled", "needs_review"].includes(s.status) || !grants.length))
         throw new HttpError(403, "A service-bot connector grant is unavailable. Ask an admin to review and publish it.");
-      const binding = await mcpAuthorityBinding(ctx, s, config, grants, s.identityHeader && caller.subject.kind === "user" ? caller.subject.groups : []);
+      const identityGroups = s.identityHeader && caller.subject.kind === "user" ? caller.subject.groups : [];
+      const binding = await mcpAuthorityBinding(ctx, s, config, grants, identityGroups);
       bindings.push(binding);
+      signingBindings.push(await mcpAuthorityBinding(ctx, s, config, grants, identityGroups, { rememberedApprovals: false }));
       return { caller, config, taken: new Set<string>(), authority: { ctx, binding, grants }, apps: { audience: 'model' as const } };
     };
     const results = await Promise.allSettled(servers.map(async (s) => (s.toolsSnapshot ? mcpTools(s, await opts(s)) : connectedMcpTools(s, await opts(s)))));
@@ -316,7 +320,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
     skills,
     delegates,
     approval,
-    ...(bindings.length ? { approvalBinding: mcpToolsetBinding(bindings, entries) } : {}),
+    ...(bindings.length ? { approvalBinding: mcpToolsetBinding(bindings, entries), approvalSigningBinding: mcpToolsetBinding(signingBindings, entries) } : {}),
     warnings,
     workspace,
     ...(Object.keys(timeouts).length ? { timeout: { tools: timeouts } } : {}),

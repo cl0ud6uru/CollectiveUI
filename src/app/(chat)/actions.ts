@@ -31,7 +31,9 @@ import { getAccessibleBot, getAccessibleModel, getOwnedConversation, listAccessi
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { openSideChat } from "@/lib/chat/side";
 import { assertDefaultBot } from "@/lib/chat/targets";
-import { latestLeaf, loadMessageRows, pathTo, type PortalUIMessage } from "@/lib/chat/store";
+import { latestLeaf, loadMessageRows, partsToText, pathTo, type PortalUIMessage } from "@/lib/chat/store";
+import { conversationAttachmentIds, retireAttachments } from "@/lib/files/lifecycle";
+import { withoutSharedAttachments } from "@/lib/chat/shared-attachments";
 import { newId, newToken } from "@/lib/ids";
 import { stopRunsBeforeDelete } from "@/lib/runs/provider-stop";
 import { closeOpenParts } from "@/lib/runs/replay";
@@ -82,22 +84,28 @@ export async function deleteConversation(id: string) {
   await getOwnedConversation(p, idSchema.parse(id));
   await stopRuns(p, id);
   await stopRunsBeforeDelete({ conversationId: id });
-  await db.transaction(async tx => {
+  const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
     await cancelTasksForConversationTx(tx, p.user.id, id);
+    const ids = await conversationAttachmentIds(tx, p.user.id, id);
     await tx.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.userId, p.user.id)));
+    return ids;
   });
+  await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
 }
 
 export async function deleteAllConversations() {
   const p = await requirePrincipal();
   await stopRunsBeforeDelete({ userId: p.user.id });
-  await db.transaction(async tx => {
+  const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
     await cancelTasksForConversationTx(tx, p.user.id);
+    const ids = await conversationAttachmentIds(tx, p.user.id);
     await tx.delete(conversations).where(eq(conversations.userId, p.user.id));
+    return ids;
   });
+  await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
 }
 
@@ -212,6 +220,10 @@ export async function continueSharedConversation(token: string): Promise<string>
   const newConvId = newId();
   const idMap = new Map<string, string>();
   await db.transaction(async (tx) => {
+    // Recheck under a shared row lock: a revocation committed before this copy starts cannot be bypassed.
+    const [current] = await tx.select({ id: sharedLinks.id }).from(sharedLinks)
+      .where(and(eq(sharedLinks.id, link.id), isNull(sharedLinks.revokedAt))).for("share");
+    if (!current) throw new Error("Link not found");
     await tx.insert(conversations).values({
       id: newConvId,
       userId: p.user.id,
@@ -229,6 +241,7 @@ export async function continueSharedConversation(token: string): Promise<string>
     for (const m of path) {
       const nid = newId();
       idMap.set(m.id, nid);
+      const parts = stripTaskLinks(closedForCopy(m.role, withoutSharedAttachments(m.parts as unknown[]).parts.map(part => part && typeof part === "object" ? withoutOpenAIMetadata(part) : part)));
       await tx.insert(messages).values({
         id: nid,
         conversationId: newConvId,
@@ -237,10 +250,10 @@ export async function continueSharedConversation(token: string): Promise<string>
         // Attachments stay private to their owner, so drop file parts from the copy. OpenAI item ids and sealed
         // reasoning belong to the sharer's account, so they are dropped too (see src/lib/agent/replay.ts). Approvals
         // still pending belong to the sharer's turn (a Hermes one names the sharer's live run): closed in the copy.
-        parts: stripTaskLinks(closedForCopy(m.role, (m.parts as { type: string }[]).filter((x) => x.type !== "file").map((x) => withoutOpenAIMetadata(x)))),
+        parts,
         metadata: withoutReplayKey(m.metadata),
         model: m.model,
-        searchText: m.searchText,
+        searchText: partsToText(parts),
       });
       parent = nid;
     }
@@ -251,7 +264,7 @@ export async function continueSharedConversation(token: string): Promise<string>
 }
 
 /** A copied assistant message's unanswered (or answered but unrun) approvals, closed: nothing in a copy can be continued. */
-function closedForCopy(role: string, parts: { type: string }[]): unknown[] {
+function closedForCopy(role: string, parts: unknown[]): unknown[] {
   if (role !== "assistant") return parts;
   const msg = { id: "copy", role: "assistant", parts } as unknown as PortalUIMessage;
   return closeOpenParts(msg, "cancelled", { deniedReason: "Not answered in the shared chat.", stoppedText: "Not run in the shared chat." }).message.parts;

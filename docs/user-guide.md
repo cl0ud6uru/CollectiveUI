@@ -17,7 +17,7 @@ The bot features below describe ordinary **native caller bots** unless stated ot
 - Attach files or photos (click, drag and drop, or paste):
   - Images go to vision-capable models.
   - Text is extracted from PDF, Word and text files and added to the message.
-- Share an eligible chat as a snapshot link. Only signed-in people in your organization can open it. **Continue this conversation** creates the viewer's own copy when its bot/model is still accessible and supports continuation; it never grants access to the original owner's private task records or credentials.
+- Share an eligible chat as a snapshot link. Only signed-in people in your organization can open it. **Continue this conversation** creates the viewer's own copy when its bot/model is still accessible and supports continuation; it never grants access to the original owner's private task records or credentials. Private file attachments are omitted from the shared view and continued copy, with an explanatory notice.
 - Settings: theme, custom instructions, memory and learning, standing approvals, connected accounts, security and archived chats. Local accounts support passkeys and TOTP; LDAP accounts support company passkeys. Works in light and dark mode and on mobile.
 
 ![The deployed new-chat composer with attachment, Tools and command controls.](images/live-app/new-chat.png)
