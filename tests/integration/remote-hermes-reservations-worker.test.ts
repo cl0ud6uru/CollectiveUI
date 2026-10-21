@@ -11,7 +11,13 @@ vi.mock('@/lib/remote-hermes/socket', async original => {
     state = 'connected';
     connectionEpoch = 1;
     call = rpc.call;
-    async callWithEpoch(...args: unknown[]) { return { result: await rpc.call(...args), epoch: 1 }; }
+    private boundary: NonNullable<ConstructorParameters<typeof actual.DashboardSocket>[5]>;
+    constructor(...args: ConstructorParameters<typeof actual.DashboardSocket>) { this.boundary = args[5]!; }
+    async callWithEpoch(...args: Parameters<InstanceType<typeof actual.DashboardSocket>['callWithEpoch']>) {
+      // Keep the real lease/policy boundary; only the remote snapshot reply is synthetic.
+      const { value } = await this.boundary(args[0], args[1] ?? {}, () => rpc.call(...args));
+      return { result: await value, epoch: 1 };
+    }
     close() {}
   } };
 });
