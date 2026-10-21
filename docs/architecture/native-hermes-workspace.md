@@ -26,6 +26,8 @@ The composed adapter regression harness additionally runs the pinned Hermes `rpc
 
 Validation:
 
+The composed regression harness now pins the current published #266 owner adapter at `ea35cbd0e38a2bb7ff100436ede2e5e10e1a1ed8`. Workspace access holds the native session history lock from the idle check through filesystem access, sharing the same boundary used by background notification turn admission. A composed concurrency regression using the actual pinned native admission helper fails before this serialization and passes after it. This synthetic server/session proof does not establish full-gateway integration or clear the independent owner-adapter hold.
+
 ```sh
 npx vitest run --configLoader runner tests/unit/remote-hermes-operations.test.ts tests/unit/remote-hermes-projects.test.ts
 python3 tests/native-workspace-files.py

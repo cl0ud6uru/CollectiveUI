@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import types
 import unittest
 
@@ -162,7 +163,8 @@ class WorkspaceFilesEndpointTests(unittest.TestCase):
         db.commit(); db.close()
         self.transport_obj = object()
         self.session = {"cwd": str(self.workspace), "explicit_cwd": True, "cwd_from_settle": False,
-            "profile_home": str(self.home), "source": "desktop", "_compute_host_active": False}
+            "profile_home": str(self.home), "source": "desktop", "_compute_host_active": False,
+            "history_lock": threading.Lock()}
         self.server = _Server(str(self.home), self.session, self.transport_obj)
         self.handle = workspace_module.install(self.server)
 

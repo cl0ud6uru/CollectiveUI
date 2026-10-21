@@ -27,7 +27,7 @@ import types
 import unittest
 
 PIN = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
-OWNER_HEAD = "5de681d1c1050e825c6b2b0d679426590102bafa"
+OWNER_HEAD = "ea35cbd0e38a2bb7ff100436ede2e5e10e1a1ed8"
 WORKSPACE_FILE = Path(__file__).resolve().parents[1] / "src/hermes-recovery/native_workspace_files.py"
 
 
@@ -153,6 +153,8 @@ def _boot_modules(hermes: Path, owner_path: Path):
     session_workdir.register(server)
     server.contextlib = importlib.import_module("contextlib")
     server.os = os
+    _exec_defs(hermes / "tui_gateway/session_lifecycle.py", {"_session_turn_admission"}, vars(server))
+    _exec_defs(hermes / "tui_gateway/session_notifications.py", {"_notif_claim_turn"}, vars(server))
 
     owner = _load_file("tui_gateway.collective_hub_owner", owner_path)
     workspace = _load_file("composed_native_workspace_files", WORKSPACE_FILE)
@@ -206,7 +208,8 @@ class ComposedHermesWorkspaceTests(unittest.TestCase):
 
         self.session = {"session_id": "runtime-session", "session_key": "stored-session", "cwd": str(self.workspace),
                         "explicit_cwd": True, "cwd_from_settle": False, "source": "desktop",
-                        "profile_home": str(self.home), "transport": None, "_compute_host_active": False}
+                        "profile_home": str(self.home), "transport": None, "_compute_host_active": False,
+                        "history_lock": threading.Lock()}
         server = self.server
         server._hermes_home = self.home
         server._sessions = {"runtime-session": self.session}
@@ -268,6 +271,41 @@ class ComposedHermesWorkspaceTests(unittest.TestCase):
 
     def workspace_call(self, params, client=None):
         return self.dispatch("collective.workspace.files", {"profile": "synthetic-profile", "session_id": "runtime-session", **params}, client)
+
+    def test_native_background_turn_cannot_start_between_idle_check_and_file_read(self):
+        self.claim()
+        params = {"action": "read", "path": "README.md"}
+        entered, release, admitted = threading.Event(), threading.Event(), threading.Event()
+        original_read = self.workspace_module._read
+        responses = []
+
+        def paused_read(*args):
+            entered.set()
+            release.wait(2)
+            return original_read(*args)
+
+        def claim_native_turn():
+            if self.server._notif_claim_turn(self.session):
+                admitted.set()
+
+        self.workspace_module._read = paused_read
+        writer = threading.Thread(target=lambda: responses.append(self.workspace_call(params)))
+        claimer = threading.Thread(target=claim_native_turn)
+        try:
+            writer.start()
+            self.assertTrue(entered.wait(1))
+            claimer.start()
+            raced = admitted.wait(.1)
+        finally:
+            release.set()
+            writer.join(3)
+            if claimer.ident is not None:
+                claimer.join(3)
+            self.workspace_module._read = original_read
+        self.assertFalse(writer.is_alive())
+        self.assertFalse(claimer.is_alive())
+        self.assertFalse(raced, "native notification admission overtook a file read after its idle check")
+        self.assertEqual(responses[0].get("result", {}).get("content"), "synthetic native workspace\n", responses)
 
     def test_authorized_claim_and_reads_cross_actual_pinned_dispatcher_and_owner_wrapper(self):
         self.assertIsNot(self.server._methods["collective.workspace.files"], self.server._collective_workspace_files)

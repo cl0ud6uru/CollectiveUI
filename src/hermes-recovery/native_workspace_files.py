@@ -280,29 +280,32 @@ def install(server):
             attached_transport, session = server._current_session_steer_authority(params.session_id)
             if attached_transport is not transport or session is None:
                 return server._err(rid, 4030, "Workspace files require the attached native session.")
-            if (server._session_live_status(params.session_id, session) != "idle"
-                    or server._inflight_snapshot(session) or server._queued_prompt_snapshot(session)
-                    or server._session_has_active_delegations(params.session_id, session)):
-                return server._err(rid, 4090, "Finish this native turn before browsing its workspace.")
-            root_info = _project_root(server, params.profile, session)
-            if root_info is None:
-                return server._ok(rid, WorkspaceFilesResult(available=False, action=params.action, path=".").model_dump())
-            workspace_id, project_name, root, _cwd_relative = root_info
-            if params.workspace_id is not None and params.workspace_id != workspace_id:
-                return server._err(rid, 4030, "The approved workspace changed; refresh the native workspace list.")
-            parts = _relative_parts(params.path)
-            if parts is None:
-                return server._err(rid, 4000, "Choose a safe root-relative workspace path.")
-            if params.action == "list":
-                entries, truncated = _list(root, parts)
+            # Native background turns claim running under history_lock. Hold the
+            # same lock from the idle check through all workspace access.
+            with session["history_lock"]:
+                if (server._session_live_status(params.session_id, session) != "idle"
+                        or server._inflight_snapshot(session) or server._queued_prompt_snapshot(session)
+                        or server._session_has_active_delegations(params.session_id, session)):
+                    return server._err(rid, 4090, "Finish this native turn before browsing its workspace.")
+                root_info = _project_root(server, params.profile, session)
+                if root_info is None:
+                    return server._ok(rid, WorkspaceFilesResult(available=False, action=params.action, path=".").model_dump())
+                workspace_id, project_name, root, _cwd_relative = root_info
+                if params.workspace_id is not None and params.workspace_id != workspace_id:
+                    return server._err(rid, 4030, "The approved workspace changed; refresh the native workspace list.")
+                parts = _relative_parts(params.path)
+                if parts is None:
+                    return server._err(rid, 4000, "Choose a safe root-relative workspace path.")
+                if params.action == "list":
+                    entries, truncated = _list(root, parts)
+                    result = WorkspaceFilesResult(available=True, workspace_id=workspace_id,
+                        project_name=project_name, action="list", path="/".join(parts) or ".",
+                        entries=entries, truncated=truncated)
+                    return server._ok(rid, result.model_dump())
+                content = _read(root, parts)
                 result = WorkspaceFilesResult(available=True, workspace_id=workspace_id,
-                    project_name=project_name, action="list", path="/".join(parts) or ".",
-                    entries=entries, truncated=truncated)
+                    project_name=project_name, action="read", path="/".join(parts), content=content)
                 return server._ok(rid, result.model_dump())
-            content = _read(root, parts)
-            result = WorkspaceFilesResult(available=True, workspace_id=workspace_id,
-                project_name=project_name, action="read", path="/".join(parts), content=content)
-            return server._ok(rid, result.model_dump())
         except ValueError as exc:
             # Contract/domain messages are deliberately generic; never echo paths or native exceptions.
             return server._err(rid, 4000, str(exc) if str(exc) in {"A file path is required.", "This file is not an eligible small text file."} else "Invalid workspace file request.")
