@@ -37,35 +37,27 @@ receipts. It does not change approval policy, socket authentication or deploymen
 - Snapshot revision/event checks and request-ID settlement checks remain intact.
   A late acknowledgement for a consumed queue cannot replace a newer reservation.
 
-## Remaining evidence gap — #90 is partial; do not implement an idle/timeout reset
+## Native evidence and explicit owner-confirmed recovery
 
-A crashed admission that was never confirmed, or a queue that was submitted but
-never observed, can still remain reserved indefinitely. This patch intentionally
-has no force-release button. The currently consumed protocol does not supply a
-per-request terminal receipt or a cancel-and-drain dispatch barrier. Nothing here
-proves that an old native handler cannot publish its prompt/queue after Stop or
-an idle snapshot.
+Ordinary idle snapshots, interrupts and timeouts still cannot settle unobserved
+work. The separate [owner-confirmed portal path](remote-hermes-portal-recovery.md)
+now consumes the [versioned cancel-and-drain adapter](remote-hermes-native-drain-protocol.md)
+and [native owner fence](remote-hermes-hub-ownership.md). It writes a durable
+confirmation intent before cancellation, requires exact boot/runtime/profile and
+reservation evidence, promotes recovery ownership only after native workers
+actually drain, then applies a revision/generation-bound transaction while
+retaining every original turn receipt. Neither prompt nor protected answer is
+automatically replayed.
 
-Closing this gap safely requires one of:
-
-1. **Native evidence:** a persisted, operation-correlated receipt/status endpoint,
-   or an acknowledged cancellation barrier that guarantees all earlier dispatches
-   for the exact runtime generation have drained or been canceled. Wire the
-   server-owned binding and request ID through admission; verify native semantics
-   against pinned upstream source and delayed-dispatch transport tests.
-2. **Explicit operator recovery:** quiesce *all* portal dispatchers/replicas and
-   native clients for the binding, drain or terminate the old native runtime so
-   its handlers cannot resume, inspect completed work and discard queued work
-   intentionally. Only then may a reviewed, owner/binding/request-ID/revision-bound
-   transaction clear reservations while retaining every receipt. Recovery must
-   invalidate old runtime-generation acknowledgements/events and disclose that
-   already-executed effects are not undone. A browser assertion that Stop worked
-   is not this confirmation. No such operator write is implemented or authorized
-   by this patch.
-
-Until one of those contracts exists, keep the uncertain reservation, inspect
-native history, and use a different conversation for new work. Do not retry the
-old work under a new receipt just to bypass uncertainty.
+This closes the supported native-evidence path that the initial recovery patch
+lacked. It requires explicit installation of the reviewed adapters at their
+supported pin; unpatched gateways do not provide those contracts. Missing,
+pending, process-changed, unsupported or mismatched evidence remains blocked.
+There is no general timeout reset or operator force-release transaction, and
+completed external effects are not undone. Never issue the same uncertain work
+under a new receipt merely to bypass the retained reservation. See the [acceptance
+mapping](../validation/native-audit-acceptance.md) for the distinction between
+repository conformance and deployment.
 
 ## Regression evidence
 
@@ -90,6 +82,7 @@ is not a claim of live native-server or real PostgreSQL execution.
 The explicit, versioned [native cancel-and-drain adapter](remote-hermes-native-drain-protocol.md)
 is a separate opt-in source patch against the reviewed pin. Its pending/terminal
 receipt contract and strict client advance the missing native evidence layer. It
-is not deployed or called by this default recovery path, and it does not clear
-local reservations. The owner confirmation and revision-checked recovery
-transaction remain implementation work.
+is consumed only by the explicit owner-confirmed recovery path, not by ordinary
+snapshot reconciliation. The native adapter supplies evidence; the portal's
+separate transaction validates and clears exact local reservations. No adapter
+deployment or production recovery is performed by these repository changes.
