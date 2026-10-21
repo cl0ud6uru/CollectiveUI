@@ -156,6 +156,47 @@ describe('server-scoped active Team runtime',()=>{
     const settled = JSON.parse(await readFile(path.join(config.stateDir, runtimeKey('alice'), 'runtime.json'), 'utf8'));
     expect(settled.candidateReceipts.context.state).toBe('stopped');
   });
+  it('expires uncertain admin startup despite another fresh maintainer', async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now), p = await prepare('alice', 'admin');
+    driver.reopenGate = async () => { throw new Error('Synthetic uncertain native startup'); };
+    await expect(broker.startTeamCandidate('alice', p.scope, p.grant.grantId)).rejects.toThrow('uncertain native startup');
+    driver.reopenGate = undefined;
+    clock.mockReturnValue(now + 30000);
+    const sibling = broker.authorizeTeam('bob', { teamBotId: 'bot', mode: 'admin', modelPolicy: 'personal_required' });
+    await broker.ensureTeam('bob', { teamBotId: 'bot', mode: 'admin', name: 'Retained' }, sibling.grantId);
+    const file = path.join(config.stateDir, runtimeKey(p.binding.ownerId), 'runtime.json');
+    expect(JSON.parse(await readFile(file, 'utf8')).candidateReceipts.context.state).toBe('needs_attention');
+    clock.mockReturnValue(now + 61000);
+    const stops = driver.stops; await broker.expireLeases();
+    expect(driver.stops).toBeGreaterThan(stops);
+    expect(driver.active.has(p.binding.ownerId)).toBe(false);
+    expect(JSON.parse(await readFile(file, 'utf8')).candidateReceipts.context.state).toBe('stopped');
+  });
+  it('leaves a fresh active maintainer running when an idle other maintainer expires', async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const idle = broker.authorizeTeam('alice', { teamBotId: 'bot', mode: 'admin', modelPolicy: 'personal_required' });
+    await broker.ensureTeam('alice', { teamBotId: 'bot', mode: 'admin', name: 'Idle' }, idle.grantId);
+    clock.mockReturnValue(now + 30000);
+    const p = await prepare('bob', 'admin'); await broker.startTeamCandidate('bob', p.scope, p.grant.grantId);
+    clock.mockReturnValue(now + 61000);
+    const stops = driver.stops; await broker.expireLeases();
+    expect(driver.stops).toBe(stops); expect(driver.active.has(p.binding.ownerId)).toBe(true);
+    const pair = await access(p, 'bob');
+    const id = begin(pair.controller, pair.nativeBindingId, p); await terminal(pair.controller, id);
+    expect(pair.controller.getRun(id).status).toBe('completed');
+    expect(() => broker.teamBinding('alice', 'bot', 'admin', idle.grantId)).toThrow('authorization');
+  });
+  it('keeps a renewed active admin context when the same maintainer old grant expires', async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(now), p = await prepare('alice', 'admin');
+    await broker.startTeamCandidate('alice', p.scope, p.grant.grantId);
+    clock.mockReturnValue(now + 30000);
+    const fresh = broker.authorizeTeam('alice', { teamBotId: 'bot', mode: 'admin', modelPolicy: 'personal_required' });
+    broker.renewTeamCandidate('alice', { teamBotId: 'bot', mode: 'admin', bindingId: p.binding.bindingId, runId: p.scope.runId, contextId: p.scope.contextId }, fresh.grantId);
+    clock.mockReturnValue(now + 61000);
+    const stops = driver.stops; await broker.expireLeases();
+    expect(driver.stops).toBe(stops); expect(driver.active.has(p.binding.ownerId)).toBe(true);
+    expect(broker.teamBinding('alice', 'bot', 'admin', fresh.grantId)).toEqual(p.binding);
+  });
   it('renews only the retained actor scope without extending native context expiry',async()=>{
     const now=Date.now(),clock=vi.spyOn(Date,'now').mockReturnValue(now),p=await prepare();
     await broker.startTeamCandidate('alice',p.scope,p.grant.grantId);

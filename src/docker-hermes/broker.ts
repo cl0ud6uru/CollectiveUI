@@ -214,7 +214,7 @@ export class DockerBroker {
     for (const [id, grant] of this.teamGrants) if (grant.until <= Date.now()) {
       this.teamGrants.delete(id); expired.set(JSON.stringify([grant.actor, grant.teamBotId, grant.mode]), grant);
     }
-    for (const scope of expired.values()) if (![...this.teamGrants.values()].some(g => teamOwner(g.actor, g.teamBotId, g.mode) === teamOwner(scope.actor, scope.teamBotId, scope.mode) && g.teamBotId === scope.teamBotId && g.mode === scope.mode && g.until > Date.now()))
+    for (const scope of expired.values()) if (![...this.teamGrants.values()].some(g => g.actor === scope.actor && g.teamBotId === scope.teamBotId && g.mode === scope.mode && g.until > Date.now()))
       await this.revokeTeamScope(scope.actor, scope, true).catch(() => {});
     for (const [owner, s] of this.states) if (s.phase !== 'stopping' && (!['disabled', 'stopped'].includes(s.phase) || this.maintaining.has(owner)) && ((this.leases.get(owner)?.until ?? 0) <= Date.now() || s.cleanupRequired))
       await this.stop(owner).catch(() => {});
@@ -462,9 +462,9 @@ export class DockerBroker {
     const owner = teamOwner(actor, scope.teamBotId, scope.mode), s = this.state(owner);
     const operation = s?.teams[teamKey(scope.teamBotId, scope.mode)];
     const matches = (entry: Candidate) => entry.actor === actor && entry.config.teamBotId === scope.teamBotId && entry.config.mode === scope.mode;
+    const uncertain = Object.values(s?.candidateReceipts ?? {}).some(receipt => receipt.actor === actor && receipt.teamBotId === scope.teamBotId && receipt.mode === scope.mode && receipt.state !== 'stopped');
     if (expired) {
       const candidate = this.candidateOwners.get(owner);
-      const uncertain = Object.values(s?.candidateReceipts ?? {}).some(receipt => receipt.actor === actor && receipt.teamBotId === scope.teamBotId && receipt.mode === scope.mode && receipt.state !== 'stopped');
       const pending = [...this.candidateConfigs.values()].some(entry => matches(entry) && entry.phase !== 'prepared');
       // A dormant prepared config has never started native work. Keep every retained
       // profile/receipt and sibling controller, but discard its expired capability.
@@ -483,7 +483,9 @@ export class DockerBroker {
     if (!s) return { stopped: true, interruption: 'none' as const };
     if (!operation && !hadGrant) return { stopped: true, interruption: 'none' as const };
     const retainedGrant = [...this.teamGrants.values()].some(grant => teamOwner(grant.actor, grant.teamBotId, grant.mode) === owner && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode && grant.until > Date.now());
-    if (retainedGrant) {
+    // Another maintainer's fresh grant cannot settle this actor's unresolved startup.
+    // A scope with no retained native work may still leave that maintainer running.
+    if (retainedGrant && !(expired && uncertain)) {
       if(affected && affected.actor!==actor)return {stopped:false,interruption:'none' as const};
       const controller = operation?.bindingId ? this.controllers.get(operation.bindingId) : undefined;
       let idle = !controller;
