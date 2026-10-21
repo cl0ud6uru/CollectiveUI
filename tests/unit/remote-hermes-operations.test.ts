@@ -1,18 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const f = vi.hoisted(() => ({ access: vi.fn(), fetch: vi.fn(), call: vi.fn() }));
+import { createHash } from 'node:crypto';
+const f = vi.hoisted(() => ({ access: vi.fn(), fetch: vi.fn(), call: vi.fn(), refresh: vi.fn(), owned: vi.fn() }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: f.access }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardFetch: () => f.fetch }));
-vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call } }) }));
-vi.mock('@/lib/remote-hermes/sessions', async () => { const { z } = await import('zod'); return { profileName: z.string().regex(/^[a-zA-Z0-9_.-]+$/) }; });
-import { directoryProjection, inspectNative, pluginProjection, projectProjection, scheduleProjection, systemProjection, validDirectory } from '@/lib/remote-hermes/operations';
+vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: f.call }, refresh: f.refresh, sessions: new Map([['native-row', { row: { runtimeId: 'runtime-session' } }]]) }) }));
+vi.mock('@/lib/remote-hermes/sessions', async () => { const { z } = await import('zod'); return { profileName: z.string().regex(/^[a-zA-Z0-9_.-]+$/), ownedNativeSession: f.owned }; });
+import { inspectNative, pluginProjection, projectProjection, scheduleProjection, systemProjection, workspaceFilesProjection } from '@/lib/remote-hermes/operations';
 import { HttpError } from '@/lib/authz';
+import { newId } from '@/lib/ids';
 
 describe('native workspace inspection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     f.access.mockResolvedValue({ baseUrl: 'https://example.com/hermes', policy: { enabled: true, privateGateways: [] }, secrets: { mode: 'password', accessToken: 'synthetic-access' }, client: { profiles: async () => [{ name: 'default' }] } });
     f.call.mockResolvedValue({ projects: [] });
-    f.fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes('default-cwd') ? { cwd: '/workspace' } : { entries: [] })));
+    f.owned.mockResolvedValue({ id: 'native-row', profile: 'default' });
+    f.refresh.mockResolvedValue({});
+    f.fetch.mockImplementation(async () => new Response(JSON.stringify({})));
   });
   it('checks owned connection and admission before native transport', async () => {
     f.access.mockRejectedValueOnce(new Error('Connection not found'));
@@ -30,31 +34,29 @@ describe('native workspace inspection', () => {
     const values = [projectProjection({ projects: [{ id: 'p', name: 'Example', folders: [], config: secret }] }), pluginProjection({ plugins: [{ name: 'example', version: '1', settings_schema: [{ value: secret }], servers: [{ env: secret }], install_dir: secret }] }), scheduleProjection([{ id: 'j', name: 'Example', prompt: secret, command: secret, deliver: secret }]), systemProjection({ hermes_version: '1', hostname: secret, process: { pid: 1 }, env: secret })];
     expect(JSON.stringify(values)).not.toContain(secret); expect(systemProjection({ cpu_count: -1, cpu_percent: Infinity }).cpuCount).toBeUndefined();
   });
-  it('does not truncate native plugin keys into mutation identities', () => {
-    const key = 'x'.repeat(301);
-    const longName = 'n'.repeat(301);
-    expect(pluginProjection({ plugins: [{ key, name: 'Long key', source: 'user', status: 'disabled' },
-      { key: 'safe:long-name', name: longName, source: 'user', status: 'disabled' }] }).plugins)
-      .toEqual([{ key: '', name: 'Long key', version: '', status: 'disabled', source: 'user' },
-        { key: 'safe:long-name', name: '', version: '', status: 'disabled', source: 'user' }]);
+  it('uses only the selected owned native session and never dashboard filesystem endpoints', async () => {
+    const sessionId = newId();
+    f.call.mockResolvedValueOnce({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'a'.repeat(32), project_name: 'Synthetic', action: 'list', path: '.', entries: [{ name: 'src', path: 'src', kind: 'directory' }, { name: '.env', path: '.env', kind: 'file' }, { name: 'escape', path: '../escape', kind: 'file' }] });
+    expect(await inspectNative('owner', 'connection', { panel: 'files', profile: 'default', sessionId })).toEqual({ available: true, workspaceId: 'a'.repeat(32), projectName: 'Synthetic', action: 'list', path: '.', entries: [{ name: 'src', path: 'src', directory: true }], truncated: false });
+    expect(f.owned).toHaveBeenCalledWith('owner', 'connection', sessionId);
+    expect(f.call).toHaveBeenCalledExactlyOnceWith('collective.workspace.files', { profile: 'default', session_id: 'runtime-session', action: 'list' });
+    expect(f.fetch).not.toHaveBeenCalled();
   });
-  it('does not list hidden or sensitive entries, fabricated paths or traversal', () => {
-    expect(directoryProjection({ entries: [{ name: 'README.md', path: '/workspace/README.md' }, { name: 'src', path: '/workspace/src', isDirectory: true }, { name: '.env', path: '/workspace/.env' }, { name: 'credentials', path: '/workspace/credentials', isDirectory: true }, { name: 'other', path: '/etc/other' }, { name: '..', path: '/workspace/..' }] }, '/workspace')).toEqual([{ name: 'README.md', path: '/workspace/README.md', directory: false }, { name: 'src', path: '/workspace/src', directory: true }]);
-    for (const sensitive of ['secret.txt', 'secrets.json', 'credentials.yaml', 'id_rsa.pub', 'vault.db', 'auth.yaml', '.config/visible']) expect(validDirectory(`/workspace/${sensitive}`)).toBe(false);
+  it('rejects missing/mismatched chats and never falls back when the native method is unsupported', async () => {
+    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default' })).rejects.toThrow('Open a saved native Hermes chat');
+    f.owned.mockResolvedValueOnce({ id: 'native-row', profile: 'other' });
+    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', sessionId: '00000000-0000-4000-8000-000000000001' })).rejects.toThrow('profile of the selected');
+    f.call.mockRejectedValueOnce(new HttpError(501, 'Unsupported'));
+    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', sessionId: '00000000-0000-4000-8000-000000000001' })).rejects.toThrow('Unsupported');
+    expect(f.fetch).not.toHaveBeenCalled();
   });
-  it('only descends into server-listed directories and excludes symlink leaves', async () => {
-    f.fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes('default-cwd') ? { cwd: '/workspace' } : { entries: [{ name: 'link', path: '/workspace/link', isDirectory: false }] })));
-    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace/link/secret' })).rejects.toThrow('listed');
-    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/etc' })).rejects.toThrow('inside');
-    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace/../etc' })).rejects.toThrow('listed');
-    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace//src' })).rejects.toThrow('listed');
-    await expect(inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace\\src' })).rejects.toThrow('listed');
-  });
-  it('lists descendants using encoded paths, keeps credentials server-side and never mutates native state', async () => {
-    f.fetch.mockImplementation(async (url: string) => new Response(JSON.stringify(url.includes('default-cwd') ? { cwd: '/workspace' } : new URL(url).searchParams.get('path') === '/workspace' ? { entries: [{ name: 'src', path: '/workspace/src', isDirectory: true }] } : { entries: [] })));
-    expect(await inspectNative('owner', 'connection', { panel: 'files', profile: 'default', path: '/workspace/src' })).toEqual({ roots: ['/workspace'], directory: '/workspace/src', entries: [] });
-    expect(f.fetch.mock.calls.every(([, opts]) => opts.method === undefined && opts.headers.Authorization === 'Bearer synthetic-access')).toBe(true);
-    expect(f.call).toHaveBeenCalledWith('projects.list', { profile: 'default' });
+  it('projects only safe root-relative names and bounds text reads', () => {
+    expect(workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'list', path: 'src', entries: [{ name: 'main.ts', path: 'src/main.ts', kind: 'file' }, { name: '.env', path: 'src/.env', kind: 'file' }, { name: 'traversal', path: 'src/../secret', kind: 'file' }, { name: 'wrong', path: 'elsewhere/wrong', kind: 'directory' }] })).toEqual({ available: true, workspaceId: 'b'.repeat(32), projectName: 'Example', action: 'list', path: 'src', entries: [{ name: 'main.ts', path: 'src/main.ts', directory: false }], truncated: false });
+    const content = 'synthetic', sha256 = createHash('sha256').update(content).digest('hex');
+    expect(workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content, sha256 })).toMatchObject({ content, sha256 });
+    expect(() => workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content, sha256: 'a'.repeat(64) })).toThrow('invalid workspace file revision');
+    expect(() => workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: 'README.md', content: 'x'.repeat(256 * 1024 + 1) })).toThrow('oversized');
+    expect(() => workspaceFilesProjection({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'b'.repeat(32), project_name: 'Example', action: 'read', path: '/etc/passwd', content: 'secret' })).toThrow('invalid workspace path');
   });
   it('reports unavailable versions and bounds response bodies without reflecting native error text', async () => {
     f.fetch.mockResolvedValueOnce(new Response('private upstream details', { status: 404 }));

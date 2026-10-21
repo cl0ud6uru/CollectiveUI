@@ -1,22 +1,30 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export const DASHBOARD_PIN = 'f97608f178d1ffeca59860195ab7da295f7c8e5f';
 /** Starts only the repository's disposable loopback fixture, never a user URL/profile. */
-export async function startPinnedDashboard() {
+export async function startPinnedDashboard(options: { recoveryAdapters?: boolean; workspaceAdapter?: 'read' | 'write' } = {}) {
   if (!process.env.HERMES_SOURCE || !process.env.HERMES_DASHBOARD_PYTHON) throw new Error('Exact source checkout and isolated Python runtime required');
+  // The launcher owns cleanup even if Python is killed during archive/startup.
+  const temporary = await mkdtemp(join(options.workspaceAdapter ? process.cwd() : tmpdir(), 'collective-dashboard-launcher-'));
   const child = spawn(process.env.HERMES_DASHBOARD_PYTHON, ['-B', 'tests/fixtures/remote-hermes-dashboard-bootstrap.py'], {
-    env: { NODE_ENV: 'test', PATH: process.env.PATH, HERMES_SOURCE: process.env.HERMES_SOURCE }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { NODE_ENV: 'test', TMPDIR: temporary, PATH: process.env.PATH, HERMES_SOURCE: process.env.HERMES_SOURCE, ...(options.recoveryAdapters || options.workspaceAdapter ? { REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE: '1' } : {}), ...(options.workspaceAdapter ? { REMOTE_HERMES_WORKSPACE_ADAPTER_FIXTURE: options.workspaceAdapter } : {}) }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stderr.resume(); // Synthetic diagnostics are not retained as artifacts.
   async function stop() {
-    if (child.exitCode !== null) return;
-    child.kill('SIGTERM');
-    await new Promise<void>(resolve => {
-      const timeout = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 5000);
-      child.once('exit', () => { clearTimeout(timeout); resolve(); });
-    });
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+      await new Promise<void>(resolve => {
+        const timeout = setTimeout(() => { child.kill('SIGKILL'); }, 5000);
+        child.once('exit', () => { clearTimeout(timeout); resolve(); });
+      });
+    }
+    await rm(temporary, { recursive: true, force: true, maxRetries: 3 });
   }
+
   try {
     const port = await new Promise<number>((resolve, reject) => {
       const lines = createInterface({ input: child.stdout });
@@ -31,6 +39,8 @@ export async function startPinnedDashboard() {
             const site = typeof ready.startupSite === 'string' && /^[A-Za-z0-9_.:<>-]{1,160}$/.test(ready.startupSite) ? ` at ${ready.startupSite}` : '';
             reject(new Error(`Pinned dashboard startup failed (${ready.startupError}${ready.missingModule ? `: ${ready.missingModule}` : ''})${site}`)); return;
           }
+          if (options.recoveryAdapters && ready.recoveryAdapters !== true) throw new Error();
+          if (options.workspaceAdapter && ready.workspaceAdapter !== options.workspaceAdapter) throw new Error();
           if (ready.pin !== DASHBOARD_PIN || ready.runtimeVersion !== '0.21.5' || ready.desktopContract !== 8 || !Number.isInteger(ready.port) || ready.port < 1 || ready.port > 65535) throw new Error();
           resolve(ready.port);
         } catch { reject(new Error('Invalid pinned dashboard identity/readiness')); }
@@ -38,11 +48,12 @@ export async function startPinnedDashboard() {
     });
     const base = `http://127.0.0.1:${port}`;
     // The native fixture announces the bound listener before Uvicorn accepts HTTP.
-    // Require actual HTTP readiness here; callers must not race a one-second waitFor.
+    // Use the pinned lightweight liveness route, not /api/status's gateway and
+    // session probes. Callers must not race a one-second waitFor.
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(base + '/api/status', { signal: AbortSignal.timeout(1000) });
+        const response = await fetch(base + '/api/health', { signal: AbortSignal.timeout(1000) });
         if (response.ok && (await response.json()).version === '0.21.5') return { base, stop };
         await response.body?.cancel();
       } catch { /* Retry only this owned disposable loopback endpoint. */ }

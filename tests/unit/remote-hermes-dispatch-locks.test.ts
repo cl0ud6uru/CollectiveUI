@@ -6,7 +6,7 @@ import { WebSocketServer } from 'ws';
 import { eq } from 'drizzle-orm';
 import type { DB } from '@/db';
 import * as schema from '@/db/schema';
-import { remoteHermesSessions, settings } from '@/db/schema';
+import { remoteHermesHubOwners, remoteHermesRecoveries, remoteHermesSessions, settings } from '@/db/schema';
 
 // Opt-in ONLY to the named disposable database; never fall back to DATABASE_URL.
 const url = process.env.REMOTE_HERMES_LOCK_TEST_URL;
@@ -43,9 +43,9 @@ beforeAll(async () => {
   const target = new URL(url);
   if (target.pathname !== '/collective_remote_lifecycle_test' || !['127.0.0.1', 'localhost'].includes(target.hostname)) throw new Error('Named disposable loopback PostgreSQL fixture required');
   pool = new Pool({ connectionString: url, max: 4 }); f.db = drizzle(pool, { schema });
-  await pool.query('DROP TABLE IF EXISTS remote_hermes_turns, remote_hermes_sessions, remote_hermes_connections, settings, users CASCADE');
+  await pool.query('DROP TABLE IF EXISTS remote_hermes_recoveries, remote_hermes_hub_owners, remote_hermes_turns, remote_hermes_sessions, remote_hermes_connections, settings, users CASCADE');
   await pool.query("CREATE TABLE users (id text PRIMARY KEY); CREATE TABLE settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()); INSERT INTO users VALUES ('owner');");
-  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations']) await pool.query(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
+  for (const tag of ['0030_remote_hermes_connections', '0031_remote_hermes_sessions', '0032_remote_hermes_reservations', '0062_remote_hermes_hub_ownership', '0063_remote_hermes_recovery']) await pool.query(readFileSync(`src/db/migrations/${tag}.sql`, 'utf8'));
 });
 beforeEach(async () => { if (url) { f.pausePolicy = undefined; await pool.query('TRUNCATE remote_hermes_connections CASCADE; TRUNCATE settings'); } });
 afterEach(() => cleanup.splice(0).reverse().forEach(close => close()));
@@ -70,12 +70,13 @@ async function fixture() {
     });
   });
   const hub = new NativeHub('owner', connection.id); cleanup.push(() => hub.close());
-  hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: 'runtime', running: true }, 'connected'), pending: new Map(), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1 });
+  hub.sessions.set(row.id, { row, view: sessionView(row.id, row.profile, { session_id: 'runtime', running: true }, 'connected'), pending: new Map(), refreshedAt: Date.now(), eventRevision: 0, socketEpoch: 1, ownerInstanceId: hub.instanceId, leaseGeneration: 1, ownerSocketEpoch: 1 });
   await hub.socket.connect();
-  return { hub, row, input, baseUrl, received };
+  return { hub, row, input, baseUrl, received, server };
 }
 run.each(['dispatch', 'cached view'] as const)('PostgreSQL fences replacement during policy await before %s linearizes', async operation => {
   const { hub, row, input, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
   const entered = gate(); const resume = gate();
   f.pausePolicy = async () => { entered.release(); await resume.promise; };
   const pending = operation === 'dispatch' ? hub.socket.call('projects.list', { profile: 'default' }) : hub.view(row);
@@ -103,6 +104,7 @@ run.each(['dispatch', 'cached view'] as const)('PostgreSQL fences replacement du
 }, 15_000);
 run('PostgreSQL serializes policy revocation through send, then denies new work but allows active recovery', async () => {
   const { hub, row, baseUrl, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
   const entered = gate(); const resume = gate();
   f.pausePolicy = async () => { entered.release(); await resume.promise; };
   const dispatch = hub.socket.call('projects.list', { profile: 'default' }).catch(error => error);
@@ -128,6 +130,7 @@ run('PostgreSQL serializes policy revocation through send, then denies new work 
 }, 15_000);
 run('reuses a caller transaction in lock order and releases its session/identity locks before acknowledgement', async () => {
   const { hub, row, input, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
   const { reply } = await f.db.transaction(async tx => {
     await hub.lockBoundary(tx);
     await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
@@ -141,4 +144,71 @@ run('reuses a caller transaction in lock order and releases its session/identity
   expect(await f.db.select().from(remoteHermesSessions)).toEqual([]);
   await expect(hub.socket.call('projects.list')).rejects.toThrow('replaced');
   hub.close(); await outcome;
+}, 15_000);
+run('confirmed recovery blocks resume and profile-wide full promotion before any native session send', async () => {
+  const { hub, row, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
+  // Ownership preparation acquires the portal lease; negotiation alone does not.
+  // Recovery must preserve that lease and send nothing further.
+  const owners = await f.db.select().from(remoteHermesHubOwners);
+  expect(owners).toHaveLength(1);
+  expect(owners[0]).toMatchObject({ ownerInstanceId: hub.instanceId, nativeGeneration: null });
+  const methods = [...received];
+  await f.db.insert(remoteHermesRecoveries).values({ id: '5ac27952-e0b5-4bde-9d16-37165d90fce9', ownerId: 'owner',
+    connectionId: row.connectionId, sessionId: row.id, binding: { ownership: { protocol: 'collective.portal-hub-ownership.v1', ownerId: 'owner',
+      connectionId: row.connectionId, instanceId: hub.instanceId, leaseGeneration: 1, sessionId: row.id, profile: row.profile, storedId: row.storedId,
+      runtimeId: row.runtimeId!, sessionRevision: row.revision, ownershipGeneration: Number(row.ownershipGeneration), socketEpoch: 1, portalSocketEpoch: 1, nativeFence: null },
+      connectionDigest: 'a'.repeat(64), admissionRequestId: null, queueRequestId: null, status: 'running', queueStatus: null },
+    state: 'pending', expiresAt: new Date(Date.now() + 60_000) });
+  await expect(hub.socket.call('session.resume', { session_id: row.storedId, profile: row.profile })).rejects.toThrow('recovery');
+  await expect(hub.socket.call('session.create', { profile: row.profile })).rejects.toThrow('recovery');
+  expect(received).toEqual(methods);
+  expect(await f.db.select().from(remoteHermesHubOwners)).toEqual(owners);
+}, 15_000);
+run('reuses the caller transaction for session ownership preparation before a guarded setter', async () => {
+  const { hub, row, received } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
+  const nested = vi.spyOn(f.db, 'transaction');
+  try {
+    const { reply } = await f.db.transaction(async tx => {
+      await hub.lockBoundary(tx);
+      await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
+      // A second transaction would wait forever for the owner lock held above
+      // with one pool slot. Fail at the boundary so a regression cleans up.
+      nested.mockImplementationOnce(async () => { throw new Error('Nested ownership transaction'); });
+      return hub.socket.dispatchConnected('config.set', { profile: row.profile, session_id: row.runtimeId,
+        scope: 'session', key: 'model', value: 'synthetic' }, hub.socket.connectionEpoch, 1000, tx);
+    });
+    await reply;
+    expect(received.filter(method => method === 'config.set')).toEqual(['config.set']);
+    expect(nested).toHaveBeenCalledTimes(1);
+  } finally { nested.mockRestore(); }
+}, 15_000);
+run('refuses a guarded setter whose native ownership capability was never prepared', async () => {
+  const { hub, row, received } = await fixture();
+  await expect(f.db.transaction(async tx => {
+    await hub.lockBoundary(tx);
+    return hub.socket.dispatchConnected('config.set', { profile: row.profile, session_id: row.runtimeId,
+      scope: 'session', key: 'model', value: 'synthetic' }, hub.socket.connectionEpoch, 1000, tx);
+  })).rejects.toMatchObject({ status: 409 });
+  expect(received).toEqual(['client.capabilities']);
+}, 15_000);
+run('orders incoming-event locks before session locks while a dispatcher owns the lease', async () => {
+  const { hub, row, server } = await fixture();
+  await hub.socket.call('session.resume', { profile: row.profile, session_id: row.storedId });
+  const cached = hub.sessions.get(row.id)!;
+  cached.view.running = false;
+  await f.db.transaction(async tx => {
+    await tx.select().from(remoteHermesHubOwners).where(eq(remoteHermesHubOwners.connectionId, row.connectionId)).for('update');
+    server.clients.forEach(ws => ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
+      session_id: row.runtimeId, type: 'message.start',
+    } })));
+    await vi.waitFor(async () => {
+      const waiting = await pool.query("SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE 'select%remote_hermes_hub_owners%'");
+      expect(waiting.rows[0].n).toBe(1);
+    }, { timeout: 3000 });
+    // The frame must not hold a session lock while it waits for this owner.
+    await tx.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, row.id)).for('update');
+  });
+  await vi.waitFor(() => expect(cached.view.running).toBe(true), { timeout: 3000 });
 }, 15_000);

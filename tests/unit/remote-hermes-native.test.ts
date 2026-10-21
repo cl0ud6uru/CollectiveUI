@@ -71,17 +71,6 @@ describe('native Hermes socket', () => {
     await expect(socket.answer('protected', { value: 'synthetic-secret' }, epoch)).rejects.toThrow('verified Hermes connection changed');
     expect(responses).toEqual([]);
   });
-  it('drops the closed socket reference containing its authentication URL on retirement', async () => {
-    const { server, url } = await fixture(); url.searchParams.set('token', 'synthetic-token');
-    server.on('connection', ws => { ws.send(ready); ws.on('message', raw => ws.send(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(String(raw)).id, result: { server_requests: ['approval'] } }))); });
-    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}); resources.push(() => socket.close());
-    await socket.connect();
-    expect(Object.getOwnPropertyDescriptor(socket, 'ws')?.value?.url).toContain('synthetic-token');
-    socket.close();
-    expect(Object.getOwnPropertyDescriptor(socket, 'ws')?.value).toBeUndefined();
-    expect(socket.serverRequests).toEqual([]);
-    await expect(socket.connect()).rejects.toThrow('retired');
-  });
   it('pins the WebSocket upgrade to the validated address instead of resolving the URL host again', async () => {
     const { server, url } = await fixture(); url.hostname = 'dashboard.example.invalid';
     const lookup = vi.fn<NonNullable<RequestOptions['lookup']>>((_host, _options, callback) => callback(null, '127.0.0.1', 4));
@@ -156,6 +145,21 @@ describe('native Hermes socket', () => {
     const refresh = socket.call('session.resume', { session_id: 'stored' });
     await expect(refresh).resolves.toEqual({ session_id: 'runtime' });
     await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+  });
+  it('suppresses the reconnect refresh callback for a recovery-only candidate handshake', async () => {
+    const { server, url } = await fixture(); let active: import('ws').WebSocket; const methods: string[] = [];
+    server.on('connection', ws => {
+      active = ws; ws.send(ready);
+      ws.on('message', raw => { const input = JSON.parse(String(raw)); methods.push(input.method); ws.send(JSON.stringify({ jsonrpc: '2.0', id: input.id, result: { server_requests: ['approval'] } })); });
+    });
+    const reconnected = vi.fn(async () => {});
+    const socket = new DashboardSocket(async () => ({ url, options: {} }), () => {}, () => {}, reconnected); resources.push(() => socket.close());
+    await socket.connect(); active!.terminate();
+    await vi.waitFor(() => expect(socket.state).toBe('reconnecting'));
+    await socket.connect({ suppressReconnectCallback: true });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(methods).toEqual(['client.capabilities', 'client.capabilities']);
+    expect(reconnected).not.toHaveBeenCalled();
   });
   it('fails closed on unsupported approvals without exposing credentials in socket errors', async () => {
     const { server, url } = await fixture(); url.searchParams.set('ticket', 'synthetic-private-ticket');

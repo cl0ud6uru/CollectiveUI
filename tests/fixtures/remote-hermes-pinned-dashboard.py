@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import hashlib
 import importlib.metadata
+import importlib.util
 import ipaddress
 import json
 import os
@@ -17,17 +18,64 @@ import socket
 import subprocess
 import sys
 import tempfile
+import tarfile
 import threading
 import time
 
 PIN = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 SOURCE = Path(os.environ["HERMES_SOURCE"]).resolve()
+RECOVERY_ADAPTERS = os.environ.get("REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE") == "1"
+WORKSPACE_ADAPTER = os.environ.get("REMOTE_HERMES_WORKSPACE_ADAPTER_FIXTURE", "")
+assert WORKSPACE_ADAPTER in {"", "read", "write"}
 ROOT = Path(__file__).resolve().parents[2]
 assert subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip() == PIN
 assert not subprocess.check_output(["git", "-C", str(SOURCE), "status", "--porcelain", "--untracked-files=all"], text=True).strip()
 assert not (SOURCE / ".env").exists(), "A source checkout with credentials is not a fixture"
 TEMP = tempfile.TemporaryDirectory(prefix="collective-pinned-dashboard-")
 HOME = Path(TEMP.name).resolve()
+# Explicit composed-adapter mode changes only a tracked archive inside the disposable home.
+# The original clean pin remains untouched; this is never an installation/deployment path.
+if RECOVERY_ADAPTERS:
+    copy = HOME / "source"
+    copy.mkdir()
+    archive = subprocess.Popen(["git", "-C", str(SOURCE), "archive", PIN], stdout=subprocess.PIPE)
+    with tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
+        tar.extractall(copy, filter="data")
+    assert archive.wait() == 0
+    installers = {}
+    adapters = (("install-hermes-recovery.py", "native_recovery.py"),
+                ("install-hermes-hub-owner.py", "native_hub_owner.py"))
+    for script, module in adapters:
+        spec = importlib.util.spec_from_file_location("fixture_installer_" + module.removesuffix(".py"), ROOT / "scripts" / script)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        installers[module] = installer
+    if WORKSPACE_ADAPTER:
+        spec = importlib.util.spec_from_file_location("fixture_workspace_installer", ROOT / "scripts/install-hermes-workspace-files.py")
+        workspace_installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(workspace_installer)
+        targets = set(installers["native_recovery.py"].TARGETS) | set(installers["native_hub_owner.py"].TARGETS)
+        originals = {name: (copy / name).read_text() for name in targets}
+        changed = workspace_installer.patch_sources(originals, installers["native_recovery.py"], installers["native_hub_owner.py"])
+        for name, content in changed.items():
+            (copy / name).write_text(content)
+        for _script, module in adapters:
+            installer = installers[module]
+            (copy / (getattr(installer, "MODULE", None) or installer.OWNER_MODULE)).write_bytes((ROOT / "src/hermes-recovery" / module).read_bytes())
+        workspace_source = (ROOT / "src/hermes-recovery/native_workspace_files.py").read_bytes()
+        owner_source = (ROOT / "src/hermes-recovery/native_hub_owner.py").read_bytes()
+        ADAPTER_PROVENANCE = {"workspace_sha256": hashlib.sha256(workspace_source).hexdigest(),
+                              "owner_sha256": hashlib.sha256(owner_source).hexdigest(),
+                              "owner_installer_sha256": hashlib.sha256((ROOT / "scripts/install-hermes-hub-owner.py").read_bytes()).hexdigest()}
+        (copy / workspace_installer.MODULE).write_bytes(workspace_source)
+    else:
+      for _script, module in adapters:
+        installer = installers[module]
+        originals = {name: (copy / name).read_text() for name in installer.TARGETS}
+        for name, content in installer.patch_sources(originals).items():
+            (copy / name).write_text(content)
+        (copy / (getattr(installer, "MODULE", None) or installer.OWNER_MODULE)).write_bytes((ROOT / "src/hermes-recovery" / module).read_bytes())
+    SOURCE = copy
 os.environ.clear()
 os.environ.update(PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", HOME=str(HOME),
                   HERMES_HOME=str(HOME / "profile"), HERMES_DISABLE_LAZY_INSTALLS="1",
@@ -35,7 +83,24 @@ os.environ.update(PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin", HOME=st
 Path(os.environ["HERMES_HOME"]).mkdir()
 os.chdir(HOME)
 Path(os.environ["HERMES_HOME"], "config.yaml").write_text("model:\n  default: synthetic-conformance\n  provider: synthetic\ndashboard:\n  process_isolation: false\n")
-METRICS = {"agent_turns": 0, "external_attempts": 0, "refreshes": 0, "protected_answers": 0, "dropped_acks": 0, "attachment_hashes": []}
+if RECOVERY_ADAPTERS:
+    other = Path(os.environ["HERMES_HOME"], "profiles", "fixture-other")
+    other.mkdir(parents=True)
+    (other / "config.yaml").write_text(Path(os.environ["HERMES_HOME"], "config.yaml").read_text())
+WORKSPACES = {}
+if WORKSPACE_ADAPTER:
+    for profile in ("default", "fixture-other"):
+        workspace = HOME / ("workspace-" + profile)
+        workspace.mkdir()
+        (workspace / "README.md").write_text("Synthetic " + profile + " workspace\n")
+        (workspace / ".env").write_text("SYNTHETIC_TOKEN=never-project-this\n")
+        outside = HOME / ("outside-" + profile + ".txt")
+        outside.write_text("Synthetic outside boundary\n")
+        (workspace / "outside-link").symlink_to(outside)
+        (workspace / "nested").mkdir()
+        WORKSPACES[profile] = str(workspace)
+METRICS = {"agent_turns": 0, "external_attempts": 0, "refreshes": 0, "protected_answers": 0, "auxiliary_calls": 0, "auxiliary_tracked": 0, "dropped_acks": 0, "attachment_hashes": []}
+CAPTURED_POLLER = None
 # Deny external networking before importing any source with import-time hooks.
 _connect = socket.socket.connect
 _connect_ex = socket.socket.connect_ex
@@ -102,8 +167,36 @@ from hermes_cli.dashboard_auth.base import DashboardAuthProvider, InvalidCredent
 from hermes_cli.dashboard_auth.registry import register_global_provider
 from tui_gateway import server, server_requests, ws as native_ws
 from tui_gateway.synthetic_turn import SyntheticHeavyAgent
+if RECOVERY_ADAPTERS:
+    # A real named profile needs its native schema before read-only discovery/owner CAS.
+    with server._profile_db({"profile": "fixture-other"}, writer=True) as fixture_other_db:
+        assert fixture_other_db is not None
 from fastapi import Request
 import uvicorn
+
+if RECOVERY_ADAPTERS:
+    # Fixture-only worker observation; uses the actual guarded RPC dispatch context
+    # and the published composed auxiliary starter, never a fabricated owner context.
+    from tui_gateway.contracts.base import Params, Result
+    from tui_gateway.contracts.registry import method as declare_method
+    class AuxiliaryProbeParams(Params):
+        profile: str
+        session_id: str
+    class AuxiliaryProbeResult(Result):
+        scheduled: bool
+    def auxiliary_probe(rid, params):
+        with server._sessions_lock:
+            session = server._sessions.get(params["session_id"])
+        assert session is not None
+        def target():
+            METRICS["auxiliary_calls"] += 1
+            owner = server._collective_hub_owner
+            with owner._guard:
+                METRICS["auxiliary_tracked"] += int(owner._active_workers.get(str(Path(server._session_home(session)).resolve()), 0) > 0)
+        thread = server._collective_start_auxiliary_work(target, name="fixture-bound-auxiliary", session=session)
+        return server._ok(rid, {"scheduled": thread is not None})
+    declare_method("fixture.owner_auxiliary", params=AuxiliaryProbeParams, result=AuxiliaryProbeResult)
+    server.register_method("fixture.owner_auxiliary", server._collective_hub_owner.guard_method("fixture.owner_auxiliary", auxiliary_probe))
 
 app = web_server.app
 app.state.auth_required = True
@@ -113,6 +206,8 @@ TOKENS = {}
 REFRESH = {}
 DROP_ACK = False
 CONNECTIONS = set()
+FAULTED_TRANSPORTS = set()
+RECOVERY_RELEASE = threading.Event()
 
 class FixtureProvider(DashboardAuthProvider):
     name = "synthetic"
@@ -155,11 +250,13 @@ class FixtureAgent(SyntheticHeavyAgent):
         text = str(message)
         if "fixture-protected" in text:
             answer = server._ask("secret", self.sid, {"prompt": "Synthetic protected value"}, timeout=10)
-            METRICS["protected_answers"] += int(bool(answer and answer.get("value")))
+            METRICS["protected_answers"] += int(bool(answer))  # Native _ask unwraps the result to a string.
         elif "fixture-clarify" in text:
             server._ask("clarify", self.sid, {"questions": [{"qid": "q1", "question": "Synthetic question", "choices": ["One", "Two"]}]}, timeout=10)
         elif "fixture-approval" in text:
             server._ask("approval", self.sid, {"command": "synthetic-noop", "choices": ["once", "deny"]}, timeout=10)
+        if "fixture-drain-hold" in text:
+            RECOVERY_RELEASE.wait(20)  # Deliberately ignores interrupt until the synthetic control releases it.
         if "fixture-hold" in text:
             deadline = time.monotonic() + 10
             while not self._interrupt.is_set() and time.monotonic() < deadline:
@@ -167,7 +264,19 @@ class FixtureAgent(SyntheticHeavyAgent):
         final = "Synthetic fixture reply"
         if stream_callback:
             stream_callback(final)
-        self.history = [*(conversation_history or []), {"role": "user", "content": text}, {"role": "assistant", "content": final}]
+        user = {"role": "user", "content": text}
+        assistant = {"role": "assistant", "content": final}
+        if RECOVERY_ADAPTERS:
+            # The real agent owns assistant persistence. The synthetic seam must
+            # implement that contract to test retained completed output, using the
+            # actual profile-scoped native SessionDB rather than a fake history API.
+            user = getattr(self, "_pending_cli_user_message", None) or user
+            session = server._sessions[self.sid]
+            with server._session_db(session) as database:
+                assert database is not None
+                assistant["_row_id"] = database.append_message(self.session_id, "assistant", content=final)
+            assistant[server._DB_PERSISTED_MARKER] = True
+        self.history = [*(conversation_history or []), user, assistant]
         return {"final_response": final, "messages": self.history, "interrupted": self._interrupt.is_set(), "completed": True, "error": None, "last_reasoning": None}
 
 # Only construction/inference is replaced. Registry, admission, persistence,
@@ -185,16 +294,31 @@ def observe_attachment(frame):
         if digest not in METRICS["attachment_hashes"]:
             METRICS["attachment_hashes"].append(digest)
 
+async def close_after_lost_ack(transport, observed_turns):
+    if RECOVERY_ADAPTERS:
+        # The native callback runs after a successful write. Drop the bytes while
+        # returning success, then allow actual deferred admission to enter its agent
+        # before disconnecting. This removes a reconnect/queued-worker race from the
+        # active-worker recovery case without inventing a native completion result.
+        deadline = time.monotonic() + 1
+        while METRICS["agent_turns"] <= observed_turns and time.monotonic() < deadline:
+            await asyncio.sleep(.005)
+    await transport._ws.close(code=1012)
+
 _original_write = native_ws.WSTransport.write
 
 def fault_write(self, frame):
     global DROP_ACK
     CONNECTIONS.add(self)
     observe_attachment(frame)
+    if RECOVERY_ADAPTERS and frame.get("method") == "event" and frame.get("params", {}).get("type") != "gateway.ready" and (DROP_ACK or self in FAULTED_TRANSPORTS):
+        return True  # The same lost transport cannot deliver terminal evidence around its missing ACK.
     if DROP_ACK and isinstance(frame.get("id"), int) and frame.get("result", {}).get("status") in {"streaming", "queued"}:
         DROP_ACK = False
+        if RECOVERY_ADAPTERS:
+            FAULTED_TRANSPORTS.add(self)
         METRICS["dropped_acks"] += 1
-        asyncio.run_coroutine_threadsafe(self._ws.close(code=1012), self._loop)
+        asyncio.run_coroutine_threadsafe(close_after_lost_ack(self, METRICS["agent_turns"]), self._loop)
         return True
     return _original_write(self, frame)
 
@@ -205,10 +329,17 @@ async def fault_write_async(self, frame):
     global DROP_ACK
     CONNECTIONS.add(self)
     observe_attachment(frame)
+    if RECOVERY_ADAPTERS and frame.get("method") == "event" and frame.get("params", {}).get("type") != "gateway.ready" and (DROP_ACK or self in FAULTED_TRANSPORTS):
+        return True  # The same lost transport cannot deliver terminal evidence around its missing ACK.
     if DROP_ACK and isinstance(frame.get("id"), int) and frame.get("result", {}).get("status") in {"streaming", "queued"}:
         DROP_ACK = False
+        if RECOVERY_ADAPTERS:
+            FAULTED_TRANSPORTS.add(self)
         METRICS["dropped_acks"] += 1
-        await self._ws.close(code=1012)
+        if RECOVERY_ADAPTERS:
+            asyncio.create_task(close_after_lost_ack(self, METRICS["agent_turns"]))
+        else:
+            await self._ws.close(code=1012)
         return True
     return await _original_write_async(self, frame)
 
@@ -221,11 +352,138 @@ async def metrics(request: Request):
 
 @app.post("/api/__fixture/control")
 async def control(request: Request):
+    global CAPTURED_POLLER
     global DROP_ACK
     web_server._require_token(request)
     body = await request.json()
-    if body == {"drop_next_ack": True}:
+    if WORKSPACE_ADAPTER and body == {"workspace_roots": True}:
+        return {"roots": WORKSPACES, "adapter": WORKSPACE_ADAPTER, **ADAPTER_PROVENANCE}
+    elif WORKSPACE_ADAPTER and set(body) == {"workspace_busy", "session_id"} and isinstance(body["workspace_busy"], bool):
+        with server._sessions_lock:
+            session = server._sessions.get(body["session_id"])
+        assert session is not None
+        with session["history_lock"]:
+            session["running"] = body["workspace_busy"]
+        return {"ok": True}
+    elif body == {"drop_next_ack": True}:
         DROP_ACK = True
+    elif RECOVERY_ADAPTERS and body == {"release_recovery_worker": True}:
+        RECOVERY_RELEASE.set()
+    elif RECOVERY_ADAPTERS and body == {"probe_recovery_worker": True}:
+        with server._sessions_lock:
+            session = next(record for record in server._sessions.values() if Path(server._session_home(record)).resolve() == Path(os.environ["HERMES_HOME"]) and not record.get("_finalized") and not record.get("_closing"))
+        entered, auxiliary, tracked = [], [], []
+        owner = server._collective_hub_owner
+        owner.protect_worker(lambda: entered.append(True), session)()
+        def auxiliary_target():
+            auxiliary.append(True)
+            with owner._guard:
+                tracked.append(owner._active_workers.get(str(Path(server._session_home(session)).resolve()), 0) > 0)
+        worker = server._collective_start_auxiliary_work(auxiliary_target, name="fixture-owner-auxiliary", session=session)
+        if worker is not None:
+            worker.join(timeout=1)
+        return {"target_called": bool(entered), "auxiliary_called": bool(auxiliary), "auxiliary_tracked": bool(tracked and tracked[0])}
+    elif RECOVERY_ADAPTERS and body == {"profile_real_work": True}:
+        owner = server._collective_hub_owner
+        home = Path(os.environ["HERMES_HOME"])
+        with owner._locked(home):
+            return {"default": owner._profile_has_native_work(home)}
+    elif RECOVERY_ADAPTERS and body == {"profile_workers": True}:
+        owner = server._collective_hub_owner
+        home = Path(os.environ["HERMES_HOME"])
+        with owner._guard:
+            return {name: owner._active_workers.get(str(path.resolve()), 0)
+                    for name, path in (("default", home), ("fixture-other", home / "profiles" / "fixture-other"))}
+    elif RECOVERY_ADAPTERS and set(body) == {"probe_pending_auxiliary_claim"} and isinstance(body["probe_pending_auxiliary_claim"], str):
+        from tui_gateway.collective_hub_owner import _active_binding
+        from tui_gateway.transport import bind_transport, reset_transport
+        with server._sessions_lock:
+            session = server._sessions[body["probe_pending_auxiliary_claim"]]
+            binding = session["_collective_poller_binding"]
+        owner = server._collective_hub_owner
+        entered = threading.Event()
+        with owner._locked(Path(binding.home)):
+            token = _active_binding.set(binding)
+            transport_token = bind_transport(binding.transport)
+            try:
+                worker = server._collective_start_auxiliary_work(entered.set, name="synthetic-pending-auxiliary", session=session)
+                assert worker is not None and worker.is_alive() and not entered.is_set()
+                claim = owner.claim("synthetic-pending-claim", {
+                    "profile": binding.profile, "portal_connection_id": binding.connection_id,
+                    "portal_instance_id": "synthetic-pending-successor", "portal_generation": binding.portal_generation + 1,
+                    "portal_socket_epoch": binding.socket_epoch + 1, "expected_native_generation": binding.native_generation,
+                })
+                blocked = claim.get("error", {}).get("code") == 4091
+                unchanged = owner._current_owner(binding.home).same_claim(binding)
+            finally:
+                reset_transport(transport_token)
+                _active_binding.reset(token)
+        worker.join(timeout=2)
+        return {"claim_rejected": blocked, "generation_unchanged": unchanged, "worker_executed": entered.is_set()}
+    elif RECOVERY_ADAPTERS and set(body) == {"capture_poller_claim"} and isinstance(body["capture_poller_claim"], str):
+        sid = body["capture_poller_claim"]
+        with server._sessions_lock:
+            session = server._sessions.get(sid)
+            binding = session.get("_collective_poller_binding") if session is not None else None
+        assert binding is not None
+        CAPTURED_POLLER = (sid, session, binding)
+        return {"captured": True}
+    elif RECOVERY_ADAPTERS and body == {"probe_stale_poller_drain": True}:
+        import queue
+        from tools.process_registry import process_registry
+        from tui_gateway.collective_hub_owner import _active_binding
+        assert CAPTURED_POLLER is not None
+        sid, session, binding = CAPTURED_POLLER
+        owner = server._collective_hub_owner
+        class ProbeQueue(queue.Queue):
+            gets = 0
+            def get(self, *args, **kwargs):
+                self.gets += 1
+                return super().get(*args, **kwargs)
+        probe = ProbeQueue()
+        probe.put({"type": "synthetic-stale-drain"})
+        stop = threading.Event()
+        stop.set()  # Enter the real native final-drain path directly.
+        with owner._locked(Path(binding.home)):
+            original = process_registry.completion_queue
+            process_registry.completion_queue = probe
+            token = _active_binding.set(binding)
+            try:
+                server._notification_poller_loop(stop, sid, session)
+            finally:
+                _active_binding.reset(token)
+                process_registry.completion_queue = original
+        return {"consumed": probe.gets, "retained": probe.qsize()}
+    elif RECOVERY_ADAPTERS and body == {"profile_pollers": True}:
+        result = {name: {"count": 0, "stopped": 0, "alive": 0, "all_alive": 0} for name in ("default", "fixture-other")}
+        with server._sessions_lock:
+            sessions = list(server._sessions.items())
+        for sid, session in sessions:
+            home = Path(server._session_home(session)).resolve()
+            name = "default" if home == Path(os.environ["HERMES_HOME"]) else "fixture-other" if home == Path(os.environ["HERMES_HOME"], "profiles", "fixture-other") else None
+            stop = session.get("_notif_stop")
+            if name is not None and stop is not None:
+                result[name]["count"] += 1
+                result[name]["stopped"] += int(stop.is_set())
+                result[name]["alive"] += int(any(event is stop and thread.is_alive() for event, thread in server._notification_pollers))
+                result[name]["all_alive"] += sum(thread.is_alive() and thread.name == f"tui-notif-poller-{sid}"
+                                                  for _, thread in server._notification_pollers)
+        return result
+    elif RECOVERY_ADAPTERS and set(body) == {"probe_unowned_stdio", "request_id"} and body["probe_unowned_stdio"] is True and isinstance(body["request_id"], str) and 0 < len(body["request_id"]) <= 200:
+        create = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-create", "method": "session.create", "params": {"profile": "default"}})
+        answer = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-answer", "method": "request.answer", "params": {"id": body["request_id"], "result": {"value": "synthetic-stdio-rejected"}}})
+        response = server_requests.resolve_response({"jsonrpc": "2.0", "id": body["request_id"], "result": {"value": "synthetic-stdio-rejected"}})
+        with server_requests._lock:
+            req = server_requests._open.get(body["request_id"])
+        assert req is not None
+        with server._sessions_lock:
+            orphan = server._sessions.pop(req.sid)
+        try:
+            orphan_response = server_requests.resolve_response({"jsonrpc": "2.0", "id": body["request_id"], "result": {"value": "synthetic-orphan-rejected"}})
+        finally:
+            with server._sessions_lock:
+                server._sessions[req.sid] = orphan
+        return {"create_rejected": "error" in create, "answer_rejected": "error" in answer, "response_resolved": bool(response), "orphan_response_resolved": bool(orphan_response)}
     elif body == {"disconnect": True}:
         for connection in list(CONNECTIONS):
             with contextlib.suppress(Exception):
@@ -302,7 +560,7 @@ app.router.routes[:] = controls + [route for route in app.router.routes if route
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
 listener.listen(128)
-print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT}), file=sys.__stdout__, flush=True)
+print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT, "recoveryAdapters": RECOVERY_ADAPTERS, "workspaceAdapter": WORKSPACE_ADAPTER}), file=sys.__stdout__, flush=True)
 try:
     uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="error")).run(sockets=[listener])
 finally:
