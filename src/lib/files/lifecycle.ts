@@ -70,4 +70,3 @@ export async function retireAttachments(options: { userId?: string; ids?: string
 export async function sweepAttachments(now = new Date(), adapter: StorageAdapter = storage()) {
   return retireAttachments({ orphanBefore: new Date(now.getTime() - ATTACHMENT_DRAFT_GRACE_MS) }, adapter);
 }
-
