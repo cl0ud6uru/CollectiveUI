@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { DB, DbOrTx } from "@/db";
-import { sandboxes, users, workspaceInstances } from "@/db/schema";
+import { sandboxes, users, workspaceBotBindings, workspaceInstances } from "@/db/schema";
 import { audit } from "@/lib/audit";
 import { getSetting } from "@/lib/settings";
 import { withWorkspaceUserLock } from "@/lib/workspaces/locks";
@@ -14,6 +14,7 @@ import {
   listSandboxRows,
   listWorkspaceInstances,
   markDeleteAfter,
+  retireUnboundTemplateInstances,
 } from "./store";
 
 const ORPHAN_AGE_MS = 60 * 60_000;
@@ -53,30 +54,40 @@ export async function onUserEnabled(userId: string) {
 }
 
 /** Bring retention written by older portal binaries into the additive instance registry. */
-async function reconcileRetention(ownerUserId: string, query: DbOrTx, deleteAfterDays: number) {
+async function reconcileRetention(ownerUserId: string, query: DbOrTx, deleteAfterDays: number, now: Date) {
   const legacy = await findSandbox(ownerUserId, query);
   if (legacy) await ensureLegacyInstance(ownerUserId, legacy.ref, query);
   const instances = await query.select().from(workspaceInstances).where(eq(workspaceInstances.ownerUserId, ownerUserId));
   if (!instances.length) return;
   const [account] = await query.select({ disabled: users.disabled }).from(users).where(eq(users.id, ownerUserId));
   if (!account?.disabled) {
-    // Enabled accounts should not retain a deadline left by an older disable/enable flow.
+    // Bound workspaces recover from old disable/enable flows. Unbound templates retain cleanup deadlines,
+    // including reservations from a process that disappeared before it could finalize or stop the sandbox.
     await clearDeleteAfter(ownerUserId, query);
+    await retireUnboundTemplateInstances(ownerUserId, deleteAfterDays, query, now);
     return;
   }
 
   // Preserve an existing legacy deadline, including an already-expired one. If an older binary disabled the
   // account before this registry existed, give every registered ref the same retention deadline.
-  const existing = legacy?.deleteAfter ?? instances.map((row) => row.deleteAfter)
+  const bindings = new Set((await query.select({ instanceId: workspaceBotBindings.instanceId }).from(workspaceBotBindings)
+    .where(eq(workspaceBotBindings.userId, ownerUserId))).map(row => row.instanceId));
+  // Unbound template deadlines describe retirement, not account disable. An already-expired orphan must never
+  // shorten retention for currently bound templates when an older binary disabled an owner with no legacy row.
+  const existing = legacy?.deleteAfter ?? instances.filter(row => row.origin === "legacy_personal" || bindings.has(row.id)).map((row) => row.deleteAfter)
     .filter((value): value is Date => value !== null && value !== undefined)
     .sort((a, b) => a.getTime() - b.getTime())[0];
-  const deadline = existing ?? new Date(Date.now() + deleteAfterDays * 86_400_000);
+  const deadline = existing ?? new Date(now.getTime() + deleteAfterDays * 86_400_000);
   await query.update(sandboxes).set({ deleteAfter: deadline }).where(eq(sandboxes.userId, ownerUserId));
-  await query.update(workspaceInstances).set({ deleteAfter: deadline }).where(eq(workspaceInstances.ownerUserId, ownerUserId));
+  await query.update(workspaceInstances).set({ deleteAfter: sql`case
+    when ${workspaceInstances.origin} = 'legacy_personal' or exists (select 1 from ${workspaceBotBindings} where ${workspaceBotBindings.instanceId} = ${workspaceInstances.id})
+    then ${deadline.toISOString()}::timestamptz
+    else coalesce(${workspaceInstances.deleteAfter}, ${deadline.toISOString()}::timestamptz) end`
+  }).where(eq(workspaceInstances.ownerUserId, ownerUserId));
 }
 
 /**
- * Hourly: destroys workspaces past their retention date and truly unregistered sandboxd volumes.
+ * Hourly: destroys disabled/unbound workspaces past retention and truly unregistered sandboxd volumes.
  * Reservations commit before a volume is created, and the owner lock serializes sweep with assignment and lifecycle.
  */
 export async function sweepSandboxes(now = new Date()): Promise<{ expired: number; orphans: number }> {
@@ -91,7 +102,7 @@ export async function sweepSandboxes(now = new Date()): Promise<{ expired: numbe
   const owners = new Set([...sandboxRows.map((row) => row.userId), ...instanceRows.map((row) => row.ownerUserId)]);
   for (const ownerUserId of owners) {
     await withWorkspaceUserLock(ownerUserId, async (lockedDb) => {
-      await lockedDb.transaction((tx) => reconcileRetention(ownerUserId, tx, settings.deleteAfterDays));
+      await lockedDb.transaction((tx) => reconcileRetention(ownerUserId, tx, settings.deleteAfterDays, now));
     });
   }
 
@@ -102,11 +113,11 @@ export async function sweepSandboxes(now = new Date()): Promise<{ expired: numbe
         const didExpire = await lockedDb.transaction(async (tx) => {
           // Re-read old-binary retention changes under row locks immediately before destruction. Current portal
           // disable/enable actions share the advisory lock; these row locks also serialize legacy binary updates.
-          await tx.select({ id: users.id }).from(users).where(eq(users.id, candidate.ownerUserId)).for("update");
+          const [account] = await tx.select({ id: users.id, disabled: users.disabled }).from(users).where(eq(users.id, candidate.ownerUserId)).for("update");
           await tx.select({ userId: sandboxes.userId }).from(sandboxes).where(eq(sandboxes.userId, candidate.ownerUserId)).for("update");
           await tx.select({ id: workspaceInstances.id }).from(workspaceInstances)
             .where(eq(workspaceInstances.ownerUserId, candidate.ownerUserId)).for("update");
-          await reconcileRetention(candidate.ownerUserId, tx, settings.deleteAfterDays);
+          await reconcileRetention(candidate.ownerUserId, tx, settings.deleteAfterDays, now);
           const [row] = await tx.select().from(workspaceInstances).where(and(
             eq(workspaceInstances.ownerUserId, candidate.ownerUserId),
             eq(workspaceInstances.id, candidate.id),
@@ -114,10 +125,10 @@ export async function sweepSandboxes(now = new Date()): Promise<{ expired: numbe
           if (!row || !row.deleteAfter || row.deleteAfter > now) return false;
           await client.destroy(row.sandboxRef);
           await forgetWorkspaceInstance(row.ownerUserId, row.id, tx);
-          return true;
+          return { reason: account?.disabled ? "disabled" : "unbound" };
         });
         if (didExpire) {
-          await audit(null, "workspace.destroyed_after_disable", candidate.ownerUserId, undefined, lockedDb);
+          await audit(null, didExpire.reason === "disabled" ? "workspace.destroyed_after_disable" : "workspace.destroyed_after_retirement", candidate.ownerUserId, undefined, lockedDb);
           expired++;
         }
       } catch (err) {

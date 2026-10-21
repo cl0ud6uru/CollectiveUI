@@ -15,6 +15,8 @@ Output: one header line "PORTALFS1 <json>" on stdout, then (read only) the raw b
 """
 import json
 import os
+import resource
+import signal
 import stat
 import sys
 import tempfile
@@ -309,6 +311,13 @@ COMMANDS = {"read": cmd_read, "write": cmd_write, "list": cmd_list, "grep": cmd_
 
 
 def main():
+    # Docker attach closure does not kill an exec. Bound this process itself, including blocking stdin,
+    # pathological regex backtracking and large directory walks, before sandboxd's 60-second collection timeout.
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.alarm(45)
+    _, inherited_hard = resource.getrlimit(resource.RLIMIT_CPU)
+    cpu_seconds = 40 if inherited_hard == resource.RLIM_INFINITY else min(40, inherited_hard)
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         header({"ok": False, "code": "bad_request", "message": "unknown command"})
         sys.exit(2)

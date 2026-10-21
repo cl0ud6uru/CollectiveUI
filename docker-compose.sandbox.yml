@@ -17,6 +17,7 @@ services:
       # runsc = gVisor required (recommended); auto = gVisor when it works, else runc; runc = never gVisor.
       SANDBOXD_RUNTIME: ${SANDBOXD_RUNTIME:-runsc}
       SANDBOXD_IMAGE: ${SANDBOXD_IMAGE:-ai-portal-sandbox:p5}
+      SANDBOXD_PROFILE_IMAGES: ${SANDBOXD_PROFILE_IMAGES:-}
       SANDBOXD_INSTANCE: ${SANDBOXD_INSTANCE:-default}
       # Capacity limits (empty = sandboxd's defaults, see src/sandboxd/config.ts).
       SANDBOXD_MEMORY_MB: ${SANDBOXD_MEMORY_MB:-}

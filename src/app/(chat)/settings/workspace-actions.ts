@@ -59,13 +59,19 @@ export async function resetWorkspace(confirm: string) {
   });
 }
 
-/** The Stop button on a running command: kills it in this person's own workspace (no-op if it already ended). */
-export async function stopWorkspaceCommand(toolCallId: string) {
+/** Provider IDs are invocation-local. Resolve the exact executed instance instead of probing other owned refs. */
+export async function stopWorkspaceCommand(toolCallId: string, instanceId?: string | null, executionId?: string) {
   return friendly(async () => {
-    if (typeof toolCallId !== "string" || toolCallId.length > 200) throw new HttpError(400, "Invalid tool call");
-    const { client, ref } = await own();
-    if (!ref) return false;
-    return (await client.kill(ref, execIdForToolCall(toolCallId))).killed;
+    if (typeof toolCallId !== "string" || !toolCallId.length || toolCallId.length > 512) throw new HttpError(400, "Invalid tool call");
+    if (instanceId !== undefined && instanceId !== null && (typeof instanceId !== "string" || !instanceId.length || instanceId.length > 128)) throw new HttpError(400, "Invalid workspace");
+    if (executionId !== undefined && (typeof executionId !== "string" || !/^[0-9a-f]{16}$/.test(executionId))) throw new HttpError(400, "Invalid command execution");
+    const p = await requirePrincipal(), client = sandboxd();
+    if (!client) throw new HttpError(503, "Workspace service is unavailable");
+    const instance = instanceId ? await findWorkspaceInstance(p.user.id, instanceId) : null;
+    if (instanceId && !instance) throw new HttpError(404, "Workspace not found");
+    const ref = instance?.sandboxRef ?? (await findSandbox(p.user.id))?.ref;
+    if (ref && (await client.kill(ref, executionId ?? execIdForToolCall(toolCallId))).killed) return true;
+    throw new HttpError(409, "This command has already ended or could not be found in your workspaces.");
   });
 }
 

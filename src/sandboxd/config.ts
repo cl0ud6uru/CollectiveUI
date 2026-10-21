@@ -4,6 +4,7 @@
  */
 import { assertSecret } from "./protocol/auth.ts";
 import type { Limits } from "./spec.ts";
+import { WORKSPACE_PROFILES } from "./profiles.ts";
 
 export type RuntimePolicy = "auto" | "runsc" | "runc";
 
@@ -13,6 +14,8 @@ export type Config = {
   port: number;
   socketPath: string;
   image: string;
+  /** Optional, administrator-installed immutable images for fixed template profiles. */
+  profileImages: Readonly<Record<string, string>>;
   runtime: RuntimePolicy;
   instance: string;
   limits: Limits;
@@ -43,6 +46,20 @@ function count(env: Env, key: string, def: number, min: number, max: number): nu
   return n;
 }
 
+function profileImages(raw: string | undefined): Readonly<Record<string, string>> {
+  if (!raw) return Object.freeze({});
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error("SANDBOXD_PROFILE_IMAGES must be a JSON object of installed profile image IDs"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("SANDBOXD_PROFILE_IMAGES must be a JSON object");
+  const result: Record<string, string> = {};
+  for (const [key, image] of Object.entries(parsed)) {
+    if (!Object.hasOwn(WORKSPACE_PROFILES, key) || typeof image !== "string" || !/^sha256:[0-9a-f]{64}$/.test(image))
+      throw new Error("SANDBOXD_PROFILE_IMAGES accepts only known template profile keys and full sha256 image IDs");
+    result[key] = image;
+  }
+  return Object.freeze(result);
+}
+
 export function loadConfig(env: Env = process.env): Config {
   const secret = env.SANDBOXD_SECRET;
   assertSecret(secret);
@@ -61,6 +78,7 @@ export function loadConfig(env: Env = process.env): Config {
     port: Number(m[2]),
     socketPath: socket,
     image: env.SANDBOXD_IMAGE ?? "ai-portal-sandbox:p5",
+    profileImages: profileImages(env.SANDBOXD_PROFILE_IMAGES),
     runtime,
     instance,
     limits: {

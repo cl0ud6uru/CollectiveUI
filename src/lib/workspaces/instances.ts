@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import { db, type DB, type Tx } from "@/db";
 import { sandboxes, users, workspaceBotBindings, workspaceInstances, workspaceTemplateVersions, workspaceTemplates } from "@/db/schema";
 import { getUsableBot, HttpError } from "@/lib/authz";
@@ -8,13 +8,16 @@ import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { getSetting } from "@/lib/settings";
 import { requiredIsolation, userMayUseWorkspace } from "@/lib/sandbox/policy";
 import { SandboxError, sandboxd } from "@/lib/sandbox/client";
-import { touchWorkspaceInstance } from "@/lib/sandbox/store";
+import { retireUnboundTemplateInstances, touchWorkspaceInstance } from "@/lib/sandbox/store";
 import { newId } from "@/lib/ids";
 import { withWorkspaceUserLock } from "./locks";
 import type { WorkspaceInstanceView } from "./contracts";
 import { admitWorkspaceRecipe, WorkspaceRecipePolicyError } from "./instance-policy";
 import { assertWorkspaceAccess } from "./resolve";
 export { resolveWorkspace } from "./resolve";
+
+/** Includes retained, failed and provisioning templates; the legacy workspace is independent. */
+export const MAX_TEMPLATE_INSTANCES_PER_OWNER = 32;
 
 async function freshPrincipalForAssignment(tx: Tx, original: Principal): Promise<Principal> {
   const [current] = await tx.select({ disabled: users.disabled, sessionVersion: users.sessionVersion })
@@ -71,6 +74,9 @@ export async function assignTemplate(input: {
   const client = sandboxd();
   if (!client) throw new HttpError(503, "Workspace service is unavailable");
   const userId = input.principal.user.id;
+  // The portal process has no daemon image configuration. Availability comes from its authenticated health report;
+  // start() still resolves the immutable image on the daemon, so a removed image or restart fails closed.
+  const installedProfiles = (await client.health()).profiles;
   return withWorkspaceUserLock(userId, async (lockedDb: DB) => {
     const reservation = await lockedDb.transaction(async (tx) => {
       const principal = await freshPrincipalForAssignment(tx, input.principal);
@@ -100,7 +106,7 @@ export async function assignTemplate(input: {
         throw new HttpError(404, "That published workspace template is unavailable.");
       }
       let admitted: ReturnType<typeof admitWorkspaceRecipe>;
-      try { admitted = admitWorkspaceRecipe(version.recipe); }
+      try { admitted = admitWorkspaceRecipe(version.recipe, installedProfiles); }
       catch (err) {
         if (err instanceof WorkspaceRecipePolicyError && err.code === "image_missing") throw new SandboxError("image_missing", err.message);
         if (err instanceof WorkspaceRecipePolicyError) throw new HttpError(409, err.message);
@@ -113,6 +119,12 @@ export async function assignTemplate(input: {
       // Only the currently bound same-version instance is reused. Keep a different-version binding untouched
       // until the candidate is ready; the committed, unbound reservation is already visible to cleanup.
       const isExistingBinding = !!(currentIsSame && current);
+      if (!isExistingBinding) {
+        const [{ total }] = await tx.select({ total: count() }).from(workspaceInstances)
+          .where(and(eq(workspaceInstances.ownerUserId, userId), eq(workspaceInstances.origin, "template")));
+        if (total >= MAX_TEMPLATE_INSTANCES_PER_OWNER)
+          throw new HttpError(409, `You have reached the limit of ${MAX_TEMPLATE_INSTANCES_PER_OWNER} retained template workspaces. Unused workspaces must finish their retention period before assigning another version.`);
+      }
       const row = isExistingBinding ? current! : (await tx.insert(workspaceInstances).values({
         id: newId(),
         ownerUserId: userId,
@@ -121,7 +133,7 @@ export async function assignTemplate(input: {
         sandboxRef: newRef(),
         runtimeProfileKey: admitted.profile.key,
         provisionState: "provisioning",
-        deleteAfter: null,
+        deleteAfter: new Date(Date.now() + settings.deleteAfterDays * 86_400_000),
       }).returning())[0];
       if (isExistingBinding) {
         // A provisioning state on a bound row can only be left by an older process that crashed after its
@@ -178,7 +190,7 @@ export async function assignTemplate(input: {
         return { ok: false as const, error: failure };
       }
 
-      const [ready] = await tx.update(workspaceInstances).set({ provisionState: "ready", lastUsedAt: new Date() }).where(and(
+      const [ready] = await tx.update(workspaceInstances).set({ provisionState: "ready", lastUsedAt: new Date(), deleteAfter: null }).where(and(
         eq(workspaceInstances.ownerUserId, userId),
         eq(workspaceInstances.id, reservation.row.id),
       )).returning();
@@ -188,6 +200,7 @@ export async function assignTemplate(input: {
           target: [workspaceBotBindings.userId, workspaceBotBindings.botId],
           set: { instanceId: ready.id, updatedAt: new Date() },
         });
+      await retireUnboundTemplateInstances(userId, latestSettings.deleteAfterDays, tx);
       return {
         ok: true as const,
         instance: view({ ...ready, templateName: reservation.templateName }),
