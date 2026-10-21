@@ -2,6 +2,12 @@ import { LOCAL_ORIGIN } from '@/lib/local-hermes/client';
 import { dockerControl, dockerFetch } from '@/lib/docker-hermes/client';
 import type { Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
+import { db } from '@/db';
+import { users } from '@/db/schema';
+import { eq } from 'drizzle-orm';
+import { lockDockerOwner } from '@/lib/docker-hermes/enrollment';
+import { assertDockerCreate } from '@/lib/docker-hermes/policy';
+import { getSetting } from '@/lib/settings';
 import { authorizeTeam } from './store';
 import type { TeamMode } from './types';
 import type { ResourceUpdateReceipt, TeamResourceUpdatePlan } from './updates';
@@ -9,8 +15,22 @@ export type TeamResourceSelection = { skillPackages?: readonly string[]; include
 export type TeamPublishableInventory = { selection: TeamResourceSelection; available: boolean; reason?: string };
 /** Only this trusted server adapter constructs broker scopes and grant headers. */
 async function grantTeam(p: Principal, botId: string, mode: TeamMode) {
-  const auth = await authorizeTeam(p, botId, mode);
-  const grant = await dockerControl<{ grantId: string; expiresAt: number }>(p.user.id, '/team/authorize', { teamBotId: botId, mode, modelPolicy: auth.definition.modelPolicy.mode });
+  const issue = async (auth: Awaited<ReturnType<typeof authorizeTeam>>) => ({ ...auth,
+    grant: await dockerControl<{ grantId: string; expiresAt: number }>(p.user.id, '/team/authorize', { teamBotId: botId, mode, modelPolicy: auth.definition.modelPolicy.mode }) });
+  const { grant, ...auth } = mode === 'member' ? await db.transaction(async tx => {
+    // A first Team open may precede the owner's first worker tick. Serialize its
+    // freshly checked personal lease with enrollment revocation before granting Team access.
+    await lockDockerOwner(tx, p.user.id, 3000);
+    // Account disable/session changes also serialize with lease dispatch, even
+    // though their authority transaction does not use the enrollment owner lock.
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, p.user.id)).for('share');
+    const fresh = await authorizeTeam(p, botId, mode, tx);
+    let canCreate = true;
+    try { await assertDockerCreate(fresh.principal, await getSetting('tools', tx), tx); }
+    catch (error) { if (!(error instanceof HttpError) || error.status !== 403) throw error; canCreate = false; }
+    await dockerControl(p.user.id, '/control/lease', { canCreate }, 3000);
+    return issue(fresh);
+  }) : await issue(await authorizeTeam(p, botId, mode));
   if (typeof grant.grantId !== 'string' || !/^[0-9a-f-]{36}$/.test(grant.grantId) || !Number.isFinite(grant.expiresAt) || grant.expiresAt <= Date.now())
     throw new HttpError(503, 'The Team runtime did not confirm a valid grant.');
   return { ...auth, grant };

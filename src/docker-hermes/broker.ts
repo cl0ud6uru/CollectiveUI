@@ -208,14 +208,14 @@ export class DockerBroker {
     for(const [owner,entry] of this.candidateOwners) {
       try{this.candidateCurrent(entry);}catch{entry.phase='retiring';await this.stop(owner).catch(()=>{});}
     }
-    // One expired Team grant cannot be kept alive by an unrelated personal-runtime lease.
-    // Stop is currently container-wide; invalidation fences every sibling before cleanup.
+    // Expiry fences this Team capability. Idle tabs do not own the personal lease
+    // or unrelated work; active/uncertain Team work still requires a container-wide stop.
     const expired = new Map<string, { actor: string; teamBotId: string; mode: TeamMode }>();
     for (const [id, grant] of this.teamGrants) if (grant.until <= Date.now()) {
       this.teamGrants.delete(id); expired.set(JSON.stringify([grant.actor, grant.teamBotId, grant.mode]), grant);
     }
-    for (const scope of expired.values()) if (![...this.teamGrants.values()].some(g => teamOwner(g.actor, g.teamBotId, g.mode) === teamOwner(scope.actor, scope.teamBotId, scope.mode) && g.teamBotId === scope.teamBotId && g.mode === scope.mode && g.until > Date.now()))
-      await this.revokeTeam(scope.actor, { teamBotId: scope.teamBotId, mode: scope.mode }).catch(() => {});
+    for (const scope of expired.values()) if (![...this.teamGrants.values()].some(g => g.actor === scope.actor && g.teamBotId === scope.teamBotId && g.mode === scope.mode && g.until > Date.now()))
+      await this.revokeTeamScope(scope.actor, scope, true).catch(() => {});
     for (const [owner, s] of this.states) if (s.phase !== 'stopping' && (!['disabled', 'stopped'].includes(s.phase) || this.maintaining.has(owner)) && ((this.leases.get(owner)?.until ?? 0) <= Date.now() || s.cleanupRequired))
       await this.stop(owner).catch(() => {});
     for (const [owner, s] of this.states) {
@@ -237,13 +237,14 @@ export class DockerBroker {
   authorizeTeam(actor: string, raw: unknown): TeamGrant {
     this.teamEnabled(); ownerId.parse(actor);
     const input = teamAuthorization.parse(raw), owner = teamOwner(actor, input.teamBotId, input.mode);
+    if (input.mode === 'member') this.authorized(owner);
     const until = Date.now() + 60000, grantId = randomUUID();
     for (const [id, grant] of this.teamGrants) if (teamOwner(grant.actor, grant.teamBotId, grant.mode) === owner && grant.teamBotId === input.teamBotId && grant.mode === input.mode && grant.modelPolicy !== input.modelPolicy)
       this.teamGrants.delete(id);
     this.teamGrants.set(grantId, { actor, ...input, until });
-    const prior = this.leases.get(owner);
-    // Team membership permits provisioning its own profile, without granting personal-bot creation.
-    this.leases.set(owner, { until, canCreate: !!prior && prior.until > Date.now() && prior.canCreate });
+    // A member grant cannot create or renew personal runtime authority. The trusted
+    // application/worker must first check enrollment and issue the personal lease.
+    if (input.mode === 'admin') this.leases.set(owner, { until, canCreate: false });
     return { grantId, expiresAt: until };
   }
   private authorizedTeam(actor: string, bot: string, mode: TeamMode, grantId: string) {
@@ -251,6 +252,7 @@ export class DockerBroker {
     const grant = this.teamGrants.get(grantId);
     if (!grant || grant.actor !== actor || grant.teamBotId !== bot || grant.mode !== mode || grant.until <= Date.now())
       throw new LocalError(403, 'Current Team Bot authorization is required. Reopen the bot.');
+    if (mode === 'member') this.authorized(actor);
     return grant;
   }
   /** Protected capability query. Network policy comes from the retained, derived runtime owner. */
@@ -456,19 +458,34 @@ export class DockerBroker {
     this.revokeJobs.set(jobKey, job);
     try { return await job; } finally { this.revokeJobs.delete(jobKey); }
   }
-  private async revokeTeamScope(actor: string, scope: { teamBotId: string; mode: TeamMode }) {
+  private async revokeTeamScope(actor: string, scope: { teamBotId: string; mode: TeamMode }, expired = false) {
+    const owner = teamOwner(actor, scope.teamBotId, scope.mode), s = this.state(owner);
+    const operation = s?.teams[teamKey(scope.teamBotId, scope.mode)];
+    const matches = (entry: Candidate) => entry.actor === actor && entry.config.teamBotId === scope.teamBotId && entry.config.mode === scope.mode;
+    const uncertain = Object.values(s?.candidateReceipts ?? {}).some(receipt => receipt.actor === actor && receipt.teamBotId === scope.teamBotId && receipt.mode === scope.mode && receipt.state !== 'stopped');
+    if (expired) {
+      const candidate = this.candidateOwners.get(owner);
+      const pending = [...this.candidateConfigs.values()].some(entry => matches(entry) && entry.phase !== 'prepared');
+      // A dormant prepared config has never started native work. Keep every retained
+      // profile/receipt and sibling controller, but discard its expired capability.
+      const busy = (candidate && matches(candidate)) || uncertain || pending || operation?.state === 'preparing'
+        || (operation?.bindingId && this.controllers.has(operation.bindingId)) || this.maintaining.has(owner) || this.resourceMaintaining.has(owner);
+      if (!busy) {
+        for (const [id, entry] of this.candidateConfigs) if (matches(entry)) this.candidateConfigs.delete(id);
+        return { stopped: false, interruption: 'none' as const };
+      }
+    }
     const affected=this.candidateOwners.get(teamOwner(actor,scope.teamBotId,scope.mode));
     if(affected?.actor===actor)affected.phase='retiring';
     for(const [id,value] of this.candidateConfigs)if(value.actor===actor && value.config.teamBotId===scope.teamBotId && value.config.mode===scope.mode)this.candidateConfigs.delete(id);
-    const owner = teamOwner(actor, scope.teamBotId, scope.mode);
     const hadGrant = [...this.teamGrants.values()].some(grant => grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode);
     for (const [id, grant] of this.teamGrants) if (grant.actor === actor && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode) this.teamGrants.delete(id);
-    const s = this.state(owner);
     if (!s) return { stopped: true, interruption: 'none' as const };
-    const operation = s.teams[teamKey(scope.teamBotId, scope.mode)];
     if (!operation && !hadGrant) return { stopped: true, interruption: 'none' as const };
     const retainedGrant = [...this.teamGrants.values()].some(grant => teamOwner(grant.actor, grant.teamBotId, grant.mode) === owner && grant.teamBotId === scope.teamBotId && grant.mode === scope.mode && grant.until > Date.now());
-    if (retainedGrant) {
+    // Another maintainer's fresh grant cannot settle this actor's unresolved startup.
+    // A scope with no retained native work may still leave that maintainer running.
+    if (retainedGrant && !(expired && uncertain)) {
       if(affected && affected.actor!==actor)return {stopped:false,interruption:'none' as const};
       const controller = operation?.bindingId ? this.controllers.get(operation.bindingId) : undefined;
       let idle = !controller;

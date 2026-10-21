@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-const f = vi.hoisted(() => ({ authorize: vi.fn(), control: vi.fn(), fetch: vi.fn() }));
+const f = vi.hoisted(() => {
+  const rowLock = vi.fn();
+  return { authorize: vi.fn(), control: vi.fn(), fetch: vi.fn(), lock: vi.fn(), create: vi.fn(), rowLock,
+    tx: { select: () => ({ from: () => ({ where: () => ({ for: rowLock }) }) }) } };
+});
+vi.mock('@/db', () => ({ db: { transaction: async (run: (tx: unknown) => unknown) => run(f.tx) } }));
+vi.mock('@/lib/docker-hermes/enrollment', () => ({ lockDockerOwner: f.lock }));
+vi.mock('@/lib/docker-hermes/policy', () => ({ assertDockerCreate: f.create }));
+vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ botCreation: 'everyone' }) }));
 vi.mock('@/lib/hermes-team/store', () => ({ authorizeTeam: f.authorize }));
 vi.mock('@/lib/docker-hermes/client', () => ({ dockerControl: f.control, dockerFetch: () => f.fetch }));
 import { captureTeamResources, ensureTeamRuntime, inventoryTeamResources, inventoryTeamMemberResources, applyTeamMemberResources, abortTeamMemberResources } from '@/lib/hermes-team/transport';
@@ -17,6 +25,9 @@ describe('trusted Team broker adapter', () => {
   it('builds a private scope from authenticated actor/bot/mode with a server-only grant', async () => {
     expect(await ensureTeamRuntime(p, 'team', 'member')).toEqual({ accepted: true });
     expect(f.control).toHaveBeenCalledWith('alice', '/team/authorize', { teamBotId: 'team', mode: 'member', modelPolicy: 'personal_required' });
+    expect(f.lock).toHaveBeenCalledWith(f.tx, 'alice', 3000);
+    expect(f.rowLock).toHaveBeenCalledWith('share');
+    expect(f.control).toHaveBeenNthCalledWith(1, 'alice', '/control/lease', { canCreate: true }, 3000);
     const [url, request] = f.fetch.mock.calls[0];
     expect(url).toMatch(/\/team\/ensure$/); expect(request.headers['x-collective-team-grant']).toBe(grantId);
     expect(JSON.parse(request.body)).toEqual({ teamBotId: 'team', mode: 'member', name: 'Support' }); expect(f.authorize).toHaveBeenCalledTimes(3);
@@ -58,7 +69,7 @@ describe('trusted Team broker adapter', () => {
     expect(JSON.parse(f.fetch.mock.calls[2][1].body)).toEqual({ teamBotId: 'team', mode: 'member', operationId: 'operation', plan });
   });
   it('rejects expired grants and hides upstream response/exception contents', async () => {
-    f.control.mockResolvedValueOnce({ grantId, expiresAt: Date.now() - 1 });
+    f.control.mockResolvedValueOnce({}).mockResolvedValueOnce({ grantId, expiresAt: Date.now() - 1 });
     await expect(ensureTeamRuntime(p, 'team', 'member')).rejects.toMatchObject({ status: 503 }); expect(f.fetch).not.toHaveBeenCalled();
     f.fetch.mockResolvedValueOnce(Response.json({ secret: 'fixture-secret' }, { status: 500 }));
     await expect(ensureTeamRuntime(p, 'team', 'member')).rejects.toThrow(/runtime needs attention/);

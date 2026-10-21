@@ -39,6 +39,8 @@ beforeEach(async()=>{
  vi.restoreAllMocks();vi.stubEnv('HERMES_TEAM_BOTS_ENABLED','1');vi.stubEnv('HERMES_TEAM_CANDIDATE_RUNTIME_ENABLED','1');vi.stubEnv('ENCRYPTION_KEY','synthetic-official-fixture-encryption-only');fixture.control.mockReset();fixture.control.mockImplementation(async(_actor,path)=>path==='/team/revoke'?{stopped:true,interruption:'none'}:{grantId:'synthetic-current-grant'});fixture.runtime.mockReset();fixture.runtime.mockImplementation(async()=>Response.json({available:true,network:'internet'}));
  await fixture.client!.exec('TRUNCATE users,ai_apps,groups,mcp_servers CASCADE');
  await db.insert(schema.users).values([{id:'admin',upn:'admin@test.invalid',name:'Admin',isAdmin:true,authSource:'local',identityRealm:'local'},{id:'alice',upn:'alice@test.invalid',name:'Alice',authSource:'local',identityRealm:'local'},{id:'bob',upn:'bob@test.invalid',name:'Bob',authSource:'local',identityRealm:'local'}]);
+  // Member Team profiles share an explicitly enrolled personal runtime.
+  await db.insert(schema.dockerHermesEnrollments).values([{ userId: 'alice', enabled: true }, { userId: 'bob', enabled: true }]);
  admin=(await loadPrincipal('admin'))!;alice=(await loadPrincipal('alice'))!;bob=(await loadPrincipal('bob'))!;
  await db.insert(schema.bots).values({id:'team',ownerId:'admin',name:'Team',visibility:'groups'});await db.insert(schema.botUserAccess).values([{botId:'team',userId:'alice'},{botId:'team',userId:'bob'}]);
  await configureTeam(admin,'team',{enabled:true,expectedVersion:0,maintainerIds:['admin'],modelPolicy:{mode:'personal_required',personalRouteId:route.id,personalWorkspaceId:'business-work',adminRouteId:'app:never-company'}});

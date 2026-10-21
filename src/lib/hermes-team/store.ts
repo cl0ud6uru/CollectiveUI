@@ -4,6 +4,7 @@ import { db, type DbOrTx } from '@/db';
 import { agentRuns, aiApps, botAccess, botUserAccess, bots, hermesTeamDefinitions, hermesTeamMaintainers, hermesTeamOperations, hermesTeamProfiles } from '@/db/schema';
 import { loadPrincipal, type Principal } from '@/lib/auth/groups';
 import { HttpError } from '@/lib/authz';
+import { dockerAllowed } from '@/lib/docker-hermes/policy';
 import { teamBotsEnabled, teamModeAllows, teamOwnerKey } from './policy';
 import { teamConfiguration, type TeamMode } from './types';
 import { OPEN_STATUSES } from '@/lib/runs/types';
@@ -25,6 +26,10 @@ export async function authorizeTeam(p: Principal, botId: string, mode: TeamMode,
   const audienceUsers = await q.select().from(botUserAccess).where(eq(botUserAccess.botId, botId));
   if (!teamModeAllows(fresh, bot, { groupIds: audienceGroups.map(r => r.groupId), userIds: audienceUsers.map(r => r.userId) }, maintainers.map(r => r.userId), mode))
     throw new HttpError(403, mode === 'admin' ? 'Admin status and permission to maintain this bot are required.' : 'You are outside this bot’s audience.');
+  // Member profiles share this user's personal container and its enrollment lifecycle.
+  // The dedicated working admin profile has a separate, bot-owned runtime identity.
+  if (mode === 'member' && !await dockerAllowed(fresh, q))
+    throw new HttpError(403, 'Personal Hermes enrollment is required to open a Team Bot as a member. Ask an administrator to allow access.');
   if (!allowDisabled) {
     const cleanup = await q.select().from(hermesTeamOperations).where(and(eq(hermesTeamOperations.botId, botId), eq(hermesTeamOperations.kind, 'revoke'), inArray(hermesTeamOperations.state, ['pending','needs_attention'])));
     if (cleanup.some(r => {
