@@ -94,11 +94,16 @@ describe("native budget admission around the actual AI SDK dispatch", () => {
     const interrupted = wrapped(new MockLanguageModelV4({ doStream: async () => ({ stream: new ReadableStream({ start(controller) { controller.enqueue({ type: "text-delta", id: "t", delta: "partial" }); } }) }) }), ctx);
     const first = await interrupted.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "Fixture" }] }] });
     const reader = first.stream.getReader(); await reader.read(); await reader.cancel();
+    await Promise.all(ctx.scope!.pending);
+    expect(await db.select().from(schema.usageEvents)).toMatchObject([{ completionStatus: "incomplete", inputTokens: null, outputTokens: null }]);
+    expect(await db.select().from(schema.usageEvents)).toHaveLength(1);
     await vi.waitFor(async () => expect((await db.select().from(schema.nativeRunBudgetAttempts))[0].state).toBe("uncertain"));
     expect((await db.select().from(schema.nativeRunBudgets))[0].reservedTokens).toBeGreaterThan(0);
     const completed = wrapped(new MockLanguageModelV4({ doStream: async () => ({ stream: convertArrayToReadableStream([{ type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage }]) }) }), context("child"));
     const second = await completed.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "Fixture" }] }] });
     const completedReader = second.stream.getReader(); while (!(await completedReader.read()).done) { /* Drain completion. */ }
+    await Promise.all(ctx.scope!.pending);
+    expect(await db.select().from(schema.usageEvents)).toHaveLength(2);
     expect((await db.select().from(schema.nativeRunBudgets))[0]).toMatchObject({ usedTokens: 5 });
   });
   it("holds an error-finished stream while recording its partial usage once", async () => {

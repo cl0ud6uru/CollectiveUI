@@ -1,7 +1,7 @@
 import "server-only";
 import type { AiApp, Bot } from "@/db/schema";
 import { providerContextFor } from "@/lib/llm/resolve";
-import type { ProviderContext } from "@/lib/llm/providers/types";
+import { mapUsage, recordUsage } from "@/lib/llm/usage";
 import { HttpError } from "@/lib/authz";
 import { liveHistory, type VoiceHistoryMessage } from "./history";
 
@@ -56,7 +56,7 @@ export async function voiceEligibility(target: VoiceTarget): Promise<VoiceEligib
   }
 }
 
-async function credentialContext(app: AiApp): Promise<ProviderContext> {
+async function credentialContext(app: AiApp) {
   if (app.provider !== "openai" || app.credentialMode !== "org") throw new HttpError(403, "Voice requires an OpenAI API connection with company credentials.");
   if (!app.model.trim()) throw new HttpError(400, "Choose a Responses API model for the voice assistant.");
   if (app.model === "gpt-live-1") throw new HttpError(400, "Choose a Responses API model for the voice assistant.");
@@ -66,7 +66,7 @@ async function credentialContext(app: AiApp): Promise<ProviderContext> {
   return ctx;
 }
 
-export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch, history: readonly VoiceHistoryMessage[] = [], options: { reactionTest?: boolean; signal?: AbortSignal } = {}) {
+export async function createVoiceSession(target: VoiceTarget, sdp: string, fetchImpl: typeof fetch = fetch, history: readonly VoiceHistoryMessage[] = [], options: { reactionTest?: boolean; signal?: AbortSignal; userId?: string; conversationId?: string } = {}) {
   const { app, bot } = target;
   const ctx = await credentialContext(target.voiceApp ?? app);
   const apiKey = ctx.secret!.type === "api-key" ? ctx.secret!.apiKey : "";
@@ -99,9 +99,16 @@ export async function createVoiceSession(target: VoiceTarget, sdp: string, fetch
       throw new HttpError(502, "OpenAI could not start the voice session.");
     }
     const result = await upstream.json() as { session?: { id?: unknown }; transport?: { type?: unknown; sdp?: unknown } };
-    if (typeof result.session?.id !== "string" || !result.session.id || result.transport?.type !== "webrtc" || typeof result.transport.sdp !== "string" || !result.transport.sdp) {
+    if (typeof result.session?.id !== "string" || !result.session.id) {
       throw new HttpError(502, "OpenAI returned an invalid voice session response.");
     }
+    // This proves a session start, not its final audio usage. Preserve null tokens
+    // and the actual OpenAI transport's historical billing identity.
+    await recordUsage({ purpose: "voice", completionStatus: "started", providerKind: "openai", billingSource: "org", model: "gpt-live-1",
+      appId: (target.voiceApp ?? app).id, botId: bot?.id, userId: options.userId, conversationId: options.conversationId,
+      ...ctx.usageAttribution }, mapUsage(undefined));
+    if (result.transport?.type !== "webrtc" || typeof result.transport.sdp !== "string" || !result.transport.sdp)
+      throw new HttpError(502, "OpenAI returned an invalid voice session response.");
     return { sessionId: result.session.id, sdp: result.transport.sdp };
   } catch (err) {
     if (err instanceof HttpError) throw err;

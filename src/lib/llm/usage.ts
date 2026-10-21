@@ -1,7 +1,7 @@
 import { db, type DbOrTx } from "@/db";
 import { usageEvents, type UsageEvent } from "@/db/schema";
 import { newId } from "@/lib/ids";
-import type { BillingSource, ModelPurpose, ProviderKind } from "./kinds";
+import type { BillingSource, ModelPurpose, ProviderKind, UsageCompletionStatus } from "./kinds";
 
 /**
  * Collects the ledger writes of one turn so the turn can await them before reporting that it's done,
@@ -52,6 +52,7 @@ export type UsageContext = {
   providerOrganization?: string | null;
   providerProject?: string | null;
   billingRoute?: string | null;
+  completionStatus?: UsageCompletionStatus;
   scope?: UsageScope;
 };
 
@@ -101,6 +102,7 @@ export function recordUsage(ctx: UsageContext, tokens: ReturnType<typeof mapUsag
     providerOrganization: ctx.providerOrganization ?? null,
     providerProject: ctx.providerProject ?? null,
     billingRoute: ctx.billingRoute ?? (ctx.billingSource === "chatgpt_plan" ? "subscription:chatgpt" : ctx.providerKind === "hermes" ? "unknown:hermes" : null),
+    completionStatus: ctx.completionStatus ?? "complete",
     ...tokens,
     ...search,
     // Only verified organization API routes may carry dollar estimates. Subscription and unknown Hermes

@@ -10,7 +10,7 @@ const inputOf = (params: ModelParams) => {
 const uncertain = async (receipt: NativeBudgetReceipt, ctx: UsageContext, record = true) => {
   // The committed reservation remains held even if the status annotation or best-effort ledger write fails.
   await retainNativeBudget(receipt).catch(() => {});
-  if (record) await recordUsage(ctx, mapUsage(undefined), { id: `native-budget-${receipt.id}` });
+  if (record) await recordUsage({ ...ctx, completionStatus: "incomplete" }, mapUsage(undefined), { id: `native-budget-${receipt.id}` });
 };
 
 /** Inner middleware sees defaults and all SDK-transformed prompt/tool fields. SDK retries enter it afresh. */
@@ -52,23 +52,24 @@ export function nativeRunBudgetMiddleware(ctx: UsageContext): LanguageModelMiddl
       try {
         params.abortSignal?.throwIfAborted(); await markNativeBudgetDispatched(receipt); dispatched = true;
         const { stream, ...rest } = await doStream(); const reader = stream.getReader();
-        let completed = false; let failed = false; let sawFinish = false;
+        let completed = false; let failed = false;
         return { ...rest, stream: new ReadableStream({
           async pull(controller) {
             try {
               const part = await reader.read();
-              if (part.done) { if (!completed) await uncertain(receipt, ctx, !sawFinish); controller.close(); return; }
+              if (part.done) { if (!completed) await uncertain(receipt, ctx, false); controller.close(); return; }
               if (part.value.type === "error") failed = true;
               if (part.value.type === "finish") {
-                sawFinish = true;
                 const complete = !failed && ["stop", "length", "tool-calls"].includes(part.value.finishReason.unified);
                 await settleNativeBudget(receipt, part.value.usage.inputTokens.total, part.value.usage.outputTokens.total, { complete });
                 completed = complete;
               }
               controller.enqueue(part.value);
-            } catch (error) { if (!completed) await uncertain(receipt, ctx, !sawFinish); controller.error(error); }
+            } catch (error) { if (!completed) await uncertain(receipt, ctx, false); controller.error(error); }
           },
-          async cancel(reason) { if (!completed) await uncertain(receipt, ctx, !sawFinish); await reader.cancel(reason); },
+          // The outer usage middleware owns the stream's single ledger row. This
+          // layer retains its reservation; only pre-stream dispatch errors log here.
+          async cancel(reason) { if (!completed) await uncertain(receipt, ctx, false); await reader.cancel(reason); },
         }) };
       } catch (error) {
         if (dispatched) await uncertain(receipt, ctx); else await releaseNativeBudget(receipt);

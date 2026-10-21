@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AiApp } from "@/db/schema";
+import type { AiApp, UsageEvent } from "@/db/schema";
 
 const deps = vi.hoisted(() => ({
   providerContextFor: vi.fn(),
@@ -25,6 +25,9 @@ vi.mock("@/lib/authz", () => ({ HttpError: class HttpError extends Error { const
 
 import { GET, POST } from "@/app/api/voice/session/route";
 import { voiceEligibility } from "@/lib/voice/session";
+import { setUsageWriter } from "@/lib/llm/usage";
+
+const ledger: UsageEvent[] = [];
 
 const app = {
   id: "app-1", name: "OpenAI", provider: "openai", credentialMode: "org", model: "gpt-4.1",
@@ -35,11 +38,14 @@ const providerContext = {
   appId: app.id, appName: app.name, kind: "openai", baseUrl: null,
   config: { organization: "org-1", project: "proj-1" },
   secret: { type: "api-key", apiKey: "secret-api-key" },
+  usageAttribution: { providerConnectionId: "openai-transport", providerOrganization: "org-1", providerProject: "proj-1", billingRoute: "api:openai" },
 };
 const target = { app, bot: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ledger.length = 0;
+  setUsageWriter(async row => { ledger.push(row); });
   vi.stubEnv("AUTH_URL", "https://portal.example");
   deps.requirePrincipal.mockResolvedValue(principal);
   deps.configureVoiceTarget.mockImplementation(async (_p, target) => target);
@@ -49,6 +55,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setUsageWriter(null);
   vi.unstubAllEnvs();
 });
 
@@ -65,6 +72,8 @@ describe("voice session API", () => {
     expect(upstream.session.instructions).toContain("listening-only avatar reaction test");
     expect(upstream.session.instructions).toContain("No tools or external actions");
     expect(upstream.session.instructions).not.toContain("saved chat");
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({ purpose: "voice", completionStatus: "started", userId: "user-1", conversationId: "chat00000001", inputTokens: null, outputTokens: null });
     fetchSpy.mockRestore();
   });
 
@@ -80,6 +89,8 @@ describe("voice session API", () => {
       expect((await response.json()).history).toEqual([]);
     }
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(ledger).toHaveLength(2);
+    expect(ledger.map(row => row.conversationId)).toEqual(["newchat00001", "newchat00002"]);
     for (const [, init] of fetchSpy.mock.calls) {
       const session = JSON.parse(String(init?.body)).session;
       expect(session.input).toEqual([]);
@@ -88,7 +99,7 @@ describe("voice session API", () => {
     fetchSpy.mockRestore();
   });
   it("uses an independently authorized OpenAI transport for a Hermes bot", async () => {
-    const hermes = { app: { ...app, provider: "hermes" }, bot: { id: "bot0000001", name: "Hermes", instructions: "Use my tools" } };
+    const hermes = { app: { ...app, id: "hermes-backend", provider: "hermes" }, bot: { id: "bot0000001", name: "Hermes", instructions: "Use my tools" } };
     deps.resolveTurnTarget.mockResolvedValueOnce(hermes);
     deps.configureVoiceTarget.mockResolvedValueOnce({ ...hermes, voiceApp: app });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "vs_1" }, transport: { type: "webrtc", sdp: "answer" } }));
@@ -98,6 +109,8 @@ describe("voice session API", () => {
     const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
     expect(body.session.delegation).toEqual({ type: "client" });
     expect(body.session.instructions).toContain("Hermes");
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({ appId: app.id, botId: "bot0000001", providerKind: "openai", model: "gpt-live-1", billingSource: "org", providerConnectionId: "openai-transport", providerOrganization: "org-1", providerProject: "proj-1", billingRoute: "api:openai" });
     fetchSpy.mockRestore();
   });
   it("requires an authenticated principal", async () => {
@@ -112,6 +125,7 @@ describe("voice session API", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ supported: false });
     expect(deps.providerContextFor).not.toHaveBeenCalled();
+    expect(ledger).toHaveLength(0);
   });
 
   it("denies session creation before reading targets when authentication fails", async () => {
@@ -232,6 +246,9 @@ describe("voice session API", () => {
     expect(body.session.instructions).toContain("## Delegation policy");
     expect(body.session.instructions).not.toContain(app.systemPrompt);
     expect(JSON.stringify(body)).not.toContain("secret-api-key");
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({ purpose: "voice", completionStatus: "started", providerKind: "openai", model: "gpt-live-1", appId: app.id, userId: "user-1", conversationId: "chat00000001", inputTokens: null, outputTokens: null, cacheReadTokens: null, reasoningTokens: null });
+    expect(JSON.stringify(ledger)).not.toContain("secret-api-key");
     fetchSpy.mockRestore();
   });
 
@@ -244,6 +261,24 @@ describe("voice session API", () => {
     }));
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain("sensitive provider detail");
+    expect(ledger).toHaveLength(0);
     failure.mockRestore();
+  });
+
+  it("counts an acknowledged session even if its transport answer is invalid, without inventing tokens", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "started-with-bad-answer" }, transport: { type: "webrtc", sdp: "" } }));
+    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }) }));
+    expect(response.status).toBe(502);
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({ purpose: "voice", completionStatus: "started", inputTokens: null, outputTokens: null });
+    fetchSpy.mockRestore();
+  });
+
+  it("does not claim a session start without an upstream acknowledgement", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new DOMException("Aborted", "AbortError"));
+    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }) }));
+    expect(response.status).toBe(502);
+    expect(ledger).toHaveLength(0);
+    fetchSpy.mockRestore();
   });
 });
