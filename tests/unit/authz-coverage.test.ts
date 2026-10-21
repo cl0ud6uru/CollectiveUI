@@ -78,6 +78,15 @@ describe("authorization coverage", () => {
     expect(missing).toEqual([]);
   });
 
+  // Layouts are skipped on client navigations whose router state already holds the admin segment, so the
+  // admin layout's check does not protect its pages' RSC payloads on its own.
+  it("every admin page checks admin rights itself, not only through the admin layout", () => {
+    const pages = walk(path.join(SRC, "app/admin")).filter((f) => /\/page\.tsx$/.test(f));
+    expect(pages.length).toBeGreaterThan(5);
+    const missing = pages.filter((f) => !/\brequireAdminPage\s*\(/.test(readFileSync(f, "utf8")));
+    expect(missing.map(rel)).toEqual([]);
+  });
+
   it("proxy.ts uses the shared public path list, and it covers exactly the public handlers", () => {
     expect(readFileSync(path.join(SRC, "proxy.ts"), "utf8")).toContain("isPublicPath(");
     for (const url of Object.keys(PUBLIC_HANDLERS)) expect(isPublicPath(url), url).toBe(true);

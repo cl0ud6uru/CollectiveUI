@@ -27,6 +27,11 @@ export { HttpError } from "@/lib/http-error";
 export const forbidden = (msg = "Forbidden") => new HttpError(403, msg);
 export const notFound = (msg = "Not found") => new HttpError(404, msg);
 
+/** The admin "Who can create bots" policy. */
+export function mayCreateBots(p: Principal, botCreation: "everyone" | "groups" | "admins") {
+  return botCreation === "everyone" || (botCreation === "groups" ? p.canCreateBots : p.isAdmin);
+}
+
 export function assertAdmin(p: Principal) {
   if (!p.isAdmin) throw forbidden("Admin only");
 }

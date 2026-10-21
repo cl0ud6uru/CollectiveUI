@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { buildCommandRequest } from "@/lib/chat/composer-commands";
 
 const f = vi.hoisted(() => ({ principal: vi.fn(), execute: vi.fn(), revalidate: vi.fn() }));
@@ -9,9 +9,9 @@ import { POST } from "@/app/api/chat/commands/route";
 
 const principal = { user: { id: "owner" } };
 const controls = { conversationId: "existingChat1234", text: "/new", revision: 0, newConversationId: "newChat123456789", messageId: "lastMessage12345" };
-const request = (body: unknown) => new Request("https://portal.test/api/chat/commands", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const request = (body: unknown) => new Request("https://portal.test/api/chat/commands", { method: "POST", headers: { "Content-Type": "application/json", Origin: "https://portal.test" }, body: JSON.stringify(body) });
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.clearAllMocks(); vi.stubEnv("AUTH_URL", "https://portal.test");
   f.principal.mockResolvedValue(principal);
   f.execute.mockResolvedValue({ title: "New chat", lines: [], navigateTo: `/c/${controls.newConversationId}` });
 });
@@ -38,3 +38,5 @@ it("keeps server validation strict when raw clients send model settings", async 
   expect(await response.json()).toEqual({ error: "Invalid command request" });
   expect(f.execute).not.toHaveBeenCalled();
 });
+
+afterEach(() => { vi.unstubAllEnvs(); });

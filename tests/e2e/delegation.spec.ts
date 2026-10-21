@@ -48,7 +48,7 @@ test("parent links to receiving task, history/activity include it, and home stay
   await send(page, "delegate explain cats");
   await expect.poll(async () => (await pool.query("SELECT child_conversation_id FROM delegated_tasks WHERE origin_conversation_id=$1 AND returned_at IS NOT NULL", [originId])).rows.length).toBe(1);
   taskId = (await pool.query("SELECT child_conversation_id FROM delegated_tasks WHERE origin_conversation_id=$1", [originId])).rows[0].child_conversation_id;
-  const steps = page.getByRole("button", { name: /Worked for|1 steps/ }).first();
+  const steps = page.getByRole("button", { name: /\d+ steps?\b/ }).first();
   if (await steps.isVisible()) await steps.click();
   const taskLink = page.getByRole("link", { name: "Open task", exact: true });
   await expect(taskLink).toHaveAttribute("href", `/c/${taskId}`);

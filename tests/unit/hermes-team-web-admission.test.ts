@@ -36,7 +36,7 @@ beforeAll(async () => {
     await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, 'utf8').replace('CREATE EXTENSION IF NOT EXISTS vector;', '').replace(/\bvector\b/g, 'real[]'));
 }, 45000);
 beforeEach(async () => {
-  vi.restoreAllMocks(); vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1'); fixture.enqueue.mockReset(); fixture.enqueue.mockResolvedValue(undefined);
+  vi.restoreAllMocks(); vi.stubEnv('AUTH_URL', 'https://app.test.invalid'); vi.stubEnv('HERMES_TEAM_BOTS_ENABLED', '1'); fixture.enqueue.mockReset(); fixture.enqueue.mockResolvedValue(undefined);
   fixture.proof.mockReset(); fixture.proof.mockResolvedValue({ available: false, reason: 'No verified model route.', choice: 'default' }); fixture.authorize = undefined;
   await fixture.client!.exec('TRUNCATE users,ai_apps,settings CASCADE');
   await db.insert(schema.users).values([{ id: 'admin', upn: 'admin@test.invalid', name: 'Admin', isAdmin: true, authSource: 'local', identityRealm: 'local' },
@@ -128,7 +128,7 @@ describe('private Team web admission with injected server evidence', () => {
   });
   it('installs fresh Team authority on the actual POST and reload stream routes', async () => {
     const { conversation } = await privateChat(); ready();
-    const response = await POST(new Request('https://app.test.invalid/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' },
+    const response = await POST(new Request('https://app.test.invalid/api/chat', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://app.test.invalid' },
       body: JSON.stringify({ conversationId: conversation.id, message: { id: 'stream-user', role: 'user', parts: [{ type: 'text', text: 'Synthetic turn' }] } }) }));
     expect(response.status).toBe(200); const postAuthorize = fixture.authorize; expect(postAuthorize).toBeTypeOf('function'); await postAuthorize!();
     fixture.authorize = undefined;

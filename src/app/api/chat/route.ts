@@ -24,6 +24,7 @@ import { parseHermesInput } from "@/lib/chat/hermes-commands";
 import { isTeamRuntimeApp } from '@/lib/agent/team-target';
 import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
 import { resolveReplyReference, resolveStoredReplyReference } from "@/lib/chat/reply-server";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 // No maxDuration: direct chats run in the worker and this response only tails the run's event log, which may stay
 // open for as long as the reply takes (self-hosted Node has no route time limit; a proxy must allow long reads).
@@ -126,6 +127,7 @@ export async function POST(req: Request) {
   let body: Body | undefined;
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     body = Body.parse(await req.json());
     const input = body;
 

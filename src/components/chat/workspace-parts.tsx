@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Check, FilePen, Loader2, Square, Terminal, X } from "lucide-react";
+import { Check, FilePen, Square, Terminal, X } from "lucide-react";
 import { stopWorkspaceCommand } from "@/app/(chat)/settings/workspace-actions";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { commandLine, RailDot, RunningTicker } from "./steps";
 
 type Part = {
   toolCallId: string;
@@ -136,10 +137,13 @@ export function BashResult({ part, live }: { part: Part; live: boolean }) {
   const interrupted = running && !live;
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-border text-sm">
+    <div className={cn("my-2 overflow-hidden rounded-xl border border-border text-sm", running && !interrupted && "tool-running")}>
       <div className="flex items-center gap-2 border-b border-border bg-surface-2/50 px-3 py-1.5">
-        {running && !interrupted ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted" /> : <Terminal className="h-3.5 w-3.5 text-muted" />}
-        <code className="min-w-0 flex-1 truncate font-mono text-xs">{input.command}</code>
+        <RailDot />
+        <Terminal className={cn("h-3.5 w-3.5 shrink-0", running && !interrupted ? "text-hermes" : "text-muted")} />
+        {running && !interrupted
+          ? <span className="min-w-0 flex-1"><RunningTicker toolCallId={part.toolCallId} command={commandLine(input.command)} /></span>
+          : <code className="min-w-0 flex-1 truncate font-mono text-xs">{input.command}</code>}
         {o?.status === "done" && (
           <span className={cn("rounded-full px-2 py-0.5 text-xs", o.ok ? "bg-green-500/15 text-green-700 dark:text-green-300" : "bg-red-500/15 text-red-700 dark:text-red-300")}>
             exit {o.exitCode}

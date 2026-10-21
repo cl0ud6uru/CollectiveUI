@@ -29,7 +29,7 @@ import {
   skills,
   type BotTemplateSnapshot,
 } from "@/db/schema";
-import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers } from "@/lib/authz";
+import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers, mayCreateBots } from "@/lib/authz";
 import { chunkText } from "@/lib/files/extract";
 import { newToken } from "@/lib/ids";
 import { enqueue, QUEUES } from "@/lib/jobs";
@@ -105,8 +105,8 @@ export type BotInput = z.infer<typeof BotInput>;
 async function assertCanCreate() {
   const p = await requirePrincipal();
   const t = await getSetting("tools");
-  if (t.botCreation === "admins" && !p.isAdmin) throw new HttpError(403, "Only admins can create bots");
-  if (t.botCreation === "groups" && !p.canCreateBots) throw new HttpError(403, "You are not allowed to create bots");
+  if (!mayCreateBots(p, t.botCreation))
+    throw new HttpError(403, t.botCreation === "admins" ? "Only admins can create bots" : "You are not allowed to create bots");
   return p;
 }
 
@@ -360,9 +360,11 @@ export async function revokeServiceBotGrant(grantId: string) {
 }
 
 /** "Create with chat": draft a bot configuration from a plain-language description. */
-export async function draftBotFromDescription(description: string): Promise<BotDraftResult> {
+export async function draftBotFromDescription(description: string, botId?: string): Promise<BotDraftResult> {
   try {
-    const p = await requirePrincipal();
+    // Drafting spends the company utility model: only for people who may create bots, or edit the bot being drafted.
+    const p = botId ? await requirePrincipal() : await assertCanCreate();
+    if (botId) await getEditableBot(p, botId);
     const idea = z.string().trim().min(1, "Describe the bot first.").max(DRAFT_DESCRIPTION_MAX_LENGTH, "Shorten the description and try again.").safeParse(description);
     if (!idea.success) return { ok: false, error: idea.error.issues[0].message };
     // No silent fallback to another model: drafting uses only the configured utility model.
@@ -608,14 +610,17 @@ export async function runRoutineNow(id: string) {
   return { runId: run.id };
 }
 
-/** Snapshot of a bot's shareable configuration (no conversations, memory, knowledge files or secrets). */
-async function snapshotBot(botId: string): Promise<BotTemplateSnapshot> {
+/**
+ * Snapshot of a bot's shareable configuration (no conversations, memory, knowledge files or secrets). Routines are
+ * private to the person who created them, so only `routineOwnerId`'s own routines on the bot are included.
+ */
+async function snapshotBot(botId: string, routineOwnerId: string): Promise<BotTemplateSnapshot> {
   const [bot] = await db.select().from(bots).where(eq(bots.id, botId));
   if (!bot) throw new HttpError(404, "Bot not found");
   const [tools, botSkills, botRoutines] = await Promise.all([
     db.select().from(botTools).where(eq(botTools.botId, bot.id)),
     db.select().from(skills).where(eq(skills.botId, bot.id)),
-    db.select().from(routines).where(and(eq(routines.botId, bot.id), eq(routines.ownerId, bot.ownerId))),
+    db.select().from(routines).where(and(eq(routines.botId, bot.id), eq(routines.ownerId, routineOwnerId))),
   ]);
   return {
     name: bot.name,
@@ -703,7 +708,7 @@ export async function duplicateBot(botId: string) {
   const p = await requirePrincipal();
   const src = await getAccessibleBot(p, botId);
   await requirePortableEngine(src.appId, src.hermesTeam);
-  const snap = await snapshotBot(src.id);
+  const snap = await snapshotBot(src.id, p.user.id);
   const delegates = await db.select().from(botDelegates).where(eq(botDelegates.botId, src.id));
   return createBotFromSnapshot(snap, {
     name: `${src.name} copy`,
@@ -741,7 +746,7 @@ export async function createBotTemplate(botId: string) {
   const existing = await getBotTemplate(botId);
   if (existing) return existing;
   const token = newToken();
-  await db.insert(botTemplates).values({ id: token, botId, createdBy: p.user.id, snapshot: await snapshotBot(botId) });
+  await db.insert(botTemplates).values({ id: token, botId, createdBy: p.user.id, snapshot: await snapshotBot(botId, p.user.id) });
   return { token, updatedAt: new Date().toISOString() };
 }
 
@@ -752,7 +757,7 @@ export async function updateBotTemplate(botId: string) {
   await requirePortableEngine(bot.appId, bot.hermesTeam);
   const res = await db
     .update(botTemplates)
-    .set({ snapshot: await snapshotBot(botId), updatedAt: new Date() })
+    .set({ snapshot: await snapshotBot(botId, p.user.id), updatedAt: new Date() })
     .where(and(eq(botTemplates.botId, botId), isNull(botTemplates.revokedAt)))
     .returning({ id: botTemplates.id });
   if (!res.length) throw new HttpError(404, "No template link for this bot");

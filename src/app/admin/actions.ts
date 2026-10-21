@@ -1,6 +1,7 @@
 "use server";
 
 import { changeBotStatus } from "@/lib/admin/bot-status";
+import { uploadMaxMbInput } from "@/lib/files/upload-limits";
 
 import { deletePortalGroup, savePortalGroup, type GroupInput } from "@/lib/admin/groups";
 
@@ -494,7 +495,7 @@ export async function saveLoginPet(choice: BotPetDefault, rights?: "confirmed") 
 
 export async function saveLimits(value: LimitsSettings) {
   const p = await requireAdmin();
-  const v = z.object({ uploadMaxMb: z.number().int().min(1).max(500), maxAttachmentsPerMessage: z.number().int().min(1).max(50) }).parse(value);
+  const v = z.object({ uploadMaxMb: uploadMaxMbInput, maxAttachmentsPerMessage: z.number().int().min(1).max(50) }).parse(value);
   await setSetting("limits", v);
   await audit(p.user.id, "settings.limits", undefined, v);
   done();

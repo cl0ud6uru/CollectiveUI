@@ -8,8 +8,9 @@ change in this milestone.
 **Status:** native Debug and universal Release builds pass on Xcode 27.0. The
 Apple-toolchain package suite and macOS/iOS hosted fixture suites pass. See the
 [native validation record](../docs/development/native-macos-validation.md)
-for completed checks and remaining limits. Current polish UI cases have not completed. Real browser sign-in and Keychain behavior
-remain outside fixture coverage.
+for completed checks and remaining limits. The offline Mac UI suite is included
+in GitHub Actions. Real browser sign-in and Keychain behavior remain outside
+fixture coverage.
 
 ## Project and boundaries
 
@@ -107,6 +108,58 @@ image with networking disabled; no Apple toolchain is installed in the cloud.
 
 See the [validation record](../docs/development/native-macos-validation.md) for
 recorded results and remaining scope.
+
+## GitHub Actions
+
+[The macOS workflow](../.github/workflows/macos.yml) runs on pull requests and
+pushes to `main` that change Mac code, its shared iOS sources/tests, CollectiveKit
+or the workflow itself. It can also be run manually. New commits cancel an
+older run for the same PR or branch.
+
+A Linux job checks project membership, shared-source contracts and the workflow
+with actionlint/ShellCheck before using GitHub's hosted `xcode-27` Apple Silicon
+runner. The native job runs CollectiveKit tests, builds Debug and its hosted
+tests once, executes hosted tests without rebuilding, then runs the offline UI
+suite against that same `io.collectiveui.macos.polish` app. The two suites run
+sequentially because they launch the same fixture app. Release builds both
+`arm64` and `x86_64` with distribution signing disabled and verifies the binary
+contains both architectures.
+
+Each stage has a timeout. Toolchain/build/test logs, hosted and UI `.xcresult`
+bundles, and exported UI attachments are uploaded as `macos-native-validation`
+even after a failure and retained for 14 days. Fixtures use no production
+session, browser sign-in or real server actions. This gate does not establish
+macOS 14/Intel runtime coverage or distribution readiness.
+
+## Background draft and recovery regressions
+
+On macOS, `bash macos/scripts/test-headless-chat.sh` runs the production session,
+chat and persistence sources in a temporary Swift package. It uses synthetic
+credentials/transport and disposable storage, and does not launch an app, create
+a window or change focus. The command-output layout tests measure `NSHostingView`
+offscreen. This is model/layout evidence, not hosted or interactive UI validation.
+
+A failed draft write now shows a warning with **Retry saving** in both native
+clients. Sending, retrying an original request, regenerating and executing a
+command require a successful save first. The original message ID/body and pending
+admission flag are saved together with an empty next composer before constructing
+the network stream. This keeps a relaunch from presenting the submitted text/files
+as a new message. A retained pending request always requires a status check, even
+if an older saved flag says otherwise. If saving fails, the synchronous send
+transaction restores text and attachments before returning; keep the app open
+until saving succeeds.
+Unavailable storage cannot guarantee recovery after quitting or a crash.
+Unreadable saved state is protected from overwrite and sending. **Retry loading
+draft** reloads repaired/readable storage only when there is no newer composer
+text or attachment to discard.
+
+Parity review: web command results already provide bounded scrolling and dismissal;
+iOS results live in the scrolling transcript and have a dismiss control. Mac uses
+a 160-point output viewport with a separate dismiss header to keep its composer
+reachable. Both native clients now expose the shared persistence failure state.
+Web composer drafts currently live in component state, so this change does not add
+a browser persistence feature. `/status` remains an explicit command; neither
+native chat surface contains an unsolicited Hermes status button.
 
 ## Native validation
 
@@ -237,7 +290,7 @@ Independent multiwindow navigation/session coordination; Groups lead/activity UI
 native attachments/import/download/search/inbox; the remaining avatar types;
 voice, microphone and dictation; full website settings/admin parity; transcript
 pagination; app icon, localization and distribution packaging; broader macOS UI
-regressions and a native macOS CI gate.
+regressions.
 
 Uploaded references in saved drafts remain intact, failed uploads block send, and
 the desktop can remove them, but a native attachment workflow is not complete.

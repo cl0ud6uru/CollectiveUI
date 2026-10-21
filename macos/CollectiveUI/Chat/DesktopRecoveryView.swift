@@ -6,6 +6,14 @@ struct DesktopRecoveryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let message = model.draftPersistenceMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(PortalTheme.danger)
+                        .textSelection(.enabled).accessibilityIdentifier("draft.persistenceError")
+                    Button(model.draftPersistenceRetryTitle, action: model.retryDraftPersistence)
+                        .accessibilityIdentifier("draft.retryPersistence")
+                }
+            }
             if let error = model.inlineError {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("This reply needs attention", systemImage: "exclamationmark.triangle")
@@ -27,7 +35,7 @@ struct DesktopRecoveryView: View {
                 .background(PortalTheme.surfaceSecondary, in: .rect(cornerRadius: 14))
             }
             if let error = model.commandError { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
-            if let result = model.commandResult { Text(([result.title] + result.lines).joined(separator: "\n")).textSelection(.enabled) }
+            if let result = model.commandResult { DesktopCommandResultView(result: result, dismiss: model.dismissCommandResult) }
             if model.needsMessageStatusCheck && !model.isStreaming {
                 Button(model.isCheckingMessageStatus ? "Checking…" : "Check Message Status") {
                     Task { await model.checkMessageStatus() }
@@ -40,17 +48,14 @@ struct DesktopRecoveryView: View {
             if model.hasDetachedReply {
                 Button("Reconnect to Reply", action: model.resume).accessibilityIdentifier("chat.reconnect")
             }
-            if model.canCheckHermesStatus {
-                Button("Check Hermes Status", action: model.checkHermesStatus)
-            }
             if let error = model.delegateApprovalError { Text(error).foregroundStyle(.red) }
             ForEach(model.delegatedApprovals) { request in DesktopDelegatedApprovalView(request: request, model: model) }
         }
         .frame(maxWidth: DesktopLayout.transcriptWidth, alignment: .leading)
         .padding(.horizontal, DesktopLayout.pageInset)
         .padding(.vertical, model.inlineError != nil || model.needsMessageStatusCheck || model.hasDetachedReply ||
-                 model.commandResult != nil || model.commandError != nil || !model.delegatedApprovals.isEmpty ||
-                 model.canCheckHermesStatus || model.delegateApprovalError != nil ? 12 : 0)
+                 model.draftPersistenceMessage != nil || model.commandResult != nil || model.commandError != nil || !model.delegatedApprovals.isEmpty ||
+                 model.delegateApprovalError != nil ? 12 : 0)
         .frame(maxWidth: .infinity)
     }
 }

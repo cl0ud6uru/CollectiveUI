@@ -3,6 +3,7 @@ import { db, type DbOrTx } from "@/db";
 import { settings } from "@/db/schema";
 import { AAD, decryptOptional } from "@/lib/crypto";
 import { DECISIONS_DEFAULTS } from "@/lib/decisions-policy";
+import { DEFAULT_UPLOAD_MB } from "@/lib/files/upload-limits";
 
 export type BrandingSettings = {
   appName: string;
@@ -131,7 +132,7 @@ const defaults = {
   brandingLogo: { id: null } as { id: string | null },
   loginPet: { appearance: "off", catalogId: null, revision: null } as LoginPetSettings,
   petGeneration: { enabled: false, providerConnectionId: null, modelId: "gpt-image-2.5-sunburst", access: "selected", allowedGroupIds: [], allowedUpns: [] } as PetGenerationSettings,
-  limits: { uploadMaxMb: 20, maxAttachmentsPerMessage: 10 } as LimitsSettings,
+  limits: { uploadMaxMb: DEFAULT_UPLOAD_MB, maxAttachmentsPerMessage: 10 } as LimitsSettings,
   tools: {
     disabledTools: [],
     enforcedApproval: [],
