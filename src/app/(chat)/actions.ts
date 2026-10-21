@@ -32,6 +32,7 @@ import { CLIENT_ID_RE } from "@/lib/ids";
 import { openSideChat } from "@/lib/chat/side";
 import { assertDefaultBot } from "@/lib/chat/targets";
 import { latestLeaf, loadMessageRows, partsToText, pathTo, type PortalUIMessage } from "@/lib/chat/store";
+import { conversationAttachmentIds, retireAttachments } from "@/lib/files/lifecycle";
 import { withoutSharedAttachments } from "@/lib/chat/shared-attachments";
 import { newId, newToken } from "@/lib/ids";
 import { stopRunsBeforeDelete } from "@/lib/runs/provider-stop";
@@ -83,22 +84,28 @@ export async function deleteConversation(id: string) {
   await getOwnedConversation(p, idSchema.parse(id));
   await stopRuns(p, id);
   await stopRunsBeforeDelete({ conversationId: id });
-  await db.transaction(async tx => {
+  const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
     await cancelTasksForConversationTx(tx, p.user.id, id);
+    const ids = await conversationAttachmentIds(tx, p.user.id, id);
     await tx.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.userId, p.user.id)));
+    return ids;
   });
+  await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
 }
 
 export async function deleteAllConversations() {
   const p = await requirePrincipal();
   await stopRunsBeforeDelete({ userId: p.user.id });
-  await db.transaction(async tx => {
+  const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
     await cancelTasksForConversationTx(tx, p.user.id);
+    const ids = await conversationAttachmentIds(tx, p.user.id);
     await tx.delete(conversations).where(eq(conversations.userId, p.user.id));
+    return ids;
   });
+  await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
 }
 

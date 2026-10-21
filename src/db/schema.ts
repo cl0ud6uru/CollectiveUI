@@ -609,6 +609,7 @@ export const messages = pgTable(
     index("messages_conversation_idx").on(t.conversationId, t.createdAt),
     index("messages_tsv_idx").using("gin", t.searchTsv),
     index("messages_app_idx").on(t.appId),
+    index("messages_attachment_parts_idx").using("gin", t.parts),
   ],
 );
 
@@ -622,8 +623,11 @@ export const attachments = pgTable("attachments", {
   size: integer("size").notNull(),
   storageKey: text("storage_key").notNull(),
   extractedText: text("extracted_text"),
+  // Keep the storage key until physical deletion succeeds; readers and new references refuse a tombstone.
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  uploadComplete: boolean("upload_complete").notNull().default(true),
   createdAt: createdAt(),
-});
+}, (t) => [index("attachments_cleanup_idx").on(t.createdAt)]);
 
 export const sharedLinks = pgTable("shared_links", {
   id: text("id").primaryKey(), // the share token
@@ -922,6 +926,7 @@ export const knowledgeChunks = pgTable(
   },
   (t) => [
     index("knowledge_bot_idx").on(t.botId),
+    index("knowledge_attachment_idx").on(t.attachmentId),
     index("knowledge_tsv_idx").using("gin", t.tsv),
   ],
 );

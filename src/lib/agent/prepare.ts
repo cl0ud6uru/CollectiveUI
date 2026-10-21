@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { attachments, type AiApp } from "@/db/schema";
 import type { PortalUIMessage } from "@/lib/chat/store";
@@ -32,7 +32,7 @@ export async function resolveAttachmentsForModel(
     ? await db
         .select()
         .from(attachments)
-        .where(and(inArray(attachments.id, [...ids]), eq(attachments.userId, userId)))
+        .where(and(inArray(attachments.id, [...ids]), eq(attachments.userId, userId), isNull(attachments.deletedAt), eq(attachments.uploadComplete, true)))
     : [];
   const byId = new Map(rows.map((r) => [r.id, r]));
   if (hermes && newestUser) {

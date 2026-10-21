@@ -1,3 +1,4 @@
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { attachments } from "@/db/schema";
 import { extractText, isImage } from "@/lib/files/extract";
@@ -26,8 +27,7 @@ export async function POST(req: Request) {
     const id = newId();
     const mediaType = file.type || "application/octet-stream";
     const storageKey = `${p.user.id}/${id}`;
-    await storage().put(storageKey, data);
-    const extractedText = isImage(mediaType) ? null : await extractText(data, mediaType, file.name);
+    // Record the key before writing bytes. A failed upload remains recoverable by the orphan sweep.
     await db.insert(attachments).values({
       id,
       userId: p.user.id,
@@ -35,7 +35,17 @@ export async function POST(req: Request) {
       mediaType,
       size: file.size,
       storageKey,
-      extractedText,
+      uploadComplete: false,
+    });
+    const extractedText = await db.transaction(async tx => {
+      // An active upload holds only its own row lock, so an aged sweep cannot delete bytes while put is running.
+      const [pending] = await tx.select({ id: attachments.id }).from(attachments)
+        .where(and(eq(attachments.id, id), isNull(attachments.deletedAt))).for("update");
+      if (!pending) throw new HttpError(410, "This upload expired. Please upload the file again.");
+      await storage().put(storageKey, data);
+      const text = isImage(mediaType) ? null : await extractText(data, mediaType, file.name);
+      await tx.update(attachments).set({ extractedText: text, uploadComplete: true }).where(eq(attachments.id, id));
+      return text;
     });
     return Response.json({ id, url: `/api/files/${id}`, filename: file.name, mediaType, readable: isImage(mediaType) || !!extractedText });
   } catch (err) {

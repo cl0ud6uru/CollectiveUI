@@ -406,7 +406,7 @@ export async function addKnowledgeFile(botId: string, attachmentId: string) {
       if (bot.executionMode === "service") throw new HttpError(400, "Service bots do not support knowledge files.");
       // Serialize repeated ordinary uploads without upgrading competing shared bot locks.
       await q.execute(sql`select pg_advisory_xact_lock(hashtext(${`bot-knowledge:${botId}`}))`);
-      const [att] = await q.select().from(attachments).where(and(eq(attachments.id, attachmentId), eq(attachments.userId, fresh.user.id)));
+      const [att] = await q.select().from(attachments).where(and(eq(attachments.id, attachmentId), eq(attachments.userId, fresh.user.id), isNull(attachments.deletedAt), eq(attachments.uploadComplete, true))).for("share");
       if (!att) throw new HttpError(404, "File not found");
       if (!att.extractedText) throw new HttpError(400, `${att.filename} has no readable text`);
       const chunks = chunkText(att.extractedText);

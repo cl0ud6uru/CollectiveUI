@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { attachments } from "@/db/schema";
 import { isImage } from "@/lib/files/extract";
@@ -10,7 +10,7 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/files/[id]">) {
   try {
     const p = await requirePrincipal();
     const { id } = await ctx.params;
-    const [att] = await db.select().from(attachments).where(eq(attachments.id, id));
+    const [att] = await db.select().from(attachments).where(and(eq(attachments.id, id), isNull(attachments.deletedAt), eq(attachments.uploadComplete, true)));
     if (!att || (att.userId !== p.user.id && !p.isAdmin)) throw new HttpError(404, "Not found");
     const data = await storage().get(att.storageKey);
     const inline = isImage(att.mediaType) || att.mediaType === "application/pdf";
