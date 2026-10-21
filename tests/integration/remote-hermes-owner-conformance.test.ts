@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { remoteHermesConnections, remoteHermesHubOwners, remoteHermesSessions, users } from '@/db/schema';
+import { remoteHermesConnections, remoteHermesHubOwners, remoteHermesSessions, remoteHermesTurns, users } from '@/db/schema';
 import { encrypt } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
 import type { DashboardSecrets } from '@/lib/remote-hermes/client';
@@ -19,6 +19,7 @@ let DashboardSocket: typeof import('@/lib/remote-hermes/socket').DashboardSocket
 let NativeHub: typeof import('@/lib/remote-hermes/hub').NativeHub;
 let nativeHub: typeof import('@/lib/remote-hermes/hub').nativeHub;
 let openNativeSession: typeof import('@/lib/remote-hermes/sessions').openNativeSession;
+let submitNativePrompt: typeof import('@/lib/remote-hermes/sessions').submitNativePrompt;
 let inspectNative: typeof import('@/lib/remote-hermes/operations').inspectNative;
 let fixture: Awaited<ReturnType<typeof startPinnedDashboard>>, secrets: DashboardSecrets;
 const successors: InstanceType<typeof import('@/lib/remote-hermes/hub').NativeHub>[] = [];
@@ -46,7 +47,7 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     ({ DashboardClient } = await import('@/lib/remote-hermes/client'));
     ({ DashboardSocket } = await import('@/lib/remote-hermes/socket'));
     ({ NativeHub, nativeHub } = await import('@/lib/remote-hermes/hub'));
-    ({ openNativeSession } = await import('@/lib/remote-hermes/sessions'));
+    ({ openNativeSession, submitNativePrompt } = await import('@/lib/remote-hermes/sessions'));
     ({ inspectNative } = await import('@/lib/remote-hermes/operations'));
   });
   beforeEach(async () => {
@@ -64,6 +65,35 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     await fixture?.stop(); f.base = '';
   });
   afterAll(async () => { await pool?.end(); });
+
+  it.each(['refresh', 'view'] as const)('takes over an expired foreign lease on direct cold %s without replaying a completed turn', async operation => {
+    const session = await openNativeSession(owner, connection, 'default'), oldHub = nativeHub(owner, connection);
+    const text = `fixture-ordinary-${operation}`, requestId = randomUUID();
+    await submitNativePrompt(owner, connection, session.id, requestId, text);
+    await vi.waitFor(async () => expect((await oldHub.refresh(await row(session.id))).running).toBe(false), { timeout: 10_000 });
+    const saved = await row(session.id), oldLease = await lease();
+    const native = await oldHub.socket.call('collective.hub_owner.current', { profile: 'default' });
+    expect(await oldHub.socket.call('session.close', { profile: saved.profile, session_id: saved.runtimeId })).toMatchObject({ closed: true });
+    oldHub.close();
+    const blocked = new NativeHub(owner, connection, randomUUID()); successors.push(blocked);
+    // Negotiation must never steal a live lease or dispatch a native resume.
+    await expect(blocked[operation](saved)).rejects.toMatchObject({ status: 409 });
+    expect(await lease()).toMatchObject({ ownerInstanceId: oldHub.instanceId, generation: oldLease.generation });
+    blocked.close();
+    await db.update(remoteHermesHubOwners).set({ leaseExpiresAt: new Date(Date.now() - 1000) }).where(eq(remoteHermesHubOwners.connectionId, connection));
+    const successor = new NativeHub(owner, connection, randomUUID()); successors.push(successor);
+    expect(successor.socket.connectionEpoch).toBe(0);
+    expect(await successor[operation](saved)).toMatchObject({ id: saved.id, profile: saved.profile, running: false });
+    expect(await lease()).toMatchObject({ ownerInstanceId: successor.instanceId, generation: Number(oldLease.generation) + 1 });
+    expect(await successor.socket.call('collective.hub_owner.current', { profile: saved.profile })).toMatchObject({
+      portal_instance_id: successor.instanceId, native_generation: Number(native.native_generation) + 1, phase: 'full', transport_bound: true,
+    });
+    const history = await new DashboardClient(f.base, fetch, secrets).history(saved.profile, saved.storedId, 0);
+    expect(history.messages.some(message => message.text.includes(text))).toBe(true);
+    expect(history.messages.some(message => message.role === 'assistant')).toBe(true);
+    expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, saved.id))).toHaveLength(1);
+    expect(await metrics()).toMatchObject({ agent_turns: 1, external_attempts: 0 });
+  }, 30000);
 
   it('lets a new portal instance prepare recovery after the old lease expires without claiming native ownership', async () => {
     const session = await openNativeSession(owner, connection, 'default'), oldHub = nativeHub(owner, connection);
