@@ -185,7 +185,7 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
         }
         for (const [id, part] of text) { part.state = 'done'; emit({ type: 'text-end', id }); }
         if (error) emit({ type: 'error', errorText: error });
-        if (dispatched) await recordUsage({ purpose: 'chat', billingSource: source, providerKind: opts.app.provider,
+        if (dispatched) await recordUsage({ purpose: 'chat', completionStatus: error ? 'incomplete' : 'complete', billingSource: source, providerKind: opts.app.provider,
           model: policy.model, appId: opts.app.id, userId: runtime.ownerId, conversationId: opts.conversation.id,
           botId: opts.bot!.id, credentialId: runtime.id, billingRoute: `codex:${policy.funding}`,
           scope: { pending: [], runId: opts.run!.id, messageId: responseMessage.id } }, tokens);
@@ -195,7 +195,9 @@ export async function runCodexTurn(opts: TurnOptions): Promise<TurnResult> {
             extra: { model: policy.model, inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, billingSource: source, providerKind: opts.app.provider, appId: opts.app.id },
             // No company-funded memory/title side-call for caller-owned Codex execution.
             background: true }, { error });
-          if (runtime.managed) await db.update(codexThreads).set({ lastMessageId: responseMessage.id, tokenTotals: dispatched && error ? null : tokenTotals, updatedAt: new Date() })
+          // A dispatched error does not invalidate cumulative counters already observed.
+          // Undefined is omitted by Drizzle, preserving the prior (possibly unknown) baseline.
+          if (runtime.managed) await db.update(codexThreads).set({ lastMessageId: responseMessage.id, tokenTotals, updatedAt: new Date() })
             .where(and(eq(codexThreads.conversationId, opts.conversation.id), eq(codexThreads.binding, binding(runtime))));
         } catch { error = 'The Codex response could not be saved.'; }
         emit({ type: 'finish', finishReason: error ? 'error' : 'stop' }); if (!closed) controller.close(); closed = true;

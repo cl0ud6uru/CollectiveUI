@@ -44,22 +44,22 @@ export function defaultsMiddleware(kind: EnabledKind, config: AnyProviderConfig,
 
 /**
  * Records one usage row per provider call (every step of a multi-step turn). Params are untouched, so the
- * request is identical with or without this middleware. A step aborted mid-stream has no usage to record.
+ * request is identical with or without this middleware. Missing provider counters remain null.
  */
 /**
- * Records every call's usage. `skipUnknown`: calls that report no token counts aren't recorded (a Hermes turn paused
- * for approval; its run reports the whole usage when it finishes).
+ * `skipUnknown` omits clean finishes without counters (a Hermes approval pause;
+ * its run reports whole-turn usage later). Interrupted streams still leave evidence.
  */
 export function usageMiddleware(ctx: UsageContext, opts: { skipUnknown?: boolean } = {}): LanguageModelMiddleware {
-  const record = (usage: ProviderUsage, metadata?: unknown) => {
+  const record = (usage: ProviderUsage | undefined, metadata?: unknown, completionStatus: "complete" | "incomplete" = "complete") => {
     const tokens = mapUsage(usage);
-    if (opts.skipUnknown && tokens.inputTokens === null && tokens.outputTokens === null) return;
+    if (opts.skipUnknown && completionStatus === "complete" && tokens.inputTokens === null && tokens.outputTokens === null) return Promise.resolve();
     const reported = (metadata as { hermes?: { model?: unknown } } | undefined)?.hermes?.model;
     // A Hermes route/default is not necessarily the runtime it chose. Never label that fallback as reported usage.
     const model = ctx.providerKind === "hermes"
       ? typeof reported === "string" && reported.trim() && reported.length <= 300 ? reported.trim() : "unreported"
       : ctx.model;
-    void recordUsage({ ...ctx, model }, tokens);
+    return recordUsage({ ...ctx, model, completionStatus }, tokens);
   };
   return {
     specificationVersion: "v4",
@@ -70,13 +70,29 @@ export function usageMiddleware(ctx: UsageContext, opts: { skipUnknown?: boolean
     },
     wrapStream: async ({ doStream }) => {
       const { stream, ...rest } = await doStream();
-      const tap = new TransformStream<StreamPart<typeof stream>, StreamPart<typeof stream>>({
-        transform(part, controller) {
-          if (part.type === "finish") record(part.usage as ProviderUsage, part.providerMetadata);
-          controller.enqueue(part);
+      const reader = stream.getReader();
+      let recorded: Promise<void> | undefined, failed = false;
+      const once = (usage?: ProviderUsage, metadata?: unknown, status: "complete" | "incomplete" = "incomplete") =>
+        recorded ??= record(usage, metadata, status);
+      // TransformStream.flush misses source errors and consumer cancellation. Owning
+      // the reader makes all terminal paths observable and forwards cancellation.
+      const tracked = new ReadableStream<StreamPart<typeof stream>>({
+        async pull(controller) {
+          try {
+            const part = await reader.read();
+            if (part.done) { await once(); controller.close(); return; }
+            if (part.value.type === "error") failed = true;
+            if (part.value.type === "finish") await once(part.value.usage as ProviderUsage, part.value.providerMetadata,
+              !failed && ["stop", "length", "tool-calls"].includes(part.value.finishReason.unified) ? "complete" : "incomplete");
+            controller.enqueue(part.value);
+          } catch (error) {
+            await once();
+            controller.error(error);
+          }
         },
+        async cancel(reason) { await once(); await reader.cancel(reason); },
       });
-      return { stream: stream.pipeThrough(tap), ...rest };
+      return { stream: tracked, ...rest };
     },
   };
 }

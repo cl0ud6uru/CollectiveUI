@@ -26,6 +26,7 @@ import type {
   ProviderKind,
   UserCredentialProvider,
   UserCredentialStatus,
+  UsageCompletionStatus,
 } from "../lib/llm/kinds";
 import type {
   RoutineRunTrigger,
@@ -1223,6 +1224,8 @@ export const usageEvents = pgTable(
     providerOrganization: text("provider_organization"),
     providerProject: text("provider_project"),
     billingRoute: text("billing_route"),
+    /** Null for historical rows without lifecycle evidence; started is a Live session, not a completed call. */
+    completionStatus: text("completion_status").$type<UsageCompletionStatus>(),
     /** Total input tokens, including cached reads and writes. */
     inputTokens: integer("input_tokens"),
     outputTokens: integer("output_tokens"),
@@ -1240,6 +1243,7 @@ export const usageEvents = pgTable(
     index("usage_events_message_idx").on(t.messageId),
     index("usage_events_app_idx").on(t.appId),
     index("usage_events_bot_idx").on(t.botId),
+    check("usage_events_completion_status_check", sql`${t.completionStatus} is null or ${t.completionStatus} in ('complete', 'incomplete', 'started')`),
     check("usage_events_api_cost_check", sql`(${t.billingSource} = 'org' and ${t.providerKind} not in ('chatgpt', 'hermes') and (${t.billingRoute} is null or ${t.billingRoute} like 'api:%')) or (${t.costMicros} is null and ${t.searchToolCostEstimateMicros} is null)`),
   ],
 );

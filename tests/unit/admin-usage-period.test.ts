@@ -53,6 +53,28 @@ afterEach(async () => { await fixture.client!.exec("ROLLBACK"); });
 afterAll(async () => { await fixture.client!.close(); });
 
 describe("admin Usage period on isolated SQL", () => {
+  it("counts Live sessions and incomplete calls without guessing missing tokens or counting hosted-tool observations twice", async () => {
+    await db.insert(schema.messages).values({ id: "stopped-reply", conversationId: "chat", role: "assistant", parts: [], billingSource: "org", inputTokens: 999, outputTokens: 999 });
+    await db.insert(schema.usageEvents).values([
+      { id: "voice-1", userId: "fixture", conversationId: "chat", providerKind: "openai", model: "gpt-live-1", purpose: "voice", billingSource: "org", completionStatus: "started" },
+      { id: "voice-2", userId: "fixture", conversationId: "chat", providerKind: "openai", model: "gpt-live-1", purpose: "voice", billingSource: "org", completionStatus: "started" },
+      { id: "stopped", userId: "fixture", conversationId: "chat", messageId: "stopped-reply", providerKind: "openai", model: "fixture", purpose: "chat", billingSource: "org", completionStatus: "incomplete" },
+      { id: "hosted-tool-observation", userId: "fixture", conversationId: "chat", providerKind: "openai", model: "fixture", purpose: "chat", billingSource: "org", hostedSearchCalls: 1 },
+    ]);
+    const { totals } = await usageSummary();
+    expect(Number(totals.calls)).toBe(4);
+    expect(Number(totals.incomplete_calls)).toBe(1);
+    expect(Number(totals.voice_sessions)).toBe(2);
+    expect(Number(totals.input_tokens)).toBe(15);
+    expect(Number(totals.output_tokens)).toBe(3);
+    const rows = await usageExportRows();
+    const voice = rows.find(row => row.purpose === "voice")!;
+    expect([voice.calls, voice.voice_sessions, voice.input_tokens, voice.output_tokens].map(Number)).toEqual([2, 2, 0, 0]);
+    expect(rows.reduce((sum, row) => sum + Number(row.incomplete_calls), 0)).toBe(1);
+    const html = renderToStaticMarkup(await AdminUsagePage());
+    expect(html).toContain("2 Live sessions started");
+    expect(html).toContain("do not imply zero cost");
+  });
   it("keeps the default summary and export on the same rolling 30-day cutoff for legacy replies and ledger tokens", async () => {
     expect(ADMIN_USAGE_DAYS).toBe(30);
     const { totals } = await usageSummary();

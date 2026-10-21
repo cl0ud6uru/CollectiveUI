@@ -25,6 +25,9 @@ function tokenRows(since: SQL) {
                 when e.purpose in ${BACKGROUND} then 'Background'
                 else coalesce(ca.name, cb.name, a.name, b.name, 'Unknown') end as target,
            e.purpose as purpose, e.billing_source as billing_source, 0 as replies,
+           case when e.hosted_search_calls is null then 1 else 0 end as calls,
+           case when e.completion_status = 'incomplete' and e.hosted_search_calls is null then 1 else 0 end as incomplete_calls,
+           case when e.purpose = 'voice' and e.completion_status = 'started' then 1 else 0 end as voice_sessions,
            coalesce(e.input_tokens, 0)::bigint as input_tokens, coalesce(e.output_tokens, 0)::bigint as output_tokens,
            coalesce(e.cache_read_tokens, 0)::bigint as cache_read_tokens, coalesce(e.cache_write_tokens, 0)::bigint as cache_write_tokens,
            coalesce(e.reasoning_tokens, 0)::bigint as reasoning_tokens,
@@ -41,7 +44,7 @@ function tokenRows(since: SQL) {
     union all
     select m.created_at, c.user_id,
            case when c.is_group then 'Group chats' else coalesce(a.name, b.name, 'Unknown') end,
-           'chat', coalesce(m.billing_source, 'org'), 1,
+           'chat', coalesce(m.billing_source, 'org'), 1, 0, 0, 0,
            case when m.billing_source is null then coalesce(m.input_tokens, 0) else 0 end::bigint,
            case when m.billing_source is null then coalesce(m.output_tokens, 0) else 0 end::bigint,
            0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint
@@ -69,6 +72,9 @@ export async function usageSummary(days = ADMIN_USAGE_DAYS) {
       tool_calls: number;
       hosted_search_calls: number;
       search_tool_cost_estimate_micros: number;
+      calls: number;
+      incomplete_calls: number;
+      voice_sessions: number;
     }>(sql`
       with t as (${tokenRows(since)})
       select
@@ -84,6 +90,9 @@ export async function usageSummary(days = ADMIN_USAGE_DAYS) {
         (select count(*)::int from bots) as bots,
         (select count(*)::int from tool_calls where created_at > ${since}) as tool_calls,
         (select coalesce(sum(hosted_search_calls), 0)::bigint from t) as hosted_search_calls,
+        (select coalesce(sum(calls), 0)::bigint from t) as calls,
+        (select coalesce(sum(incomplete_calls), 0)::bigint from t) as incomplete_calls,
+        (select coalesce(sum(voice_sessions), 0)::bigint from t) as voice_sessions,
         (select coalesce(sum(search_tool_cost_estimate_micros), 0)::bigint from t) as search_tool_cost_estimate_micros
     `)
   ).rows;
@@ -134,6 +143,9 @@ export const USAGE_EXPORT_COLUMNS = [
   "billing_source",
   "hosted_search_calls",
   "search_tool_cost_estimate_micros",
+  "calls",
+  "incomplete_calls",
+  "voice_sessions",
 ] as const;
 
 /** Rows for the admin CSV export (last `days` days), grouped by day, user, target, purpose and who paid. */
@@ -146,6 +158,8 @@ export async function usageExportRows(days = ADMIN_USAGE_DAYS) {
            sum(t.cache_read_tokens)::bigint as cache_read_tokens, sum(t.cache_write_tokens)::bigint as cache_write_tokens,
            sum(t.reasoning_tokens)::bigint as reasoning_tokens,
            sum(t.hosted_search_calls)::bigint as hosted_search_calls,
+           sum(t.calls)::bigint as calls, sum(t.incomplete_calls)::bigint as incomplete_calls,
+           sum(t.voice_sessions)::bigint as voice_sessions,
            sum(t.search_tool_cost_estimate_micros)::bigint as search_tool_cost_estimate_micros
     from t left join users u on u.id = t.user_id
     group by 1, 2, 3, 4, 5 order by 1 desc, 2, 3, 4, 5
