@@ -40,9 +40,6 @@ struct DesktopRecoveryView: View {
             if model.hasDetachedReply {
                 Button("Reconnect to Reply", action: model.resume).accessibilityIdentifier("chat.reconnect")
             }
-            if model.canCheckHermesStatus {
-                Button("Check Hermes Status", action: model.checkHermesStatus)
-            }
             if let error = model.delegateApprovalError { Text(error).foregroundStyle(.red) }
             ForEach(model.delegatedApprovals) { request in DesktopDelegatedApprovalView(request: request, model: model) }
         }
@@ -50,7 +47,7 @@ struct DesktopRecoveryView: View {
         .padding(.horizontal, DesktopLayout.pageInset)
         .padding(.vertical, model.inlineError != nil || model.needsMessageStatusCheck || model.hasDetachedReply ||
                  model.commandResult != nil || model.commandError != nil || !model.delegatedApprovals.isEmpty ||
-                 model.canCheckHermesStatus || model.delegateApprovalError != nil ? 12 : 0)
+                 model.delegateApprovalError != nil ? 12 : 0)
         .frame(maxWidth: .infinity)
     }
 }
