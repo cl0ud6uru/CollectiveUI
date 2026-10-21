@@ -41,6 +41,15 @@ This document preserves the original phased design and its P0–P6 delivery note
 - Tests: `tests/unit/{approvals,mcp-identity,mcp-import,mcp-hygiene,mcp-snapshot,toolset-lifecycle}.test.ts`, `tests/integration/mcp.test.ts` (against `dev/mcp-echo`: snapshot, zero connections before a call, identity with audience, budget, drift/accept, failures), `tests/e2e/mcp.spec.ts` (import → identity → Test → Enable → `whoami` runs as alice without asking on a trusted server → `delete_record` asks).
 
 **P5 as built: sandbox plane + workspace tools (differences from the P5 text below):**
+
+File helpers now install a 45-second wall alarm and a 40-second CPU hard limit
+before parsing requests or reading stdin. These process-local limits end regex
+backtracking and long or blocked file operations before sandboxd's 60-second
+collector deadline; closing a Docker attach socket alone does not terminate an
+exec. Rebuild the sandbox and optional starter images to include updated helper
+bytes. The credential-free `fsops-lifetime` unit suite runs the actual helper in
+disposable host processes and requires their own signals to terminate both a
+pathological regex and blocked stdin before its test watchdog intervenes.
 - **No network in P5 (user decision).** Sandboxes run with `NetworkMode: none`. Per-user /28 networks, Smokescreen egress, `ExtraHosts`, the host firewall rule and the egress allowlist move to **P7**, which needs per-user networks for the gateway anyway. **G4 for P5:** the isolation suite passes with `none` networking (it does, under runsc and runc, on Docker 29.3 with gVisor release-20260921.0). The web port can be bound to one address (`WEB_BIND`).
 - **sandboxd** (`src/sandboxd/`, plain Node type stripping, **no npm dependencies**: no `ws`, no dockerode). It imports only `node:*` and its own files (ESLint override + policy guard) and never reads portal settings. HTTP + NDJSON instead of WebSocket: `start`/`out`/`err` (base64)/`hb` every 15 s/`gap`/`exit {code, reason, ms, dropped}`/`error` frames; client disconnect kills the command. Docker Engine API over the socket pinned to `/v1.44`, exec via connection hijack plus an 8-byte-header demuxer; create `Warnings` fail closed. HMAC-SHA256 over `v1\n{METHOD}\n{path?query}\n{ts}\n{nonce}\n{sha256(body)}`, ±60 s, verified before the body is parsed; only a correctly signed request uses up a nonce.
 - **Isolation.** `SANDBOXD_RUNTIME=runsc` (strict, compose default) / `auto` (gVisor only if a probe container really runs under it: `uname -r` differs from the host kernel) / `runc`. Requests carry `isolation: gvisor|any`; sandboxd answers 412 instead of downgrading. The portal defaults to requiring gVisor; allowing runc needs a typed acknowledgement (who/when recorded). Start-up refuses hosts that can't enforce memory, pids or CPU limits (warns for swap) and ignores runsc configured with `--overlay2=all:*`.
