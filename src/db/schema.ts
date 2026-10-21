@@ -636,7 +636,7 @@ export const sharedLinks = pgTable("shared_links", {
     .references(() => users.id, { onDelete: "cascade" }),
   createdAt: createdAt(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
-});
+}, (t) => [index("shared_links_conversation_idx").on(t.conversationId)]);
 
 // ---------------------------------------------------------------------------
 // Bots (agents)
@@ -1120,6 +1120,7 @@ export const routineRuns = pgTable(
   },
   (t) => [
     index("routine_runs_routine_idx").on(t.routineId, t.createdAt),
+    index("routine_runs_conversation_idx").on(t.conversationId),
     uniqueIndex("routine_runs_trigger_event_idx").on(t.routineId, t.triggerEventId).where(sql`${t.triggerEventId} is not null`),
   ],
 );
@@ -1153,7 +1154,12 @@ export const toolCalls = pgTable(
     durationMs: integer("duration_ms"),
     createdAt: createdAt(),
   },
-  (t) => [index("tool_calls_created_idx").on(t.createdAt), uniqueIndex("tool_calls_message_call_idx").on(t.messageId, t.providerCallId)],
+  (t) => [
+    index("tool_calls_created_idx").on(t.createdAt),
+    index("tool_calls_conversation_idx").on(t.conversationId),
+    index("tool_calls_user_bot_created_idx").on(t.userId, t.botId, t.createdAt),
+    uniqueIndex("tool_calls_message_call_idx").on(t.messageId, t.providerCallId),
+  ],
 );
 
 export const toolGrants = pgTable(
@@ -1181,7 +1187,10 @@ export const hostedSearchBudgets = pgTable("hosted_search_budgets", {
   conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
   maxCalls: integer("max_calls").notNull(),
   reservedCalls: integer("reserved_calls").notNull().default(0),
-}, t => [check("hosted_search_budget_check", sql`${t.maxCalls} between 1 and 10 and ${t.reservedCalls} between 0 and ${t.maxCalls}`)]);
+}, t => [
+  check("hosted_search_budget_check", sql`${t.maxCalls} between 1 and 10 and ${t.reservedCalls} between 0 and ${t.maxCalls}`),
+  index("hosted_search_budgets_conversation_idx").on(t.conversationId),
+]);
 
 export const usageEvents = pgTable(
   "usage_events",
@@ -1470,7 +1479,11 @@ export const groupBotWork = pgTable("group_bot_work", {
   conversationId: text("conversation_id").notNull().references(() => conversations.id, { onDelete: "cascade" }),
   botId: text("bot_id").notNull().references(() => bots.id, { onDelete: "cascade" }),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-}, t => [index("group_bot_work_owner_idx").on(t.userId, t.expiresAt), index("group_bot_work_expiry_idx").on(t.expiresAt)]);
+}, t => [
+  index("group_bot_work_owner_idx").on(t.userId, t.expiresAt),
+  index("group_bot_work_expiry_idx").on(t.expiresAt),
+  index("group_bot_work_conversation_idx").on(t.conversationId),
+]);
 
 export const agentRuns = pgTable(
   "agent_runs",
@@ -1686,6 +1699,7 @@ export const delegatedTasks = pgTable("delegated_tasks", {
   uniqueIndex("delegated_tasks_run_idx").on(t.childRunId),
   index("delegated_tasks_receiver_idx").on(t.userId, t.receiverBotId, t.createdAt),
   index("delegated_tasks_root_idx").on(t.userId, t.rootMessageId),
+  index("delegated_tasks_origin_conversation_idx").on(t.originConversationId),
   index("delegated_tasks_parent_idx").on(t.parentRunId),
   index("delegated_tasks_async_pending_idx").on(t.parentRunId, t.parentSegment).where(sql`${t.mode} = 'async' and ${t.returnedAt} is null`),
   check("delegated_tasks_mode_check", sql`${t.mode} in ('sync', 'async')`),
