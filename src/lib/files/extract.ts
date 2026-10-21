@@ -48,7 +48,7 @@ const waiting: (() => void)[] = [];
 
 async function extractIsolated(kind: "pdf" | "docx", data: Buffer, filename: string): Promise<string | null> {
   if (running >= EXTRACT_CONCURRENCY) await new Promise<void>((resolve) => waiting.push(resolve));
-  running++;
+  else running++;
   try {
     const { spawn } = await import("node:child_process");
     return await new Promise<string | null>((resolve) => {
@@ -83,8 +83,11 @@ async function extractIsolated(kind: "pdf" | "docx", data: Buffer, filename: str
       child.stdin.end(data);
     });
   } finally {
-    running--;
-    waiting.shift()?.();
+    // Hand the occupied slot straight to a waiter. Decrementing first lets a new arrival take the slot
+    // before the waiter's continuation resumes, exceeding the parser-process cap.
+    const next = waiting.shift();
+    if (next) next();
+    else running--;
   }
 }
 

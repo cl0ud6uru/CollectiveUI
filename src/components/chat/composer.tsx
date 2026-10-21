@@ -109,29 +109,43 @@ export const Composer = forwardRef<
 
   // Image previews are object URLs: release each one once its chip leaves the composer, and all of them on unmount.
   const previews = useRef(new Set<string>());
+  const renderedPreviews = useRef(new Set<string>());
+  const uploadMounted = useRef(true);
   useEffect(() => {
     const live = new Set(files.flatMap((f) => (f.preview ? [f.preview] : [])));
-    for (const url of previews.current) if (!live.has(url)) URL.revokeObjectURL(url);
-    previews.current = live;
+    for (const url of renderedPreviews.current) if (!live.has(url)) {
+      URL.revokeObjectURL(url);
+      previews.current.delete(url);
+    }
+    renderedPreviews.current = live;
   }, [files]);
   useEffect(() => {
     const tracked = previews;
-    return () => tracked.current.forEach((url) => URL.revokeObjectURL(url));
+    uploadMounted.current = true;
+    return () => {
+      uploadMounted.current = false;
+      tracked.current.forEach((url) => URL.revokeObjectURL(url));
+      tracked.current.clear();
+    };
   }, []);
 
   const upload = useCallback(async (list: FileList | File[]) => {
     for (const file of Array.from(list)) {
+      if (!uploadMounted.current) return;
       const key = Math.random().toString(36).slice(2);
       const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
+      if (preview) previews.current.add(preview);
       setFiles((f) => [...f, { key, filename: file.name, mediaType: file.type || "application/octet-stream", preview }]);
       const form = new FormData();
       form.append("file", file);
       try {
         const res = await fetch("/api/files", { method: "POST", body: form });
         const body = await res.json();
+        if (!uploadMounted.current) return;
         if (!res.ok) throw new Error(body.error ?? "Upload failed");
         setFiles((f) => f.map((x) => (x.key === key ? { ...x, uploaded: body } : x)));
       } catch (err) {
+        if (!uploadMounted.current) return;
         toast.error(`${file.name}: ${err instanceof Error ? err.message : "Upload failed"}`);
         setFiles((f) => f.filter((x) => x.key !== key));
       }

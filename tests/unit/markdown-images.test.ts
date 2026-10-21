@@ -23,6 +23,15 @@ describe("markdown images", () => {
     expect(render("![x](//evil.test/p.png)")).not.toContain("<img");
   });
 
+  it("keeps entity-encoded control characters in same-origin paths", () => {
+    for (const entity of ["&#9;", "&#10;", "&#13;"]) {
+      const html = render(`![x](/${entity}/evil.test/p.png)`);
+      const src = /<img src="([^"]+)"/.exec(html)?.[1];
+      expect(src).toBeDefined();
+      expect(new URL(src!, "https://portal.test").origin).toBe("https://portal.test");
+    }
+  });
+
   it("keeps same-origin images inline", () => {
     expect(render("![chart](/api/files/abc)")).toContain('<img src="/api/files/abc" alt="chart"');
   });
