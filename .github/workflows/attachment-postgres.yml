@@ -1,0 +1,58 @@
+name: Attachment PostgreSQL proof
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  attachment-postgres:
+    name: Attachment deletion, sharing and upload races
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: attachment_fixture
+          POSTGRES_PASSWORD: synthetic-fixture-only
+          POSTGRES_DB: collective_attachments_test
+        ports:
+          - 55445:5432
+        options: >-
+          --health-cmd "pg_isready -U attachment_fixture -d collective_attachments_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      NODE_ENV: test
+      ATTACHMENT_POSTGRES_PROOF: '1'
+      ATTACHMENT_POSTGRES_URL: postgres://attachment_fixture:synthetic-fixture-only@127.0.0.1:55445/collective_attachments_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify target and report rejection guards
+        run: node --test .github/scripts/attachment-postgres-proof.test.mjs
+      - name: Migrate only the dedicated disposable database
+        run: node .github/scripts/migrate-attachment-postgres.mjs
+      - name: Run actual PostgreSQL attachment lifecycle and sharing regressions
+        run: >-
+          node node_modules/vitest/vitest.mjs run --project integration
+          tests/integration/attachment-lifecycle-postgres.test.ts
+          tests/integration/shared-attachments-postgres.test.ts
+          --maxWorkers=1 --configLoader runner --cache=false
+          --reporter=default --reporter=json
+          --outputFile.json=artifacts/attachment-postgres.json
+      - name: Require all 19 PostgreSQL cases to pass without skips
+        run: node .github/scripts/check-attachment-postgres-report.mjs artifacts/attachment-postgres.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attachment-postgres-results
+          path: artifacts/attachment-postgres.json
+          if-no-files-found: ignore

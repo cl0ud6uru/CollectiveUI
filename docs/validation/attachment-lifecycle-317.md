@@ -60,3 +60,12 @@ All candidate files are automatically restored after each negative run.
 
 Parity: iOS and macOS use the shared CollectiveKit DELETE conversation endpoint, so this server fix covers both.
 No client UI was changed for deletion. Shared-view omission is web-only as documented for #318.
+
+Hosted regression coverage: `.github/workflows/attachment-postgres.yml` runs on every pull request and main push.
+Its exclusive PostgreSQL16/pgvector service exposes only the suites' fixed disposable loopback target on port55445.
+Before importing database drivers, the CI migration helper requires the existing explicit proof flag, fixed URL and
+absence of PostgreSQL environment overrides. It migrates this database without importing the application database
+fallback or installing runtime assets. Both exact integration suites run with synthetic storage/provider fixtures.
+The JSON result gate requires all15 lifecycle and all4 sharing cases to pass, with zero skipped or missing cases;
+an ordinary opt-out run cannot produce a green proof. Guard tests also reject skipped, missing and duplicate results.
+The job has read-only repository permissions and no production database, provider or deployment credentials.
