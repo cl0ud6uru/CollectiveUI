@@ -90,7 +90,7 @@ export default async function TemplatePage(props: PageProps<"/templates/[token]"
                   {r.triggerType === "cron" ? <Clock className="mt-0.5 h-4 w-4 text-muted" /> : <Webhook className="mt-0.5 h-4 w-4 text-muted" />}
                   <div>
                     <div className="font-medium">{r.name}</div>
-                    <div className="text-xs text-muted">{r.triggerType === "cron" ? `${cronToText(r.cron)} (${r.timezone})` : "Webhook"}</div>
+                    <div className="text-xs text-muted">{r.triggerType === "cron" ? `${cronToText(r.cron)} (${r.timezone})` : r.triggerType === "event" ? "Integration event" : "Webhook"}</div>
                   </div>
                 </div>
               ))}
