@@ -23,6 +23,7 @@ run("hosted search database and agent fixtures", () => {
   let seq = 0;
   const settings = { disabledTools: [], enforcedApproval: [], fetchAllowlist: [], webSearch: { provider: "none" }, maxStepsCap: 5, botCreation: "everyone", nativeSearch: { enabled: true, maxCalls: 2, allowedDomains: ["example.com"] } } satisfies ToolSettings;
   beforeAll(async () => {
+    vi.stubEnv("AUTH_URL", "http://fixture");
     const { db } = await import("@/db");
     const { users, aiApps, bots, botTools } = await import("@/db/schema");
     const { loadPrincipal } = await import("@/lib/auth/groups");
@@ -46,7 +47,7 @@ run("hosted search database and agent fixtures", () => {
     if (app) await db.delete(usageEvents).where(eq(usageEvents.appId, app.id));
     await db.delete(users).where(inArray(users.id, [`${prefix}-owner`, `${prefix}-other`]));
     if (app) await db.delete(aiApps).where(eq(aiApps.id, app.id));
-    await pool.end();
+    await pool.end(); vi.unstubAllEnvs();
   });
   function fixtureFetch() {
     vi.stubGlobal("fetch", async (url: string | URL | Request, init?: RequestInit) => {
@@ -125,7 +126,7 @@ run("hosted search database and agent fixtures", () => {
   it("owner-only settings persist; failed updates do not change the owner choice", async () => {
     const conv = await conversation("off", bot.id);
     const { GET, PATCH } = await import("@/app/api/chat/native-search/route");
-    const patch = (mode: string) => PATCH(new Request("http://fixture/api/chat/native-search", { method: "PATCH", body: JSON.stringify({ conversationId: conv.id, mode }) }));
+    const patch = (mode: string) => PATCH(new Request("http://fixture/api/chat/native-search", { method: "PATCH", headers: { Origin: "http://fixture", "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conv.id, mode }) }));
     expect((await patch("auto")).status).toBe(200);
     expect(await (await GET(new Request(`http://fixture/api/chat/native-search?conversationId=${conv.id}`))).json()).toMatchObject({ mode: "auto", reason: null });
     const owner = session.principal; session.principal = other;
@@ -188,7 +189,7 @@ run("hosted search database and agent fixtures", () => {
     await db.insert(conversationBots).values([{ conversationId: conv.id, botId: bot.id, position: 0 }, { conversationId: conv.id, botId: second.id, position: 1 }]);
     const { GET, PATCH } = await import("@/app/api/chat/native-search/route");
     for (const mode of ["off", "auto"]) {
-      expect((await PATCH(new Request("http://fixture/api/chat/native-search", { method: "PATCH", body: JSON.stringify({ conversationId: conv.id, mode }) }))).status).toBe(200);
+      expect((await PATCH(new Request("http://fixture/api/chat/native-search", { method: "PATCH", headers: { Origin: "http://fixture", "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conv.id, mode }) }))).status).toBe(200);
       expect(await (await GET(new Request(`http://fixture/api/chat/native-search?conversationId=${conv.id}`))).json()).toMatchObject({ mode, reason: null });
     }
     const { runGroupTurn } = await import("@/lib/agent/group");

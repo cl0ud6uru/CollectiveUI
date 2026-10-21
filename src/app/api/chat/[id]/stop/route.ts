@@ -6,6 +6,7 @@ import { CLIENT_ID_RE } from "@/lib/ids";
 import { stopRunFor, stopRuns } from "@/lib/runs/store";
 import { runConfig } from "@/lib/runs/types";
 import { errorResponse, requirePrincipal } from "@/lib/session";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 /**
  * Stop the conversation's reply: a queued one is cancelled at once, a running one is signalled (its worker aborts the
@@ -19,6 +20,7 @@ import { errorResponse, requirePrincipal } from "@/lib/session";
 export async function POST(req: Request, ctx: RouteContext<"/api/chat/[id]/stop">) {
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     const { id } = await ctx.params;
     const body = (await req.json().catch(() => null)) as { messageId?: unknown } | null;
     const messageId = typeof body?.messageId === "string" && CLIENT_ID_RE.test(body.messageId) ? body.messageId : null;

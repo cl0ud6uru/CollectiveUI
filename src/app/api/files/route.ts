@@ -6,12 +6,14 @@ import { newId } from "@/lib/ids";
 import { HttpError } from "@/lib/authz";
 import { errorResponse, requirePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 const BLOCKED = /\.(exe|dll|bat|cmd|msi|scr|com|vbs|js\.map)$/i;
 
 export async function POST(req: Request) {
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req, "multipart/form-data");
     const limits = await getSetting("limits");
     const form = await req.formData();
     const file = form.get("file");

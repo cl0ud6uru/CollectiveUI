@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { commandCatalog, executeHermesCommand, resolveCommandTarget } from "@/lib/chat/hermes-command-service";
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { errorResponse, requirePrincipal } from "@/lib/session";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 const Target = z.object({ conversationId: z.string().regex(CLIENT_ID_RE), appId: z.string().max(100).optional(), botId: z.string().max(100).optional() }).strict();
 const Command = Target.extend({ text: z.string().min(1).max(2000), revision: z.number().int().nonnegative().optional(), newConversationId: z.string().regex(CLIENT_ID_RE).optional(), messageId: z.string().regex(CLIENT_ID_RE).optional() }).strict();
@@ -19,6 +20,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     const input = Command.parse(await req.json());
     const result = await executeHermesCommand(p, input);
     if (result.navigateTo) revalidatePath("/", "layout");
