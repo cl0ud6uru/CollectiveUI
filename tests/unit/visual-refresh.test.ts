@@ -74,16 +74,41 @@ describe("message layout", () => {
   const render = (message: PortalUIMessage, opts: object = {}) =>
     html(createElement(AssistantMessage, { message, streaming: false, isLast: true, onApprove: () => {}, onDeny: () => {}, ...opts }));
 
-  it("collapses a finished run of tool steps into one 'Worked for' line, across step boundaries", () => {
+  it("folds a finished run of tool steps into one chip, across step boundaries, keeping failures visible", () => {
     const html = render(
       reply(
-        [{ type: "step-start" }, tool("a", "output-available", { output: {} }), { type: "step-start" }, tool("b", "output-error", { errorText: "x" }), { type: "step-start" }, tool("c", "output-available", { output: {} }), { type: "text", text: "Done." }],
+        [{ type: "step-start" }, tool("a", "output-available", { output: {} }), { type: "step-start" }, tool("b", "output-error", { errorText: "quota exceeded" }), { type: "step-start" }, tool("c", "output-available", { output: {} }), { type: "text", text: "Done." }],
         { startedAt: 1_000, finishedAt: 36_000 },
       ),
     );
-    expect(html).toContain("Worked for 35s");
-    expect(html).toContain("1 failed");
-    expect(html).not.toContain("Searched the web"); // the steps stay folded until opened
+    expect(html).toContain("web · 3 steps · 1 failed · 35s");
+    // Only the failed step stays out of the fold, with its error showing.
+    expect(html.match(/Searched the web/g)).toHaveLength(1);
+    expect(html).toContain("Searched the web — failed");
+    expect(html).toContain("quota exceeded");
+  });
+  it("shows a live reply's steps on a rail, the running one with a ticker and a pulsing border", () => {
+    const html = render(
+      reply([
+        tool("a", "output-available", { output: {} }),
+        { type: "tool-workspace_bash", toolCallId: "b", state: "input-available", input: { command: "npm   test\n--watch" } },
+      ]),
+      { streaming: true },
+    );
+    expect(html).not.toContain("2 steps");
+    expect(html.match(/<li /g)).toHaveLength(2);
+    expect(html).toContain("tool-running");
+    expect(html).toContain("$ npm test --watch");
+    expect(html).toContain("bg-hermes");
+  });
+  it("folds even a single finished step", () => {
+    expect(render(reply([tool("a", "output-available", { output: {} })]))).toContain("web · 1 step");
+  });
+  it("keeps a delegated task's card out of the fold", () => {
+    const delegate = { type: "tool-ask_gemma", toolCallId: "d", state: "output-available", input: {}, output: { status: "error", error: "The assignment is no longer authorized to return a result." } };
+    const html = render(reply([delegate]));
+    expect(html).not.toContain("1 step");
+    expect(html).toContain("The assignment is no longer authorized to return a result.");
   });
   it("keeps a step that needs approval outside the folded group", () => {
     const ask = tool("d", "approval-requested", { approval: { id: "ap1" } });

@@ -7,7 +7,6 @@ struct MessageView: View {
     let message: UIMessage
     let model: ChatModel
     var marksLatestParagraph = false
-    @State private var showWork = false
 
     var body: some View {
         Group {
@@ -90,20 +89,11 @@ struct MessageView: View {
                     .font(.footnote).foregroundStyle(PortalTheme.muted)
                     .accessibilityIdentifier("chat.stopped.\(message.id)")
             }
-            if !completedWork.isEmpty {
-                DisclosureGroup(isExpanded: $showWork) {
-                    ForEach(Array(completedWork.enumerated()), id: \.offset) { item in
-                        MessagePartView(part: item.element, messageId: message.id, model: model)
-                    }
-                } label: {
-                    Label("\(completedWork.count) completed \(completedWork.count == 1 ? "step" : "steps")", systemImage: "checkmark")
-                        .font(.footnote).foregroundStyle(PortalTheme.muted)
-                }
-                .tint(PortalTheme.muted)
+            TurnStepsView(message: message, model: model, toolDotY: 19, reasoningDotY: 9) { part in
+                MessagePartView(part: part, messageId: message.id, model: model)
             }
             ForEach(Array(message.parts.enumerated()), id: \.offset) { item in
-                if !isCompletedWork(item.element) {
-                    // Approvals, failures and running tools always remain visible.
+                if !item.element.isTurnStep {
                     MessagePartView(part: item.element, messageId: message.id, model: model,
                         marksLatestParagraph: item.offset == latestTextPartIndex)
                 }
@@ -115,14 +105,6 @@ struct MessageView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var completedWork: [MessagePart] { message.parts.filter(isCompletedWork) }
-    private func isCompletedWork(_ part: MessagePart) -> Bool {
-        switch part {
-        case .tool(let tool): return tool.phase == .completed
-        case .reasoning(let reasoning): return reasoning.state != "streaming" && !reasoning.text.isEmpty
-        default: return false
-        }
-    }
 
 }
 

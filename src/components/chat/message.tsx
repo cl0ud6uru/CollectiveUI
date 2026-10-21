@@ -11,7 +11,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "@/components/bots/bot-avatar";
 import { CopyButton, Markdown } from "./markdown";
-import { needsAction, StepsGroup } from "./steps";
+import { needsAction, standsAlone, StepsGroup } from "./steps";
 import { ToolPartView } from "./tool-part";
 import { ReplyQuote } from "./reply-quote";
 import { replyContext } from "@/lib/chat/reply";
@@ -186,14 +186,14 @@ type Block =
   | { kind: "part"; part: Part; index: number }
   | { kind: "steps"; parts: { part: Part; index: number }[] };
 
-/** Consecutive tool steps become one block; steps waiting for your approval always stand alone. */
+/** Consecutive tool steps become one block; steps waiting for your approval and delegated tasks stand alone. */
 function toBlocks(parts: { part: Part; index: number }[]): Block[] {
   const out: Block[] = [];
   for (const p of parts) {
     // Step boundaries carry no content and must not split a run of tool calls.
     if (p.part.type === "step-start") continue;
     const last = out.at(-1);
-    if (isToolUIPart(p.part) && !needsAction(p.part)) {
+    if (isToolUIPart(p.part) && !standsAlone(p.part)) {
       if (last?.kind === "steps") last.parts.push(p);
       else out.push({ kind: "steps", parts: [p] });
     } else out.push({ kind: "part", ...p });
@@ -323,20 +323,18 @@ export function AssistantMessage({
 
   const renderBlocks = (parts: { part: Part; index: number }[], lastRun: boolean) => {
     const blocks = toBlocks(parts);
-    return blocks.map((b, bi) => {
+    return blocks.map((b) => {
       if (b.kind === "part") return renderPart(b.part, b.index);
-      if (b.parts.length === 1) return tool(b.parts[0].part);
       return (
         <StepsGroup
           key={`steps-${b.parts[0].index}`}
           parts={b.parts.map((p) => p.part) as never}
-          live={streaming && lastRun && bi === blocks.length - 1}
+          live={streaming && lastRun}
           startedAt={meta?.startedAt}
           finishedAt={meta?.finishedAt}
           timed={stepGroups === 1}
-        >
-          {b.parts.map((p) => tool(p.part))}
-        </StepsGroup>
+          renderStep={(part) => tool(part as Part)}
+        />
       );
     });
   };

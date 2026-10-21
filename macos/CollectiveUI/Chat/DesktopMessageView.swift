@@ -33,7 +33,10 @@ struct DesktopMessageView: View {
                 Label("Reply stopped", systemImage: "stop.circle").foregroundStyle(.secondary)
                     .accessibilityIdentifier("chat.stopped." + message.id)
             }
-            ForEach(Array(message.parts.enumerated()), id: \.offset) { item in part(item.element) }
+            TurnStepsView(message: message, model: model, toolDotY: 21, reasoningDotY: 9) { step in part(step) }
+            ForEach(Array(message.parts.enumerated()), id: \.offset) { item in
+                if !item.element.isTurnStep { part(item.element) }
+            }
         }
         .lineSpacing(4)
         .textSelection(.enabled)
