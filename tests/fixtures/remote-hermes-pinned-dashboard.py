@@ -296,7 +296,18 @@ class FixtureAgent(SyntheticHeavyAgent):
 
 # Only construction/inference is replaced. Registry, admission, persistence,
 # server requests, queue helpers, interrupt, resume and WS framing remain real.
-server._make_agent = lambda sid, key, **kwargs: FixtureAgent(sid, key)
+SELECTION_BUILD_RELEASE = threading.Event()
+SELECTION_BUILD_RELEASE.set()
+SELECTION_BUILD_ENTERED = threading.Event()
+
+def make_fixture_agent(sid, key, **kwargs):
+    if PLUGIN_SELECTION:
+        SELECTION_BUILD_ENTERED.set()
+        if not SELECTION_BUILD_RELEASE.wait(15):
+            raise AssertionError("Synthetic plugin-selection construction barrier timed out")
+    return FixtureAgent(sid, key)
+
+server._make_agent = make_fixture_agent
 from hermes_cli import mcp_startup
 mcp_startup.start_deferred_mcp_discovery_now = lambda: None
 def observe_attachment(frame):
@@ -373,6 +384,32 @@ async def control(request: Request):
     body = await request.json()
     if WORKSPACE_ADAPTER and body == {"workspace_roots": True}:
         return {"roots": WORKSPACES, "adapter": WORKSPACE_ADAPTER, **ADAPTER_PROVENANCE}
+    elif PLUGIN_SELECTION and body in ({"plugin_selection_build": "hold"}, {"plugin_selection_build": "release"}):
+        if body["plugin_selection_build"] == "hold":
+            SELECTION_BUILD_ENTERED.clear()
+            SELECTION_BUILD_RELEASE.clear()
+        else:
+            SELECTION_BUILD_RELEASE.set()
+        return {"ok": True}
+    elif PLUGIN_SELECTION and set(body) == {"plugin_selection_readiness"}:
+        sid = body["plugin_selection_readiness"]
+        assert isinstance(sid, str) and sid
+        with server._sessions_lock:
+            session = server._sessions.get(sid)
+        assert session is not None
+        home = Path(server._session_home(session)).resolve()
+        assert home == Path(os.environ["HERMES_HOME"]).resolve()
+        # Observe actual native construction/owner fences without changing them.
+        # running=False alone also describes a session whose build is unfinished.
+        with session["history_lock"]:
+            ready = session.get("agent_ready")
+            return {"agent_ready": bool(ready is not None and ready.is_set() and session.get("agent") is not None),
+                    "status": server._session_live_status(sid, session),
+                    "native_profile": server._fallback_session_info(session).get("profile_name", ""),
+                    "stored_id": server._session_lookup_key(session, fallback=sid),
+                    "runtime_id": sid,
+                    "profile_work": server._collective_hub_owner._profile_has_native_work(home),
+                    "build_blocked": SELECTION_BUILD_ENTERED.is_set() and not SELECTION_BUILD_RELEASE.is_set()}
     elif PLUGIN_SELECTION and body == {"plugin_selection_probe": True}:
         from hermes_cli import collective_plugin_selection as selection_store
         from hermes_cli import plugins, plugins_cmd, plugins_activation

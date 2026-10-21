@@ -33,14 +33,36 @@ async function control(body: unknown) {
     headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   expect(response.ok).toBe(true); return response.json();
 }
-async function openChat() {
+async function createChat() {
   const hub: NativeHub = nativeHub(owner, connection);
   const created = await hub.socket.call('session.create', { profile: 'default', source: 'desktop',
     messages: [{ role: 'user', content: 'Synthetic saved question' }, { role: 'assistant', content: 'Synthetic saved answer' }] });
   const [saved] = await db.insert(remoteHermesSessions).values({ id: newId(), connectionId: connection, profile: 'default',
     storedId: String(created.stored_session_id), runtimeId: String(created.session_id), title: 'Synthetic selection chat' }).returning();
-  await vi.waitFor(async () => expect((await hub.refresh(saved)).running).toBe(false), { timeout: 10_000 });
   return { hub, saved };
+}
+async function readyChat({ hub, saved }: Awaited<ReturnType<typeof createChat>>) {
+  // Native create schedules construction after its reply. An idle-looking lazy
+  // resume can lack profile proof and still have build/resume workers alive.
+  // Wait for the real owner fence before arming no-discovery traps, then hydrate
+  // once as ordinary chat setup and retain its reconciled persisted identity.
+  const readiness = async () => {
+    const native = await control({ plugin_selection_readiness: saved.runtimeId });
+    expect(native).toMatchObject({ agent_ready: true, status: 'idle', native_profile: 'default', profile_work: false });
+    return native;
+  };
+  await vi.waitFor(readiness, { timeout: 10_000 });
+  expect((await hub.refresh(saved)).running).toBe(false);
+  const native = await vi.waitFor(readiness, { timeout: 10_000 });
+  const [current] = await db.select().from(remoteHermesSessions).where(eq(remoteHermesSessions.id, saved.id));
+  const cached = hub.sessions.get(saved.id)!;
+  expect(current).toMatchObject({ runtimeId: native.runtime_id, storedId: native.stored_id, profile: 'default', status: 'idle' });
+  expect(cached.row).toMatchObject({ runtimeId: current.runtimeId, storedId: current.storedId, profile: current.profile, status: 'idle' });
+  expect(cached.view).toMatchObject({ running: false, nativeProfile: 'default', profile: 'default', uncertain: false });
+  return { hub, saved: current };
+}
+async function openChat() {
+  return readyChat(await createChat());
 }
 function post(sessionId: string, input: unknown) {
   return POST(new Request(portal + '/api/hermes/' + connection + '/operations', { method: 'POST',
@@ -81,6 +103,35 @@ describe.skipIf(!enabled)('selection sidecar through actual pinned gateway, owne
   });
   afterAll(async () => { await pool?.end(); vi.unstubAllEnvs(); });
 
+  it('refuses an idle-looking chat during construction, then accepts only its ready matching identity without discovery', async () => {
+    await control({ plugin_selection_build: 'hold' });
+    const chat = await createChat();
+    try {
+      await vi.waitFor(async () => expect(await control({ plugin_selection_readiness: chat.saved.runtimeId }))
+        .toMatchObject({ agent_ready: false, status: 'starting', profile_work: true, build_blocked: true }), { timeout: 10_000 });
+      // Reproduce the old setup's false readiness signal with actual native resume.
+      const early = await chat.hub.refresh(chat.saved);
+      expect(early).toMatchObject({ running: false, nativeProfile: '' });
+      const blocked = await post(chat.saved.id, { operation: 'prepare', action: 'plugin-selection', enabled: true });
+      expect(blocked.status).toBe(409);
+      expect(await blocked.json()).toMatchObject({ error: 'Refresh the selected Hermes chat before changing its project.' });
+      await expect(chat.hub.socket.callConnected('collective.plugins.selection.v1', { profile: 'default',
+        session_id: chat.saved.runtimeId, action: 'inspect' }, chat.hub.socket.connectionEpoch)).rejects.toMatchObject({ code: 4090 });
+      expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, chat.saved.id))).toHaveLength(0);
+    } finally {
+      await control({ plugin_selection_build: 'release' });
+    }
+    const { saved } = await readyChat(chat);
+    const before = await control({ plugin_selection_probe: true });
+    expect(before).toMatchObject({ forbidden_plugin_calls: 0, selection_hydration_calls: 0, sidecar_exists: false });
+    const preparedResponse = await post(saved.id, { operation: 'prepare', action: 'plugin-selection', enabled: true });
+    const prepared = await preparedResponse.json(); expect(preparedResponse.status, JSON.stringify(prepared)).toBe(200);
+    expect(prepared).toMatchObject({ action: 'plugin-selection', enabled: true });
+    const after = await control({ plugin_selection_probe: true });
+    expect(after).toMatchObject({ config_sha256: before.config_sha256, forbidden_plugin_calls: 0,
+      selection_hydration_calls: 0, sidecar_exists: false, source_module_imported: false });
+  }, 45_000);
+
   it('stores one confirmed preference, preserves raw config, retains frozen startup state and refuses replay', async () => {
     const { hub, saved } = await openChat();
     const before = await control({ plugin_selection_probe: true });
@@ -119,7 +170,8 @@ describe.skipIf(!enabled)('selection sidecar through actual pinned gateway, owne
 
   it('refuses a changed sidecar revision before receipt and never invokes the upstream toggle', async () => {
     const { hub, saved } = await openChat(); await control({ plugin_selection_probe: true });
-    const prepared = await (await post(saved.id, { operation: 'prepare', action: 'plugin-selection', enabled: true })).json();
+    const prepareResponse = await post(saved.id, { operation: 'prepare', action: 'plugin-selection', enabled: true });
+    const prepared = await prepareResponse.json(); expect(prepareResponse.status, JSON.stringify(prepared)).toBe(200);
     const current = await hub.socket.callConnected('collective.plugins.selection.v1', { profile: 'default', session_id: saved.runtimeId, action: 'inspect' }, hub.socket.connectionEpoch);
     await hub.socket.callConnected('collective.plugins.selection.v1', { profile: 'default', session_id: saved.runtimeId, action: 'select',
       key: 'teams_pipeline', expected_identity: current.identity_revision, expected_revision: current.revision, enabled: false }, hub.socket.connectionEpoch);
@@ -141,19 +193,24 @@ describe.skipIf(!enabled)('selection sidecar through actual pinned gateway, owne
   }, 45_000);
 
   it('rejects unclaimed native requests, foreign portal users and work in a different session of the same profile', async () => {
-    const { hub, saved } = await openChat(); await control({ plugin_selection_probe: true });
+    const { hub, saved } = await openChat();
+    const sibling = await hub.socket.callConnected('session.create', { profile: 'default', source: 'desktop' }, hub.socket.connectionEpoch);
+    await vi.waitFor(async () => expect(await control({ plugin_selection_readiness: sibling.session_id }))
+      .toMatchObject({ agent_ready: true, status: 'idle', native_profile: 'default', profile_work: false }), { timeout: 10_000 });
+    const before = await control({ plugin_selection_probe: true });
     const auth = new DashboardClient(f.base, fetch, secrets);
     const unclaimed = new DashboardSocket(async () => ({ url: new URL(`${f.base.replace('http:', 'ws:')}/api/ws?ticket=${encodeURIComponent(await auth.websocketTicket())}`), options: {} }), () => {});
     sockets.push(unclaimed); await unclaimed.connect();
     await expect(unclaimed.call('collective.plugins.selection.v1', { profile: 'default', session_id: saved.runtimeId })).rejects.toMatchObject({ code: 4091 });
     await expect(hub.socket.callConnected('collective.plugins.selection.v1', { profile: 'default', session_id: saved.runtimeId, action: 'promote' }, hub.socket.connectionEpoch)).rejects.toMatchObject({ code: 4090 });
     f.actor = foreign; expect((await inspect(saved.id)).status).toBe(404); f.actor = owner;
-    const sibling = await hub.socket.callConnected('session.create', { profile: 'default', source: 'desktop' }, hub.socket.connectionEpoch);
     await control({ workspace_busy: true, session_id: sibling.session_id });
     const blocked = await post(saved.id, { operation: 'prepare', action: 'plugin-selection', enabled: true });
     expect(blocked.status).toBeGreaterThanOrEqual(400);
     await control({ workspace_busy: false, session_id: sibling.session_id });
     expect(await db.select().from(remoteHermesTurns).where(eq(remoteHermesTurns.sessionId, saved.id))).toHaveLength(0);
-    expect((await control({ plugin_selection_probe: true })).sidecar_exists).toBe(false);
+    const after = await control({ plugin_selection_probe: true });
+    expect(after).toMatchObject({ config_sha256: before.config_sha256, sidecar_exists: false,
+      forbidden_plugin_calls: 0, selection_hydration_calls: 0, source_module_imported: false });
   }, 45_000);
 });
