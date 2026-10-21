@@ -144,10 +144,20 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
       expect(await db.select().from(s.botTools).where(eq(s.botTools.botId, id))).toEqual([]);
     }
   });
+  it("keeps a pending approval verifiable when the person chooses Always allow", async () => {
+    const callerBot = await getUsableBot(admin, (await createBot(input("caller"))).id);
+    const ts = await tools({ principal: admin, bot: callerBot });
+    expect(ts.approvalSigningBinding).toBeDefined();
+    await db.insert(s.toolGrants).values({ userId: admin.user.id, botId: callerBot.id, toolName: ts.entries[0].name });
+    const granted = await tools({ principal: admin, bot: callerBot });
+    expect(granted.approvalSigningBinding).toBe(ts.approvalSigningBinding);
+    // Dispatch and shortlisting still see the grant change.
+    expect(granted.approvalBinding).not.toBe(ts.approvalBinding);
+  });
   it("binds approval secrets to publication and current permission state", async () => {
-    const before = await tools(); const secret = toolApprovalSecret(before.approvalBinding);
+    const before = await tools(); const secret = toolApprovalSecret(before.approvalSigningBinding);
     await publishServiceBot(botId, 2, grants());
-    expect(toolApprovalSecret((await tools()).approvalBinding)).not.toBe(secret);
+    expect(toolApprovalSecret((await tools()).approvalSigningBinding)).not.toBe(secret);
     await db.update(s.mcpServers).set({ policyRevision: 2 }).where(eq(s.mcpServers.id, server.id));
     await expect(tools()).rejects.toThrow(/review/);
   });
@@ -158,7 +168,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
       { content: [{ type: "tool-call", toolCallId: "signed-call", toolName: "ticket_fixture__create_ticket", input: JSON.stringify(args()) }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage, warnings: [] },
       { content: [{ type: "text", text: "Done" }], finishReason: { unified: "stop", raw: "stop" }, usage, warnings: [] },
     ] });
-    const first = await generateText({ model, prompt: "File a synthetic ticket", tools: ts.tools, toolApproval: ts.approval, experimental_toolApprovalSecret: toolApprovalSecret(ts.approvalBinding) });
+    const first = await generateText({ model, prompt: "File a synthetic ticket", tools: ts.tools, toolApproval: ts.approval, experimental_toolApprovalSecret: toolApprovalSecret(ts.approvalSigningBinding) });
     const request = first.content.find(p => p.type === "tool-approval-request")!;
     expect(request).toBeDefined(); expect(network.call).not.toHaveBeenCalled();
     const messages: ModelMessage[] = [...structuredClone(first.responseMessages), { role: "tool", content: [{ type: "tool-approval-response", approvalId: request.approvalId, approved: true }] }];
@@ -168,7 +178,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
         if (part.type === "tool-call") part.input = { ...args(), text: "Different write" };
     }
     const resumed = await tools();
-    const result = generateText({ model, messages, tools: resumed.tools, toolApproval: resumed.approval, experimental_toolApprovalSecret: toolApprovalSecret(resumed.approvalBinding) });
+    const result = generateText({ model, messages, tools: resumed.tools, toolApproval: resumed.approval, experimental_toolApprovalSecret: toolApprovalSecret(resumed.approvalSigningBinding) });
     if (change === "unchanged") { await result; expect(network.call).toHaveBeenCalledTimes(1); }
     else { await expect(result).rejects.toSatisfy(InvalidToolApprovalSignatureError.isInstance); expect(network.call).not.toHaveBeenCalled(); }
   });
@@ -192,14 +202,14 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
     const ts = await tools();
     const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } };
     const model = new MockLanguageModelV4({ doGenerate: { content: [{ type: "tool-call", toolCallId: "legacy-call", toolName: "ticket_fixture__create_ticket", input: JSON.stringify(args()) }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage, warnings: [] } });
-    const first = await generateText({ model, prompt: "File ticket", tools: ts.tools, toolApproval: ts.approval, experimental_toolApprovalSecret: toolApprovalSecret(ts.approvalBinding) });
+    const first = await generateText({ model, prompt: "File ticket", tools: ts.tools, toolApproval: ts.approval, experimental_toolApprovalSecret: toolApprovalSecret(ts.approvalSigningBinding) });
     const request = first.content.find(p => p.type === "tool-approval-request")!;
     expect(request).toBeDefined();
     currentDefs = defs.map(d => ({ ...d, description: "Changed tool behavior" }));
     const resumed = await tools();
     expect(resumed.approvalBinding).not.toBe(ts.approvalBinding);
     const messages: ModelMessage[] = [...first.responseMessages, { role: "tool", content: [{ type: "tool-approval-response", approvalId: request.approvalId, approved: true }] }];
-    await expect(generateText({ model, messages, tools: resumed.tools, toolApproval: resumed.approval, experimental_toolApprovalSecret: toolApprovalSecret(resumed.approvalBinding) })).rejects.toSatisfy(InvalidToolApprovalSignatureError.isInstance);
+    await expect(generateText({ model, messages, tools: resumed.tools, toolApproval: resumed.approval, experimental_toolApprovalSecret: toolApprovalSecret(resumed.approvalSigningBinding) })).rejects.toSatisfy(InvalidToolApprovalSignatureError.isInstance);
     expect(network.call).not.toHaveBeenCalled();
   });
   it("preserves caller intersection; legacy reused clients recheck access and remembered approvals", async () => {

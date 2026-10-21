@@ -16,17 +16,22 @@ import type { McpToolDef } from "./kinds";
 export type ServiceGrant = Awaited<ReturnType<typeof activeServiceGrants>>[number];
 
 /** Opaque binding only: secrets are hashed, never placed in model definitions, messages or audit records. */
-export async function mcpAuthorityBinding(ctx: AgentCtx, server: McpServer, config: BotToolConfig | null, grants: ServiceGrant[], identityGroups?: string[]) {
+/**
+ * `rememberedApprovals: false` is for approval signing: "Always allow" saves a grant right before answering the
+ * pending request, and that explicit answer must still verify. Dispatch keeps the grants in its binding.
+ */
+export async function mcpAuthorityBinding(ctx: AgentCtx, server: McpServer, config: BotToolConfig | null, grants: ServiceGrant[], identityGroups?: string[],
+  { rememberedApprovals = true }: { rememberedApprovals?: boolean } = {}) {
   const u = ctx.principal.user;
-  const approvals = await db.select({ name: toolGrants.toolName }).from(toolGrants).where(and(
+  const approvals = rememberedApprovals ? await db.select({ name: toolGrants.toolName }).from(toolGrants).where(and(
     eq(toolGrants.userId, u.id), eq(toolGrants.botId, ctx.bot!.id),
-  ));
+  )) : null;
   const names = identityGroups ?? (ctx.principal.groupIds.length && server.identityHeader
     ? (await db.select({ name: groups.name }).from(groups).where(inArray(groups.id, ctx.principal.groupIds))).map(g => g.name).sort() : []);
   return sha256Hex(canonicalJson({
     actor: { id: u.id, upn: u.upn, email: u.email, name: u.name, session: u.sessionVersion,
       groups: [...ctx.principal.groupIds].sort(), admin: ctx.principal.isAdmin },
-    identityGroups: names, rememberedApprovals: approvals.map(a => a.name).sort(),
+    identityGroups: names, ...(approvals ? { rememberedApprovals: approvals.map(a => a.name).sort() } : {}),
     bot: ctx.bot, app: ctx.app, config, settings: ctx.toolSettings,
     server, grants: [...grants].sort((a, b) => a.id.localeCompare(b.id)),
     conversation: ctx.conversationId, run: ctx.usage?.runId ?? null,
