@@ -20,7 +20,9 @@ export async function GET(req: Request) {
                     replace(replace(replace(m.search_text, '&', '&amp;'), '<', '&lt;'), '>', '&gt;'),
                     query.tsq, 'StartSel=<mark>,StopSel=</mark>,MaxWords=24,MinWords=8')
                   order by ts_rank(m.search_tsv, query.tsq) desc))[1] as snippet
-        from messages m, query
+        from messages m
+        join conversations mc on mc.id = m.conversation_id and mc.user_id = ${p.user.id}
+        cross join query
         where m.search_tsv @@ query.tsq
         group by m.conversation_id
       )
