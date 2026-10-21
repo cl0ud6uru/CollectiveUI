@@ -32,9 +32,9 @@ import {
 import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers, mayCreateBots } from "@/lib/authz";
 import { chunkText } from "@/lib/files/extract";
 import { newToken } from "@/lib/ids";
-import { enqueue, QUEUES } from "@/lib/jobs";
 import { embedTexts, newUsageScope, restoreUsageAfterRollback, resolveModel, utilityApp, type UsageScope } from "@/lib/llm";
 import { newWebhookSecret, nextCronRun, openWebhookSecret } from "@/lib/routines";
+import { queueRoutineRun } from "@/lib/routines/admission";
 import { requirePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
 import { mcpInputValidator } from "@/lib/mcp/input";
@@ -557,7 +557,7 @@ export async function saveRoutine(raw: z.infer<typeof RoutineInput>) {
     try {
       nextRunAt = nextCronRun(input.cron, input.timezone);
     } catch {
-      throw new HttpError(400, "Invalid cron expression");
+      throw new HttpError(400, "Use a valid five-field cron schedule with times at least five minutes apart and a valid timezone.");
     }
   }
   const values = {
@@ -598,15 +598,8 @@ export async function deleteRoutine(id: string) {
 
 export async function runRoutineNow(id: string) {
   const p = await requirePrincipal();
-  const [r] = await db
-    .select()
-    .from(routines)
-    .where(and(eq(routines.id, id), eq(routines.ownerId, p.user.id)));
-  if (!r) throw new HttpError(404, "Routine not found");
-  const [run] = await db.insert(routineRuns).values({ routineId: r.id, trigger: "manual", lastEnqueueAt: new Date() }).returning();
-  // The queued row is durable; the sweeper retries when immediate admission fails.
-  await enqueue(QUEUES.routineRun, { runId: run.id }, { singletonKey: run.id });
-  revalidatePath(`/bots/${r.botId}`);
+  const { run, botId } = await queueRoutineRun({ routineId: id, ownerId: p.user.id, trigger: "manual" });
+  revalidatePath(`/bots/${botId}`);
   return { runId: run.id };
 }
 

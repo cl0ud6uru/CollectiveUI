@@ -8,6 +8,7 @@ import { insertMessage, partsToText, setCurrentLeaf, type PortalUIMessage } from
 import { newId } from "@/lib/ids";
 import { enqueue, enqueueRun, QUEUES } from "@/lib/jobs";
 import { nextCronRun } from "@/lib/routines";
+import { insertRoutineRunTx, lockRoutineAdmission } from "@/lib/routines/admission";
 import { insertRunTx } from "@/lib/runs/state";
 
 async function finishRun(runId: string, status: RoutineRunStatus, error?: string, q: DbOrTx = db) {
@@ -164,6 +165,9 @@ export async function scheduleDueRoutines(now = new Date()) {
   for (const r of due) {
     let next: Date | null = null;
     try {
+      // Validate the occurrence being admitted as well as the future one. At an
+      // exact/late DST tick the next future slot may already be safe again.
+      nextCronRun(r.cron ?? "", r.timezone, new Date(+r.nextRunAt! - 1));
       next = nextCronRun(r.cron ?? "", r.timezone, now);
     } catch {
       next = null;
@@ -171,13 +175,16 @@ export async function scheduleDueRoutines(now = new Date()) {
     // The queued row is a durable outbox. Advancing the schedule and recording the work must
     // commit together; a lost/failed send is retried by the sweeper using this same run ID.
     const run = await db.transaction(async (tx) => {
+      await lockRoutineAdmission(tx, r.ownerId);
       const claimed = await tx.update(routines).set({ nextRunAt: next }).where(and(
         eq(routines.id, r.id), eq(routines.enabled, true), eq(routines.triggerType, "cron"),
+        eq(routines.cron, r.cron ?? ""), eq(routines.timezone, r.timezone),
         sql`${routines.nextRunAt} = ${r.nextRunAt}`,
       )).returning({ id: routines.id });
-      if (!claimed.length) return null;
-      const [created] = await tx.insert(routineRuns).values({ routineId: r.id, trigger: "schedule", lastEnqueueAt: new Date() }).returning();
-      return created;
+      // Coalesce missed ticks, including while another run or the owner's cap is
+      // holding admission. Legacy invalid schedules stop here until edited.
+      if (!claimed.length || !next) return null;
+      return insertRoutineRunTx(tx, r, "schedule");
     });
     if (run && await enqueue(QUEUES.routineRun, { runId: run.id }, { singletonKey: run.id })) queued++;
   }

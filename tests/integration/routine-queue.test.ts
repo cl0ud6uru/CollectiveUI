@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
 import { expect, it } from "vitest";
+import { routineFixtureURL } from "../fixtures/routines/disposable-database";
 
 // This test deliberately removes a queue to simulate admission failure; never run it on an app database.
 const test = process.env.ROUTINE_QUEUE_TEST === "1" ? it : it.skip;
 test("real pg-boss admission failure recovers the same routine exactly once", async () => {
-  if (new URL(process.env.DATABASE_URL!).pathname !== "/collective_review_queue_test") throw new Error("Requires disposable collective_review_queue_test database");
+  routineFixtureURL("queue");
   const { db, pool, schema } = await import("@/db");
   const { getBoss, QUEUES } = await import("@/lib/jobs");
   const { scheduleDueRoutines, executeRoutineRun } = await import("@/lib/agent/routine-runner");
@@ -16,7 +17,7 @@ test("real pg-boss admission failure recovers the same routine exactly once", as
   try {
     const [bot] = await db.insert(schema.bots).values({ ownerId: user.id, appId: app.id, name: stamp }).returning();
     const now = new Date();
-    const [routine] = await db.insert(schema.routines).values({ ownerId: user.id, botId: bot.id, name: stamp, prompt: "synthetic", triggerType: "cron", cron: "* * * * *", nextRunAt: new Date(+now - 1000) }).returning();
+    const [routine] = await db.insert(schema.routines).values({ ownerId: user.id, botId: bot.id, name: stamp, prompt: "synthetic", triggerType: "cron", cron: "*/5 * * * *", nextRunAt: new Date(+now - 1000) }).returning();
     await boss.deleteQueue(QUEUES.routineRun);
     expect(await scheduleDueRoutines(now)).toBe(0);
     const [pending] = await db.select().from(schema.routineRuns).where(eq(schema.routineRuns.routineId, routine.id));

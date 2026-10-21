@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Principal } from "@/lib/auth/groups";
 import type { AgentCtx } from "@/lib/agent/types";
 import { startMockLlm } from "./helpers/mock-llm";
@@ -65,6 +65,12 @@ suite("verified review regressions (isolated Postgres, synthetic data)", () => {
     ctx.conversationId = conv.id;
     mocks.principal = alice;
   });
+  afterEach(async () => {
+    // Each routine fixture has its own admission budget; unfinished runs from a
+    // previous regression must not consume the next test's per-owner allowance.
+    const { db, schema } = await import("@/db");
+    if (alice) await db.delete(schema.routines).where(eq(schema.routines.ownerId, alice.user.id));
+  });
   afterAll(async () => {
     const { db, pool, schema } = await import("@/db");
     await runHost().shutdown(2000);
@@ -108,7 +114,7 @@ suite("verified review regressions (isolated Postgres, synthetic data)", () => {
     const { scheduleDueRoutines, executeRoutineRun } = await import("@/lib/agent/routine-runner");
     const { sweepRuns } = await import("@/lib/runs/sweeper");
     const now = new Date();
-    const [routine] = await db.insert(schema.routines).values({ ownerId: alice.user.id, botId: ctx.bot!.id, name: stamp, prompt: "test", triggerType: "cron", cron: "* * * * *", nextRunAt: new Date(+now - 1000) }).returning();
+    const [routine] = await db.insert(schema.routines).values({ ownerId: alice.user.id, botId: ctx.bot!.id, name: stamp, prompt: "test", triggerType: "cron", cron: "*/5 * * * *", nextRunAt: new Date(+now - 1000) }).returning();
     mocks.enqueue.mockResolvedValue(null);
     expect(await scheduleDueRoutines(now)).toBe(0);
     const runs = await db.select().from(schema.routineRuns).where(eq(schema.routineRuns.routineId, routine.id));
@@ -230,7 +236,7 @@ suite("verified review regressions (isolated Postgres, synthetic data)", () => {
     const { scheduleDueRoutines } = await import("@/lib/agent/routine-runner");
     const { sweepRuns } = await import("@/lib/runs/sweeper");
     const now = new Date();
-    const [routine] = await db.insert(schema.routines).values({ ownerId: alice.user.id, botId: ctx.bot!.id, name: "concurrent", prompt: "test", triggerType: "cron", cron: "* * * * *", nextRunAt: new Date(+now - 1000) }).returning();
+    const [routine] = await db.insert(schema.routines).values({ ownerId: alice.user.id, botId: ctx.bot!.id, name: "concurrent", prompt: "test", triggerType: "cron", cron: "*/5 * * * *", nextRunAt: new Date(+now - 1000) }).returning();
     mocks.enqueue.mockResolvedValue(null);
     await Promise.all(Array.from({ length: 12 }, () => scheduleDueRoutines(now)));
     expect(await db.select().from(schema.routineRuns).where(eq(schema.routineRuns.routineId, routine.id))).toHaveLength(1);
@@ -268,7 +274,7 @@ suite("verified review regressions (isolated Postgres, synthetic data)", () => {
     const { db, schema } = await import("@/db");
     const { scheduleDueRoutines } = await import("@/lib/agent/routine-runner");
     const now = new Date();
-    const [routine] = await db.insert(schema.routines).values({ ownerId: alice.user.id, botId: ctx.bot!.id, name: "insert failure", prompt: "test", triggerType: "cron", cron: "* * * * *", nextRunAt: new Date(+now - 1000) }).returning();
+    const [routine] = await db.insert(schema.routines).values({ ownerId: alice.user.id, botId: ctx.bot!.id, name: "insert failure", prompt: "test", triggerType: "cron", cron: "*/5 * * * *", nextRunAt: new Date(+now - 1000) }).returning();
     // An isolated test-only DB constraint injects a real insert failure after the schedule update.
     await db.execute(sql.raw(`ALTER TABLE routine_runs ADD CONSTRAINT review_reject_insert CHECK (routine_id <> '${routine.id}')`));
     try {

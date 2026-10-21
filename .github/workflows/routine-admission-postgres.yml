@@ -1,0 +1,57 @@
+name: Routine admission PostgreSQL proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  routine-admission-postgres:
+    name: Routine admission with pool ${{ matrix.pool }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      matrix:
+        pool: [1, 4]
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: routine_fixture
+          POSTGRES_PASSWORD: synthetic-fixture-only
+          POSTGRES_DB: collective_review_routine_admission_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U routine_fixture -d collective_review_routine_admission_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://routine_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_review_routine_admission_test
+      DATABASE_POOL_MAX: ${{ matrix.pool }}
+      ENCRYPTION_KEY: synthetic-routine-admission-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Prove fixture target guards without connecting
+        run: npx vitest run --project unit tests/unit/routine-disposable-database.test.ts
+      - name: Migrate the disposable database
+        run: npm run db:migrate
+      - name: Require actual action, webhook, scheduler, advisory lock and queue proofs
+        env:
+          ROUTINE_ADMISSION_TEST: '1'
+        run: npx vitest run --project integration tests/integration/routine-admission.test.ts --maxWorkers=1
+      - name: Create and migrate the queue recovery fixture
+        if: matrix.pool == 1
+        run: |
+          PGPASSWORD=synthetic-fixture-only psql -h 127.0.0.1 -U routine_fixture -d postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE collective_review_queue_test'
+          DATABASE_URL=postgres://routine_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_review_queue_test npm run db:migrate
+      - name: Require durable outbox recovery and exactly-once routine startup
+        if: matrix.pool == 1
+        env:
+          DATABASE_URL: postgres://routine_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_review_queue_test
+          ROUTINE_QUEUE_TEST: '1'
+        run: npx vitest run --project integration tests/integration/routine-queue.test.ts --maxWorkers=1
