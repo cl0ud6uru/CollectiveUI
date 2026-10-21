@@ -99,3 +99,21 @@ it("never invents a directory account identifier from typed input", async () => 
   fixture.search.mockResolvedValue({ searchEntries: [{ dn: entry.dn, entryUUID: "fixture-alice", cn: "Display name only" }] });
   expect(await authenticateLdap("attacker-chosen@fixture.invalid", "password", cfg)).toBeNull();
 });
+
+it("finds a relocated bound entry by its canonical directory account and binds the current DN", async () => {
+  const moved = { ...entry, dn: "uid=alice,ou=moved,dc=fixture" };
+  const identity = ldapEntryIdentity(entry, cfg)!;
+  fixture.search.mockResolvedValueOnce({ searchEntries: [] }).mockResolvedValueOnce({ searchEntries: [] }).mockResolvedValueOnce({ searchEntries: [moved] });
+  expect(await readLdapIdentity(entry.dn, identity, cfg, "alice@fixture.invalid")).toMatchObject({ dn: moved.dn, identity });
+  fixture.count = 0; fixture.search.mockReset();
+  fixture.search.mockResolvedValueOnce({ searchEntries: [] }).mockResolvedValueOnce({ searchEntries: [] }).mockResolvedValueOnce({ searchEntries: [moved] });
+  expect(await authenticateLdapAtBinding(entry.dn, identity, "synthetic-password", cfg, "alice@fixture.invalid")).toMatchObject({ dn: moved.dn, identity });
+  expect(fixture.userBind).toHaveBeenLastCalledWith(moved.dn, "synthetic-password");
+});
+
+it("refuses a recreated canonical account during stale-DN lookup", async () => {
+  const replacement = { ...entry, dn: "uid=alice,ou=moved,dc=fixture", entryUUID: "replacement" };
+  fixture.search.mockResolvedValueOnce({ searchEntries: [] }).mockResolvedValue({ searchEntries: [replacement] });
+  expect(await readLdapIdentity(entry.dn, ldapEntryIdentity(entry, cfg)!, cfg, "alice@fixture.invalid")).toBeNull();
+  expect(fixture.userBind).not.toHaveBeenCalled();
+});

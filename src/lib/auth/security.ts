@@ -52,7 +52,7 @@ async function take(token: string, purpose: string, binding: string): Promise<Fl
   if (!flow) fail();
   return flow;
 }
-async function account(tx: Tx, expected: Account, permanent = false) {
+async function account(tx: Tx, expected: Account, permanent = false, verified?: LdapUser) {
   const [row] = await tx.select({ user: users, credential: localCredentials }).from(users)
     .leftJoin(localCredentials, eq(localCredentials.userId, users.id)).where(eq(users.id, expected.id));
   if (!row || row.user.disabled || row.user.sessionVersion !== expected.sessionVersion) fail();
@@ -63,23 +63,26 @@ async function account(tx: Tx, expected: Account, permanent = false) {
   }
   if (!ldapEnabled()) fail();
   const [p] = await tx.select().from(localSecurity).where(eq(localSecurity.userId, expected.id));
+  if (verified && p?.ldapIdentity && verified.identity !== p.ldapIdentity) fail();
   if (p?.ldapDn && p.ldapIdentity) {
-    const identity = await readLdapIdentity(p.ldapDn, p.ldapIdentity);
-    if (!identity || identity.upn !== row.user.upn) fail();
+    const identity = verified ?? await readLdapIdentity(p.ldapDn, p.ldapIdentity, undefined, row.user.upn);
+    if (!identity || identity.identity !== p.ldapIdentity || identity.upn !== row.user.upn) fail();
+    // A directory-verified relocation keeps the original factor identity and every enrolled factor.
+    if (identity.dn !== p.ldapDn) await tx.update(localSecurity).set({ ldapDn: identity.dn }).where(eq(localSecurity.userId, expected.id));
     const synced = await syncUserOnSignIn({ ...identity, source: "ldap", groups: identity.groups.map(g => ({ externalId: g.dn, displayName: g.name })) }, tx);
     if (synced.id !== row.user.id || synced.disabled) fail();
-  } else if (row.user.authSource !== "ldap") fail();
+  } else if (row.user.authSource !== "ldap" || await hasLocalFactors(expected.id, tx)) fail();
   return { user: row.user, credential: null };
 }
 function flowAccount(flow: Flow): Account { if (!flow.userId || flow.sessionVersion === null) fail(); return { id: flow.userId, sessionVersion: flow.sessionVersion }; }
-async function locked<T>(expected: Account, fn: (tx: Tx, row: Awaited<ReturnType<typeof account>>) => Promise<T>, permanent = false) {
+async function locked<T>(expected: Account, fn: (tx: Tx, row: Awaited<ReturnType<typeof account>>) => Promise<T>, permanent = false, verified?: LdapUser) {
   const result = await db.transaction(async tx => {
     await lockAccounts(tx);
     if (teamBotsEnabled()) {
       const { lockTeamAccessBots } = await import('@/lib/hermes-team/revocation');
       await lockTeamAccessBots(tx);
     }
-    return fn(tx, await account(tx, expected, permanent));
+    return fn(tx, await account(tx, expected, permanent, verified));
   });
   if (teamBotsEnabled()) {
     const { reconcileTeamActorAccess } = await import('@/lib/hermes-team/revocation');
@@ -138,7 +141,7 @@ export async function beginPasswordLogin(username: string, password: string, hea
     }
     if (!await hasLocalFactors(user.id, tx)) return { mustChangePassword: credential?.mustChangePassword ?? false, ticket: await issue(tx, "login-ticket", binding, user, { provider }, 60) };
     return { flow: await issue(tx, "password-factor", binding, user, { provider }) };
-  });
+  }, false, verified?.identity);
 }
 export async function finishPasswordLogin(token: string, code: string, recovery: boolean, binding: string, provider: FactorProvider = "local") {
   const flow = await take(token, "password-factor", binding), expected = flowAccount(flow);
@@ -230,7 +233,7 @@ export async function reauthenticatePassword(actor: SecurityActor, op: string, p
     // Stored DN avoids ambiguity for directories whose uid filter does not accept a UPN.
     const [p] = await db.select().from(localSecurity).where(eq(localSecurity.userId, actor.id));
     const verified = p?.ldapDn && p.ldapIdentity
-      ? await authenticateLdapAtBinding(p.ldapDn, p.ldapIdentity, password)
+      ? await authenticateLdapAtBinding(p.ldapDn, p.ldapIdentity, password, undefined, user.upn)
       : (await authenticateLdapPassword(user.upn, password, headers))?.identity;
     if (!verified || verified.upn !== user.upn || !verified.identity) fail();
     identity = verified;
@@ -247,7 +250,7 @@ export async function reauthenticatePassword(actor: SecurityActor, op: string, p
     const codes = await replenishFinalRecoveryCode(tx, actor.id, protectedAccount && recovery);
     if (codes) return { codes, signOut: true, recoveryRotated: true };
     return { proof: await issue(tx, `reauth:${op}`, actor.sessionId, actor, { passwordVerified: "true" }) };
-  }, op !== "password");
+  }, op !== "password", identity);
 }
 async function takeReauth(actor: SecurityActor, op: string, token: string) {
   const flow = await take(token, `reauth:${op}`, actor.sessionId);

@@ -280,24 +280,37 @@ async function resolveEntry(service: Client, entry: Entry, cfg: LdapConfig): Pro
 }
 
 /** Service-account lookup only; never store or reuse a user's directory password. */
-export async function readLdapIdentity(dn: string, identity: string, cfg = ldapConfigFromEnv()): Promise<LdapUser | null> {
+export async function readLdapIdentity(dn: string, identity: string, cfg = ldapConfigFromEnv(), expectedUpn?: string): Promise<LdapUser | null> {
   const service = await directory("client_configuration", () => newClient(cfg));
   try {
     await directory("service_bind", () => service.bind(cfg.bindDn, cfg.bindPassword));
-    const entry = await readAccountEntry(service, dn);
-    if (!entry) return null;
-    if (ldapEntryIdentity(entry, cfg) !== identity || !ldapAccountActive(entry, cfg)) return null;
-    return await directory("group_search", () => resolveEntry(service, entry, cfg));
+    let entry = await readAccountEntry(service, dn);
+    // A moved entry may no longer exist at its saved DN. The canonical portal UPN is only a lookup hint:
+    // every candidate must still match the saved stable GUID/UUID identity, directory and canonical UPN.
+    if ((!entry || ldapEntryIdentity(entry, cfg) !== identity) && expectedUpn) {
+      const upn = expectedUpn.trim().toLowerCase(), suffix = cfg.upnSuffix ? `@${cfg.upnSuffix.toLowerCase()}` : "";
+      const candidates = [...new Set([upn, ...(suffix && upn.endsWith(suffix) ? [upn.slice(0, -suffix.length)] : [])])];
+      for (const candidate of candidates) {
+        const found = await findIdentityEntry(service, candidate, cfg);
+        if (found && ldapEntryIdentity(found, cfg) === identity) {
+          entry = cfg.groupMode === "ad" || hasAdGuid(found) ? await readAccountEntry(service, found.dn) : found;
+          break;
+        }
+      }
+    }
+    if (!entry || ldapEntryIdentity(entry, cfg) !== identity || !ldapAccountActive(entry, cfg)) return null;
+    const resolved = await directory("group_search", () => resolveEntry(service, entry!, cfg));
+    return expectedUpn && resolved?.upn !== expectedUpn.trim().toLowerCase() ? null : resolved;
   } finally { await service.unbind().catch(() => {}); }
 }
 
 /** Recovery/enrollment still proves the actual company password against the bound entry. */
-export async function authenticateLdapAtBinding(dn: string, identity: string, password: string, cfg = ldapConfigFromEnv()) {
+export async function authenticateLdapAtBinding(dn: string, identity: string, password: string, cfg = ldapConfigFromEnv(), expectedUpn?: string) {
   if (!password) return null;
-  const user = await readLdapIdentity(dn, identity, cfg);
+  const user = await readLdapIdentity(dn, identity, cfg, expectedUpn);
   if (!user) return null;
   const client = await directory("client_configuration", () => newClient(cfg));
-  try { await client.bind(dn, password); return user; }
+  try { await client.bind(user.dn, password); return user; }
   catch (err) {
     if (err instanceof InvalidCredentialsError) return null;
     throw new LdapUnavailableError(err, "user_bind");
