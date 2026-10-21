@@ -203,6 +203,11 @@ export class DockerBroker {
     const s = this.states.get(owner);
     if (!canCreate && s && this.creationJobs.has(owner) && !this.maintaining.has(owner)) void this.stop(owner).catch(() => {});
   }
+  /** Trusted stopped-broker operator only. A network lease grants no personal
+   * creation permission or Team capability, and does not start the runtime. */
+  authorizeNetwork(owner: string) {
+    runtimeOwnerId.parse(owner); this.leases.set(owner, { until: Date.now() + 60000, canCreate: false });
+  }
   owners() { return [...this.states.keys()]; }
   async expireLeases() {
     for(const [owner,entry] of this.candidateOwners) {

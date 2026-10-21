@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { DockerBroker } from '@/docker-hermes/broker';
 import { BrokerConfig, runtimeKey, type RuntimeDriver, type Profile } from '@/docker-hermes/docker';
-import { loadBrokerConfig, cleanupRetainedBroker } from '@/docker-hermes/main';
+import { loadBrokerConfig, cleanupRetainedBroker, listenBroker } from '@/docker-hermes/main';
+import { LOCAL_ORIGIN, socketFetch } from '@/lib/local-hermes/client';
 import type { NetworkMode, NetworkMigration } from '@/docker-hermes/network';
 const id = (v: string) => createHash('sha256').update(v).digest('hex');
 const until = async (fn: () => Promise<boolean>) => { for (let i=0;i<200;i++) { if (await fn()) return; await new Promise(r=>setTimeout(r,5)); } throw new Error('Timed out'); };
@@ -30,6 +31,7 @@ class Driver implements RuntimeDriver {
   async finishNetwork(owner:string,m:NetworkMigration) { this.finishes++;expect(m.state).toBe('committed');this.backup.delete(owner); }
   async rollbackNetwork(owner:string,m:NetworkMigration) {this.active.delete(owner);this.setNetwork(owner,m.previous);if(this.backup.has(owner)){this.ids.set(owner,this.backup.get(owner)!);this.backup.delete(owner);}}
   async create(): Promise<Profile> { throw new Error('Not used'); }
+  async createTeam(owner:string,name:string):Promise<Profile>{const profile={name,identity:id(owner+name)};this.roster.get(owner)!.push(profile);return profile;}
   async resources() { return {skills:[],memories:[]}; }
   transport(): ReturnType<RuntimeDriver['transport']> { throw new Error('No native process in this fixture'); }
   async settings() {return {revision:id('settings'),provider:'openai-api' as const,model:'fixture-model',reasoningEffort:'' as const,maxTurns:null,advancedSupported:true,editableProviders:{'openai-api':true},credentials:{'openai-api':false,anthropic:false,openrouter:false,'openai-codex':false}};}
@@ -37,13 +39,59 @@ class Driver implements RuntimeDriver {
 }
 let root:string, config:BrokerConfig, driver:Driver, broker:DockerBroker;
 beforeEach(async()=>{root=await mkdtemp(path.join(tmpdir(),'dh-network-'));await mkdir(path.join(root,'state'),{mode:0o700});await mkdir(path.join(root,'ipc'),{mode:0o700});
- config=BrokerConfig.parse({stateDir:path.join(root,'state'),socketPath:path.join(root,'ipc/b.sock'),bridgePath:path.resolve('src/docker-hermes/bridge.py'),namespace:'cui-network',image:`nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`,network:'none'});
+ config=BrokerConfig.parse({stateDir:path.join(root,'state'),socketPath:path.join(root,'ipc/b.sock'),bridgePath:path.resolve('src/docker-hermes/bridge.py'),namespace:'cui-network',image:`nousresearch/hermes-agent@sha256:${'a'.repeat(64)}`,network:'none',teamBotsEnabled:true});
  driver=new Driver();broker=new DockerBroker(config,driver);broker.controller=vi.fn(async()=>({} as Awaited<ReturnType<DockerBroker['controller']>>));});
 afterEach(async()=>{await broker.close();await rm(root,{recursive:true,force:true});});
 const enable=async(owner='alice')=>{broker.authorize(owner,true);broker.enable(owner);await until(async()=>(await broker.status(owner)).phase==='ready');};
 const request=(mode:NetworkMode,revision=0)=>({mode,revision,requestId:randomUUID(),confirmRestart:true as const});
 const settled=()=>until(async()=>!(await broker.networkStatus('alice')).changing);
 describe('per-owner network transitions',()=>{
+ it('admits reserved Team admin network IPC while keeping personal and Team actor routes restricted',async()=>{
+   const listener=await listenBroker(broker), owner='team-admin:shared-bot';
+   try {
+     broker.authorizeTeam('maintainer',{teamBotId:'shared-bot',mode:'admin',modelPolicy:'personal_required'});
+     const fetch=socketFetch(config.socketPath),headers={'x-collective-owner':owner,'Content-Type':'application/json'};
+     expect((await fetch(`${LOCAL_ORIGIN}/control/network`,{headers})).status).toBe(200);
+     const input=request('internet');
+     expect((await fetch(`${LOCAL_ORIGIN}/control/network`,{method:'POST',headers,body:JSON.stringify({actor:'maintainer',request:input})})).status).toBe(202);
+     expect(await broker.settleNetwork(owner)).toMatchObject({mode:'internet',revision:1,actual:'absent',receipt:{state:'committed',actor:'maintainer'}});
+     expect(driver.changes).toBe(0);expect(driver.active.size).toBe(0);
+     for(const action of ['/control/enable','/control/lease','/team/authorize'])
+       expect((await fetch(`${LOCAL_ORIGIN}${action}`,{method:'POST',headers,body:JSON.stringify({canCreate:true})})).status).toBe(400);
+     expect((await fetch(`${LOCAL_ORIGIN}/control/status`,{headers})).status).toBe(400);
+     expect((await fetch(`${LOCAL_ORIGIN}/control/network`,{headers:{...headers,origin:'https://foreign.invalid'}})).status).toBe(403);
+   } finally {await listener.close();}
+ });
+ it('issues an operator network lease for a reserved owner without creating a personal or Team capability',async()=>{
+   const owner='team-admin:shared-bot';
+   broker.authorizeNetwork(owner);broker.requestNetwork(owner,request('proxy'),'operator');
+   expect(await broker.settleNetwork(owner)).toMatchObject({mode:'proxy',actual:'absent',revision:1,receipt:{state:'committed'}});
+   expect(driver.active.size).toBe(0);expect(driver.changes).toBe(0);
+   expect(()=>broker.authorize(owner,true)).toThrow();expect(()=>broker.enable(owner)).toThrow();
+   expect(()=>broker.teamBinding('maintainer','shared-bot','admin','arbitrary')).toThrow('authorization');
+   expect(()=>broker.authorizeNetwork('team-admin:')).toThrow();
+ });
+ it('retains a running Team admin profile and a separate personal owner through network replacement',async()=>{
+   const listener=await listenBroker(broker),owner='team-admin:shared-bot';
+   try {
+     const grant=broker.authorizeTeam('maintainer',{teamBotId:'shared-bot',mode:'admin',modelPolicy:'personal_required'});
+     const binding=await broker.ensureTeam('maintainer',{teamBotId:'shared-bot',mode:'admin',name:'Shared'},grant.grantId);
+     const roster=structuredClone(await driver.profiles(owner));await enable('alice');
+     const fetch=socketFetch(config.socketPath),headers={'x-collective-owner':owner,'Content-Type':'application/json'};
+     const input=request('proxy'),body=JSON.stringify({actor:'maintainer',request:input});
+     expect((await fetch(`${LOCAL_ORIGIN}/control/network`,{method:'POST',headers,body})).status).toBe(202);
+     expect(await broker.settleNetwork(owner)).toMatchObject({mode:'proxy',revision:1,running:true,receipt:{state:'committed'}});
+     expect(broker.teamBinding('maintainer','shared-bot','admin',grant.grantId)).toEqual(binding);
+     expect(await driver.profiles(owner)).toEqual(roster);expect((await broker.status('alice')).network).toBe('none');
+     expect((await fetch(`${LOCAL_ORIGIN}/control/network`,{method:'POST',headers,body})).status).toBe(202);
+     expect(driver.changes).toBe(1);
+     await broker.stop(owner);
+     const next={actor:'maintainer',request:request('internet',1)};
+     expect((await fetch(`${LOCAL_ORIGIN}/control/network`,{method:'POST',headers,body:JSON.stringify(next)})).status).toBe(202);
+     expect(await broker.settleNetwork(owner)).toMatchObject({mode:'internet',running:false,revision:2});
+     expect(await driver.profiles(owner)).toEqual(roster);expect(driver.active.has('alice')).toBe(true);
+   } finally {await listener.close();}
+ });
  it('defaults fresh installs to Internet while omitted legacy config inherits its pinned offline deployment',async()=>{
    expect(BrokerConfig.parse({...config,network:undefined}).network).toBe('internet');
    const file=path.join(root,'broker.json');const raw={...config};delete (raw as Partial<BrokerConfig>).network;await writeFile(file,JSON.stringify(raw));
