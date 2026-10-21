@@ -131,6 +131,36 @@ even after a failure and retained for 14 days. Fixtures use no production
 session, browser sign-in or real server actions. This gate does not establish
 macOS 14/Intel runtime coverage or distribution readiness.
 
+## Background draft and recovery regressions
+
+On macOS, `bash macos/scripts/test-headless-chat.sh` runs the production session,
+chat and persistence sources in a temporary Swift package. It uses synthetic
+credentials/transport and disposable storage, and does not launch an app, create
+a window or change focus. The command-output layout tests measure `NSHostingView`
+offscreen. This is model/layout evidence, not hosted or interactive UI validation.
+
+A failed draft write now shows a warning with **Retry saving** in both native
+clients. Sending, retrying an original request, regenerating and executing a
+command require a successful save first. The original message ID/body and pending
+admission flag are saved together with an empty next composer before constructing
+the network stream. This keeps a relaunch from presenting the submitted text/files
+as a new message. A retained pending request always requires a status check, even
+if an older saved flag says otherwise. If saving fails, the synchronous send
+transaction restores text and attachments before returning; keep the app open
+until saving succeeds.
+Unavailable storage cannot guarantee recovery after quitting or a crash.
+Unreadable saved state is protected from overwrite and sending. **Retry loading
+draft** reloads repaired/readable storage only when there is no newer composer
+text or attachment to discard.
+
+Parity review: web command results already provide bounded scrolling and dismissal;
+iOS results live in the scrolling transcript and have a dismiss control. Mac uses
+a 160-point output viewport with a separate dismiss header to keep its composer
+reachable. Both native clients now expose the shared persistence failure state.
+Web composer drafts currently live in component state, so this change does not add
+a browser persistence feature. `/status` remains an explicit command; neither
+native chat surface contains an unsolicited Hermes status button.
+
 ## Native validation
 
 These checks require no real account or paid model. The macOS test scheme launches the host with `--demo`; application tests
