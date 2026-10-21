@@ -41,8 +41,34 @@ def patch_sources(originals):
     changes["tui_gateway/session_notifications.py"] = once(
         changes["tui_gateway/session_notifications.py"],
         "target=_notification_poller_loop, args=(stop, sid, session)",
-        "target=_collective_hub_owner.protect_worker(_notification_poller_loop, session), args=(stop, sid, session)",
+        "target=_collective_hub_owner.protect_poller(_notification_poller_loop, session), args=(stop, sid, session)",
     )
+    notifications = changes["tui_gateway/session_notifications.py"]
+    notifications = once(notifications,
+        '        try:\n            evt = queue.get(timeout=0.5)\n        except Exception:\n            continue\n',
+        '        try:\n            evt = queue.get_nowait()\n        except Exception:\n            _owner_cycle.idle = True\n            continue\n')
+    loop = '    while not stop_event.is_set() and not session.get("_finalized"):\n'
+    drain = '    # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation\n'
+    if notifications.count(loop) != 1 or notifications.count(drain) != 1:
+        raise ValueError("Pinned notification execution boundary does not match")
+    start = notifications.index(loop) + len(loop)
+    end = notifications.index(drain, start)
+    body = notifications[start:end]
+    notifications = notifications[:start] + (
+        '        with _collective_hub_owner.poller_cycle(session, stop_event) as _owner_cycle:\n'
+        '            if not _owner_cycle.admitted:\n'
+        '                stop_event.set()\n'
+        '                return\n'
+    ) + ''.join('    ' + line if line.strip() else line for line in body.splitlines(keepends=True)) + notifications[end:]
+    start = notifications.index(drain)
+    end = notifications.index('\n\ndef _async_delegation_display_metadata', start)
+    body = notifications[start:end]
+    notifications = notifications[:start] + (
+        '    with _collective_hub_owner.poller_cycle(session, stop_event) as _owner_cycle:\n'
+        '        if not _owner_cycle.admitted:\n'
+        '            return\n'
+    ) + ''.join('    ' + line if line.strip() else line for line in body.splitlines(keepends=True)) + notifications[end:]
+    changes["tui_gateway/session_notifications.py"] = notifications
     prompt = changes["tui_gateway/methods_prompt.py"]
     prompt = once(prompt, "    run_thread = threading.Thread(\n        target=lambda:",
                   "    from tui_gateway import server as _owner_server\n    run_thread = threading.Thread(\n        target=_owner_server._collective_hub_owner.protect_worker(lambda:")

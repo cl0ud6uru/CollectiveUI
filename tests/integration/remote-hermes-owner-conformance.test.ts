@@ -71,18 +71,25 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     const text = `fixture-ordinary-${operation}`, requestId = randomUUID();
     await submitNativePrompt(owner, connection, session.id, requestId, text);
     await vi.waitFor(async () => expect((await oldHub.refresh(await row(session.id))).running).toBe(false), { timeout: 10_000 });
+    // A terminal snapshot precedes thread cleanup. Require actual real-work
+    // quiescence while preserving the live idle poller and native runtime.
+    await vi.waitFor(async () => {
+      const work = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+        headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_real_work: true }) });
+      expect(await work.json()).toEqual({ default: false });
+    }, { timeout: 10_000 });
     const saved = await row(session.id), oldLease = await lease();
     const native = await oldHub.socket.call('collective.hub_owner.current', { profile: 'default' });
-    await expect(oldHub.socket.call('session.close', { profile: saved.profile, session_id: saved.runtimeId })).resolves.toMatchObject({ closed: true });
-    // Native close signals pollers to stop, but their tracked threads can outlive
-    // its reply. This idle-takeover proof must first establish actual quiescence.
-    await vi.waitFor(async () => {
-      const workers = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
-        headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_workers: true }) });
-      expect(workers.ok).toBe(true);
-      expect(await workers.json()).toMatchObject({ default: 0 });
-    }, { timeout: 10_000 });
+    // Preserve the ordinary retained runtime and its live housekeeping poller.
+    // Explicit session.close would hide a poller lifetime being mistaken for active work.
+    const pollers = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+      headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile_pollers: true }) });
+    expect(await pollers.json()).toMatchObject({ default: { alive: 1 } });
+    expect((await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+      headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capture_poller_claim: saved.runtimeId }) })).ok).toBe(true);
     oldHub.close();
     const blocked = new NativeHub(owner, connection, randomUUID()); successors.push(blocked);
     // Negotiation must never steal a live lease or dispatch a native resume.
@@ -94,6 +101,17 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     expect(successor.socket.connectionEpoch).toBe(0);
     await expect(successor[operation](saved)).resolves.toMatchObject({ id: saved.id, profile: saved.profile, running: false });
     expect(await lease()).toMatchObject({ ownerInstanceId: successor.instanceId, generation: Number(oldLease.generation) + 1 });
+    expect((await row(saved.id)).runtimeId).toBe(saved.runtimeId);
+    await vi.waitFor(async () => {
+      const resumedPollers = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+        headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_pollers: true }) });
+      expect(await resumedPollers.json()).toMatchObject({ default: { count: 1, alive: 1, stopped: 0, all_alive: 1 } });
+    }, { timeout: 10_000 });
+    const staleDrain = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+      headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ probe_stale_poller_drain: true }) });
+    expect(await staleDrain.json()).toEqual({ consumed: 0, retained: 1 });
     expect(await successor.socket.call('collective.hub_owner.current', { profile: saved.profile })).toMatchObject({
       portal_instance_id: successor.instanceId, native_generation: Number(native.native_generation) + 1, phase: 'full', transport_bound: true,
     });
@@ -117,6 +135,53 @@ describe.skipIf(!enabled)('actual native owner adapter with PostgreSQL portal ow
     expect(candidate).toMatchObject({ instanceId: successor.instanceId, leaseGeneration: Number(oldLease.generation) + 1, nativeFence: null });
     expect(await successor.socket.call('collective.hub_owner.current', { profile: 'default' })).toMatchObject({ native_generation: native.native_generation, portal_instance_id: oldHub.instanceId });
     expect((await metrics()).agent_turns).toBe(0);
+  }, 15000);
+
+  it('reattaches an ordinary idle runtime after socket replacement without replaying its completed turn', async () => {
+    const session = await openNativeSession(owner, connection, 'default'), hub = nativeHub(owner, connection);
+    await submitNativePrompt(owner, connection, session.id, randomUUID(), 'fixture-idle-reconnect');
+    await vi.waitFor(async () => expect((await hub.refresh(await row(session.id))).running).toBe(false), { timeout: 10_000 });
+    const saved = await row(session.id), epoch = hub.socket.connectionEpoch;
+    const headers = { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' };
+    expect((await fetch(f.base + '/api/__fixture/control', { method: 'POST', headers, body: JSON.stringify({ disconnect: true }) })).ok).toBe(true);
+    await vi.waitFor(() => expect(hub.socket.state).toBe('reconnecting'));
+    await hub.socket.connect();
+    expect(hub.socket.connectionEpoch).toBeGreaterThan(epoch);
+    // A terminal snapshot may precede the original worker's final cleanup. Keep
+    // its active-work refusal, and retry only this read until that worker exits.
+    await vi.waitFor(async () => {
+      expect(await hub.refresh(await row(session.id))).toMatchObject({ id: saved.id, running: false });
+    }, { timeout: 10_000 });
+    expect((await row(saved.id)).runtimeId).toBe(saved.runtimeId);
+    expect(await metrics()).toMatchObject({ agent_turns: 1, external_attempts: 0 });
+  }, 30000);
+
+  it('continues to reject a different full owner while a real native turn remains active', async () => {
+    const session = await openNativeSession(owner, connection, 'default'), hub = nativeHub(owner, connection);
+    const current = await hub.socket.call('collective.hub_owner.current', { profile: 'default' });
+    await submitNativePrompt(owner, connection, session.id, randomUUID(), 'fixture-drain-hold');
+    try {
+      await vi.waitFor(async () => expect((await metrics()).agent_turns).toBe(1), { timeout: 10_000 });
+      await expect(claimElsewhere('default')).rejects.toMatchObject({ code: 4091 });
+      expect(await hub.socket.call('collective.hub_owner.current', { profile: 'default' })).toMatchObject({
+        native_generation: current.native_generation, portal_instance_id: hub.instanceId, phase: 'full',
+      });
+    } finally {
+      await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+        headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ release_recovery_worker: true }) });
+    }
+  }, 30000);
+
+  it('keeps an accepted auxiliary worker fenced before its target wins the profile lock', async () => {
+    const session = await openNativeSession(owner, connection, 'default');
+    const saved = await row(session.id);
+    const response = await fetch(f.base + '/api/__fixture/control', { method: 'POST',
+      headers: { Authorization: `Bearer ${secrets.accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ probe_pending_auxiliary_claim: saved.runtimeId }) });
+    expect(response.ok).toBe(true);
+    expect(await response.json()).toEqual({ claim_rejected: true, generation_unchanged: true, worker_executed: true });
+    expect(await metrics()).toMatchObject({ agent_turns: 0, external_attempts: 0 });
   }, 15000);
 
   it('retains both profile bindings when one saved connection opens a second native profile', async () => {

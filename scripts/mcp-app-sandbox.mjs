@@ -1,8 +1,20 @@
 import { createServer } from 'node:http';
+import { pathToFileURL } from 'node:url';
+
+export function mcpAppsHostOrigin(value) {
+  try {
+    const url = new URL(value);
+    if (url.href !== `${url.origin}/` ||
+        (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error('MCP_APPS_HOST_ORIGIN must be the public CollectiveUI HTTPS origin without credentials, path, query or fragment; HTTP is allowed only on loopback.');
+  }
+}
 
 /** Dedicated, cookieless origin. Never run a general web server or proxy the application on this origin. */
 export function createMcpAppSandbox(hostOrigin) {
-  const host = new URL(hostOrigin).origin;
+  const host = mcpAppsHostOrigin(hostOrigin);
   const script = `(() => {
     const expected = ${JSON.stringify(host)};
     if (window === window.top) return;
@@ -38,8 +50,15 @@ export function createMcpAppSandbox(hostOrigin) {
   });
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
-  if (!process.env.MCP_APPS_HOST_ORIGIN) throw new Error('MCP_APPS_HOST_ORIGIN is required.');
-  const server = createMcpAppSandbox(process.env.MCP_APPS_HOST_ORIGIN);
-  server.listen(Number(process.env.MCP_APPS_SANDBOX_PORT ?? 3102), process.env.MCP_APPS_SANDBOX_HOST ?? '127.0.0.1', () => console.log('MCP Apps sandbox listening'));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const server = createMcpAppSandbox(process.env.MCP_APPS_HOST_ORIGIN);
+    const port = Number(process.env.MCP_APPS_SANDBOX_PORT ?? 3102);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('MCP_APPS_SANDBOX_PORT must be an integer between 1 and 65535.');
+    server.on('error', () => { console.error('MCP Apps sandbox could not listen. Check its bind address and port.'); process.exit(1); });
+    server.listen(port, process.env.MCP_APPS_SANDBOX_HOST ?? '127.0.0.1', () => console.log('MCP Apps sandbox listening'));
+    for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => server.close(() => process.exit(0)));
+  } catch (error) {
+    console.error(error.message); process.exit(1);
+  }
 }

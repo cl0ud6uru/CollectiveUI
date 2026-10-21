@@ -4,6 +4,7 @@
 #   worker – background worker (every chat and routine reply, memory extraction) + migrations, runs from source with tsx
 #   test   – writable, non-root unit-test harness with Python/native fixtures; never a production image
 #   sandboxd – the workspace daemon (docker-compose.sandbox.yml): plain Node, no npm dependencies, only src/sandboxd
+#   mcp-app-sandbox – opt-in cookieless widget origin: plain Node, no app code or npm dependencies
 
 FROM node:22-slim AS base
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -52,6 +53,8 @@ COPY tsconfig.json ./
 COPY scripts/local-account.ts ./scripts/local-account.ts
 # Existing owner-only SIWC helpers; credential profiles are excluded by .dockerignore.
 COPY scripts/chatgpt-sign-in.ts scripts/chatgpt-import.ts ./scripts/
+# The release Compose profile reuses the verified worker image with only this command and a minimal environment.
+COPY scripts/mcp-app-sandbox.mjs ./scripts/mcp-app-sandbox.mjs
 RUN chmod -R a+rX /app && groupadd -r app && useradd -r -g app app && mkdir -p /data/uploads && chown -R app:app /data
 USER app
 ENV STORAGE_DIR=/data/uploads
@@ -85,3 +88,14 @@ USER node
 EXPOSE 4200
 HEALTHCHECK --interval=30s --timeout=5s CMD ["node", "-e", "require('node:net').connect(4200, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"]
 CMD ["node", "src/sandboxd/index.ts"]
+
+# ---------------------------------------------------------------------------
+# This service must never receive .env, credentials, uploads, the Docker socket or application routes.
+FROM node:22-slim AS mcp-app-sandbox
+ENV NODE_ENV=production MCP_APPS_SANDBOX_HOST=0.0.0.0 MCP_APPS_SANDBOX_PORT=3102
+WORKDIR /app
+COPY --chown=root:root scripts/mcp-app-sandbox.mjs ./scripts/mcp-app-sandbox.mjs
+USER node
+EXPOSE 3102
+HEALTHCHECK --interval=30s --timeout=5s CMD ["node", "-e", "fetch('http://127.0.0.1:3102/sandbox').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+CMD ["node", "scripts/mcp-app-sandbox.mjs"]
