@@ -6,7 +6,7 @@
  *
  * Only workspace_bash runs a shell. The read-only tools use sandboxd's argv-only helpers.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tool } from "ai";
 import { z } from "zod";
 import { nativeErrorText } from "@/lib/llm/native-errors";
@@ -20,7 +20,7 @@ import type { ToolEntry } from "../types";
 const KEY = "workspace";
 const MASK = "[redacted]";
 
-/** A command's id in the sandbox, derived from the tool call so a Stop button can find it again. */
+/** Compatibility ID for older command parts that did not carry exact execution metadata. */
 export const execIdForToolCall = (toolCallId: string) => createHash("sha256").update(toolCallId).digest("hex").slice(0, 16);
 
 export type Failure = { ok: false; reason: string; message: string };
@@ -31,7 +31,7 @@ function failure(err: unknown): Failure {
 }
 
 export type BashOutput =
-  | { status: "running"; stdout: string; stderr: string; bytes: number }
+  | { status: "running"; stdout: string; stderr: string; bytes: number; workspaceInstanceId: string | null; workspaceExecutionId: string }
   | {
       status: "done";
       ok: boolean;
@@ -41,12 +41,14 @@ export type BashOutput =
       stderr: string;
       truncated: boolean;
       durationMs: number;
+      workspaceInstanceId: string | null;
+      workspaceExecutionId: string;
     }
   | ({ status: "error" } & Failure);
 
 const tail = (s: string, n: number) => (s.length > n ? `…${s.slice(s.length - n)}` : s);
 
-export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings, toolCallPrefix = ""): ToolEntry[] {
+export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings): ToolEntry[] {
   const budget = Math.max(4096, s.outputKb * 1024);
   const half = Math.floor(budget / 2);
   const readBudget = Math.min(256 * 1024, Math.max(64 * 1024, budget * 4));
@@ -66,12 +68,13 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings, toolCall
         cwd: z.string().max(1024).optional().describe("Working directory, relative to the workspace"),
         timeout_seconds: z.number().int().min(1).max(maxTimeout).optional().describe(`Stop after this many seconds (default and max ${maxTimeout})`),
       }),
-      async *execute({ command, cwd, timeout_seconds }, { abortSignal, toolCallId }): AsyncGenerator<BashOutput> {
+      async *execute({ command, cwd, timeout_seconds }, { abortSignal }): AsyncGenerator<BashOutput> {
         const blocked = isHardDenied(command);
         if (blocked) {
           yield { status: "error", ok: false, reason: "blocked", message: blocked };
           return;
         }
+        const executionId = randomBytes(8).toString("hex");
         let out = "";
         let err = "";
         let bytes = 0;
@@ -90,7 +93,7 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings, toolCall
             cwd,
             timeoutMs: (timeout_seconds ?? maxTimeout) * 1000,
             signal: abortSignal,
-            execId: execIdForToolCall(`${toolCallPrefix}${toolCallId}`),
+            execId: executionId,
             onFrame: (f) => {
               if (f.t === "out" || f.t === "err") {
                 const chunk = Buffer.from(f.d, "base64");
@@ -105,7 +108,7 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings, toolCall
               const now = Date.now();
               if (now - lastYield >= 500) {
                 lastYield = now;
-                queue({ status: "running", stdout: tail(cleanText(out), 2000), stderr: tail(cleanText(err), 1000), bytes });
+                queue({ status: "running", stdout: tail(cleanText(out), 2000), stderr: tail(cleanText(err), 1000), bytes, workspaceInstanceId: ws.instanceId ?? null, workspaceExecutionId: executionId });
               }
             },
           })
@@ -142,6 +145,8 @@ export function workspaceTools(ws: PortalWorkspace, s: SandboxSettings, toolCall
           stderr: e.text,
           truncated: gap || o.omitted > 0 || e.omitted > 0,
           durationMs: r.exit.ms,
+          workspaceInstanceId: ws.instanceId ?? null,
+          workspaceExecutionId: executionId,
         };
       },
       toModelOutput: ({ output }) => {

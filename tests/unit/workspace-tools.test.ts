@@ -200,15 +200,16 @@ describe("workspace_list and workspace_grep", () => {
 });
 
 describe("workspace_bash", () => {
-  it("namespaces repeated provider call IDs exactly as the group stream and Stop button do", async () => {
+  it("emits the exact instance and unique execution ID even when provider call IDs repeat", async () => {
     const { ws, script, execs } = fakeWorkspace();
+    Object.assign(ws, { instanceId: "selected-template" });
+    script.frames = [{ t: "start", id: "x" } as Frame];
     script.exit = { t: "exit", code: 0, reason: "exited", ms: 1, dropped: 0 };
-    for (const prefix of ["speaker-a:", "speaker-b:"]) {
-      const tool = workspaceTools(ws, SETTINGS, prefix).find(entry => entry.name === "workspace_bash")!.tool;
-      const result = await tool.execute!({ command: "printf fixture" } as never, opts("same-provider-id"));
-      for await (const _ of result as AsyncIterable<unknown>) { void _; }
+    for (let n = 0; n < 2; n++) {
+      const results = await execute(ws, "workspace_bash", { command: "printf fixture" }, opts("same-provider-id")) as Record<string, unknown>[];
+      expect(execs[n].execId).toMatch(/^[0-9a-f]{16}$/);
+      expect(results.every(result => result.workspaceInstanceId === "selected-template" && result.workspaceExecutionId === execs[n].execId)).toBe(true);
     }
-    expect(execs.map(exec => exec.execId)).toEqual([execIdForToolCall("speaker-a:same-provider-id"), execIdForToolCall("speaker-b:same-provider-id")]);
     expect(execs[0].execId).not.toBe(execs[1].execId);
   });
 
@@ -221,7 +222,7 @@ describe("workspace_bash", () => {
     ];
     script.exit = { t: "exit", code: 0, reason: "exited", ms: 1234, dropped: 0 };
     const all = (await execute(ws, "workspace_bash", { command: "id", cwd: "src", timeout_seconds: 5 }, opts("call_9"))) as Record<string, unknown>[];
-    expect(execs[0]).toMatchObject({ command: "id", cwd: "src", timeoutMs: 5000, execId: execIdForToolCall("call_9") });
+    expect(execs[0]).toMatchObject({ command: "id", cwd: "src", timeoutMs: 5000, execId: expect.stringMatching(/^[0-9a-f]{16}$/) });
     // At most one preview for a burst of frames, and the final result is always last.
     expect(all.filter((u) => u.status === "running").length).toBeLessThanOrEqual(1);
     expect(all.at(-1)).toEqual({
@@ -233,6 +234,8 @@ describe("workspace_bash", () => {
       stderr: "warning: token [redacted]\n",
       truncated: false,
       durationMs: 1234,
+      workspaceInstanceId: null,
+      workspaceExecutionId: execs[0].execId,
     });
   });
 
