@@ -16,7 +16,7 @@ test("real pg-boss admission failure recovers the same routine exactly once", as
   try {
     const [bot] = await db.insert(schema.bots).values({ ownerId: user.id, appId: app.id, name: stamp }).returning();
     const now = new Date();
-    const [routine] = await db.insert(schema.routines).values({ ownerId: user.id, botId: bot.id, name: stamp, prompt: "synthetic", triggerType: "cron", cron: "* * * * *", nextRunAt: new Date(+now - 1000) }).returning();
+    const [routine] = await db.insert(schema.routines).values({ ownerId: user.id, botId: bot.id, name: stamp, prompt: "synthetic", triggerType: "cron", cron: "*/5 * * * *", nextRunAt: new Date(+now - 1000) }).returning();
     await boss.deleteQueue(QUEUES.routineRun);
     expect(await scheduleDueRoutines(now)).toBe(0);
     const [pending] = await db.select().from(schema.routineRuns).where(eq(schema.routineRuns.routineId, routine.id));
