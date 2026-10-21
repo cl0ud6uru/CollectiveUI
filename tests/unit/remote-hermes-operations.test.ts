@@ -7,6 +7,7 @@ vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({ socket: { call: 
 vi.mock('@/lib/remote-hermes/sessions', async () => { const { z } = await import('zod'); return { profileName: z.string().regex(/^[a-zA-Z0-9_.-]+$/), ownedNativeSession: f.owned }; });
 import { inspectNative, pluginProjection, projectProjection, scheduleProjection, systemProjection, workspaceFilesProjection } from '@/lib/remote-hermes/operations';
 import { HttpError } from '@/lib/authz';
+import { newId } from '@/lib/ids';
 
 describe('native workspace inspection', () => {
   beforeEach(() => {
@@ -34,9 +35,10 @@ describe('native workspace inspection', () => {
     expect(JSON.stringify(values)).not.toContain(secret); expect(systemProjection({ cpu_count: -1, cpu_percent: Infinity }).cpuCount).toBeUndefined();
   });
   it('uses only the selected owned native session and never dashboard filesystem endpoints', async () => {
+    const sessionId = newId();
     f.call.mockResolvedValueOnce({ protocol: 'collective.workspace-files.v1', available: true, workspace_id: 'a'.repeat(32), project_name: 'Synthetic', action: 'list', path: '.', entries: [{ name: 'src', path: 'src', kind: 'directory' }, { name: '.env', path: '.env', kind: 'file' }, { name: 'escape', path: '../escape', kind: 'file' }] });
-    expect(await inspectNative('owner', 'connection', { panel: 'files', profile: 'default', sessionId: '00000000-0000-4000-8000-000000000001' })).toEqual({ available: true, workspaceId: 'a'.repeat(32), projectName: 'Synthetic', action: 'list', path: '.', entries: [{ name: 'src', path: 'src', directory: true }], truncated: false });
-    expect(f.owned).toHaveBeenCalledWith('owner', 'connection', '00000000-0000-4000-8000-000000000001');
+    expect(await inspectNative('owner', 'connection', { panel: 'files', profile: 'default', sessionId })).toEqual({ available: true, workspaceId: 'a'.repeat(32), projectName: 'Synthetic', action: 'list', path: '.', entries: [{ name: 'src', path: 'src', directory: true }], truncated: false });
+    expect(f.owned).toHaveBeenCalledWith('owner', 'connection', sessionId);
     expect(f.call).toHaveBeenCalledExactlyOnceWith('collective.workspace.files', { profile: 'default', session_id: 'runtime-session', action: 'list' });
     expect(f.fetch).not.toHaveBeenCalled();
   });
