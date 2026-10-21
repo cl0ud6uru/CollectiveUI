@@ -17,6 +17,8 @@ const requests = [];
 let scheduleEnabled = true;
 let scheduleState = 'scheduled';
 let fileContent = 'Synthetic file before edit\n';
+let pluginSelected = null;
+let preparedPluginSelection;
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/bundle.js') { res.setHeader('Content-Type', 'application/javascript'); res.end(bundle.outputFiles[0].contents); return; }
@@ -29,7 +31,15 @@ const server = createServer((req, res) => {
     req.on('end', () => {
       const envelope = JSON.parse(request.body); request.input = envelope.input;
       request.sessionId = envelope.sessionId;
-      if (envelope.input.operation === 'prepare') { res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'schedule' : envelope.input.action, enabled: envelope.input.action === 'resume', name: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'Fixture schedule' : envelope.input.name, profile: 'default', title: 'Fixture chat', bytes: Buffer.byteLength(envelope.input.content || '') })); return; }
+      if (envelope.input.operation === 'prepare') {
+        preparedPluginSelection = envelope.input.action === 'plugin-selection' ? envelope.input.enabled : undefined;
+        res.end(JSON.stringify({ confirmation: 'synthetic-confirmation', action: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'schedule' : envelope.input.action,
+          enabled: envelope.input.action === 'plugin-selection' ? envelope.input.enabled : envelope.input.action === 'resume', name: envelope.input.action === 'pause' || envelope.input.action === 'resume' ? 'Fixture schedule' : envelope.input.action === 'plugin-selection' ? 'teams_pipeline' : envelope.input.name, profile: 'default', title: 'Fixture chat', bytes: Buffer.byteLength(envelope.input.content || '') })); return;
+      }
+      if (preparedPluginSelection !== undefined) {
+        pluginSelected = preparedPluginSelection; preparedPluginSelection = undefined;
+        res.end(JSON.stringify({ accepted: true, pluginSelection: { name: 'teams_pipeline', selected: pluginSelected, operatorSelected: null, startupSelected: null, loadedState: 'unreported' }, output: 'Preference stored for local operator confirmation.' })); return;
+      }
       if (envelope.input.operation === 'confirm-file-edit') { fileContent = envelope.input.content; res.end(JSON.stringify({ accepted: true, path: 'README.md', output: 'File saved and verified.' })); return; }
       if (requests.at(-2)?.input?.action === 'pause') { scheduleEnabled = false; scheduleState = 'paused'; }
       if (requests.at(-2)?.input?.action === 'resume') { scheduleEnabled = true; scheduleState = 'scheduled'; }
@@ -43,6 +53,7 @@ const server = createServer((req, res) => {
     projects: { projects: [{ id: 'p1', name: 'Fixture project', archived: false, folders: [{ path: '/workspace' }] }] },
     schedules: { schedules: [{ id: 's1', name: 'Fixture schedule', enabled: scheduleEnabled, state: scheduleState, schedule: '0 7 * * *' }, { id: 'done', name: 'Completed schedule', enabled: false, state: 'completed', schedule: 'once' }] },
     plugins: { plugins: [{ name: 'Fixture plugin', version: '1.0', status: 'enabled' }] },
+    'plugin-selection': { pluginSelection: { name: 'teams_pipeline', selected: pluginSelected, operatorSelected: null, startupSelected: null, loadedState: 'unreported' } },
     system: { version: 'Fixture version', cpuCount: 4, cpuPercent: 10, memory: { total: 1000, used: 500, percent: 50 } },
     files: url.searchParams.get('action') === 'read' ? { available: true, workspaceId: '0123456789abcdef0123456789abcdef', projectName: 'Synthetic project', action: 'read', path: 'README.md', content: fileContent, sha256: createHash('sha256').update(fileContent).digest('hex'), entries: [] } : { available: true, workspaceId: '0123456789abcdef0123456789abcdef', projectName: 'Synthetic project', action: 'list', path: '.', entries: [{ name: 'README.md', path: 'README.md', directory: false }, { name: 'src', path: 'src', directory: true }] },
   };
@@ -106,6 +117,19 @@ try {
   await expect(page.getByText('Enabled: yes')).toBeVisible();
   await page.getByRole('button', { name: 'Plugins', exact: true }).click();
   await expect(page.getByText('Fixture plugin', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Plugin preferences', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Plugin selection controls' })).toContainText('Runtime loaded state: unreported');
+  await expect(page.getByText('Stored preference for teams_pipeline: follow native configuration.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Review enable preference', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Confirm profile-wide Hermes change' })).toContainText('local operator confirmation');
+  expect(pluginSelected).toBeNull();
+  expect(requests.filter(r => r.method === 'POST').at(-1).input).toEqual({ operation: 'prepare', action: 'plugin-selection', enabled: true });
+  await page.getByRole('button', { name: 'Confirm Hermes change', exact: true }).click();
+  await expect(page.getByText('Stored preference for teams_pipeline: pending enabled.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Process-start selection: follow native configuration. This is not proof of loaded state.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Review enable preference', exact: true })).toBeDisabled();
+  expect(requests.some(r => r.panel === 'plugin-selection' && r.sessionId === 'owned-session')).toBe(true);
+  expect(requests.filter(r => r.method === 'POST').some(r => ['enable-plugin', 'disable-plugin', 'toggle'].includes(r.input.action))).toBe(false);
   await page.getByRole('button', { name: 'System', exact: true }).click();
   await expect(page.getByText('Fixture version', { exact: true })).toBeVisible();
   await page.getByLabel('Hermes workspace profile').click(); await page.getByRole('option', { name: 'work', exact: true }).click();
@@ -118,5 +142,5 @@ try {
   expect(requests.filter(r => r.method === 'GET').length).toBeGreaterThan(0);
   expect(requests.some(r => r.path === 'README.md')).toBe(true);
   expect(errors).toEqual([]);
-  console.log('PASS: editor drafts and confirmations stay bound across same-path/same-digest profile and session switches; explicit two-step file save, project creation, schedule pause/resume, shared-profile warning, panel rendering and refresh; no browser errors.');
+  console.log('PASS: bound drafts/confirmations, two-step file/project/schedule controls, pending plugin preference with frozen startup/unreported loaded state, shared-profile warning, panel rendering and refresh; no browser errors.');
 } finally { await browser?.close(); server.close(); await rm(dir, { recursive: true, force: true }); }

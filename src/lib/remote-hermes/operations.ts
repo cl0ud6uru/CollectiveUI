@@ -7,7 +7,7 @@ import { nativeHub } from './hub';
 import { record } from './socket';
 import { ownedNativeSession, profileName } from './sessions';
 
-export const inspectionQuery = z.object({ panel: z.enum(['projects', 'files', 'schedules', 'plugins', 'system']), profile: profileName, sessionId: z.string().min(1).max(200).optional(), workspaceId: z.string().regex(/^[a-f0-9]{32}$/).optional(), action: z.enum(['list', 'read']).optional(), path: z.string().max(1024).optional() }).strict();
+export const inspectionQuery = z.object({ panel: z.enum(['projects', 'files', 'schedules', 'plugins', 'plugin-selection', 'system']), profile: profileName, sessionId: z.string().min(1).max(200).optional(), workspaceId: z.string().regex(/^[a-f0-9]{32}$/).optional(), action: z.enum(['list', 'read']).optional(), path: z.string().max(1024).optional() }).strict();
 const string = (v: unknown, max = 300) => typeof v === 'string' ? v.slice(0, max) : '';
 const number = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
 const rows = (v: unknown) => Array.isArray(v) ? v.slice(0, 500).map(record) : [];
@@ -31,6 +31,16 @@ export function pluginProjection(value: unknown) {
     status: string(p.status) || (p.enabled === true ? 'enabled' : p.enabled === false ? 'disabled' : 'unknown'),
     source: string(p.source),
   })) };
+}
+export function pluginSelectionProjection(value: unknown) {
+  const parsed = z.object({ protocol: z.literal('collective.plugin-selection.v1'), key: z.literal('teams_pipeline'),
+    name: z.literal('teams_pipeline'), version: z.literal('0.1.0'), identity_revision: z.string().regex(/^[a-f0-9]{64}$/),
+    revision: z.string().regex(/^[a-f0-9]{64}$/), selected: z.boolean().nullable(), operator_selected: z.boolean().nullable(), startup_selected: z.boolean().nullable(),
+    loaded_state: z.literal('unreported'), requires_local_operator_confirmation: z.literal(true) }).safeParse(value);
+  if (!parsed.success) throw new HttpError(501, 'This Hermes version cannot safely store plugin selections.');
+  const p = parsed.data;
+  return { key: p.key, name: p.name, version: p.version, identityRevision: p.identity_revision, revision: p.revision,
+    selected: p.selected, operatorSelected: p.operator_selected, startupSelected: p.startup_selected, loadedState: p.loaded_state, requiresLocalOperatorConfirmation: p.requires_local_operator_confirmation };
 }
 export function systemProjection(value: unknown) {
   const p = record(value);
@@ -93,6 +103,18 @@ export async function inspectNative(ownerId: string, connectionId: string, raw: 
     return scheduleProjection(value);
   }
   if (input.panel === 'system') return systemProjection(await get('/api/system/stats'));
+  if (input.panel === 'plugin-selection') {
+    if (!input.sessionId) throw new HttpError(409, 'Open a saved native Hermes chat before reviewing plugin selection.');
+    const row = await ownedNativeSession(ownerId, connectionId, input.sessionId);
+    if (row.profile !== input.profile) throw new HttpError(403, 'Choose the profile of the selected native chat.');
+    const hub = nativeHub(ownerId, connectionId);
+    const live = hub.sessions.get(input.sessionId);
+    if (!live?.row.runtimeId || live.row.connectionId !== connectionId || live.row.runtimeId !== row.runtimeId || live.row.storedId !== row.storedId || live.row.profile !== input.profile ||
+        live.view.profile !== input.profile || live.view.nativeProfile !== input.profile || !live.socketEpoch || hub.socket.state !== 'connected' || hub.socket.connectionEpoch !== live.socketEpoch)
+      throw new HttpError(409, 'Open the selected native chat before reviewing plugin selection.');
+    return { pluginSelection: pluginSelectionProjection(await hub.socket.callConnected('collective.plugins.selection.v1',
+      { profile: input.profile, session_id: live.row.runtimeId, action: 'inspect' }, live.socketEpoch, 30_000)) };
+  }
   if (!input.sessionId) throw new HttpError(409, 'Open a saved native Hermes chat before browsing workspace files.');
   const row = await ownedNativeSession(ownerId, connectionId, input.sessionId);
   if (row.profile !== input.profile) throw new HttpError(403, 'Choose the profile of the selected native chat.');

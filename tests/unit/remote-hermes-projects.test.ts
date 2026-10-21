@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { NativeConnectionChanged, NativeRpcError } from '@/lib/remote-hermes/socket';
 
-const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], readbackFolders: null as Record<string, unknown>[] | null, schedules: [] as Record<string, unknown>[], activeId: '', fileContent: 'Synthetic file before edit\n', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
+const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), refresh: vi.fn(), selectionReads: 0, selection: {} as Record<string, unknown>, selectionUnsupported: false, list: [] as Record<string, unknown>[], readbackFolders: null as Record<string, unknown>[] | null, schedules: [] as Record<string, unknown>[], activeId: '', fileContent: 'Synthetic file before edit\n', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
   row: {} as Record<string, unknown>, receipt: null as null | { requestId: string; digest: string }, cached: {} as { row: Record<string, unknown>; view: Record<string, unknown>; pending: Map<string, unknown>; socketEpoch: number } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled }) }));
+vi.mock('@/lib/session', () => ({ requirePrincipal: async () => ({ user: { id: 'owner' } }), errorResponse: () => { throw new Error('Unexpected GET error'); } }));
 vi.mock('@/lib/remote-hermes/policy', () => ({ assertRemoteHermesAdmission: (value: { enabled: boolean }) => { if (!value.enabled) throw new Error('Personal remote Hermes is disabled'); } }));
 vi.mock('@/lib/remote-hermes/sessions', async () => ({
   ownedNativeSession: async (owner: string, connection: string, session: string) => { if (owner !== 'owner' || connection !== 'connection' || session !== 'session') throw new Error('not found'); return f.row; },
@@ -12,9 +13,14 @@ vi.mock('@/lib/remote-hermes/sessions', async () => ({
 }));
 vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: async () => ({ client: { profiles: f.profiles } }) }));
 vi.mock('@/lib/remote-hermes/hub', () => ({ nativeHub: () => ({
-  lockBoundary: async () => { ++f.locks; if (f.concurrentReceipt) { f.receipt = { requestId: f.concurrentReceipt.requestId, digest: f.concurrentReceipt.digest }; f.list.push(f.concurrentReceipt.project); f.concurrentReceipt = null; } if (f.locks === f.runAt) f.cached.view.running = true; }, refresh: async () => f.cached.view, sessions: new Map([['session', f.cached]]),
+  lockBoundary: async () => { ++f.locks; if (f.concurrentReceipt) { f.receipt = { requestId: f.concurrentReceipt.requestId, digest: f.concurrentReceipt.digest }; f.list.push(f.concurrentReceipt.project); f.concurrentReceipt = null; } if (f.locks === f.runAt) f.cached.view.running = true; }, refresh: f.refresh, sessions: new Map([['session', f.cached]]),
   socket: { state: 'connected', get connectionEpoch() { return f.cached.socketEpoch; },
     callConnected: async (method: string, params: Record<string, unknown>) => {
+      if (method === 'collective.plugins.selection.v1') {
+        ++f.selectionReads;
+        if (f.selectionUnsupported) throw new NativeRpcError(-32601);
+        return f.selection;
+      }
       if (method === 'projects.list') return { active_id: f.activeId || null, projects: f.list };
       if (method === 'projects.get') {
         const project = f.list.find(value => value.id === params.id || value.slug === params.id);
@@ -64,18 +70,31 @@ vi.mock('@/db', async () => {
 });
 import { nativeProjectOperation, projectOperationInput } from '@/lib/remote-hermes/projects';
 import { nativeWorkspaceFileEdit, workspaceFileEditInput } from '@/lib/remote-hermes/workspace-edit';
-import { decrypt, hmacSha256Hex } from '@/lib/crypto';
+import { decrypt, encrypt, hmacSha256Hex } from '@/lib/crypto';
+import { POST } from '@/app/api/hermes/[connectionId]/operations/route';
 
 const prepareCreate = async () => nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'Example' });
 const confirm = (confirmation: string) => nativeProjectOperation('owner', 'connection', 'session', { operation: 'confirm', confirmation });
 
 describe('confirmed native Hermes project operations', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
     vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.readbackFolders = null; f.schedules = []; f.activeId = ''; f.fileContent = 'Synthetic file before edit\n'; f.receipt = null;
     f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: 'idle', revision: 1, queueRequestId: null };
     f.cached = { row: f.row, view: { title: 'Synthetic chat', profile: 'default', nativeProfile: 'default', running: false, uncertain: false, queuePending: false, queued: '', prompts: [] }, pending: new Map(), socketEpoch: 1 };
     f.profiles.mockResolvedValue([{ name: 'default' }]);
+    f.selectionUnsupported = false;
+    f.selectionReads = 0; f.refresh.mockImplementation(async () => f.cached.view);
+    f.selection = { protocol: 'collective.plugin-selection.v1', key: 'teams_pipeline', name: 'teams_pipeline', version: '0.1.0',
+      identity_revision: 'a'.repeat(64), revision: 'b'.repeat(64), selected: null, operator_selected: null, startup_selected: null,
+      loaded_state: 'unreported', requires_local_operator_confirmation: true };
     f.calls.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'collective.plugins.selection.v1') {
+        expect(f.receipt).not.toBeNull(); expect(f.row.status).toBe('admitting');
+        expect(params).toMatchObject({ action: 'select', expected_identity: f.selection.identity_revision, expected_revision: f.selection.revision });
+        f.selection = { ...f.selection, selected: params.enabled, revision: 'c'.repeat(64) };
+        return f.selection;
+      }
       if (method === 'collective.workspace.files.write.v1') {
         const { createHash } = await import('node:crypto');
         f.fileContent = String(params.content);
@@ -94,6 +113,84 @@ describe('confirmed native Hermes project operations', () => {
       schedule.state = params.action === 'resume' ? 'scheduled' : 'paused';
       return { success: true, job: { job_id: schedule.id, enabled: schedule.enabled, state: schedule.state } };
     });
+  });
+
+  it('confirms source/revision-bound selection once with write-ahead receipt and exact readback', async () => {
+    const prepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'plugin-selection', enabled: true });
+    expect(prepared).toMatchObject({ action: 'plugin-selection', name: 'teams_pipeline', enabled: true });
+    expect(f.refresh).not.toHaveBeenCalled();
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull();
+    const result = await confirm(prepared.confirmation!);
+    expect(result).toMatchObject({ accepted: true, pluginSelection: { selected: true, startupSelected: null, loadedState: 'unreported' } });
+    expect(result.output).toContain('Explicit local operator confirmation');
+    expect(f.calls).toHaveBeenCalledExactlyOnceWith('collective.plugins.selection.v1', expect.objectContaining({
+      profile: 'default', session_id: 'runtime', action: 'select', key: 'teams_pipeline', enabled: true,
+      expected_identity: 'a'.repeat(64), expected_revision: 'b'.repeat(64),
+    }));
+    await expect(confirm(prepared.confirmation!)).resolves.toMatchObject({ accepted: false, duplicate: true });
+    expect(f.calls).toHaveBeenCalledOnce(); expect(f.row.status).toBe('idle');
+  });
+
+  it.each(['profile', 'storedId', 'runtimeId', 'status', 'viewProfile', 'nativeProfile'])('refuses stale cached %s before native selection inspection', async field => {
+    if (field === 'viewProfile') f.cached.view.profile = 'other';
+    else if (field === 'nativeProfile') f.cached.view.nativeProfile = 'other';
+    else { f.row = { ...f.row, [field]: field === 'status' ? 'uncertain' : 'other' }; }
+    if (field === 'profile') f.profiles.mockResolvedValue([{ name: 'other' }]);
+    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'plugin-selection', enabled: true })).rejects.toThrow();
+    expect(f.selectionReads).toBe(0); expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull(); expect(f.refresh).not.toHaveBeenCalled();
+  });
+
+  it.each(['identity_revision', 'revision'])('rejects changed plugin %s before receipt or dispatch', async field => {
+    const prepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'plugin-selection', enabled: true });
+    f.selection[field] = 'd'.repeat(64);
+    await expect(confirm(prepared.confirmation!)).rejects.toThrow('changed');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull(); expect(f.locks).toBe(0);
+  });
+
+  it('keeps unknown selection outcomes uncertain and never replays them', async () => {
+    const prepared = await nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'plugin-selection', enabled: false });
+    f.calls.mockRejectedValueOnce(new Error('lost selection acknowledgement'));
+    await expect(confirm(prepared.confirmation!)).rejects.toThrow('lost selection acknowledgement');
+    expect(f.row.status).toBe('uncertain'); expect(f.receipt).not.toBeNull();
+    await expect(confirm(prepared.confirmation!)).resolves.toMatchObject({ accepted: false, duplicate: true });
+    expect(f.calls).toHaveBeenCalledOnce();
+  });
+
+  it('refuses unsupported or misleading native selection contracts before admission', async () => {
+    f.selectionUnsupported = true;
+    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'plugin-selection', enabled: true })).rejects.toBeInstanceOf(NativeRpcError);
+    f.selectionUnsupported = false; f.selection.loaded_state = 'enabled';
+    await expect(nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'plugin-selection', enabled: true })).rejects.toThrow('cannot safely store');
+    expect(f.calls).not.toHaveBeenCalled(); expect(f.receipt).toBeNull(); expect(f.locks).toBe(0);
+  });
+
+  it.each(['enable-plugin', 'disable-plugin'])('rejects %s at the actual operations POST before native access', async action => {
+    vi.stubEnv('AUTH_URL', 'http://portal.fixture.invalid');
+    const response = await POST(new Request('http://portal.fixture.invalid/api/hermes/connection/operations', {
+      method: 'POST', headers: { Origin: 'http://portal.fixture.invalid', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'session', input: { operation: 'prepare', action, pluginKey: 'teams_pipeline' } }),
+    }), { params: Promise.resolve({ connectionId: 'connection' }) });
+    expect(response.status).toBe(400);
+    expect(f.profiles).not.toHaveBeenCalled(); expect(f.calls).not.toHaveBeenCalled();
+    expect(f.receipt).toBeNull(); expect(f.locks).toBe(0); expect(f.row.status).toBe('idle');
+  });
+
+  it.each([
+    ['remote-hermes-workspace:v1', true], ['remote-hermes-workspace:v1', false],
+    ['remote-hermes-project:v1', true], ['remote-hermes-project:v1', false],
+  ] as const)('rejects encrypted %s plugin claim (enabled=%s) without dispatch or receipt', async (scope, enabled) => {
+    vi.stubEnv('AUTH_URL', 'http://portal.fixture.invalid');
+    const confirmation = encrypt(JSON.stringify({ requestId: 'f29cc742-4d14-4b1a-a13d-4907ef912df7', runtimeId: 'runtime',
+      storedId: 'stored', profile: 'default', socketEpoch: 1, action: 'plugin', pluginKey: 'teams_pipeline',
+      pluginName: 'teams_pipeline', enabled, expiresAt: Date.now() + 30_000 }), JSON.stringify([scope, 'owner', 'connection', 'session']));
+    const response = await POST(new Request('http://portal.fixture.invalid/api/hermes/connection/operations', {
+      method: 'POST', headers: { Origin: 'http://portal.fixture.invalid', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'session', input: { operation: 'confirm', confirmation } }),
+    }), { params: Promise.resolve({ connectionId: 'connection' }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('confirmation is invalid') });
+    expect(f.profiles).not.toHaveBeenCalled(); expect(f.calls).not.toHaveBeenCalled();
+    expect(f.receipt).toBeNull(); expect(f.locks).toBe(0); expect(f.row.status).toBe('idle');
   });
 
   it('accepts only bounded create/select requests; browser-supplied paths are rejected', () => {
