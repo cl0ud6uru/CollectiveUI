@@ -15,6 +15,7 @@ import { audit } from '@/lib/audit';
 import { authorizeMcpInvocation } from './authorization';
 import { appResource, appToolVisible, type AppActionReply, type AppView } from './apps-contract';
 import { appComponentResult, appHtmlResource, appModelResult } from './apps-result';
+import { mcpAppSandboxConfig } from './apps-config';
 import type { McpCallResult } from './hygiene';
 import type { McpToolDef } from './kinds';
 import { offeredTools } from './servers';
@@ -27,14 +28,12 @@ const unavailable = () => new HttpError(403, 'This widget is expired or its perm
 
 /** No cookies, credentials or app server code may be hosted on this origin. Fail closed when unconfigured. */
 export function mcpAppSandboxUrl(): string | null {
-  try {
-    const host = new URL(process.env.AUTH_URL!);
-    const sandbox = new URL(process.env.MCP_APPS_SANDBOX_URL!);
-    if (host.origin === sandbox.origin || sandbox.pathname !== '/sandbox' || sandbox.username || sandbox.password || sandbox.search || sandbox.hash ||
-        (sandbox.protocol !== 'https:' && !(sandbox.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(sandbox.hostname)))) return null;
-    return sandbox.href;
-  } catch { return null; }
+  return mcpAppSandboxConfig().url;
 }
+
+// Put the diagnostic first so even a full tool result cannot crowd it out of the existing byte budget.
+const widgetFallback = (model: McpCallResult, text: string, budget: number) => appModelResult({ ...model,
+  content: [{ type: 'text', text: `${text} The tool result is available as text.` }, ...(model.content ?? [])] }, budget);
 
 /** Called only after the native tool executed. The HTML is pinned to this invocation; reload never re-executes it. */
 export async function captureMcpApp(opts: { ctx: AgentCtx; binding: string; server: McpServer; def: McpToolDef; client: MCPClient;
@@ -42,8 +41,9 @@ export async function captureMcpApp(opts: { ctx: AgentCtx; binding: string; serv
   const { ctx, server, def } = opts;
   const model = appModelResult(opts.result, server.resultBudgetKb * 1024 - 80);
   const resource = appResource(def);
-  const sandboxUrl = mcpAppSandboxUrl();
-  if (!resource || !ctx.bot || !sandboxUrl || opts.result.isError) return model;
+  if (!resource || !ctx.bot || opts.result.isError) return model;
+  const { url: sandboxUrl, issue } = mcpAppSandboxConfig();
+  if (sandboxUrl === null) return widgetFallback(model, issue, server.resultBudgetKb * 1024);
   try {
     await opts.authorize();
     const raw = await opts.client.readResource({ uri: resource.uri, options: { timeout: server.timeoutMs } });
@@ -61,7 +61,7 @@ export async function captureMcpApp(opts: { ctx: AgentCtx; binding: string; serv
     return { ...model, _mcpApp: id };
   } catch {
     // A bad/missing resource cannot erase a successful tool result or expose its private metadata.
-    return appModelResult({ ...model, content: [...(model.content ?? []), { type: 'text', text: 'The interactive widget could not be loaded. The tool result is available as text.' }] }, server.resultBudgetKb * 1024);
+    return widgetFallback(model, 'The interactive widget could not be loaded. Ask an administrator to verify migration 0066_mcp_apps, review the server\'s accepted widget descriptor, and check that resources/read returns one supported bundled HTML document. See docs/architecture/mcp-apps.md.', server.resultBudgetKb * 1024);
   }
 }
 
@@ -88,8 +88,8 @@ async function context(p: Principal, id: string) {
 }
 
 export async function loadMcpApp(p: Principal, id: string): Promise<AppView> {
-  const sandboxUrl = mcpAppSandboxUrl();
-  if (!sandboxUrl) throw new HttpError(409, 'The separate widget sandbox is not configured.');
+  const { url: sandboxUrl, issue } = mcpAppSandboxConfig();
+  if (sandboxUrl === null) throw new HttpError(409, issue);
   const { instance, payload, def } = await context(p, id);
   if (sha256Hex(payload.html) !== payload.resourceHash) throw unavailable();
   await audit(p.user.id, 'mcp.app.loaded', instance.serverId, { instance: id, resourceHash: payload.resourceHash });

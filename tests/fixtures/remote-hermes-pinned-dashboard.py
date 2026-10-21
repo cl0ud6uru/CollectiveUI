@@ -100,6 +100,7 @@ if WORKSPACE_ADAPTER:
         (workspace / "nested").mkdir()
         WORKSPACES[profile] = str(workspace)
 METRICS = {"agent_turns": 0, "external_attempts": 0, "refreshes": 0, "protected_answers": 0, "auxiliary_calls": 0, "auxiliary_tracked": 0, "dropped_acks": 0, "attachment_hashes": []}
+CAPTURED_POLLER = None
 # Deny external networking before importing any source with import-time hooks.
 _connect = socket.socket.connect
 _connect_ex = socket.socket.connect_ex
@@ -351,6 +352,7 @@ async def metrics(request: Request):
 
 @app.post("/api/__fixture/control")
 async def control(request: Request):
+    global CAPTURED_POLLER
     global DROP_ACK
     web_server._require_token(request)
     body = await request.json()
@@ -381,17 +383,82 @@ async def control(request: Request):
         if worker is not None:
             worker.join(timeout=1)
         return {"target_called": bool(entered), "auxiliary_called": bool(auxiliary), "auxiliary_tracked": bool(tracked and tracked[0])}
+    elif RECOVERY_ADAPTERS and body == {"profile_real_work": True}:
+        owner = server._collective_hub_owner
+        home = Path(os.environ["HERMES_HOME"])
+        with owner._locked(home):
+            return {"default": owner._profile_has_native_work(home)}
     elif RECOVERY_ADAPTERS and body == {"profile_workers": True}:
         owner = server._collective_hub_owner
         home = Path(os.environ["HERMES_HOME"])
         with owner._guard:
             return {name: owner._active_workers.get(str(path.resolve()), 0)
                     for name, path in (("default", home), ("fixture-other", home / "profiles" / "fixture-other"))}
-    elif RECOVERY_ADAPTERS and body == {"profile_pollers": True}:
-        result = {name: {"count": 0, "stopped": 0, "alive": 0} for name in ("default", "fixture-other")}
+    elif RECOVERY_ADAPTERS and set(body) == {"probe_pending_auxiliary_claim"} and isinstance(body["probe_pending_auxiliary_claim"], str):
+        from tui_gateway.collective_hub_owner import _active_binding
+        from tui_gateway.transport import bind_transport, reset_transport
         with server._sessions_lock:
-            sessions = list(server._sessions.values())
-        for session in sessions:
+            session = server._sessions[body["probe_pending_auxiliary_claim"]]
+            binding = session["_collective_poller_binding"]
+        owner = server._collective_hub_owner
+        entered = threading.Event()
+        with owner._locked(Path(binding.home)):
+            token = _active_binding.set(binding)
+            transport_token = bind_transport(binding.transport)
+            try:
+                worker = server._collective_start_auxiliary_work(entered.set, name="synthetic-pending-auxiliary", session=session)
+                assert worker is not None and worker.is_alive() and not entered.is_set()
+                claim = owner.claim("synthetic-pending-claim", {
+                    "profile": binding.profile, "portal_connection_id": binding.connection_id,
+                    "portal_instance_id": "synthetic-pending-successor", "portal_generation": binding.portal_generation + 1,
+                    "portal_socket_epoch": binding.socket_epoch + 1, "expected_native_generation": binding.native_generation,
+                })
+                blocked = claim.get("error", {}).get("code") == 4091
+                unchanged = owner._current_owner(binding.home).same_claim(binding)
+            finally:
+                reset_transport(transport_token)
+                _active_binding.reset(token)
+        worker.join(timeout=2)
+        return {"claim_rejected": blocked, "generation_unchanged": unchanged, "worker_executed": entered.is_set()}
+    elif RECOVERY_ADAPTERS and set(body) == {"capture_poller_claim"} and isinstance(body["capture_poller_claim"], str):
+        sid = body["capture_poller_claim"]
+        with server._sessions_lock:
+            session = server._sessions.get(sid)
+            binding = session.get("_collective_poller_binding") if session is not None else None
+        assert binding is not None
+        CAPTURED_POLLER = (sid, session, binding)
+        return {"captured": True}
+    elif RECOVERY_ADAPTERS and body == {"probe_stale_poller_drain": True}:
+        import queue
+        from tools.process_registry import process_registry
+        from tui_gateway.collective_hub_owner import _active_binding
+        assert CAPTURED_POLLER is not None
+        sid, session, binding = CAPTURED_POLLER
+        owner = server._collective_hub_owner
+        class ProbeQueue(queue.Queue):
+            gets = 0
+            def get(self, *args, **kwargs):
+                self.gets += 1
+                return super().get(*args, **kwargs)
+        probe = ProbeQueue()
+        probe.put({"type": "synthetic-stale-drain"})
+        stop = threading.Event()
+        stop.set()  # Enter the real native final-drain path directly.
+        with owner._locked(Path(binding.home)):
+            original = process_registry.completion_queue
+            process_registry.completion_queue = probe
+            token = _active_binding.set(binding)
+            try:
+                server._notification_poller_loop(stop, sid, session)
+            finally:
+                _active_binding.reset(token)
+                process_registry.completion_queue = original
+        return {"consumed": probe.gets, "retained": probe.qsize()}
+    elif RECOVERY_ADAPTERS and body == {"profile_pollers": True}:
+        result = {name: {"count": 0, "stopped": 0, "alive": 0, "all_alive": 0} for name in ("default", "fixture-other")}
+        with server._sessions_lock:
+            sessions = list(server._sessions.items())
+        for sid, session in sessions:
             home = Path(server._session_home(session)).resolve()
             name = "default" if home == Path(os.environ["HERMES_HOME"]) else "fixture-other" if home == Path(os.environ["HERMES_HOME"], "profiles", "fixture-other") else None
             stop = session.get("_notif_stop")
@@ -399,6 +466,8 @@ async def control(request: Request):
                 result[name]["count"] += 1
                 result[name]["stopped"] += int(stop.is_set())
                 result[name]["alive"] += int(any(event is stop and thread.is_alive() for event, thread in server._notification_pollers))
+                result[name]["all_alive"] += sum(thread.is_alive() and thread.name == f"tui-notif-poller-{sid}"
+                                                  for _, thread in server._notification_pollers)
         return result
     elif RECOVERY_ADAPTERS and set(body) == {"probe_unowned_stdio", "request_id"} and body["probe_unowned_stdio"] is True and isinstance(body["request_id"], str) and 0 < len(body["request_id"]) <= 200:
         create = server.handle_request({"jsonrpc": "2.0", "id": "fixture-stdio-create", "method": "session.create", "params": {"profile": "default"}})

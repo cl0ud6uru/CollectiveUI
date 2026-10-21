@@ -26,7 +26,7 @@ import { formatAdminTimestamp } from "@/lib/admin/timestamp";
 import { GroupPicker } from "./group-picker";
 import { Badge, Table, Td } from "./ui";
 
-type ToolView = { name: string; description: string; readOnly: boolean; destructive: boolean };
+type ToolView = { name: string; description: string; readOnly: boolean; destructive: boolean; widget?: boolean };
 
 export type McpServerView = {
   id: string;
@@ -85,6 +85,7 @@ function ToolBadges({ t }: { t: ToolView }) {
     <>
       {t.readOnly && <Badge tone="green">read-only</Badge>}
       {t.destructive && <Badge tone="red">destructive</Badge>}
+      {t.widget && <Badge>widget</Badge>}
     </>
   );
 }
@@ -372,11 +373,15 @@ function ServerDialog({
               {dirty && <p role="status" className="text-sm text-muted">Save your changes before testing or changing this server&apos;s status.</p>}
               {testFeedback && !dirty && <p role={testFeedback.error ? "alert" : "status"} className={`text-sm ${testFeedback.error ? "text-danger" : "text-muted"}`}>{testFeedback.message}</p>}
               {current.lastError && !testFeedback && <p className="text-xs text-danger">Last check failed: {current.lastError}</p>}
+              <p className="text-xs text-muted">
+                {current.tools?.filter(t => t.widget).length ?? 0} accepted widget descriptor(s).
+                {" "}If a widget is missing after an upgrade, Test saved server to refresh its metadata, then review and accept any changes. Older snapshots may have discarded widget metadata; a tool&apos;s text claiming a widget is ready does not establish support. Start a new tool call after review.
+              </p>
 
               {current.drift && (
                 <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
                   <p className="font-medium">The server&apos;s tool list changed ({formatAdminTimestamp(current.drift.detectedAt)})</p>
-                  <p className="text-xs text-muted">Changed and removed tools are hidden from bots, and new tools aren&apos;t offered, until you accept.</p>
+                  <p className="text-xs text-muted">Changed and removed tools are hidden from bots, and new tools aren&apos;t offered, until you accept. Widget metadata also counts as a change; review service bot grants and republish affected service bots afterward.</p>
                   {current.drift.added.map((t) => (
                     <div key={`a-${t.name}`} className="text-xs">
                       <Badge tone="blue">new</Badge> <span className="font-mono">{t.name}</span> <ToolBadges t={t} />
@@ -555,7 +560,7 @@ function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-export function McpAdmin({ servers, groups }: { servers: McpServerView[]; groups: { id: string; name: string }[] }) {
+export function McpAdmin({ servers, groups, sandboxIssue }: { servers: McpServerView[]; groups: { id: string; name: string }[]; sandboxIssue?: string | null }) {
   const router = useRouter();
   const [edit, setEdit] = useState<Partial<McpServerView> | null>(null);
   const [importing, setImporting] = useState(false);
@@ -591,6 +596,7 @@ export function McpAdmin({ servers, groups }: { servers: McpServerView[]; groups
   };
   return (
     <div>
+      {sandboxIssue && <p role="status" className="mb-4 text-sm text-muted">{sandboxIssue} This checks the web configuration only; verify the worker separately.</p>}
       <div className="mb-4 flex justify-end gap-2">
         <Button variant="outline" disabled={!!pendingAction} onClick={() => setImporting(true)}>
           <Download className="h-4 w-4" /> Import
