@@ -7,7 +7,7 @@ import { nativeHub } from './hub';
 import { record } from './socket';
 import { ownedNativeSession, profileName } from './sessions';
 
-export const inspectionQuery = z.object({ panel: z.enum(['projects', 'files', 'schedules', 'plugins', 'system']), profile: profileName, sessionId: z.string().uuid().optional(), workspaceId: z.string().regex(/^[a-f0-9]{32}$/).optional(), action: z.enum(['list', 'read']).optional(), path: z.string().max(1024).optional() }).strict();
+export const inspectionQuery = z.object({ panel: z.enum(['projects', 'files', 'schedules', 'plugins', 'system']), profile: profileName, sessionId: z.string().min(1).max(200).optional(), workspaceId: z.string().regex(/^[a-f0-9]{32}$/).optional(), action: z.enum(['list', 'read']).optional(), path: z.string().max(1024).optional() }).strict();
 const string = (v: unknown, max = 300) => typeof v === 'string' ? v.slice(0, max) : '';
 const number = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
 const rows = (v: unknown) => Array.isArray(v) ? v.slice(0, 500).map(record) : [];
