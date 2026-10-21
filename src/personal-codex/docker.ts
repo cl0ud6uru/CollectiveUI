@@ -124,7 +124,7 @@ export class PersonalCodexDriver implements PersonalCodexRuntimeDriver {
       JSON.stringify(h.CapDrop) !== JSON.stringify(['ALL']) || h.CapAdd?.length ||
       JSON.stringify(h.SecurityOpt) !== JSON.stringify(policy.inspect) ||
       c.AppArmorProfile !== (policy.appArmorProfile ?? 'docker-default') ||
-      h.Memory !== this.config.memoryMb * 1024 * 1024 || h.MemorySwap !== h.Memory || h.NanoCpus !== this.config.cpus * 1e9 || h.PidsLimit !== 256 ||
+      h.Memory !== this.config.memoryMb * 1024 * 1024 || h.MemorySwap !== h.Memory || h.NanoCpus !== Math.round(this.config.cpus * 1e9) || h.PidsLimit !== 256 ||
       h.RestartPolicy?.Name !== 'no' || h.LogConfig?.Type !== 'none' || Object.keys(h.PortBindings ?? {}).length ||
       h.NetworkMode !== `${name}-egress` || JSON.stringify(Object.keys(c.NetworkSettings.Networks)) !== JSON.stringify([`${name}-egress`]) ||
       JSON.stringify(h.Tmpfs) !== JSON.stringify({ '/tmp': 'rw,nosuid,nodev,size=256m,mode=1777' }) ||
