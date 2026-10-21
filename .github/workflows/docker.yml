@@ -20,6 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: git rev-parse HEAD
+      - name: Validate opt-in widget Compose configurations without loading operator secrets
+        run: |
+          node tests/docker/mcp-apps-compose.mjs
+          python3 -m unittest discover -s tests/deployment -p test_deployment_smoke_config.py -v
       - run: docker build --target test -t collectiveui-test:ci .
       - run: docker run --rm --init --network none collectiveui-test:ci
       - name: Verify Codex environment with real Docker create and inspect
@@ -41,6 +45,10 @@ jobs:
           docker run --rm -e npm_config_cache=/tmp/npm-cache collectiveui-worker:test npm audit --omit=dev --json > test-results/docker/worker-audit.json
       - name: Non-root runtime, migrations, queued reply and graceful shutdown
         run: bash tests/docker/worker-smoke.sh
+      - name: Build minimal widget sandbox and verify both packaging paths
+        run: |
+          docker build --target mcp-app-sandbox -t collectiveui-mcp-app-sandbox:test .
+          bash tests/docker/mcp-apps-smoke.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

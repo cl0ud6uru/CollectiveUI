@@ -2,6 +2,28 @@ import { expect, test } from '@playwright/test';
 test.beforeEach(async ({ request }) => { await request.post('/__control', { data: { reset: true } }); });
 const widget = (page: import('@playwright/test').Page) => page.frameLocator('iframe[title="Synthetic table widget"]').frameLocator('iframe[title="Widget content"]');
 
+test('Ticket Tracker-style draft renders and previews locally without creating tickets or calling tools', async ({ page, request }) => {
+  await request.post('/__control', { data: { reset: true, ticket: true } });
+  await page.goto('/');
+  const draft = page.frameLocator('iframe[title="Synthetic ticket draft"]').frameLocator('iframe[title="Widget content"]');
+  await expect(draft.getByText('Draft ready', { exact: true })).toBeVisible();
+  await expect(draft.getByLabel('Summary', { exact: true })).toHaveValue('Synthetic printer test');
+  await expect(draft.getByLabel('Description')).toHaveValue('Invented test data only.');
+  await expect(draft.getByLabel('Reporter')).toHaveValue('Fixture User (fixture@example.invalid)');
+  await expect(draft.getByText('SYNTHETIC_TICKET_COMPONENT_ONLY')).toBeVisible();
+  await expect(page.getByText('SYNTHETIC_TICKET_COMPONENT_ONLY')).toHaveCount(0);
+  await draft.getByLabel('Summary', { exact: true }).fill('Synthetic monitor test');
+  await draft.getByLabel('Description').fill('Synthetic multiline details\nNo real issue.');
+  await draft.getByRole('combobox', { name: 'Work location', exact: true }).selectOption('Test remote');
+  await draft.getByRole('combobox', { name: 'Scope', exact: true }).selectOption('Test team');
+  await draft.getByLabel('Include synthetic attachment').check();
+  await draft.getByRole('button', { name: 'Preview changes' }).click();
+  await expect(draft.getByText('Synthetic monitor test · Test remote · Test team · attachment included')).toBeVisible();
+  await expect(draft.getByRole('button', { name: 'Create ticket (disabled in fixture)' })).toBeDisabled();
+  await expect(draft.getByText('Preview updated; no ticket submitted')).toBeVisible();
+  expect(await (await request.get('/__stats')).json()).toEqual({ calls: [], actions: [] });
+});
+
 test('official AppBridge renders forms, tables and buttons inside the isolated network-denied sandbox', async ({ page, request }) => {
   await page.goto('/'); const app = widget(page);
   await expect(app.getByText('Ready', { exact: true })).toBeVisible();

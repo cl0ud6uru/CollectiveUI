@@ -109,6 +109,12 @@ class Binding:
                 and self.recovery_session_id == other.recovery_session_id and self.recovery_stored_session_id == other.recovery_stored_session_id)
 
 
+class PollerCycle:
+    def __init__(self, admitted):
+        self.admitted = admitted
+        self.idle = False
+
+
 class HubOwner:
     _LOCK_WAIT_SECONDS = 2.0
 
@@ -264,6 +270,35 @@ class HubOwner:
     def _err(self, rid, message, code=BUSY):
         return self.server._err(rid, code, message)
 
+    def _profile_has_native_work(self, home):
+        """Queued starts and native delegations also prevent an ordinary handoff.
+
+        A poller iteration holds the profile lock, so this is evaluated only at a
+        housekeeping boundary. Do not infer quiescence from session.running alone.
+        """
+        with self.server._sessions_lock:
+            sessions = [(sid, session) for sid, session in self.server._sessions.items()
+                        if Path(self.server._session_home(session)).resolve() == Path(home).resolve()]
+        for sid, session in sessions:
+            if any(session.get(key) for key in ("running", "queued_prompt", "queued_prompts", "_auto_continue_scheduled", "_compute_host_turn_id", "slash_worker")):
+                return True
+            if any(getattr(session.get(key), "is_alive", lambda: False)()
+                   for key in ("_run_thread", "_agent_build_thread", "_collective_resume_thread")):
+                return True
+            recovery = getattr(self.server, "_collective_recovery", None)
+            if recovery is not None:
+                # The auxiliary starter deliberately does not overwrite the main
+                # session thread. Its accepted worker is nevertheless remembered
+                # before the publishing RPC releases this execution lock.
+                with recovery.work_lock:
+                    workers = tuple(recovery.work.get(id(session), ()))
+                pollers = {thread for _, thread in self.server._notification_pollers}
+                if any(thread not in pollers and thread.is_alive() for thread in workers):
+                    return True
+            if self.server._session_has_active_delegations(sid, session):
+                return True
+        return False
+
     def capabilities(self, rid, _params):
         return self.server._ok(rid, CapabilityResult().model_dump())
 
@@ -311,6 +346,8 @@ class HubOwner:
                 if active and p.phase == "full":
                     if current_binding is None or current_binding.phase != "recovery" or current_binding.recovery_id != p.recovery_id:
                         return self._err(rid, "A native profile worker is still active; use the confirmed native recovery flow.")
+                if p.phase == "full" and self._profile_has_native_work(home):
+                    return self._err(rid, "Native profile work is still pending; ownership was not changed.")
                 with self._database(home, immediate=True) as db:
                     row = self._row_for_home(db, home)
                     row_key = row[0] if row else None
@@ -541,7 +578,10 @@ class HubOwner:
                         return self._err(rid, "This dashboard socket no longer owns the native profile.")
                     token = _active_binding.set(binding)
                     try:
-                        return handler(rid, params)
+                        result = handler(rid, params)
+                        if name == "session.resume" and isinstance(result, dict) and isinstance(result.get("result"), dict):
+                            self._ensure_session_poller(binding, result["result"].get("session_id"))
+                        return result
                     finally:
                         _active_binding.reset(token)
             except TimeoutError:
@@ -552,6 +592,53 @@ class HubOwner:
     def _current_owner(self, home):
         with self._guard:
             return self._owners.get(str(home))
+
+    def protect_poller(self, target, session):
+        """Keep the originating claim; each cycle, including shutdown drain, is fenced.
+
+        A parked poller is not active native work between cycles. It cannot adopt
+        a successor claim or consume a notification after its own claim expires.
+        """
+        binding = _active_binding.get()
+        def poller(*args, **kwargs):
+            token = _active_binding.set(binding)
+            try:
+                return target(*args, **kwargs)
+            finally:
+                _active_binding.reset(token)
+        return poller
+
+    @contextlib.contextmanager
+    def poller_cycle(self, session, stop_event):
+        home = Path(self.server._session_home(session)).resolve()
+        binding = _active_binding.get()
+        cycle = PollerCycle(False)
+        try:
+            with self._locked(home):
+                current = self._current_owner(str(home))
+                cycle.admitted = bool((binding is None and current is None and not self._durable_owner_exists(home)) or (
+                    binding is not None and binding.phase == "full" and binding.same_claim(current) and self._durably_current(binding)))
+                yield cycle
+        finally:
+            # A parked queue read must not monopolize the profile execution lock.
+            # Preserve the native idle cadence, with stop waking it immediately.
+            if cycle.idle:
+                stop_event.wait(0.5)
+
+    def _ensure_session_poller(self, binding, sid):
+        """Resume retains history/runtime while replacing only a stale housekeeping loop."""
+        with self.server._sessions_lock:
+            session = self.server._sessions.get(sid)
+            if session is None or session.get("_closing") or session.get("_finalized") or Path(self.server._session_home(session)).resolve() != Path(binding.home):
+                return
+            old_binding = session.get("_collective_poller_binding")
+            old_stop = session.get("_notif_stop")
+            alive = any(event is old_stop and thread.is_alive() for event, thread in self.server._notification_pollers)
+            if old_binding is not None and old_binding.same_claim(binding) and alive and not old_stop.is_set():
+                return
+            if old_stop is not None:
+                old_stop.set()
+            session["_notif_stop"] = self.server._start_notification_poller(sid, session)
 
     def protect_worker(self, target, session):
         try:
@@ -642,6 +729,12 @@ class HubOwner:
         if getattr(self.server, "_collective_hub_owner", None) is not None:
             raise RuntimeError("Native hub owner adapter already installed")
         self.server._collective_hub_owner = self
+        original_poller = self.server._start_notification_poller
+        def start_poller(sid, session):
+            stop = original_poller(sid, session)
+            session["_collective_poller_binding"] = _active_binding.get()
+            return stop
+        self.server._start_notification_poller = start_poller
         original_start = self.server._start_session_work
         def start(target, *, name, session=None):
             guarded = self.protect_worker(target, session) if session is not None else target
