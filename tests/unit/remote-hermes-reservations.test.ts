@@ -8,7 +8,20 @@ vi.mock('@/lib/remote-hermes/store', () => ({ remoteAccess: vi.fn() }));
 vi.mock('@/lib/remote-hermes/transport', () => ({ dashboardAddress: async () => ({ address: '93.184.216.34', family: 4 }) }));
 vi.mock('@/lib/remote-hermes/socket', async original => {
   const actual = await original<typeof import('@/lib/remote-hermes/socket')>();
-  return { ...actual, DashboardSocket: class { state = 'connected'; connectionEpoch = 1; call = f.call; answer = f.answer; callWithEpoch = async (...args: unknown[]) => ({ result: await f.call(...args), epoch: 1 }); constructor(_target: unknown, frame: (value: unknown, epoch: number) => void) { f.frame = value => frame(value, 1); } close() {} } };
+  return { ...actual, DashboardSocket: class {
+    state = 'connected'; connectionEpoch = 1; call = f.call; answer = f.answer;
+    private boundary: NonNullable<ConstructorParameters<typeof actual.DashboardSocket>[5]>;
+    constructor(...args: ConstructorParameters<typeof actual.DashboardSocket>) {
+      f.frame = value => args[1](value as Parameters<typeof args[1]>[0], 1);
+      this.boundary = args[5]!;
+    }
+    async callWithEpoch(...args: Parameters<InstanceType<typeof actual.DashboardSocket>['callWithEpoch']>) {
+      // Mock the remote reply, retaining production authorization before a snapshot send.
+      const { value } = await this.boundary(args[0], args[1] ?? {}, () => f.call(...args));
+      return { result: await value, epoch: 1 };
+    }
+    close() {}
+  } };
 });
 vi.mock('@/db', () => {
   const dialect = new PgDialect();
