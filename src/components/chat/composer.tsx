@@ -107,6 +107,18 @@ export const Composer = forwardRef<
     if (autoFocus) taRef.current?.focus();
   }, [autoFocus]);
 
+  // Image previews are object URLs: release each one once its chip leaves the composer, and all of them on unmount.
+  const previews = useRef(new Set<string>());
+  useEffect(() => {
+    const live = new Set(files.flatMap((f) => (f.preview ? [f.preview] : [])));
+    for (const url of previews.current) if (!live.has(url)) URL.revokeObjectURL(url);
+    previews.current = live;
+  }, [files]);
+  useEffect(() => {
+    const tracked = previews;
+    return () => tracked.current.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
+
   const upload = useCallback(async (list: FileList | File[]) => {
     for (const file of Array.from(list)) {
       const key = Math.random().toString(36).slice(2);
