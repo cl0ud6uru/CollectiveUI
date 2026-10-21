@@ -27,6 +27,13 @@ import type {
   UserCredentialProvider,
   UserCredentialStatus,
 } from "../lib/llm/kinds";
+import type {
+  RoutineRunTrigger,
+  TriggerConfig,
+  TriggerConnectionStatus,
+  TriggerEventStatus,
+  TriggerType,
+} from "../lib/triggers/types";
 import type { McpDrift, McpServerInfo, McpServerStatus, McpToolDef, McpToolPolicy, McpTrust } from "../lib/mcp/kinds";
 
 /** pgvector column without a fixed dimension, so any embedding model can be used. */
@@ -875,7 +882,7 @@ export type BotTemplateSnapshot = {
   routines: {
     name: string;
     prompt: string;
-    triggerType: "cron" | "webhook";
+    triggerType: TriggerType;
     cron: string | null;
     timezone: string;
   }[];
@@ -1024,16 +1031,58 @@ export const routines = pgTable("routines", {
     .references(() => bots.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   prompt: text("prompt").notNull(),
-  triggerType: text("trigger_type").$type<"cron" | "webhook">().notNull(),
+  triggerType: text("trigger_type").$type<TriggerType>().notNull(),
   cron: text("cron"),
   timezone: text("timezone").notNull().default("UTC"),
   webhookSecret: text("webhook_secret"),
+  /** Event triggers only: provider, connection and match rules (src/lib/triggers/types.ts). Null for cron/webhook. */
+  triggerConfig: jsonb("trigger_config").$type<TriggerConfig>(),
+  /** Denormalized from triggerConfig so inbound events find candidate routines by index. */
+  triggerProvider: text("trigger_provider"),
+  triggerConnectionId: text("trigger_connection_id").references(() => triggerConnections.id, { onDelete: "set null" }),
   enabled: boolean("enabled").notNull().default(true),
   notifyEmail: boolean("notify_email").notNull().default(false),
   nextRunAt: timestamp("next_run_at", { withTimezone: true }),
   lastRunAt: timestamp("last_run_at", { withTimezone: true }),
   createdAt: createdAt(),
-});
+}, (t) => [
+  index("routines_event_idx")
+    .on(t.triggerProvider, t.triggerConnectionId)
+    .where(sql`${t.enabled} and ${t.triggerType} = 'event'`),
+  check("routines_trigger_type_check", sql`${t.triggerType} in ('cron', 'webhook', 'event')`),
+]);
+
+/** An org-wide integration install (e.g. the admin-installed Slack workspace) that event routines bind to. */
+export const triggerConnections = pgTable("trigger_connections", {
+  id: id(),
+  provider: text("provider").notNull(),
+  /** The provider's own id for the install, e.g. a Slack team_id. */
+  externalId: text("external_id").notNull(),
+  displayName: text("display_name").notNull(),
+  /** Encrypted provider credentials (bot token etc.). */
+  credentials: text("credentials"),
+  scopes: text("scopes").array().notNull().default(sql`'{}'::text[]`),
+  status: text("status").$type<TriggerConnectionStatus>().notNull().default("active"),
+  installedBy: text("installed_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: createdAt(),
+}, (t) => [uniqueIndex("trigger_connections_provider_external_idx").on(t.provider, t.externalId)]);
+
+/** Inbound provider events: dedupe key, dispatch outbox and audit log (purged after 30 days). */
+export const triggerEvents = pgTable("trigger_events", {
+  id: id(),
+  provider: text("provider").notNull(),
+  connectionId: text("connection_id").references(() => triggerConnections.id, { onDelete: "cascade" }),
+  externalEventId: text("external_event_id").notNull(),
+  eventType: text("event_type").notNull(),
+  status: text("status").$type<TriggerEventStatus>().notNull().default("received"),
+  matchedCount: integer("matched_count").notNull().default(0),
+  payload: jsonb("payload"),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("trigger_events_provider_external_idx").on(t.provider, t.externalEventId),
+  index("trigger_events_received_idx").on(t.receivedAt),
+]);
 
 export type RoutineRunStatus =
   | "queued"
@@ -1054,8 +1103,10 @@ export const routineRuns = pgTable(
       .notNull()
       .default("queued"),
     trigger: text("trigger")
-      .$type<"schedule" | "webhook" | "manual">()
+      .$type<RoutineRunTrigger>()
       .notNull(),
+    /** Event-triggered runs: the provider event id, unique per routine so redelivered events never run twice. */
+    triggerEventId: text("trigger_event_id"),
     payload: jsonb("payload"),
     conversationId: text("conversation_id").references(() => conversations.id, {
       onDelete: "set null",
@@ -1067,7 +1118,10 @@ export const routineRuns = pgTable(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
-  (t) => [index("routine_runs_routine_idx").on(t.routineId, t.createdAt)],
+  (t) => [
+    index("routine_runs_routine_idx").on(t.routineId, t.createdAt),
+    uniqueIndex("routine_runs_trigger_event_idx").on(t.routineId, t.triggerEventId).where(sql`${t.triggerEventId} is not null`),
+  ],
 );
 
 export type ToolCallStatus =
@@ -1672,6 +1726,8 @@ export type Message = typeof messages.$inferSelect;
 export type Bot = typeof bots.$inferSelect;
 export type Skill = typeof skills.$inferSelect & { aliases?: string[]; pinned?: boolean; mandatory?: boolean };
 export type Routine = typeof routines.$inferSelect;
+export type TriggerConnection = typeof triggerConnections.$inferSelect;
+export type TriggerEvent = typeof triggerEvents.$inferSelect;
 export type McpServer = typeof mcpServers.$inferSelect;
 export type SandboxRow = typeof sandboxes.$inferSelect;
 export type UsageEvent = typeof usageEvents.$inferInsert;
