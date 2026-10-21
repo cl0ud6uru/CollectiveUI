@@ -20,7 +20,21 @@ final class ConversationState {
     var pendingSubmission: PendingChatSubmission? { didSet { saveLater() } }
     var pendingCommand: PendingCommandAttempt? { didSet { saveLater() } }
     var requiresStatusCheck = false { didSet { saveLater() } }
-    @ObservationIgnored var save: (() -> Void)?
+    enum PersistenceIssue: Equatable {
+        case unavailable, writeFailed, readFailed
+
+        var message: String {
+            switch self {
+            case .unavailable, .writeFailed:
+                return "Couldn't save this draft on this device. Your text is still in this window. Keep the app open and retry saving before sending."
+            case .readFailed:
+                return "Couldn't read the saved draft. Sending is paused to protect it. If you've typed new text, copy it and clear the composer before retrying."
+            }
+        }
+    }
+    fileprivate(set) var persistenceIssue: PersistenceIssue?
+    @ObservationIgnored var save: (() -> Bool)?
+    @ObservationIgnored var reload: (() -> Bool)?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     // A Stop acknowledgement belongs to a turn, even after its view detaches.
     @ObservationIgnored var stopOperation: UUID?
@@ -34,10 +48,17 @@ final class ConversationState {
         }
     }
 
-    func flush() {
+    @discardableResult
+    func flush() -> Bool {
         saveTask?.cancel()
         saveTask = nil
-        save?()
+        return save?() ?? false
+    }
+
+    @discardableResult
+    func retryPersistence() -> Bool {
+        if persistenceIssue == .readFailed { return reload?() ?? false }
+        return flush()
     }
 
     func markStopped(messageId: String, parentId: String) {
@@ -138,29 +159,45 @@ final class ConversationStateStore {
     func state(for conversationId: String) -> ConversationState {
         if let state = states[conversationId] { return state }
         let state = ConversationState()
-        if let file = file(for: conversationId), let data = try? Data(contentsOf: file),
-           let saved = try? JSONDecoder().decode(Saved.self, from: data) {
-            state.isEstablished = saved.isEstablished ?? false
-            state.newChatTarget = saved.newChatTarget
-            state.text = saved.text
-            state.attachments = saved.attachments.map { attachment in
-                var restored = attachment
-                if restored.isUploading { restored.errorText = "Upload interrupted. Remove the file and attach it again." }
-                return restored
+        if let file = file(for: conversationId) {
+            do {
+                let data = try Data(contentsOf: file)
+                restore(try JSONDecoder().decode(Saved.self, from: data), into: state)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                // A genuinely new conversation has no local draft yet.
+            } catch {
+                state.persistenceIssue = .readFailed
             }
-            state.stoppedReplies = saved.stoppedReplies
-            state.pendingSubmission = saved.pendingSubmission
-            state.pendingCommand = saved.pendingCommand
-            state.requiresStatusCheck = saved.requiresStatusCheck ?? (saved.pendingSubmission != nil)
+        } else {
+            state.persistenceIssue = .unavailable
+        }
+        state.reload = { [weak self, weak state] in
+            guard let self, self.isValid, let state, let file = self.file(for: conversationId),
+                  state.text.isEmpty, state.attachments.isEmpty,
+                  state.pendingSubmission == nil, state.pendingCommand == nil else { return false }
+            do {
+                let saved = try JSONDecoder().decode(Saved.self, from: Data(contentsOf: file))
+                self.restore(saved, into: state)
+                state.persistenceIssue = nil
+                return state.flush()
+            } catch {
+                state.persistenceIssue = .readFailed
+                return false
+            }
         }
         state.save = { [weak self, weak state] in
-            guard let self, self.isValid, let state else { return }
+            guard let self, self.isValid, let state else { return false }
             self.updateRecoverableID(conversationId, state: state)
-            guard let file = self.file(for: conversationId), let directory = self.directory else { return }
+            // Never replace an unreadable file: it may contain an admitted request's identity.
+            guard state.persistenceIssue != .readFailed else { return false }
+            guard let file = self.file(for: conversationId), let directory = self.directory else {
+                state.persistenceIssue = .unavailable
+                return false
+            }
             let saved = Saved(isEstablished: state.isEstablished, conversationId: conversationId, newChatTarget: state.newChatTarget, text: state.text, attachments: state.attachments, stoppedReplies: state.stoppedReplies,
                 pendingSubmission: state.pendingSubmission, pendingCommand: state.pendingCommand, requiresStatusCheck: state.requiresStatusCheck)
-            guard let data = try? JSONEncoder().encode(saved) else { return }
             do {
+                let data = try JSONEncoder().encode(saved)
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 var protectedDirectory = directory
                 var values = URLResourceValues()
@@ -174,10 +211,31 @@ final class ConversationStateStore {
                 try data.write(to: file, options: .atomic)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
                 #endif
-            } catch { /* In-memory drafts still survive navigation if storage is unavailable. */ }
+                state.persistenceIssue = nil
+                return true
+            } catch {
+                state.persistenceIssue = .writeFailed
+                return false
+            }
         }
         states[conversationId] = state
         return state
+    }
+
+    private func restore(_ saved: Saved, into state: ConversationState) {
+        state.isEstablished = state.isEstablished || saved.isEstablished == true
+        state.newChatTarget = state.isEstablished ? nil : saved.newChatTarget
+        state.text = saved.text
+        state.attachments = saved.attachments.map { attachment in
+            var restored = attachment
+            if restored.isUploading { restored.errorText = "Upload interrupted. Remove the file and attach it again." }
+            return restored
+        }
+        state.stoppedReplies = saved.stoppedReplies
+        state.pendingSubmission = saved.pendingSubmission
+        state.pendingCommand = saved.pendingCommand
+        // A retained request is unresolved even if an older/inconsistent flag says otherwise.
+        state.requiresStatusCheck = saved.requiresStatusCheck == true || saved.pendingSubmission != nil
     }
 
     private func updateRecoverableID(_ id: String, state: ConversationState) {
@@ -191,7 +249,10 @@ final class ConversationStateStore {
 
     func remove(_ conversationId: String) {
         recoverableIDs.removeAll { $0 == conversationId }
-        states.removeValue(forKey: conversationId)?.save = nil
+        if let state = states.removeValue(forKey: conversationId) {
+            state.save = nil
+            state.reload = nil
+        }
         if let file = file(for: conversationId) { try? FileManager.default.removeItem(at: file) }
     }
 
@@ -200,6 +261,8 @@ final class ConversationStateStore {
         recoverableIDs = []
         for state in states.values {
             state.save = nil
+            state.reload = nil
+            state.persistenceIssue = nil
             state.isEstablished = false
             state.newChatTarget = nil
             state.text = ""

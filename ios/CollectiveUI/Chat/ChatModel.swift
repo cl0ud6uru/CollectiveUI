@@ -129,6 +129,22 @@ final class ChatModel {
         get { conversationState.attachments }
         set { conversationState.attachments = newValue }
     }
+    var draftPersistenceMessage: String? { conversationState.persistenceIssue?.message }
+    var draftPersistenceRetryTitle: String {
+        conversationState.persistenceIssue == .readFailed ? "Retry loading draft" : "Retry saving"
+    }
+
+    func retryDraftPersistence() {
+        guard sessionClient != nil else { return }
+        let wasUnreadable = conversationState.persistenceIssue == .readFailed
+        guard conversationState.retryPersistence() else { return }
+        if wasUnreadable {
+            newChatTarget = conversationState.isEstablished ? nil : conversationState.newChatTarget
+            isNew = newChatTarget != nil
+            if let newChatTarget { target = newChatTarget }
+        }
+    }
+
     var approvalDecisions: [String: ApprovalDecision] = [:]
     var needsMessageStatusCheck: Bool {
         get { conversationState.requiresStatusCheck }
@@ -233,11 +249,11 @@ final class ChatModel {
     }
 
     var canSend: Bool {
-        return sessionClient != nil && !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && !attachments.contains(where: { $0.errorText != nil }) && hasComposerContent
+        return sessionClient != nil && conversationState.persistenceIssue == nil && !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isExecutingCommand && !isLoading && loadError == nil && target != nil && !isReadOnly && !isUnavailable && !isUploading && !attachments.contains(where: { $0.errorText != nil }) && hasComposerContent
     }
 
     var canRegenerate: Bool {
-        sessionClient != nil && !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isStopping && !isExecutingCommand && !isLoading && loadError == nil && !isReadOnly && !isUnavailable
+        sessionClient != nil && conversationState.persistenceIssue == nil && !needsMessageStatusCheck && !hasDetachedReply && !isStreaming && !isStopping && !isExecutingCommand && !isLoading && loadError == nil && !isReadOnly && !isUnavailable
     }
 
     var canRefreshConversation: Bool {
@@ -270,7 +286,7 @@ final class ChatModel {
     }
 
     var canRetryOriginalMessage: Bool {
-        sessionClient != nil && needsMessageStatusCheck && confirmedMissingSubmission && pendingDraft != nil && !isGroup && !isCheckingMessageStatus && !isStreaming && !isExecutingCommand && !isReadOnly && !isUnavailable
+        sessionClient != nil && conversationState.persistenceIssue == nil && needsMessageStatusCheck && confirmedMissingSubmission && pendingDraft != nil && !isGroup && !isCheckingMessageStatus && !isStreaming && !isExecutingCommand && !isReadOnly && !isUnavailable
     }
 
     var showsTypingIndicator: Bool {
@@ -508,7 +524,8 @@ final class ChatModel {
             commandAttempt = PendingCommandAttempt(text: text, nextId: IDGenerator.make())
         }
         let freshAttemptId = isFreshCommand ? commandAttempt?.nextId : nil
-        conversationState.flush()
+        // /new and /reset must retain the same destination after an uncertain response.
+        guard conversationState.flush() else { return }
         let originalDraft = composerText
         var body: [String: JSONValue] = [
             "conversationId": .string(conversationId), "text": .string(text),
@@ -601,10 +618,24 @@ final class ChatModel {
             }
         }
 
-        pendingDraft = PendingChatSubmission(messageId: message.id, text: composerText, attachments: attachments, body: .object(body))
-        messages.append(message)
+        let pending = PendingChatSubmission(messageId: message.id, text: composerText, attachments: attachments, body: .object(body))
+        pendingDraft = pending
+        needsMessageStatusCheck = true
         composerText = ""
         attachments = []
+        // One atomic snapshot holds the immutable request and an empty next composer.
+        // Otherwise a relaunch between this save and the later stream flush could
+        // restore the submitted draft/files as a second ready-to-send message.
+        // All staging is synchronous on MainActor; a failed save restores the UI
+        // before returning, and no network stream has been constructed yet.
+        guard conversationState.flush() else {
+            composerText = pending.text
+            attachments = pending.attachments
+            pendingDraft = nil
+            needsMessageStatusCheck = false
+            return
+        }
+        messages.append(message)
         inlineError = nil
         autoResumeBudget = 2
         requestScroll(.sent)
@@ -622,6 +653,11 @@ final class ChatModel {
         guard canRegenerate, let api = sessionClient else { return }
         guard let index = messages.firstIndex(where: { $0.id == assistantMessageId }) else { return }
         guard let userIndex = messages[..<index].lastIndex(where: { $0.role == .user }) else { return }
+        needsMessageStatusCheck = true
+        guard conversationState.flush() else {
+            needsMessageStatusCheck = false
+            return
+        }
         let userMessageId = messages[userIndex].id
         conversationState.stoppedReplies.removeAll { $0.parentId == userMessageId }
         messages.removeSubrange((userIndex + 1)...)
@@ -646,6 +682,7 @@ final class ChatModel {
         guard canRetryOriginalMessage, var pending = pendingDraft, let api = sessionClient else { return }
         pending.wasRetried = true
         pendingDraft = pending
+        guard conversationState.flush() else { return }
         confirmedMissingSubmission = false
         inlineError = nil
         if !messages.contains(where: { $0.id == pending.messageId }),

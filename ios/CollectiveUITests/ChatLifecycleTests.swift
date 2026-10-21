@@ -148,20 +148,23 @@ final class ChatLifecycleTests: XCTestCase {
     private var defaults: UserDefaults!
     private var app: AppModel!
     private var fixture: ChatFixture!
+    private var draftRoot: URL!
 
     private func prepare(_ scenario: ChatFixture.Scenario) {
+        draftRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         suite = "ChatLifecycle.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)!
         fixture = ChatFixture(scenario)
         let transport = fixture!
         FixtureProtocol.handler = { transport.response($0) }
         app = AppModel(credentials: MemoryCredentials(["baseURL": "https://qa.example.invalid", "token": "fixture-token"]),
-            defaults: defaults, draftRoot: nil, session: FixtureProtocol.session(), launchDemo: false)
+            defaults: defaults, draftRoot: draftRoot, session: FixtureProtocol.session(), launchDemo: false)
     }
 
     override func tearDown() async throws {
         if let suite { defaults.removePersistentDomain(forName: suite) }
         app = nil
+        if let draftRoot { try? FileManager.default.removeItem(at: draftRoot) }
         fixture = nil
         FixtureProtocol.handler = { _ in .init() }
     }

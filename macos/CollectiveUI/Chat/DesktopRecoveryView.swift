@@ -6,6 +6,14 @@ struct DesktopRecoveryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let message = model.draftPersistenceMessage {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(PortalTheme.danger)
+                        .textSelection(.enabled).accessibilityIdentifier("draft.persistenceError")
+                    Button(model.draftPersistenceRetryTitle, action: model.retryDraftPersistence)
+                        .accessibilityIdentifier("draft.retryPersistence")
+                }
+            }
             if let error = model.inlineError {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("This reply needs attention", systemImage: "exclamationmark.triangle")
@@ -46,7 +54,7 @@ struct DesktopRecoveryView: View {
         .frame(maxWidth: DesktopLayout.transcriptWidth, alignment: .leading)
         .padding(.horizontal, DesktopLayout.pageInset)
         .padding(.vertical, model.inlineError != nil || model.needsMessageStatusCheck || model.hasDetachedReply ||
-                 model.commandResult != nil || model.commandError != nil || !model.delegatedApprovals.isEmpty ||
+                 model.draftPersistenceMessage != nil || model.commandResult != nil || model.commandError != nil || !model.delegatedApprovals.isEmpty ||
                  model.delegateApprovalError != nil ? 12 : 0)
         .frame(maxWidth: .infinity)
     }

@@ -365,7 +365,20 @@ struct ChatView: View {
         } else if model.isUnavailable {
             NoticeBar(text: model.unavailableReason ?? "This chat can't continue.", systemImage: "exclamationmark.circle")
         } else {
-            ComposerView(model: model)
+            VStack(alignment: .leading, spacing: 8) {
+                if let message = model.draftPersistenceMessage {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(message, systemImage: "exclamationmark.triangle").font(.callout)
+                            .foregroundStyle(PortalTheme.danger).textSelection(.enabled)
+                            .accessibilityIdentifier("draft.persistenceError")
+                        Button(model.draftPersistenceRetryTitle, action: model.retryDraftPersistence)
+                            .buttonStyle(.bordered).frame(minHeight: 44)
+                            .accessibilityIdentifier("draft.retryPersistence")
+                    }
+                    .padding(.horizontal, 16).padding(.top, 8)
+                }
+                ComposerView(model: model)
+            }
         }
     }
 }
