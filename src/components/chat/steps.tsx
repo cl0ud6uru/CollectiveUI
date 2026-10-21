@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { getToolOrDynamicToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart } from "ai";
 import { AlertCircle, Check, ChevronDown, ChevronRight } from "lucide-react";
+import { isDelegationTool } from "@/lib/delegation/policy";
 import { cn } from "@/lib/utils";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
@@ -19,6 +20,14 @@ export function formatDuration(ms: number): string {
 /** A tool step the person must act on (approve/deny) stays out of the collapsed step chip. */
 export function needsAction(part: unknown): boolean {
   return isToolUIPart(part as AnyToolPart) && (part as AnyToolPart).state === "approval-requested" && !(part as { approval?: { isAutomatic?: boolean } }).approval?.isAutomatic;
+}
+
+/**
+ * Steps that never fold into the chip: ones waiting for the person, and delegated tasks, whose card carries another
+ * bot's live status, answer and errors.
+ */
+export function standsAlone(part: unknown): boolean {
+  return needsAction(part) || (isToolUIPart(part as AnyToolPart) && isDelegationTool(getToolOrDynamicToolName(part as AnyToolPart)));
 }
 
 function stepRunning(p: AnyToolPart) {

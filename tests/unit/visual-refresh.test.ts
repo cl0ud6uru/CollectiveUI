@@ -104,6 +104,12 @@ describe("message layout", () => {
   it("folds even a single finished step", () => {
     expect(render(reply([tool("a", "output-available", { output: {} })]))).toContain("web · 1 step");
   });
+  it("keeps a delegated task's card out of the fold", () => {
+    const delegate = { type: "tool-ask_gemma", toolCallId: "d", state: "output-available", input: {}, output: { status: "error", error: "The assignment is no longer authorized to return a result." } };
+    const html = render(reply([delegate]));
+    expect(html).not.toContain("1 step");
+    expect(html).toContain("The assignment is no longer authorized to return a result.");
+  });
   it("keeps a step that needs approval outside the folded group", () => {
     const ask = tool("d", "approval-requested", { approval: { id: "ap1" } });
     expect(needsAction(ask)).toBe(true);

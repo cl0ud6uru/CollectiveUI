@@ -11,7 +11,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { BotAvatar } from "@/components/bots/bot-avatar";
 import { CopyButton, Markdown } from "./markdown";
-import { needsAction, StepsGroup } from "./steps";
+import { needsAction, standsAlone, StepsGroup } from "./steps";
 import { ToolPartView } from "./tool-part";
 import { ReplyQuote } from "./reply-quote";
 import { replyContext } from "@/lib/chat/reply";
@@ -186,14 +186,14 @@ type Block =
   | { kind: "part"; part: Part; index: number }
   | { kind: "steps"; parts: { part: Part; index: number }[] };
 
-/** Consecutive tool steps become one block; steps waiting for your approval always stand alone. */
+/** Consecutive tool steps become one block; steps waiting for your approval and delegated tasks stand alone. */
 function toBlocks(parts: { part: Part; index: number }[]): Block[] {
   const out: Block[] = [];
   for (const p of parts) {
     // Step boundaries carry no content and must not split a run of tool calls.
     if (p.part.type === "step-start") continue;
     const last = out.at(-1);
-    if (isToolUIPart(p.part) && !needsAction(p.part)) {
+    if (isToolUIPart(p.part) && !standsAlone(p.part)) {
       if (last?.kind === "steps") last.parts.push(p);
       else out.push({ kind: "steps", parts: [p] });
     } else out.push({ kind: "part", ...p });
