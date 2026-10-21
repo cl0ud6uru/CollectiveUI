@@ -38,6 +38,16 @@ describe("Auth.js callback provider regressions", () => {
     mocks.state.mockResolvedValue(null);
     expect(await c.callbacks!.jwt!({ token } as never)).toBeNull();
   });
+  it.each(["local", "ldap", "microsoft-entra-id"])("exposes the approving JWT provider %s without deriving it from user metadata", async authProvider => {
+    const c = await config();
+    const session = await c.callbacks!.session!({ session: { user: {}, expires: "fixture" }, token: { uid: "user", authSessionId: "synthetic-session", sessionVersion: 3, authProvider } } as never);
+    expect((session.user as { authProvider?: string }).authProvider).toBe(authProvider);
+  });
+  it("does not invent a provider for an unattributed legacy JWT", async () => {
+    const c = await config();
+    const session = await c.callbacks!.session!({ session: { user: {}, expires: "fixture" }, token: { uid: "user", sessionVersion: 3 } } as never);
+    expect((session.user as { authProvider?: string | null }).authProvider).toBeNull();
+  });
   it("rejects expired old and new sessions even when Auth.js presents a renewed exp", async () => {
     const c = await config();
     const now = Math.floor(Date.now() / 1000);
