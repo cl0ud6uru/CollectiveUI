@@ -323,20 +323,18 @@ export function AssistantMessage({
 
   const renderBlocks = (parts: { part: Part; index: number }[], lastRun: boolean) => {
     const blocks = toBlocks(parts);
-    return blocks.map((b, bi) => {
+    return blocks.map((b) => {
       if (b.kind === "part") return renderPart(b.part, b.index);
-      if (b.parts.length === 1) return tool(b.parts[0].part);
       return (
         <StepsGroup
           key={`steps-${b.parts[0].index}`}
           parts={b.parts.map((p) => p.part) as never}
-          live={streaming && lastRun && bi === blocks.length - 1}
+          live={streaming && lastRun}
           startedAt={meta?.startedAt}
           finishedAt={meta?.finishedAt}
           timed={stepGroups === 1}
-        >
-          {b.parts.map((p) => tool(p.part))}
-        </StepsGroup>
+          renderStep={(part) => tool(part as Part)}
+        />
       );
     });
   };

@@ -45,6 +45,7 @@ import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 import { useWorkspaceFileOpener } from "./workspace-context";
 import { toolDoneLabel } from "./tool-result-label";
+import { commandLine, RailDot, RunningTicker } from "./steps";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -361,21 +362,27 @@ export function ToolPartView({
   const preliminaryRunning = preliminary && live;
   // Remote tool steps whose run ended without a result must not keep spinning.
   const interrupted = (preliminary && !live) || (running && !live && (isHermesTool(name) || name === "openai_web_search"));
+  const active = (running && !interrupted) || preliminaryRunning;
 
   return (
-    <div className="my-2 text-sm">
+    // A running step is a card whose border pulses (globals.css); it settles back to a quiet row when done.
+    <div className={cn("my-2 text-sm", active && "tool-running rounded-xl border border-border px-3 py-2")}>
       <button
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className={cn("flex items-center gap-2 text-muted hover:text-fg", denied && "line-through")}
+        className={cn("flex max-w-full items-center gap-2 text-muted hover:text-fg", denied && "line-through")}
       >
-        {(running && !interrupted) || preliminaryRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : failed ? <AlertTriangle className="h-4 w-4 text-danger" /> : <Icon className="h-4 w-4" />}
-        <span className={cn(running && !interrupted && "animate-pulse")}>
-          {denied ? `${d.done} — denied` : failed ? `${d.done} — failed` : interrupted ? `${d.running} — interrupted` : running || preliminaryRunning ? d.running : memoryDone}
+        <RailDot />
+        {active ? <Icon className="h-4 w-4 shrink-0 text-hermes" /> : failed ? <AlertTriangle className="h-4 w-4 shrink-0 text-danger" /> : <Icon className="h-4 w-4 shrink-0" />}
+        <span className={cn(active && "text-fg")}>
+          {denied ? `${d.done} — denied` : failed ? `${d.done} — failed` : interrupted ? `${d.running} — interrupted` : active ? d.running : memoryDone}
         </span>
-        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
       </button>
+      {active && <div className="mt-1 pl-6"><RunningTicker toolCallId={part.toolCallId} command={commandLine(part.input)} /></div>}
+      {/* A failure's reason stays on the step; the expanded details keep the full text. */}
+      {failed && !open && !!part.errorText && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{part.errorText}</p>}
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
       {!readOnly && appInstanceId(output) && <McpAppHost key={appInstanceId(output)!} id={appInstanceId(output)!} />}
       {artifact && <div className="mt-2 flex flex-wrap gap-2">

@@ -31,10 +31,7 @@ struct ToolPartView: View {
         return part.state == "approval-requested" && part.approval != nil
     }
 
-    /// Running, including an approved call that has not reported back yet.
-    private var isRunning: Bool {
-        part.phase == .running || (part.phase == .approvalResponded && part.approval?.approved != false)
-    }
+    private var isRunning: Bool { part.isRunningStep }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -50,7 +47,7 @@ struct ToolPartView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(displayName).font(.subheadline.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                         if isRunning {
-                            RunningTicker(toolCallId: part.toolCallId, command: ToolPartView.commandLine(part.input))
+                            RunningTicker(toolCallId: part.toolCallId, command: ToolStep.commandLine(part.input))
                         } else {
                             Text(statusText).font(.caption).foregroundStyle(PortalTheme.muted)
                         }
@@ -64,6 +61,16 @@ struct ToolPartView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            // A failure's reason stays on the card; the expanded details keep the full text.
+            if part.phase == .failed, !isExpanded, let errorText = part.errorText, !errorText.isEmpty {
+                Text(errorText)
+                    .font(.caption)
+                    .foregroundStyle(PortalTheme.danger)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             if isExpanded {
                 details
@@ -90,7 +97,7 @@ struct ToolPartView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isAwaitingApproval ? PortalTheme.warning.opacity(0.6) : Color.clear, lineWidth: 1)
+                .stroke(isAwaitingApproval ? PortalTheme.warning.opacity(0.6) : part.phase == .failed ? PortalTheme.danger.opacity(0.6) : Color.clear, lineWidth: 1)
         )
         .overlay {
             if isRunning { RunningStroke(cornerRadius: 12) }
@@ -252,130 +259,6 @@ struct ToolPartView: View {
         return String(text.prefix(maxDetailLength)) + "\n…"
     }
 
-    /// The one line a running step shows: its command, query or target, whitespace collapsed.
-    static func commandLine(_ input: JSONValue?) -> String? {
-        guard let input else { return nil }
-        guard let object = input.objectValue else { return input.stringValue.flatMap(oneLine) }
-        // `preview` is what a Hermes server reports for its own tools (see hermes/mapper.ts).
-        for key in ["command", "preview", "code", "query", "url", "pattern", "path", "goal"] {
-            if let line = object[key]?.stringValue.flatMap(oneLine) { return line }
-        }
-        return object.keys.sorted().lazy.compactMap { object[$0]?.stringValue.flatMap(oneLine) }.first
-    }
-
-    private static func oneLine(_ text: String) -> String? {
-        let line = text.prefix(400).split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return line.isEmpty ? nil : line
-    }
-
-    /// "12s", then "1m 5s", matching the website's step timings.
-    static func elapsed(_ seconds: Int) -> String {
-        seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
-    }
-}
-
-/// What a tool call does, for its glyph (and later the collapsed turn chip).
-enum ToolKind: Equatable {
-    case terminal, web, other
-
-    init(toolName: String) {
-        let name = toolName.hasPrefix("hermes__") ? String(toolName.dropFirst("hermes__".count)) : toolName
-        switch name {
-        case "workspace_bash", "terminal", "process_manage", "execute_code": self = .terminal
-        case "web_search", "openai_web_search", "fetch_url", "web_extract": self = .web
-        default: self = .other
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .terminal: "terminal"
-        case .web: "globe"
-        case .other: "wrench.and.screwdriver"
-        }
-    }
-}
-
-/// When each running step was first seen, so its timer survives the card scrolling out and back.
-@MainActor
-private enum ToolRunClock {
-    private static var starts: [String: Date] = [:]
-
-    static func start(_ toolCallId: String) -> Date {
-        if let date = starts[toolCallId] { return date }
-        let now = Date()
-        starts[toolCallId] = now
-        return now
-    }
-
-    static func finish(_ toolCallId: String) {
-        starts[toolCallId] = nil
-    }
-}
-
-/// `$ command`, a blinking cursor and the elapsed time, on one line. The cursor holds still under Reduce Motion.
-@MainActor
-private struct RunningTicker: View {
-    let toolCallId: String
-    let command: String?
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    var body: some View {
-        let start = ToolRunClock.start(toolCallId)
-        TimelineView(.periodic(from: start, by: reduceMotion ? 1 : 0.5)) { context in
-            let running = max(0, context.date.timeIntervalSince(start))
-            let cursorOn = reduceMotion || Int(running * 2) % 2 == 0
-            let stacked = dynamicTypeSize.isAccessibilitySize
-            let layout = stacked
-                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
-                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
-            layout {
-                HStack(spacing: 0) {
-                    Text("$ " + (command ?? ""))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text("▌")
-                        .foregroundStyle(PortalTheme.hermes)
-                        .opacity(cursorOn ? 1 : 0)
-                }
-                if !stacked { Spacer(minLength: 4) }
-                Text(ToolPartView.elapsed(Int(running)))
-                    .monospacedDigit()
-            }
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(PortalTheme.muted)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Running \(command ?? ""), \(Duration.seconds(Int(running)).formatted(.units(width: .wide)))")
-        }
-    }
-}
-
-/// The running card's border: a flat, slow fade between the hairline and Hermes green. Static under Reduce Motion.
-@MainActor
-private struct RunningStroke: View {
-    let cornerRadius: CGFloat
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        Group {
-            if reduceMotion {
-                shape.stroke(PortalTheme.hermes, lineWidth: 1)
-            } else {
-                shape.stroke(PortalTheme.border, lineWidth: 1)
-                    .phaseAnimator([false, true]) { content, lit in
-                        content.overlay { shape.stroke(PortalTheme.hermes, lineWidth: 1).opacity(lit ? 1 : 0) }
-                    } animation: { _ in
-                        .easeInOut(duration: 1.2)
-                    }
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
 }
 
 private struct ArtifactShareSheet: UIViewControllerRepresentable {
