@@ -334,6 +334,12 @@ async def control(request: Request):
         if worker is not None:
             worker.join(timeout=1)
         return {"target_called": bool(entered), "auxiliary_called": bool(auxiliary), "auxiliary_tracked": bool(tracked and tracked[0])}
+    elif RECOVERY_ADAPTERS and body == {"profile_workers": True}:
+        owner = server._collective_hub_owner
+        home = Path(os.environ["HERMES_HOME"])
+        with owner._guard:
+            return {name: owner._active_workers.get(str(path.resolve()), 0)
+                    for name, path in (("default", home), ("fixture-other", home / "profiles" / "fixture-other"))}
     elif RECOVERY_ADAPTERS and body == {"profile_pollers": True}:
         result = {name: {"count": 0, "stopped": 0, "alive": 0} for name in ("default", "fixture-other")}
         with server._sessions_lock:
