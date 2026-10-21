@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useRef, useState, useSyncExternalStore } from "react";
+import { forwardRef, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ArrowUp, AtSign, FileText, Loader2, Mic, Paperclip, Plus, Sparkles, Square, X } from "lucide-react";
 import { BotAvatar } from "@/components/bots/bot-avatar";
@@ -14,7 +14,10 @@ import type { ReplyContext } from "@/lib/chat/reply";
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
 
-export type ComposerHandle = { focus: () => void; setText: (t: string, ownedReplyMention?: string | null) => void; appendText: (t: string) => void; setReplyMention: (prefix: string | null) => void; getReplyMention: () => string | null; submit: (text?: string) => Promise<void> };
+/** Shared by the empty and transcript layouts so replacing the textarea preserves typing intent. */
+export type ComposerFocusState = { restore: boolean; initialized: boolean };
+
+export type ComposerHandle = { focus: () => void; setText: (t: string, ownedReplyMention?: string | null, focus?: boolean) => void; appendText: (t: string) => void; setReplyMention: (prefix: string | null) => void; getReplyMention: () => string | null; submit: (text?: string) => Promise<void> };
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -49,17 +52,21 @@ export const Composer = forwardRef<
     /** group chats: bots that can be @mentioned */
     mentions?: { id?: string; name: string; icon: string | null; label?: string | null }[];
     autoFocus?: boolean;
+    focusState?: React.RefObject<ComposerFocusState>;
     /** Send button colour (a bot chat uses the bot's colour, like ChatGPT dots). */
     tint?: { bg: string; fg: string };
     voiceActive?: boolean;
     replyTo?: ReplyContext | null;
     onCancelReply?: () => void;
   }
->(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, tint, voiceActive = false, replyTo, onCancelReply }, ref) {
+>(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, focusState: sharedFocusState, tint, voiceActive = false, replyTo, onCancelReply }, ref) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const sendRef = useRef<HTMLButtonElement>(null);
+  const localFocusState = useRef<ComposerFocusState>({ restore: false, initialized: false });
+  const focusState = sharedFocusState ?? localFocusState;
   const fileRef = useRef<HTMLInputElement>(null);
   const sendingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -75,10 +82,10 @@ export const Composer = forwardRef<
   useImperativeHandle(ref, () => ({
     submit,
     focus: () => taRef.current?.focus(),
-    setText: (t: string, ownedReplyMention?: string | null) => {
+    setText: (t: string, ownedReplyMention?: string | null, focus = true) => {
       replyMention.current = ownedReplyMention ?? null;
       setText(t);
-      requestAnimationFrame(() => taRef.current?.focus());
+      if (focus) requestAnimationFrame(() => taRef.current?.focus());
     },
     appendText: (t: string) => {
       setText(current => `${current}${current && !/\s$/.test(current) ? " " : ""}${t}`);
@@ -103,9 +110,35 @@ export const Composer = forwardRef<
     ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
   }, [text]);
 
-  useEffect(() => {
-    if (autoFocus) taRef.current?.focus();
-  }, [autoFocus]);
+  useLayoutEffect(() => {
+    // A disabled or replaced textarea can drop focus to body without a focusin event.
+    // Explicit navigation (including a click on nonfocusable content) cancels restoration.
+    const cancel = () => { focusState.current.restore = false; };
+    const pointerDown = (event: PointerEvent) => { if (event.target !== taRef.current) cancel(); };
+    const keyDown = (event: KeyboardEvent) => { if (event.key === "Tab") cancel(); };
+    const focusIn = (event: FocusEvent) => { focusState.current.restore = event.target === taRef.current; };
+    document.addEventListener("pointerdown", pointerDown, true);
+    document.addEventListener("keydown", keyDown, true);
+    document.addEventListener("focusin", focusIn, true);
+    window.addEventListener("blur", cancel);
+    return () => {
+      document.removeEventListener("pointerdown", pointerDown, true);
+      document.removeEventListener("keydown", keyDown, true);
+      document.removeEventListener("focusin", focusIn, true);
+      window.removeEventListener("blur", cancel);
+    };
+  }, [focusState]);
+
+  useLayoutEffect(() => {
+    if (!focusState.current.initialized) {
+      focusState.current.initialized = true;
+      focusState.current.restore = !!autoFocus && document.activeElement === document.body;
+    }
+    // Wait for search verification to re-enable the field; never focus at stream completion.
+    if (focusState.current.restore && !disabled && document.activeElement === document.body && document.hasFocus()) {
+      taRef.current?.focus({ preventScroll: true });
+    }
+  });
 
   const upload = useCallback(async (list: FileList | File[]) => {
     for (const file of Array.from(list)) {
@@ -169,6 +202,12 @@ export const Composer = forwardRef<
     }
     const messageText = (starterText ?? text).trim();
     if (disabled || uploading || submitting || sendingRef.current || (!messageText && !files.some((f) => f.uploaded))) return;
+    // Return keyboard/button activation to typing before Send is disabled or becomes Stop.
+    // Imperative submissions from another control do not claim the user's focus.
+    if (document.activeElement === taRef.current || document.activeElement === sendRef.current) {
+      taRef.current?.focus({ preventScroll: true });
+      focusState.current.restore = true;
+    }
     sendingRef.current = true;
     setSubmitting(true);
     const draft = text;
@@ -492,6 +531,7 @@ export const Composer = forwardRef<
               </button>
             ) : (
               <button
+                ref={sendRef}
                 onClick={() => void submit()}
                 disabled={!canSend}
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-fg text-bg transition-opacity disabled:opacity-30"

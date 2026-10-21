@@ -17,7 +17,7 @@ import { newId } from "@/lib/ids";
 import { NativeSearchControl } from "./native-search-control";
 import type { NativeSearchMode } from "@/lib/native-search-policy";
 import { VoiceControl } from "./voice-control";
-import { Composer, type ComposerHandle, type UploadedFile } from "./composer";
+import { Composer, type ComposerFocusState, type ComposerHandle, type UploadedFile } from "./composer";
 import { AssistantMessage, hasContent, UserMessage, type BranchInfo } from "./message";
 import { DelegatedApprovals } from "./delegated-approvals";
 import { ShareButton } from "./share-dialog";
@@ -165,6 +165,7 @@ export function Chat({
     return () => layout.removeEventListener("change", closeOnLayoutChange);
   }, []);
   const composerRef = useRef<ComposerHandle>(null);
+  const composerFocusState = useRef<ComposerFocusState>({ restore: false, initialized: false });
   const commandScope = `${conversationId}:${target?.kind}:${target?.id}`;
   const [commandOutput, setCommandOutput] = useState<{ scope: string; result: CommandResult } | null>(null);
   const [catalogState, setCatalogState] = useState<{ scope: string; version: number; value: HermesCommandCatalog | null; error?: boolean } | null>(null);
@@ -316,7 +317,7 @@ export function Chat({
     const draft = rejectedDraft.current;
     if (!draft || messages.some((m) => m.id === draft.messageId)) return;
     const ownedMention = draft.mention && draft.text === draft.mention.trimEnd() ? draft.text : draft.mention;
-    composerRef.current?.setText(draft.text, ownedMention);
+    composerRef.current?.setText(draft.text, ownedMention, false);
     restoreReply(draft.reply);
     rejectedDraft.current = null;
   }, [messages, restoreReply]);
@@ -780,6 +781,7 @@ export function Chat({
               <Composer
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
+                focusState={composerFocusState}
                 onSend={send}
                 onStop={stopReply}
                 voiceActive={voiceActive}
@@ -895,6 +897,7 @@ export function Chat({
               <Composer
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
+                focusState={composerFocusState}
                 onSend={send}
                 onStop={stopReply}
                 voiceActive={voiceActive}
