@@ -21,7 +21,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: git rev-parse HEAD
       - name: Validate opt-in widget Compose configurations without loading operator secrets
-        run: node tests/docker/mcp-apps-compose.mjs
+        run: |
+          node tests/docker/mcp-apps-compose.mjs
+          python3 -m unittest discover -s tests/deployment -p test_deployment_smoke_config.py -v
       - run: docker build --target test -t collectiveui-test:ci .
       - run: docker run --rm --init --network none collectiveui-test:ci
       - name: Verify Codex environment with real Docker create and inspect

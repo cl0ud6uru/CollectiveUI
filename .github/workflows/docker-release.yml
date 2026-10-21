@@ -49,7 +49,9 @@ jobs:
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
       - name: Validate opt-in widget Compose configurations
-        run: node tests/docker/mcp-apps-compose.mjs
+        run: |
+          node tests/docker/mcp-apps-compose.mjs
+          python3 -m unittest discover -s tests/deployment -p test_deployment_smoke_config.py -v
 
       - name: Build the offline test image
         run: docker build --target test -t collectiveui-test:ci .
