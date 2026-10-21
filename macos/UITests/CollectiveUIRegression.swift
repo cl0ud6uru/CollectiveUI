@@ -31,11 +31,12 @@ final class CollectiveUIRegression: XCTestCase {
         app.terminate()
     }
 
-    private func launch(_ conversation: String = "demo-research", scenario: String? = nil, reset: Bool = true, appearance: String? = nil) {
+    private func launch(_ conversation: String = "demo-research", scenario: String? = nil, reset: Bool = true, appearance: String? = nil, hermes: Bool = false) {
         app.launchArguments = ["--demo", "--demo-open", conversation]
         if let scenario { app.launchArguments += ["--demo-stream-scenario", scenario] }
         if reset { app.launchArguments.append("--demo-reset-drafts") }
         if let appearance { app.launchArguments += ["-desktopAppearance", appearance] }
+        if hermes { app.launchArguments.append("--demo-hermes-cancellation") }
         app.launch()
         app.activate()
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
@@ -60,6 +61,33 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         row.click()
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
+    }
+
+    func testCommandOutputScrollsAndDismissalKeepsTheNewDraft() {
+        launch()
+        let lines = (1...60).map { "Offline output line \($0)" }.joined(separator: "\n")
+        enterDraft("/new\n" + lines)
+        composer.typeKey(.return, modifierFlags: .command)
+        let output = app.scrollViews["command.result.output"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5))
+        XCTAssertLessThan(output.frame.height, 180)
+        XCTAssertTrue(composer.isHittable)
+        output.scroll(byDeltaX: 0, deltaY: -4000)
+        XCTAssertTrue(output.staticTexts.containing(NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", "Offline output line 60", "Offline output line 60")).firstMatch.exists)
+        enterDraft("Keep this newer unsent draft")
+        app.buttons["command.result.dismiss"].click()
+        XCTAssertFalse(app.buttons["command.result.dismiss"].exists)
+        XCTAssertEqual(composer.value as? String, "Keep this newer unsent draft")
+    }
+
+    func testHermesStatusIsAvailableOnlyThroughAnExplicitCommand() {
+        launch("home-bot-atlas", hermes: true)
+        XCTAssertFalse(app.buttons["Check Hermes Status"].exists)
+        enterDraft("/status")
+        composer.typeKey(.return, modifierFlags: .command)
+        XCTAssertTrue(app.buttons["command.result.dismiss"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Chat status"].exists)
+        XCTAssertFalse(app.buttons["Check Hermes Status"].exists)
     }
 
     func testDraftsSurviveRepeatedNavigationAndRelaunch() {

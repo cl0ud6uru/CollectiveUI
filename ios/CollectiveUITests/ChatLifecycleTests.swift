@@ -194,11 +194,16 @@ final class ChatLifecycleTests: XCTestCase {
         let chat = ChatModel(app: app, conversationId: "chat-a", newChatTarget: target)
         chat.commandResult = try JSONDecoder().decode(ChatCommandResult.self, from: Data(#"{"title":"Usage","lines":["Synthetic usage result"]}"#.utf8))
         chat.isExecutingCommand = true
+        chat.composerText = "Keep this unsent draft"
+        let pending = PendingCommandAttempt(text: "/new", nextId: "original-destination")
+        chat.conversationState.pendingCommand = pending
 
         chat.dismissCommandResult()
 
         XCTAssertNil(chat.commandResult)
         XCTAssertTrue(chat.isExecutingCommand)
+        XCTAssertEqual(chat.composerText, "Keep this unsent draft")
+        XCTAssertEqual(chat.conversationState.pendingCommand?.nextId, pending.nextId)
     }
 
     func testSuccessfulSendClearsSharedDraftAndNormalStopFinishDoesNotShowStopped() async {

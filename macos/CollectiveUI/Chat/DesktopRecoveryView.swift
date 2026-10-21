@@ -27,7 +27,7 @@ struct DesktopRecoveryView: View {
                 .background(PortalTheme.surfaceSecondary, in: .rect(cornerRadius: 14))
             }
             if let error = model.commandError { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
-            if let result = model.commandResult { Text(([result.title] + result.lines).joined(separator: "\n")).textSelection(.enabled) }
+            if let result = model.commandResult { DesktopCommandResultView(result: result, dismiss: model.dismissCommandResult) }
             if model.needsMessageStatusCheck && !model.isStreaming {
                 Button(model.isCheckingMessageStatus ? "Checking…" : "Check Message Status") {
                     Task { await model.checkMessageStatus() }
