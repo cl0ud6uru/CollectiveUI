@@ -110,7 +110,8 @@ async function assertCanCreate() {
   return p;
 }
 
-async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>, input: BotInput, botId?: string) {
+async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>, input: BotInput, botId?: string,
+  { omitUnavailableDelegates = false }: { omitUnavailableDelegates?: boolean } = {}) {
   if (input.executionMode === "service" && !p.isAdmin) throw new HttpError(403, "Only admins can configure service bots.");
   if (input.codex) {
     if (input.appId || input.executionMode === 'service' || input.coordinatorEligible || input.isCoordinator || input.tools.length || input.delegateIds.length || input.delegatorIds?.length)
@@ -166,10 +167,16 @@ async function validateBotInput(p: Awaited<ReturnType<typeof requirePrincipal>>,
   const delegates: string[] = [];
   for (const id of input.delegateIds) {
     if (id === botId) continue;
-    const delegate = await getAccessibleBot(p, id);
-    await requirePortableEngine(delegate.appId, delegate.hermesTeam);
-    if (delegate.executionMode === "service") throw new HttpError(400, "Service bots cannot be delegates. Open a direct chat instead.");
-    delegates.push(id);
+    try {
+      const delegate = await getAccessibleBot(p, id);
+      await requirePortableEngine(delegate.appId, delegate.hermesTeam);
+      if (delegate.executionMode === "service") throw new HttpError(400, "Service bots cannot be delegates. Open a direct chat instead.");
+      delegates.push(id);
+    } catch (error) {
+      // A copy inherits only delegates usable by its new owner. Explicit editor
+      // selections stay strict, and unexpected database/operational errors propagate.
+      if (!omitUnavailableDelegates || !(error instanceof HttpError) || ![400, 403, 404].includes(error.status)) throw error;
+    }
   }
   const userIds = [...new Set(input.userIds ?? (botId ? (await db.select({ userId: botUserAccess.userId }).from(botUserAccess).where(eq(botUserAccess.botId, botId))).map(a => a.userId) : []))];
   if (input.visibility === "groups" && !input.groupIds.length && !userIds.length) throw new HttpError(400, "Pick at least one group or user");
@@ -661,7 +668,7 @@ async function createBotFromSnapshot(snap: BotTemplateSnapshot, opts: { name: st
     delegateIds: opts.delegateIds ?? [],
     executionMode: "caller",
   };
-  const v = await validateBotInput(p, input);
+  const v = await validateBotInput(p, input, undefined, { omitUnavailableDelegates: true });
   const bot = await db.transaction(async (tx) => {
     const [bot] = await tx
       .insert(bots)
