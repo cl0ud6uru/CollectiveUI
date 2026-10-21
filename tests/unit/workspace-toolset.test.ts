@@ -110,6 +110,19 @@ describe("buildToolset workspace wiring", () => {
     expect(ts.workspace?.instanceId).toBe("template-instance-123");
   });
 
+  it.each([
+    { depth: 1, relayWorkspaceApproval: false },
+    { depth: 1, relayWorkspaceApproval: true },
+    { depth: 2, relayWorkspaceApproval: true },
+  ])("omits conversation attachment import for a delegated child %j", async over => {
+    const ts = await buildToolset(newCtx(over));
+    expect(Object.keys(ts.tools)).toEqual(["workspace_bash", "workspace_write", "workspace_edit", "workspace_read", "workspace_list", "workspace_grep"]);
+    expect(ts.entries.some(entry => entry.name === "workspace_import_attachment")).toBe(false);
+    expect(ts.workspace).toBeInstanceOf(PortalWorkspace);
+    expect(ts.timeout).toEqual({ tools: { workspace_bashMs: 120_000 } });
+    await ts.close();
+  });
+
   it("warns and leaves the tools out when workspaces are off, not allowed or not set up", async () => {
     sandbox = { ...ENABLED, enabled: false };
     let ts = await buildToolset(newCtx());
