@@ -29,7 +29,7 @@ import {
   skills,
   type BotTemplateSnapshot,
 } from "@/db/schema";
-import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers } from "@/lib/authz";
+import { getAccessibleApp, getAccessibleBot, getEditableBot, HttpError, listAccessibleApps, listAccessibleMcpServers, mayCreateBots } from "@/lib/authz";
 import { chunkText } from "@/lib/files/extract";
 import { newToken } from "@/lib/ids";
 import { enqueue, QUEUES } from "@/lib/jobs";
@@ -104,8 +104,8 @@ export type BotInput = z.infer<typeof BotInput>;
 async function assertCanCreate() {
   const p = await requirePrincipal();
   const t = await getSetting("tools");
-  if (t.botCreation === "admins" && !p.isAdmin) throw new HttpError(403, "Only admins can create bots");
-  if (t.botCreation === "groups" && !p.canCreateBots) throw new HttpError(403, "You are not allowed to create bots");
+  if (!mayCreateBots(p, t.botCreation))
+    throw new HttpError(403, t.botCreation === "admins" ? "Only admins can create bots" : "You are not allowed to create bots");
   return p;
 }
 
@@ -359,9 +359,11 @@ export async function revokeServiceBotGrant(grantId: string) {
 }
 
 /** "Create with chat": draft a bot configuration from a plain-language description. */
-export async function draftBotFromDescription(description: string): Promise<BotDraftResult> {
+export async function draftBotFromDescription(description: string, botId?: string): Promise<BotDraftResult> {
   try {
-    const p = await requirePrincipal();
+    // Drafting spends the company utility model: only for people who may create bots, or edit the bot being drafted.
+    const p = botId ? await requirePrincipal() : await assertCanCreate();
+    if (botId) await getEditableBot(p, botId);
     const idea = z.string().trim().min(1, "Describe the bot first.").max(DRAFT_DESCRIPTION_MAX_LENGTH, "Shorten the description and try again.").safeParse(description);
     if (!idea.success) return { ok: false, error: idea.error.issues[0].message };
     // No silent fallback to another model: drafting uses only the configured utility model.
