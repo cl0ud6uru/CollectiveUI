@@ -76,7 +76,7 @@ class FakeDockerDriver extends PersonalCodexDriver {
   imageExists = true;
   imageId = LOCAL_IMAGE;
 
-  constructor(owners = [OWNER], sandboxProfile?: 'collectiveui-sandbox-v1', image = IMAGE) { super({ ...config(owners), sandboxProfile, image }); }
+  constructor(owners = [OWNER], sandboxProfile?: 'collectiveui-sandbox-v1', image = IMAGE, cpus = 2) { super({ ...config(owners), sandboxProfile, image, cpus }); }
 
   protected override async command(args: string[]) {
     this.calls.push([...args]);
@@ -160,6 +160,33 @@ class FakeDockerDriver extends PersonalCodexDriver {
 const unavailable = /configuration or storage needs operator reconciliation/i;
 
 describe('personal Codex Docker isolation', () => {
+  it('accepts exact Docker nanocpu values throughout the supported hundredth-CPU range', async () => {
+    for (let hundredths = 25; hundredths <= 800; hundredths++) {
+      const driver = new FakeDockerDriver([OWNER], undefined, IMAGE, hundredths / 100);
+      driver.container = containerFixture();
+      // Integer arithmetic models Docker's parsed value independently of the JS fraction.
+      driver.container.HostConfig.NanoCpus = hundredths * 10_000_000;
+      driver.container.State.Running = false;
+      driver.seedVolumes();
+      expect((await driver.inspect(OWNER))?.HostConfig.NanoCpus).toBe(hundredths * 10_000_000);
+      await driver.ensure(OWNER);
+      expect(driver.calls.filter(args => args[0] === 'start')).toEqual([['start', driver.name(OWNER)]]);
+      expect(driver.calls.some(args => args[0] === 'create')).toBe(false);
+      driver.expectNoDestructiveOrExpansiveDockerCalls();
+    }
+  });
+
+  it.each([-1, 1])('rejects a retained CPU limit that differs by %i nanocpu', async difference => {
+    const driver = new FakeDockerDriver([OWNER], undefined, IMAGE, 4.1);
+    driver.container = containerFixture();
+    driver.container.HostConfig.NanoCpus = 4_100_000_000 + difference;
+    driver.seedVolumes();
+    await expect(driver.inspect(OWNER)).rejects.toThrow(unavailable);
+    await expect(driver.ensure(OWNER)).rejects.toThrow(unavailable);
+    expect(driver.calls.some(args => args[0] === 'start' || args[0] === 'create')).toBe(false);
+    driver.expectNoDestructiveOrExpansiveDockerCalls();
+  });
+
   it.each([[], ['NODE_VERSION'], ['YARN_VERSION'], ['NODE_VERSION', 'YARN_VERSION']].map(markers => ({ markers })))('accepts only the optional known unset markers: $markers', async ({ markers }) => {
     const driver = new FakeDockerDriver();
     driver.container = containerFixture();
