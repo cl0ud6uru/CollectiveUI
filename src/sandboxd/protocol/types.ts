@@ -68,6 +68,8 @@ export type Health = {
   /** Isolation sandboxd will provide for "any" requests. */
   defaultRuntime: Runtime | null;
   image: { ref: string; present: boolean };
+  /** Additive report: absent on older daemons, which cannot admit template profiles. */
+  profiles?: { key: string; installed: boolean; imageId: string | null }[];
   limits: { memoryMb: number; cpus: number; pids: number; idleMinutes: number; maxRunning: number; maxExecs: number; maxExecSeconds: number };
   running: number;
   warnings: string[];

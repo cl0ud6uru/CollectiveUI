@@ -16,8 +16,11 @@ export const CREDENTIAL_MODES = ["org", "user", "user_or_org"] as const;
 export type CredentialMode = (typeof CREDENTIAL_MODES)[number];
 
 /** Why a model is called. Background purposes (title, memory, draft, embedding) always run on org credentials. */
-export const MODEL_PURPOSES = ["chat", "group", "delegate", "title", "memory", "draft", "embedding", "decision"] as const;
+export const MODEL_PURPOSES = ["chat", "group", "delegate", "title", "memory", "draft", "embedding", "decision", "voice"] as const;
 export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
+
+/** Call lifecycle evidence, independent of whether the provider reported token counts. */
+export type UsageCompletionStatus = "complete" | "incomplete" | "started";
 
 /**
  * Who pays for a call. "org" = company credentials; "chatgpt_plan" = the user's own ChatGPT plan (Codex limits);

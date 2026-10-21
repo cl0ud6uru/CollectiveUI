@@ -121,10 +121,10 @@ export function WorkspaceApproval({
   );
 }
 
-type BashOutput =
+type BashOutput = (
   | { status: "running"; stdout: string; stderr: string; bytes: number }
   | { status: "done"; ok: boolean; exitCode: number; reason: string; stdout: string; stderr: string; truncated: boolean; durationMs: number }
-  | { status: "error"; reason: string; message: string };
+  | { status: "error"; reason: string; message: string }) & { workspaceInstanceId?: string | null; workspaceExecutionId?: string };
 
 const REASON: Record<string, string> = { timeout: "timed out", output_limit: "stopped: too much output", killed: "stopped", stopped: "workspace stopped", died: "workspace restarted" };
 
@@ -155,11 +155,11 @@ export function BashResult({ part, live }: { part: Part; live: boolean }) {
           <Button
             size="sm"
             variant="ghost"
-            disabled={stopping}
+            disabled={stopping || o?.workspaceInstanceId === undefined || !o.workspaceExecutionId}
             aria-label="Stop command"
             onClick={async () => {
               setStopping(true);
-              const r = await stopWorkspaceCommand(part.toolCallId).catch(() => ({ ok: false as const, error: "Couldn't stop it" }));
+              const r = await stopWorkspaceCommand(part.toolCallId, o?.workspaceInstanceId, o?.workspaceExecutionId).catch(() => ({ ok: false as const, error: "Couldn't stop it" }));
               if (!r.ok) toast.error(r.error);
               setStopping(false);
             }}

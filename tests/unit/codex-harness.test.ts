@@ -59,7 +59,7 @@ const server = createServer(), wss = new WebSocketServer({ server });
 let root: string, origin: string;
 const serverReplies: unknown[] = [];
 unixServer.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
-let mode: 'normal' | 'hold' | 'lost_ack' | 'approval' | 'wrong_account' | 'unreachable_stop' | 'switch_preflight' | 'native_tool' | 'completed_tool' | 'completed_text' | 'agent_tools' | 'switch_at_completion' | 'resolved_approval' = 'normal';
+let mode: 'normal' | 'hold' | 'lost_ack' | 'approval' | 'wrong_account' | 'unreachable_stop' | 'switch_preflight' | 'native_tool' | 'completed_tool' | 'completed_text' | 'agent_tools' | 'switch_at_completion' | 'resolved_approval' | 'usage_error' | 'no_usage_error' = 'normal';
 const seen: { owner: string; method: string; params: Record<string, unknown> }[] = [];
 let subscription = false, managed = false, deviceManaged = false, nativeSequence = 0;
 let nativeWorkspace: string | undefined, nativePlan = 'business';
@@ -124,9 +124,10 @@ wss.on('connection', (ws, req) => {
       notification('item/agentMessage/delta', { threadId, turnId: 'foreign', itemId: 'bad', delta: 'not yours either' });
       if (mode !== 'completed_text') notification('item/agentMessage/delta', { threadId, turnId, itemId: 'answer', delta: `Hello ${owner}` });
       notification('item/completed', { threadId, turnId, item: { id: 'answer', type: 'agentMessage', text: `Hello ${owner}` } });
-      notification('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { total: { inputTokens: managed ? nativeSequence * 7 : 7, outputTokens: managed ? nativeSequence * 3 : 3, cachedInputTokens: managed ? nativeSequence * 2 : 2, reasoningOutputTokens: managed ? nativeSequence : 1 }, last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } } });
-      states.set(threadId, { id: turnId, status: 'completed' });
-      notification('turn/completed', { threadId, turn: { id: turnId, status: 'completed' } });
+      if (mode !== 'no_usage_error') notification('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { total: { inputTokens: managed ? nativeSequence * 7 : 7, outputTokens: managed ? nativeSequence * 3 : 3, cachedInputTokens: managed ? nativeSequence * 2 : 2, reasoningOutputTokens: managed ? nativeSequence : 1 }, last: { inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, reasoningOutputTokens: 0 } } });
+      const status = mode === 'usage_error' || mode === 'no_usage_error' ? 'failed' : 'completed';
+      states.set(threadId, { id: turnId, status });
+      notification('turn/completed', { threadId, turn: { id: turnId, status } });
       reply({ turn: { id: turnId } });
     } else if (m.method === 'turn/interrupt') {
       if (mode === 'unreachable_stop') { ws.terminate(); return; }
@@ -560,6 +561,37 @@ describe('Codex native app-server harness (local protocol fixtures, no live infe
     expect((await db.select().from(schema.personalCodexAccounts))[0].credentialBinding).toBe(stableBinding);
     next.opts.history.at(-2)!.id = 'another-branch';
     await expect(runCodexTurn(next.opts)).rejects.toThrow('conversation branch');
+  });
+  it.each(['latest', 'previous', 'unknown'] as const)('preserves the %s cumulative baseline after an errored retained turn', async scenario => {
+    await managedConnection();
+    const first = await options('alice');
+    const initial = await consume(first.opts);
+    expect(initial.result.error).toBeUndefined();
+    if (scenario === 'unknown') await db.update(schema.codexThreads).set({ tokenTotals: null });
+    const follow = async (prior: typeof first, reply: Awaited<ReturnType<typeof consume>>, suffix: string) => {
+      await db.update(schema.agentRuns).set({ status: reply.result.error ? 'failed' : 'succeeded' }).where(eq(schema.agentRuns.id, prior.runId));
+      const next = await options('alice', suffix);
+      next.opts.conversation = first.opts.conversation;
+      next.opts.history = [...prior.opts.history, reply.result.responseMessage, { id: `${suffix}-user`, role: 'user', parts: [{ type: 'text', text: 'Continue.' }] }];
+      await db.update(schema.agentRuns).set({ conversationId: first.opts.conversation.id }).where(eq(schema.agentRuns.id, next.runId));
+      return next;
+    };
+    const failing = await follow(first, initial, 'failing');
+    mode = scenario === 'latest' ? 'usage_error' : 'no_usage_error';
+    const failed = await consume(failing.opts);
+    expect(failed.result.error).toContain('did not complete');
+    const [retained] = await db.select().from(schema.codexThreads);
+    expect(retained.tokenTotals?.inputTokens ?? null).toBe(scenario === 'latest' ? 14 : scenario === 'previous' ? 7 : null);
+    expect(retained.lastMessageId).toBe(failed.result.responseMessage.id);
+    const next = await follow(failing, failed, 'after-error');
+    mode = 'normal';
+    expect((await consume(next.opts)).result.error).toBeUndefined();
+    const ledger = await db.select().from(schema.usageEvents);
+    expect(ledger.map(row => row.inputTokens)).toEqual(scenario === 'latest' ? [7, 7, 7] : scenario === 'previous' ? [7, null, 14] : [7, null, null]);
+    expect(ledger.every(row => row.billingSource === 'chatgpt_plan' && row.costMicros === null)).toBe(true);
+    expect((await db.select().from(schema.codexThreads))[0].tokenTotals?.inputTokens).toBe(21);
+    expect(seen.filter(call => call.method === 'thread/start')).toHaveLength(1);
+    expect(seen.filter(call => call.method === 'thread/resume')).toHaveLength(2);
   });
   it('requires the caller’s explicit decline for native escalation and never grants expanded permissions', async () => {
     await managedConnection(); mode = 'approval';

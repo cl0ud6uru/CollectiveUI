@@ -1,0 +1,2 @@
+ALTER TABLE "usage_events" ADD COLUMN "completion_status" text;--> statement-breakpoint
+ALTER TABLE "usage_events" ADD CONSTRAINT "usage_events_completion_status_check" CHECK ("usage_events"."completion_status" is null or "usage_events"."completion_status" in ('complete', 'incomplete', 'started'));

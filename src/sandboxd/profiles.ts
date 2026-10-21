@@ -10,7 +10,7 @@ type WorkspaceCapabilities = {
 
 export type WorkspaceRuntimeProfile = {
   key: string;
-  /** Template profiles require a content-addressed image ID; null stays unavailable until W3 records a build. */
+  /** Template image IDs come only from daemon configuration; definitions alone do not install an image. */
   imageRef: string | null;
   /** Required immutable starter bundle copied by the pinned image entrypoint. */
   seedBundleKey: string | null;
@@ -71,7 +71,7 @@ export const WORKSPACE_PROFILES: Readonly<Record<string, WorkspaceRuntimeProfile
 
 export const LEGACY_PROFILE_KEY = "legacy";
 
-export function getWorkspaceRuntimeProfile(key: string, legacyImageRef = "ai-portal-sandbox:p5"): WorkspaceRuntimeProfile | null {
+export function getWorkspaceRuntimeProfile(key: string, legacyImageRef = "ai-portal-sandbox:p5", images: Readonly<Record<string, string>> = {}): WorkspaceRuntimeProfile | null {
   if (key === LEGACY_PROFILE_KEY) {
     return { ...profile(LEGACY_PROFILE_KEY, legacyImageRef, null, {
       shell: true,
@@ -80,7 +80,8 @@ export function getWorkspaceRuntimeProfile(key: string, legacyImageRef = "ai-por
       agentBrowserView: false,
     }), maxLimits: DAEMON_CONFIG_MAX };
   }
-  return WORKSPACE_PROFILES[key] ?? null;
+  const definition = Object.hasOwn(WORKSPACE_PROFILES, key) ? WORKSPACE_PROFILES[key] : null;
+  return definition ? { ...definition, imageRef: images[key] ?? null } : null;
 }
 
 /** Per-profile values only lower the administrator's daemon limits. */

@@ -45,7 +45,8 @@ export async function POST(req: Request) {
     const { context, history } = reactionTest ? { context: "", history: [] } : await prepareVoiceConversation(p, target, chatId, targetInput.conversationId);
     const settings = await getSetting("voice");
     if (reactionTest && !settings.reactions) throw new HttpError(403, "Enable avatar Decisions in Voice & avatar before testing live reactions.");
-    const result = await createVoiceSession(target, sdp, undefined, history, { reactionTest, signal: req.signal });
+    const result = await createVoiceSession(target, sdp, undefined, history, { reactionTest, signal: req.signal,
+      userId: p.user.id, conversationId: targetInput.conversationId ?? chatId });
     return Response.json({ session: { id: result.sessionId }, transport: { type: "webrtc", sdp: result.sdp }, context, history,
       avatarUrl: settings.avatarUrl, reactions: settings.reactions }, { headers: { "cache-control": "no-store" } });
   } catch (err) { return errorResponse(err); }

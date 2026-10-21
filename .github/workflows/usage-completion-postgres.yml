@@ -1,0 +1,43 @@
+name: Usage completion PostgreSQL proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  usage-completion-postgres:
+    name: Usage lifecycle and billing attribution on PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: usage_fixture
+          POSTGRES_PASSWORD: synthetic-fixture-only
+          POSTGRES_DB: collective_review_usage_completion_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U usage_fixture -d collective_review_usage_completion_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://usage_fixture:synthetic-fixture-only@127.0.0.1:5432/collective_review_usage_completion_test
+      DATABASE_POOL_MAX: 1
+      ENCRYPTION_KEY: synthetic-usage-review-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Migrate the disposable database
+        run: npm run db:migrate
+      - name: Require actual ledger, provider-attribution and budget-reservation proofs
+        env:
+          USAGE_COMPLETION_POSTGRES: '1'
+        run: npx vitest run --project integration tests/integration/usage-completion-postgres.test.ts --maxWorkers=1
+      - name: Require legacy and ledger aggregation without double counting
+        run: npx vitest run --project integration tests/integration/usage-summary.test.ts --maxWorkers=1

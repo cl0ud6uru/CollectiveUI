@@ -37,7 +37,7 @@ async function contention(rootId: string, workers: Awaited<ReturnType<typeof chi
   } finally { await lock.query('COMMIT'); lock.release(); }
   return Promise.all(results);
 }
-async function migrateThrough(last: number) {
+async function migrateThrough(last = Number.POSITIVE_INFINITY) {
   const journal = JSON.parse(readFileSync('src/db/migrations/meta/_journal.json', 'utf8'));
   const entries = journal.entries.filter((entry: { idx: number }) => entry.idx <= last);
   const directory = mkdtempSync(path.join(tmpdir(), 'native-budget-migrations-'));
@@ -69,6 +69,17 @@ describe.skipIf(!enabled)('required dedicated PostgreSQL native budget proof', (
     expect((await q.pool.query('SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations')).rows[0].n).toBe(61);
     expect((await q.pool.query("SELECT extversion FROM pg_extension WHERE extname='vector'")).rowCount).toBe(1);
     expect((await q.pool.query("SELECT to_regclass('public.native_run_budget_attempts') AS name")).rows[0].name).toBe('native_run_budget_attempts');
+    // Keep the historical budget upgrade checks above, then bring the fixture
+    // forward before exercising application code that uses the current schema.
+    await q.pool.query("INSERT INTO usage_events(id,provider_kind,model,purpose,billing_source,billing_route) VALUES ('migration-usage-preserved','hermes','unreported','chat','hermes','unknown:hermes')");
+    const historicalUsage = (await q.pool.query("SELECT * FROM usage_events WHERE id='migration-usage-preserved'")).rows[0];
+    await migrateThrough(); await migrateThrough();
+    const journal = JSON.parse(readFileSync('src/db/migrations/meta/_journal.json', 'utf8'));
+    expect((await q.pool.query('SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations')).rows[0].n).toBe(journal.entries.length);
+    expect((await q.pool.query("SELECT context_window_tokens FROM ai_apps WHERE id='migration-preserved'")).rows).toEqual([{ context_window_tokens: null }]);
+    const { completion_status, ...upgradedUsage } = (await q.pool.query("SELECT * FROM usage_events WHERE id='migration-usage-preserved'")).rows[0];
+    expect(completion_status).toBeNull(); expect(upgradedUsage).toEqual(historicalUsage);
+    await expect(q.pool.query("UPDATE usage_events SET completion_status='guessed' WHERE id='migration-usage-preserved'")).rejects.toMatchObject({ code: '23514' });
   }, 60000);
   beforeEach(async () => {
     await q.pool.query('TRUNCATE users, ai_apps, settings CASCADE');

@@ -11,7 +11,7 @@ import type { ExitReason } from "./protocol/frames.ts";
 import type { ErrorCode, ExecRequest, Health, Isolation, Runtime, SandboxState } from "./protocol/types.ts";
 import { EXEC_ID_RE, REF_RE } from "./protocol/types.ts";
 import { containerName, containerSpec, execSpec, LABEL_INSTANCE, LABEL_KIND, LABEL_PROFILE, LABEL_SANDBOX, LABEL_SPEC, specHash, volumeName, volumeSpec } from "./spec.ts";
-import { effectiveProfileLimits, getWorkspaceRuntimeProfile, LEGACY_PROFILE_KEY } from "./profiles.ts";
+import { effectiveProfileLimits, getWorkspaceRuntimeProfile, LEGACY_PROFILE_KEY, WORKSPACE_PROFILES } from "./profiles.ts";
 import { TemplateError, killRun, workspaceExec } from "./templates.ts";
 
 const STATUS: Record<ErrorCode, number> = {
@@ -162,7 +162,7 @@ export class Manager {
   private async resolveImage(profileKey: string): Promise<string> {
     const cached = this.imageIds.get(profileKey);
     if (cached) return cached;
-    const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image);
+    const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image, this.config.profileImages);
     if (!profile) throw new SandboxdError("bad_request", "Unknown workspace runtime profile");
     const imageRef = profile.imageRef;
     if (!imageRef || (profileKey !== LEGACY_PROFILE_KEY && !/^sha256:[0-9a-f]{64}$/.test(imageRef))) {
@@ -170,6 +170,7 @@ export class Manager {
     }
     const img = await this.docker.imageInspect(imageRef);
     if (!img) throw new SandboxdError("image_missing", `The image for workspace profile ${profile.key} (${imageRef}) isn't installed on this host`);
+    if (profileKey !== LEGACY_PROFILE_KEY && img.Id !== imageRef) throw new SandboxdError("image_missing", "The installed template image does not match its pinned ID");
     this.imageIds.set(profileKey, img.Id);
     return img.Id;
   }
@@ -241,7 +242,7 @@ export class Manager {
   ensure(ref: string, isolation: Isolation, callerExec?: string, callerHelper = false, runtimeProfileKey = LEGACY_PROFILE_KEY): Promise<string> {
     this.checkRef(ref);
     return this.locked(ref, () => this.admitted(async () => {
-      const profile = getWorkspaceRuntimeProfile(runtimeProfileKey, this.config.image);
+      const profile = getWorkspaceRuntimeProfile(runtimeProfileKey, this.config.image, this.config.profileImages);
       if (!profile) throw new SandboxdError("bad_request", "Unknown workspace runtime profile");
       const name = containerName(ref);
       let info = await this.docker.containerInspect(name);
@@ -526,7 +527,7 @@ export class Manager {
   private async toState(ref: string, info: ContainerInfo | null): Promise<SandboxState> {
     const e = this.entries.get(ref);
     const profileKey = info?.Config.Labels[LABEL_PROFILE] ?? this.refProfiles.get(ref) ?? LEGACY_PROFILE_KEY;
-    const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image);
+    const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image, this.config.profileImages);
     let imageId = profile ? this.imageIds.get(profileKey) : undefined;
     if (profile && !imageId) imageId = await this.resolveImage(profileKey).catch(() => undefined);
     const want = imageId && profile
@@ -600,12 +601,18 @@ export class Manager {
       warnings.push(err instanceof DockerError ? err.message : String(err));
     }
     const c = this.config;
+    const profiles = await Promise.all(Object.keys(WORKSPACE_PROFILES).map(async key => {
+      const imageId = c.profileImages[key];
+      const installed = !!imageId && (await this.docker.imageInspect(imageId).catch(() => null))?.Id === imageId;
+      return { key, installed, imageId: installed ? imageId : null };
+    }));
     return {
       ok: !!docker && present,
       docker,
       gvisor: { available: this.gvisor.available, ...(this.gvisor.reason ? { reason: this.gvisor.reason } : {}) },
       defaultRuntime: this.gvisor.available ? "runsc" : c.runtime === "runsc" ? null : "runc",
       image: { ref: c.image, present },
+      profiles,
       limits: {
         memoryMb: c.limits.memoryMb,
         cpus: c.limits.cpus,
