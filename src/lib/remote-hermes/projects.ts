@@ -12,12 +12,13 @@ import { ownedNativeSession, profileName } from './sessions';
 import { nativeHub } from './hub';
 import { remoteAccess } from './store';
 import { NativeConnectionChanged, NativeRpcError, record } from './socket';
-import { projectProjection, scheduleProjection } from './operations';
+import { pluginSelectionProjection, projectProjection, scheduleProjection } from './operations';
 
 export const projectOperationInput = z.union([
   z.object({ operation: z.literal('prepare'), action: z.literal('create'), name: z.string().trim().min(1).max(80) }).strict(),
   z.object({ operation: z.literal('prepare'), action: z.literal('select'), projectId: z.string().min(1).max(200) }).strict(),
   z.object({ operation: z.literal('prepare'), action: z.enum(['pause', 'resume']), scheduleId: z.string().min(1).max(200) }).strict(),
+  z.object({ operation: z.literal('prepare'), action: z.literal('plugin-selection'), enabled: z.boolean() }).strict(),
   z.object({ operation: z.literal('confirm'), confirmation: z.string().min(1).max(4000) }).strict(),
 ]);
 
@@ -28,6 +29,9 @@ const claimSchema = z.discriminatedUnion('action', [
     socketEpoch: z.number().int().positive(), action: z.literal('select'), projectId: z.string().min(1).max(200), projectName: z.string().max(300), expiresAt: z.number().int() }).strict(),
   z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
     socketEpoch: z.number().int().positive(), action: z.literal('schedule'), scheduleAction: z.enum(['pause', 'resume']), scheduleId: z.string().min(1).max(200), scheduleName: z.string().max(300), scheduleState: z.string().max(100), enabled: z.boolean(), expiresAt: z.number().int() }).strict(),
+  z.object({ requestId: z.string().uuid(), runtimeId: z.string().min(1).max(200), storedId: z.string().min(1).max(200), profile: profileName,
+    socketEpoch: z.number().int().positive(), action: z.literal('plugin-selection'), enabled: z.boolean(),
+    identityRevision: z.string().regex(/^[a-f0-9]{64}$/), expectedRevision: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int() }).strict(),
 ]);
 type Claim = z.infer<typeof claimSchema>;
 type Session = typeof remoteHermesSessions.$inferSelect;
@@ -57,18 +61,23 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   const access = await remoteAccess(ownerId, connectionId, 'admission');
   if (!(await access.client.profiles()).some(profile => profile.name === initialRow.profile)) throw new HttpError(404, 'Hermes profile not found.');
   const hub = nativeHub(ownerId, connectionId);
-  await hub.refresh(initialRow);
+  const isPluginSelection = input.operation === 'prepare' ? input.action === 'plugin-selection' : target?.action === 'plugin-selection';
+  // Native session.resume can initialize plugins while constructing its tool
+  // inventory. Selection must only use an already-open matching owner-bound
+  // runtime; its own native inspection proves current full-profile idleness.
+  if (!isPluginSelection) await hub.refresh(initialRow);
+  else if (!hub.sessions.has(sessionId)) throw new HttpError(409, 'Open the saved native chat before reviewing plugin selection.');
   const cached = () => hub.sessions.get(sessionId);
   // refresh can populate a missing runtime identity from Hermes; take the
   // persisted row it just reconciled as the comparison source for this action.
-  const row = cached()?.row ?? initialRow;
+  const row = isPluginSelection ? initialRow : cached()?.row ?? initialRow;
 
   function compatible(current: Session | undefined) {
     const live = cached();
     if (!live?.row.runtimeId || !live.socketEpoch || hub.socket.state !== 'connected' || live.socketEpoch !== hub.socket.connectionEpoch)
       throw new NativeConnectionChanged();
     if (!current || current.profile !== row.profile || live.row.profile !== row.profile || live.view.profile !== row.profile || live.view.nativeProfile !== row.profile ||
-      current.storedId !== live.row.storedId || current.runtimeId !== live.row.runtimeId || current.connectionId !== connectionId)
+      current.storedId !== live.row.storedId || current.runtimeId !== live.row.runtimeId || current.connectionId !== connectionId || live.row.connectionId !== connectionId)
       throw new HttpError(409, 'Refresh the selected Hermes chat before changing its project.');
     return live;
   }
@@ -108,6 +117,14 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     if (value.scoped !== row.profile) throw new HttpError(501, 'This Hermes version cannot confirm profile-scoped schedules.');
     return scheduleProjection(value);
   }
+  async function selection(epoch: number) {
+    return pluginSelectionProjection(await hub.socket.callConnected('collective.plugins.selection.v1',
+      { profile: row.profile, session_id: cached()!.row.runtimeId, action: 'inspect' }, epoch, 30_000));
+  }
+  async function previousSelection(epoch: number) {
+    return { confirmation: undefined, accepted: false, duplicate: true, pluginSelection: await selection(epoch),
+      output: 'This selection request was already submitted and will not be replayed. The current stored preference is shown; runtime loaded state is unreported.' };
+  }
 
   if (input.operation === 'prepare') {
     const snapshot = idle(row);
@@ -125,6 +142,12 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       if (!project || project.archived) throw new HttpError(409, 'Choose an active project from the refreshed Hermes list.');
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
         action: 'select', projectId: project.id, projectName: project.name, expiresAt: Date.now() + 60_000 };
+    } else if (input.action === 'plugin-selection') {
+      const current = await selection(snapshot.socketEpoch);
+      if (current.selected === input.enabled) throw new HttpError(409, 'This stored plugin selection already matches. Refresh before reviewing a change.');
+      claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile,
+        socketEpoch: snapshot.socketEpoch, action: 'plugin-selection', enabled: input.enabled,
+        identityRevision: current.identityRevision, expectedRevision: current.revision, expiresAt: Date.now() + 60_000 };
     } else {
       const listed = await schedules(snapshot.socketEpoch);
       const schedule = listed.schedules.find(value => value.id === input.scheduleId);
@@ -134,8 +157,8 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       claim = { requestId: randomUUID(), runtimeId: snapshot.row.runtimeId!, storedId: snapshot.row.storedId, profile: row.profile, socketEpoch: snapshot.socketEpoch,
         action: 'schedule', scheduleAction: input.action, scheduleId: schedule.id, scheduleName: schedule.name, scheduleState: schedule.state, enabled: input.action === 'resume', expiresAt: Date.now() + 60_000 };
     }
-    return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action, enabled: claim.action === 'schedule' ? claim.enabled : undefined,
-      name: claim.action === 'create' ? claim.name : claim.action === 'select' ? claim.projectName : claim.scheduleName,
+    return { confirmation: encrypt(JSON.stringify(claim), aad), expiresAt: claim.expiresAt, action: claim.action, enabled: claim.action === 'schedule' || claim.action === 'plugin-selection' ? claim.enabled : undefined,
+      name: claim.action === 'create' ? claim.name : claim.action === 'select' ? claim.projectName : claim.action === 'plugin-selection' ? 'teams_pipeline' : claim.scheduleName,
       profile: row.profile, title: snapshot.view.title };
   }
 
@@ -147,6 +170,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
   const [existingReceipt] = await db.select().from(remoteHermesTurns).where(and(eq(remoteHermesTurns.sessionId, sessionId), eq(remoteHermesTurns.requestId, claim.requestId)));
   if (existingReceipt) {
     if (existingReceipt.digest !== digest) throw new HttpError(409, 'This project confirmation was already used for different content.');
+    if (claim.action === 'plugin-selection') return previousSelection(claim.socketEpoch);
     if (claim.action === 'schedule') {
       const current = await schedules(claim.socketEpoch);
       const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim));
@@ -164,6 +188,10 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
     const listed = await schedules(claim.socketEpoch);
     const current = listed.schedules.find(schedule => schedule.id === claim.scheduleId);
     if (!current || !scheduleStillReady(current, claim)) throw new HttpError(409, 'This schedule changed after confirmation. Refresh the schedule list and review it again.');
+  } else if (claim.action === 'plugin-selection') {
+    const current = await selection(claim.socketEpoch);
+    if (current.identityRevision !== claim.identityRevision || current.revision !== claim.expectedRevision)
+      throw new HttpError(409, 'The stored selection or reviewed plugin package changed. Refresh and review it again.');
   } else {
     const listed = await projects(claim.socketEpoch);
     if (claim.action === 'select' && !listed.projects.some(project => project.id === claim.projectId && !project.archived))
@@ -188,6 +216,7 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
       .where(eq(remoteHermesSessions.id, sessionId)).returning())[0];
   });
   if (!reserved) {
+    if (claim.action === 'plugin-selection') return previousSelection(claim.socketEpoch);
     if (claim.action === 'schedule') {
       const current = await schedules(claim.socketEpoch);
       const complete = current.schedules.some(schedule => schedule.id === claim.scheduleId && scheduleMatches(schedule, claim));
@@ -214,14 +243,25 @@ export async function nativeProjectOperation(ownerId: string, connectionId: stri
         active.view.running || active.view.queuePending || active.view.queued || active.pending.size || active.view.prompts.length)
         throw new HttpError(409, 'This project confirmation is no longer ready. Review the Hermes chat and confirm again.');
       sent = true;
-      const method = claim.action === 'create' ? 'projects.create' : claim.action === 'select' ? 'projects.set_active' : 'cron.manage';
+      const method = claim.action === 'create' ? 'projects.create' : claim.action === 'select' ? 'projects.set_active' : claim.action === 'plugin-selection' ? 'collective.plugins.selection.v1' : 'cron.manage';
       const params = claim.action === 'create'
         ? { profile: claim.profile, name: claim.name, slug: claim.slug, folders: [], use: false }
         : claim.action === 'select' ? { profile: claim.profile, id: claim.projectId }
-          : { profile: claim.profile, action: claim.scheduleAction, name: claim.scheduleId };
+          : claim.action === 'plugin-selection' ? { profile: claim.profile, session_id: claim.runtimeId, action: 'select', key: 'teams_pipeline',
+            expected_identity: claim.identityRevision, expected_revision: claim.expectedRevision, enabled: claim.enabled }
+            : { profile: claim.profile, action: claim.scheduleAction, name: claim.scheduleId };
       return hub.socket.dispatchConnected(method, params, claim.socketEpoch, 30_000, tx);
     });
     const replyValue = await reply;
+    if (claim.action === 'plugin-selection') {
+      const changed = pluginSelectionProjection(replyValue), latest = await selection(claim.socketEpoch);
+      if (changed.identityRevision !== claim.identityRevision || changed.selected !== claim.enabled || changed.revision === claim.expectedRevision ||
+        latest.identityRevision !== changed.identityRevision || latest.revision !== changed.revision || latest.selected !== claim.enabled)
+        throw new HttpError(502, 'Native selection readback did not match. Refresh before taking action; this request will not replay.');
+      await settle('idle');
+      return { accepted: true, duplicate: false, pluginSelection: latest,
+        output: 'Pending plugin preference stored. Explicit local operator confirmation is required before subsequent native initializations, including worker starts, may use it. No plugin was activated or reloaded; loaded state is unreported.' };
+    }
     let createdId: string | undefined;
     if (claim.action === 'create') {
       const created = record(replyValue.project);

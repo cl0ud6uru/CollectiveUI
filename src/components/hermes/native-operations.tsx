@@ -4,15 +4,15 @@ import { Button } from '@/components/ui/button';
 import { Select, Textarea } from '@/components/ui/input';
 import type { RemoteHermesProfile } from '@/lib/remote-hermes/client';
 
-type Panel = 'projects' | 'files' | 'schedules' | 'plugins' | 'system';
+type Panel = 'projects' | 'files' | 'schedules' | 'plugins' | 'plugin-selection' | 'system';
 type Row = Record<string, unknown>;
-type Result = { projects?: Row[]; activeId?: string; schedules?: Row[]; plugins?: Row[]; entries?: { name: string; path: string; directory: boolean }[]; workspaceId?: string; projectName?: string; available?: boolean; action?: 'list' | 'read'; path?: string; content?: string; sha256?: string; truncated?: boolean; [key: string]: unknown };
+type Result = { projects?: Row[]; activeId?: string; schedules?: Row[]; plugins?: Row[]; pluginSelection?: { name: string; selected: boolean | null; operatorSelected: boolean | null; startupSelected: boolean | null; loadedState: 'unreported' }; entries?: { name: string; path: string; directory: boolean }[]; workspaceId?: string; projectName?: string; available?: boolean; action?: 'list' | 'read'; path?: string; content?: string; sha256?: string; truncated?: boolean; [key: string]: unknown };
 type EditDraft = { connectionId: string; profile: string; workspaceId: string; sessionId: string; path: string; sha256: string; content: string };
-const labels: Record<Panel, string> = { projects: 'Projects', files: 'Directories', schedules: 'Schedules', plugins: 'Plugins', system: 'System' };
+const labels: Record<Panel, string> = { projects: 'Projects', files: 'Directories', schedules: 'Schedules', plugins: 'Plugins', 'plugin-selection': 'Plugin preferences', system: 'System' };
 const fieldLabels: Record<string, string> = { id: 'ID', nextRun: 'Next run', lastStatus: 'Last result', cpuCount: 'CPU cores', cpuPercent: 'CPU usage (%)', uptimeSeconds: 'Uptime (seconds)' };
 const fieldLabel = (key: string) => fieldLabels[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase());
 const bytes = (value: number) => value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GiB` : `${Math.round(value / 1024 ** 2).toLocaleString()} MiB`;
-type PreparedProject = { confirmation: string; action: 'create' | 'select' | 'schedule' | 'file-edit'; name?: string; enabled?: boolean; profile: string; title: string; content?: string; path?: string; bytes?: number; connectionId?: string; sessionId?: string; workspaceId?: string; expectedSha256?: string };
+type PreparedProject = { confirmation: string; action: 'create' | 'select' | 'schedule' | 'plugin-selection' | 'file-edit'; name?: string; enabled?: boolean; profile: string; title: string; content?: string; path?: string; bytes?: number; connectionId?: string; sessionId?: string; workspaceId?: string; expectedSha256?: string };
 export function NativeOperations({ connectionId, profiles, nativeSession }: { connectionId: string; profiles: RemoteHermesProfile[]; nativeSession: { id: string; profile: string; title: string } | null }) {
   const [profile, setProfile] = useState(nativeSession?.profile ?? profiles[0]?.name ?? '');
   const [panel, setPanel] = useState<Panel>('projects');
@@ -40,6 +40,7 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
     if (!profile) return;
     const controller = new AbortController();
     const query = new URLSearchParams({ profile, panel,
+      ...(panel === 'plugin-selection' && nativeSession ? { sessionId: nativeSession.id } : {}),
       ...(panel === 'files' && nativeSession ? { sessionId: nativeSession.id, action: selectedFile ? 'read' : 'list', ...(workspaceId ? { workspaceId } : {}), ...(selectedFile ? { path: selectedFile } : directory ? { path: directory } : {}) } : {}) });
     fetch(`/api/hermes/${encodeURIComponent(connectionId)}/operations?${query}`, { signal: controller.signal, cache: 'no-store' })
       .then(async response => { const value = await response.json(); if (!response.ok) throw new Error(value.error || 'Could not load this Hermes panel.'); return value as Result; })
@@ -48,7 +49,7 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
     return () => controller.abort();
   }, [connectionId, profile, panel, directory, workspaceId, selectedFile, nativeSession, revision, queryScope]);
   const reset = () => { setResult(null); setError(''); };
-  async function projectRequest(input: { operation: 'prepare'; action: 'create'; name: string } | { operation: 'prepare'; action: 'select'; projectId: string } | { operation: 'prepare'; action: 'pause' | 'resume'; scheduleId: string } | { operation: 'confirm'; confirmation: string } | { operation: 'prepare'; action: 'file-edit'; workspaceId: string; path: string; expectedSha256: string; content: string } | { operation: 'confirm-file-edit'; confirmation: string; content: string }) {
+  async function projectRequest(input: { operation: 'prepare'; action: 'create'; name: string } | { operation: 'prepare'; action: 'select'; projectId: string } | { operation: 'prepare'; action: 'pause' | 'resume'; scheduleId: string } | { operation: 'prepare'; action: 'plugin-selection'; enabled: boolean } | { operation: 'confirm'; confirmation: string } | { operation: 'prepare'; action: 'file-edit'; workspaceId: string; path: string; expectedSha256: string; content: string } | { operation: 'confirm-file-edit'; confirmation: string; content: string }) {
     if (!nativeSession) return;
     if (input.operation === 'prepare' && input.action === 'file-edit' && (!currentFileTarget || input.workspaceId !== currentFileTarget.workspaceId || input.path !== currentFileTarget.path || input.expectedSha256 !== currentFileTarget.sha256)) {
       setError('The selected file belongs to a different workspace view. Reload it before reviewing an edit.'); return;
@@ -90,9 +91,23 @@ export function NativeOperations({ connectionId, profiles, nativeSession }: { co
         <Button type="submit" variant="outline" disabled={!nativeSession || profile !== nativeSession.profile || !projectName.trim() || mutating}>Review empty project creation</Button>
       </form>
     </section>}
+    {panel === 'plugins' && <p className="text-sm text-muted-foreground">Inventory status describes native configuration, not whether a plugin is loaded. Runtime loaded state is unreported. Reviewed ordinary plugin selections are available separately under Plugin preferences.</p>}
+    {panel === 'plugin-selection' && <section aria-label="Plugin selection controls" className="space-y-3 rounded-md border p-3">
+      <p className="text-sm">This panel stores a pending selection separately from native configuration. Explicit local operator confirmation authorizes subsequent native initializations, including automatic worker starts, to use it. This panel never confirms locally, activates, reloads or restarts plugins. Runtime loaded state: unreported.</p>
+      <p className="text-sm text-muted-foreground">Once confirmed locally, the operator selection overrides the native allow/deny selection for this reviewed package at initialization until an operator clears the separate preference. Native configuration files stay unchanged.</p>
+      <p className="text-sm text-muted-foreground">Only the reviewed bundled teams_pipeline 0.1.0 package is eligible. Other packages, changed source, alias collisions and managed installs stay unsupported. All work in this native profile must be idle.</p>
+      <p className="text-sm text-muted-foreground">Eligibility is checked again at initialization; changed or shadowed packages keep their native behavior.</p>
+      {currentResult?.pluginSelection && <>
+        <p>Stored preference for {currentResult.pluginSelection.name}: {currentResult.pluginSelection.selected === null ? 'follow native configuration' : currentResult.pluginSelection.selected ? 'pending enabled' : 'pending disabled'}.</p>
+        <p className="text-sm">Operator-confirmed selection: {currentResult.pluginSelection.operatorSelected === null ? 'follow native configuration' : currentResult.pluginSelection.operatorSelected ? 'enabled' : 'disabled'}.</p>
+        <p className="text-sm">Process-start selection: {currentResult.pluginSelection.startupSelected === null ? 'follow native configuration' : currentResult.pluginSelection.startupSelected ? 'enabled' : 'disabled'}. This is not proof of loaded state.</p>
+        <div className="flex flex-wrap gap-2">{[true, false].map(enabled => <Button key={String(enabled)} variant="outline" disabled={!nativeSession || profile !== nativeSession.profile || mutating || currentResult.pluginSelection?.selected === enabled}
+          onClick={() => void projectRequest({ operation: 'prepare', action: 'plugin-selection', enabled })}>Review {enabled ? 'enable' : 'disable'} preference</Button>)}</div>
+      </>}
+    </section>}
     {prepared && preparedFileMatches && <section role="region" aria-labelledby="project-confirm-title" aria-describedby="project-confirm-description" className="space-y-2 rounded-md border border-amber-500 p-3">
       <h3 id="project-confirm-title" className="font-medium">{prepared.action === 'file-edit' ? 'Confirm workspace file save' : 'Confirm profile-wide Hermes change'}</h3>
-      <p id="project-confirm-description" className="text-sm">{prepared.action === 'file-edit' ? `Save the reviewed ${prepared.bytes ?? 0}-byte edit to “${prepared.path}” in project “${currentResult?.projectName}” from chat “${prepared.title}”. The current file digest is checked again, and this confirmation is sent once. If the outcome is unclear, reload the file before another edit.` : prepared.action === 'create' ? `Create empty project “${prepared.name}”` : prepared.action === 'select' ? `Make “${prepared.name}” the active project` : `${prepared.enabled ? 'Resume' : 'Pause'} schedule “${prepared.name}”`}{prepared.action !== 'file-edit' && prepared.enabled ? '; it may run soon and use model usage' : ''}{prepared.action !== 'file-edit' && <> in profile “{prepared.profile}”, reviewed from chat “{prepared.title}”. This profile is shared with other Hermes clients.</>}</p>
+      <p id="project-confirm-description" className="text-sm">{prepared.action === 'file-edit' ? `Save the reviewed ${prepared.bytes ?? 0}-byte edit to “${prepared.path}” in project “${currentResult?.projectName}” from chat “${prepared.title}”. The current file digest is checked again, and this confirmation is sent once. If the outcome is unclear, reload the file before another edit.` : prepared.action === 'create' ? `Create empty project “${prepared.name}”` : prepared.action === 'select' ? `Make “${prepared.name}” the active project` : prepared.action === 'plugin-selection' ? `Store the ${prepared.enabled ? 'enabled' : 'disabled'} preference for “${prepared.name}”. It stays pending until explicit local operator confirmation authorizes later native initializations, including automatic worker starts; no plugin will be activated or reloaded here, and loaded state remains unreported` : `${prepared.enabled ? 'Resume' : 'Pause'} schedule “${prepared.name}”`}{prepared.action === 'schedule' && prepared.enabled ? '; it may run soon and use model usage' : ''}{prepared.action !== 'file-edit' && <> in profile “{prepared.profile}”, reviewed from chat “{prepared.title}”. This profile is shared with other Hermes clients.</>}</p>
       <div className="flex gap-2"><Button onClick={() => void (prepared.action === 'file-edit' ? projectRequest({ operation: 'confirm-file-edit', confirmation: prepared.confirmation, content: prepared.content ?? '' }) : projectRequest({ operation: 'confirm', confirmation: prepared.confirmation }))} disabled={mutating}>Confirm {prepared.action === 'file-edit' ? 'file save' : 'Hermes change'}</Button><Button variant="outline" onClick={() => setPrepared(null)} disabled={mutating}>Cancel</Button></div>
     </section>}
     {!profile && <p>No Hermes profiles are available.</p>}

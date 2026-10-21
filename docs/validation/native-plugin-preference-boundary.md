@@ -39,10 +39,16 @@ reload or restart. Synthetic security/auth/provider fields and literal env
 references establish preservation without reading real configuration. The
 separate child process also uses only this disposable home.
 
-The bounded alternative under evaluation is an adapter-owned, per-profile
-selection sidecar with its own revision/lock and an exact-pin initialization
-hook. Portal writes must remain pending until a later operator-controlled
-initialization, affect only positively classified ordinary plugins, and neither
-rewrite shared config nor invoke activation. No such capability is currently
-implemented or accepted. Keep #95 and tracker #100 open until an independently
-reviewed implementation satisfies those conditions.
+The implemented bounded alternative is an adapter-owned per-profile selection
+sidecar with its own cross-process lock, revision and generation. Portal writes
+change only pending selection. A separate explicit local operator promotion
+commits a selection for subsequent native initializations, including automatic
+workers. The portal never promotes or loads code. Immutable per-process snapshots
+read only committed values; new workers cannot consume pending preferences.
+Canonical source/path/name/version/digests and effective winner/alias gates apply
+within the operator-trusted native installation. Ordinary caches are accepted;
+this is source identity, not executable attestation. See the
+[complete contract and proof](../architecture/native-hermes-plugin-selection.md).
+Keep #95/#100 open until this increment's independent review, exact-head CI and
+merge gates complete. No production installation or local operator promotion has
+been performed outside disposable synthetic fixtures.

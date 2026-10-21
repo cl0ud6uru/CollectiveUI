@@ -26,6 +26,7 @@ PIN = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 SOURCE = Path(os.environ["HERMES_SOURCE"]).resolve()
 RECOVERY_ADAPTERS = os.environ.get("REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE") == "1"
 WORKSPACE_ADAPTER = os.environ.get("REMOTE_HERMES_WORKSPACE_ADAPTER_FIXTURE", "")
+PLUGIN_SELECTION = os.environ.get("REMOTE_HERMES_PLUGIN_SELECTION_FIXTURE") == "1"
 assert WORKSPACE_ADAPTER in {"", "read", "write"}
 ROOT = Path(__file__).resolve().parents[2]
 assert subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip() == PIN
@@ -55,8 +56,19 @@ if RECOVERY_ADAPTERS:
         workspace_installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(workspace_installer)
         targets = set(installers["native_recovery.py"].TARGETS) | set(installers["native_hub_owner.py"].TARGETS)
+        if PLUGIN_SELECTION:
+            assert WORKSPACE_ADAPTER == "write"
+            targets.add("hermes_cli/plugins.py")
         originals = {name: (copy / name).read_text() for name in targets}
-        changed = workspace_installer.patch_sources(originals, installers["native_recovery.py"], installers["native_hub_owner.py"])
+        if PLUGIN_SELECTION:
+            spec = importlib.util.spec_from_file_location("fixture_selection_installer", ROOT / "scripts/install-hermes-plugin-selection.py")
+            selection_installer = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(selection_installer)
+            changed = selection_installer.patch_sources(originals, workspace_installer, installers["native_recovery.py"], installers["native_hub_owner.py"])
+            for name, source in selection_installer.MODULES.items():
+                (copy / name).write_bytes((ROOT / "src/hermes-recovery" / source).read_bytes())
+        else:
+            changed = workspace_installer.patch_sources(originals, installers["native_recovery.py"], installers["native_hub_owner.py"])
         for name, content in changed.items():
             (copy / name).write_text(content)
         for _script, module in adapters:
@@ -67,6 +79,9 @@ if RECOVERY_ADAPTERS:
         ADAPTER_PROVENANCE = {"workspace_sha256": hashlib.sha256(workspace_source).hexdigest(),
                               "owner_sha256": hashlib.sha256(owner_source).hexdigest(),
                               "owner_installer_sha256": hashlib.sha256((ROOT / "scripts/install-hermes-hub-owner.py").read_bytes()).hexdigest()}
+        if PLUGIN_SELECTION:
+            ADAPTER_PROVENANCE.update({name: hashlib.sha256((ROOT / "src/hermes-recovery" / source).read_bytes()).hexdigest()
+                for name, source in [("selection_sha256", "native_plugin_selection.py"), ("selection_store_sha256", "native_plugin_selection_store.py")]})
         (copy / workspace_installer.MODULE).write_bytes(workspace_source)
     else:
       for _script, module in adapters:
@@ -358,6 +373,40 @@ async def control(request: Request):
     body = await request.json()
     if WORKSPACE_ADAPTER and body == {"workspace_roots": True}:
         return {"roots": WORKSPACES, "adapter": WORKSPACE_ADAPTER, **ADAPTER_PROVENANCE}
+    elif PLUGIN_SELECTION and body == {"plugin_selection_probe": True}:
+        from hermes_cli import collective_plugin_selection as selection_store
+        from hermes_cli import plugins, plugins_cmd, plugins_activation
+        if "forbidden_plugin_calls" not in METRICS:
+            METRICS["forbidden_plugin_calls"] = 0
+            METRICS["forbidden_plugin_labels"] = []
+            def no_plugin_calls(label):
+                def denied_plugin_call(*_args, **_kwargs):
+                    METRICS["forbidden_plugin_calls"] += 1
+                    METRICS["forbidden_plugin_labels"].append(label)
+                    raise AssertionError("Selection RPC must not discover, toggle, activate or reload")
+                return denied_plugin_call
+            plugins.discover_plugins = no_plugin_calls("discover_plugins")
+            plugins.PluginManager.discover_and_load = no_plugin_calls("discover_and_load")
+            plugins_cmd._discover_all_plugins = no_plugin_calls("inventory")
+            plugins_cmd.dashboard_set_agent_plugin_enabled = no_plugin_calls("toggle")
+            plugins_activation.activate_plugin_now = no_plugin_calls("activate")
+            METRICS["selection_hydration_calls"] = 0
+            def observe_hydration(original):
+                def observed(rid, params):
+                    METRICS["selection_hydration_calls"] += 1
+                    return original(rid, params)
+                return observed
+            for name in ("session.resume", "session.create"):
+                server._methods[name] = observe_hydration(server._methods[name])
+        home = Path(os.environ["HERMES_HOME"]).resolve()
+        return {"config_sha256": hashlib.sha256((home / "config.yaml").read_bytes()).hexdigest(),
+                "sidecar_exists": (home / selection_store.FILE).exists(),
+                "startup_selected": selection_store._startup.get(str(home)),
+                "forbidden_plugin_calls": METRICS["forbidden_plugin_calls"],
+                "forbidden_plugin_labels": METRICS["forbidden_plugin_labels"],
+                "selection_hydration_calls": METRICS["selection_hydration_calls"],
+                "source_module_imported": any(name.startswith("plugins.teams_pipeline") for name in sys.modules),
+                **ADAPTER_PROVENANCE}
     elif WORKSPACE_ADAPTER and set(body) == {"workspace_busy", "session_id"} and isinstance(body["workspace_busy"], bool):
         with server._sessions_lock:
             session = server._sessions.get(body["session_id"])
@@ -560,7 +609,7 @@ app.router.routes[:] = controls + [route for route in app.router.routes if route
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
 listener.listen(128)
-print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT, "recoveryAdapters": RECOVERY_ADAPTERS, "workspaceAdapter": WORKSPACE_ADAPTER}), file=sys.__stdout__, flush=True)
+print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT, "recoveryAdapters": RECOVERY_ADAPTERS, "workspaceAdapter": WORKSPACE_ADAPTER, "pluginSelection": PLUGIN_SELECTION}), file=sys.__stdout__, flush=True)
 try:
     uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="error")).run(sockets=[listener])
 finally:
