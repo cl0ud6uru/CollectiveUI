@@ -100,18 +100,19 @@ it('fences ready sockets and cached account A identities when its connection is 
   expect(hub.sessions.size).toBe(0);
   expect(received.map(frame => frame.method).filter(method => method !== 'collective.hub_owner.capabilities')).toEqual(['client.capabilities', 'session.resume']);
 });
-it('negotiates a successor without touching a foreign lease and refuses unsupported takeover', async () => {
-  const { hub, received } = await fixture();
+it.each(['projects', 'refresh', 'view'] as const)('negotiates a successor for %s without touching a foreign lease and refuses unsupported takeover', async operation => {
+  const { hub, row, received } = await fixture();
   hub.close();
   const successor = new NativeHub('owner', 'connection', 'a64bfbd5-ea03-4d11-8f39-f82074288ec4');
   resources.push(() => successor.close());
   const original = { ...f.owners[0] }, before = received.length;
   await successor.socket.connect();
   expect(f.owners[0]).toEqual(original);
-  await expect(successor.socket.call('projects.list', { profile: 'default' })).rejects.toMatchObject({ status: 409 });
+  const attempt = () => operation === 'projects' ? successor.socket.call('projects.list', { profile: 'default' }) : successor[operation](row);
+  await expect(attempt()).rejects.toMatchObject({ status: 409 });
   f.owners[0].leaseExpiresAt = new Date(Date.now() - 1000);
   const expired = { ...f.owners[0] };
-  await expect(successor.socket.call('projects.list', { profile: 'default' })).rejects.toMatchObject({ status: 409 });
+  await expect(attempt()).rejects.toMatchObject({ status: 409 });
   expect(f.owners[0]).toEqual(expired);
   expect(received.slice(before).map(frame => frame.method)).toEqual(['client.capabilities', 'collective.hub_owner.capabilities']);
 });
