@@ -7,12 +7,14 @@ import { HttpError } from "@/lib/authz";
 import { errorResponse, requirePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
 import { effectiveUploadMaxMb } from "@/lib/files/upload-limits";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 const BLOCKED = /\.(exe|dll|bat|cmd|msi|scr|com|vbs|js\.map)$/i;
 
 export async function POST(req: Request) {
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req, "multipart/form-data");
     const limits = await getSetting("limits");
     const uploadMaxMb = effectiveUploadMaxMb(limits.uploadMaxMb);
     // A body cut off by the proxy's buffer limit fails to parse; report it as too large rather than an internal error.

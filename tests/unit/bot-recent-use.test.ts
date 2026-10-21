@@ -38,6 +38,7 @@ beforeAll(async () => {
     await fixture.client!.exec(readFileSync(`src/db/migrations/${file}`, "utf8").replace("CREATE EXTENSION IF NOT EXISTS vector;", "").replace(/\bvector\b/g, "real[]"));
 }, 45_000);
 beforeEach(async () => {
+  vi.stubEnv("AUTH_URL", "http://localhost");
   fixture.enqueue.mockReset(); fixture.enqueue.mockResolvedValue(undefined);
   await fixture.client!.exec("TRUNCATE users, ai_apps, settings CASCADE");
   await db.insert(schema.users).values(["alice", "bob"].map(id => ({ id, name: id, upn: `${id}@test.invalid`, authSource: "local" as const, identityRealm: "local" as const, prefs: { botOrder: ["c", "b", "a"], customInstructions: "Keep this" } })));
@@ -45,7 +46,7 @@ beforeEach(async () => {
   await db.insert(schema.bots).values(["a", "b", "c"].map(id => ({ id, name: id.toUpperCase(), ownerId: "alice", appId: "model", visibility: "org" as const })));
   fixture.principal = (await loadPrincipal("alice"))!;
 });
-afterAll(async () => { await fixture.client!.close(); });
+afterAll(async () => { await fixture.client!.close(); vi.unstubAllEnvs(); });
 
 async function roster(user = "alice") { return (await loadShell((await loadPrincipal(user))!)).bots; }
 async function ids(user = "alice") { return (await roster(user)).map(b => b.id); }
@@ -60,7 +61,7 @@ async function history(botId: string, date: string, options: { userId?: string; 
   return conv;
 }
 async function send(botId: string, over: Record<string, unknown> = {}) {
-  const response = await POST(new Request("http://localhost/api/chat", { method: "POST", body: JSON.stringify({ conversationId: newId(), botId, message: { id: newId(), role: "user", parts: [{ type: "text", text: "Synthetic send" }] }, ...over }) }));
+  const response = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { Origin: "http://localhost", "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: newId(), botId, message: { id: newId(), role: "user", parts: [{ type: "text", text: "Synthetic send" }] }, ...over }) }));
   await response.text();
   return response;
 }

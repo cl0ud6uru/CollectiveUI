@@ -10,6 +10,7 @@ import { nativeSearchSelection } from "@/lib/agent/native-search";
 import { lockUserRuns } from "@/lib/runs/lock";
 import { activeRunOf } from "@/lib/runs/state";
 import { getSetting } from "@/lib/settings";
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 
 export async function GET(req: Request) {
   try {
@@ -34,6 +35,7 @@ export async function GET(req: Request) {
 export async function PATCH(req: Request) {
   try {
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     const { conversationId, mode } = z.object({ conversationId: z.string().min(1), mode: z.enum(["off", "auto"]) }).parse(await req.json());
     await db.transaction(async tx => {
       await lockUserRuns(tx, p.user.id);
