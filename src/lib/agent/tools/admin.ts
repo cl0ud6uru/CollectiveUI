@@ -1,4 +1,5 @@
 import { tool } from "ai";
+import { MAX_UPLOAD_MB } from "@/lib/files/upload-limits";
 import { z } from "zod";
 import type { Principal } from "@/lib/auth/groups";
 import { adminGetBot, adminListBots, adminListConnections, adminListUsers } from "@/lib/admin/inventory";
@@ -97,12 +98,12 @@ export function adminTools(ctx: AgentCtx): ToolEntry[] {
       execute: guarded("admin_update_group_profile", (p, i: z.output<typeof architectGroupProfileInput>, signal) => updateArchitectGroupProfile(ctx, p, i, signal)),
     }) },
     { name: "admin_update_settings", key: ADMIN_TOOL_KEY, sensitive: true, grantable: false, tool: tool({
-      description: "Update only the existing public branding text fields or upload/attachment limits. Read admin_get_settings first and pass the exact updatedAt revision. Default model/bot routing and all access/policy settings are excluded. Always requires exact per-call approval.",
+      description: `Update only the existing public branding text fields or upload/attachment limits. File limits must be 1–${MAX_UPLOAD_MB} MB; legacy larger settings are reported separately from the effective limit. Read admin_get_settings first and pass the exact updatedAt revision. Default model/bot routing and all access/policy settings are excluded. Always requires exact per-call approval.`,
       inputSchema: architectSettingsUpdateInput,
       execute: guarded("admin_update_settings", (p, i: z.output<typeof architectSettingsUpdateInput>, signal) => updateArchitectSettings(ctx, p, i, signal)),
     }) },
     entry("admin_get_settings", tool({
-      description: "Read public portal branding fields and upload/attachment limits with exact update revisions. Default model/bot routing is omitted.",
+      description: "Read public portal branding fields, saved upload/attachment limits, effective upload policy and exact update revisions. Default model/bot routing is omitted.",
       inputSchema: none,
       execute: guarded("admin_get_settings", p => adminGetArchitectSettings(p)),
     })),

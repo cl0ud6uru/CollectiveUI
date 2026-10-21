@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { errorResponse, requirePrincipal } from '@/lib/session';
 import { assertAuthOrigin } from '@/lib/auth/origin';
 import { getSetting } from '@/lib/settings';
+import { effectiveUploadMaxMb } from '@/lib/files/upload-limits';
 import { HttpError } from '@/lib/authz';
 import { browseNativeSessions, nativeHistory, nativeControl, nativeSnapshot, openNativeSession, profileName, submitNativePrompt, type NativeUpload } from '@/lib/remote-hermes/sessions';
 
@@ -39,14 +40,17 @@ export async function POST(req: Request, ctx: RouteContext<'/api/hermes/[connect
     let raw: unknown; const uploads: NativeUpload[] = [];
     const contentType = req.headers.get('content-type') ?? '';
     if (contentType.startsWith('multipart/form-data')) {
-      const data = await new Response(await boundedBytes(req, 25 * 1024 * 1024), { headers: { 'Content-Type': contentType } }).formData();
+      const data = await new Response(await boundedBytes(req, 25 * 1024 * 1024), { headers: { 'Content-Type': contentType } }).formData().catch(() => {
+        throw new HttpError(413, 'The Hermes upload was too large or incomplete. Keep the entire attachment request under 25 MB.');
+      });
       try { raw = JSON.parse(String(data.get('request'))); }
       catch { throw new HttpError(400, 'Invalid request JSON.'); }
       const limits = await getSetting('limits');
+      const uploadMaxMb = Math.min(20, effectiveUploadMaxMb(limits.uploadMaxMb));
       const files = data.getAll('files');
       if (files.length > limits.maxAttachmentsPerMessage) throw new HttpError(400, 'Too many attachments.');
       for (const file of files) {
-        if (!(file instanceof File) || file.size > Math.min(20, limits.uploadMaxMb) * 1024 * 1024) throw new HttpError(413, 'A Hermes attachment exceeds the allowed size.');
+        if (!(file instanceof File) || file.size > uploadMaxMb * 1024 * 1024) throw new HttpError(413, `Hermes attachments must be ${uploadMaxMb} MB or smaller.`);
         const name = file.name.split(/[\\/]/).at(-1)!.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 200);
         if (!name || name === '.' || name === '..') throw new HttpError(400, 'Invalid attachment filename.');
         uploads.push({ name, type: file.type.replace(/[^a-zA-Z0-9.+/-]/g, '').slice(0, 100), bytes: Buffer.from(await file.arrayBuffer()) });

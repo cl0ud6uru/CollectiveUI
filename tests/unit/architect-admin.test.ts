@@ -423,10 +423,23 @@ describe("The Architect using real migrated PostgreSQL state", () => {
     const changed = await execute("admin_update_settings", { setting: "branding", expectedUpdatedAt: current.brandingUpdatedAt, appName: "New Portal" });
     expect(changed).toMatchObject({ status: "verified", setting: "branding" });
     expect((await db.select().from(s.settings).where(eq(s.settings.key, "branding")))[0].value).toMatchObject({ appName: "New Portal", defaultAppId: "model" });
-    const limits = await execute("admin_update_settings", { setting: "limits", expectedUpdatedAt: current.limitsUpdatedAt, uploadMaxMb: 40, maxAttachmentsPerMessage: 12 });
-    expect(limits).toMatchObject({ status: "verified", setting: "limits", value: { uploadMaxMb: 40, maxAttachmentsPerMessage: 12 } });
+    const limits = await execute("admin_update_settings", { setting: "limits", expectedUpdatedAt: current.limitsUpdatedAt, uploadMaxMb: 25, maxAttachmentsPerMessage: 12 });
+    expect(limits).toMatchObject({ status: "verified", setting: "limits", value: { uploadMaxMb: 25, maxAttachmentsPerMessage: 12 } });
     await expect(execute("admin_update_settings", { setting: "tools", expectedUpdatedAt: null, value: { disabledTools: ["admin"] } })).rejects.toThrow();
     await expect(execute("admin_update_settings", { setting: "branding", expectedUpdatedAt: current.brandingUpdatedAt, appName: "Stale" })).rejects.toThrow("could not be verified");
+  });
+  it("reports legacy saved upload limits without mutation, then requires a supported replacement with its original CAS token", async () => {
+    await db.insert(s.settings).values({ key: "limits", value: { uploadMaxMb: 500, maxAttachmentsPerMessage: 12 } });
+    const current = await execute("admin_get_settings") as { limitsUpdatedAt: string; limits: { uploadMaxMb: number }; uploadPolicy: { maximumFileMb: number; effectiveFileMb: number; notice: string } };
+    expect(current.limits.uploadMaxMb).toBe(500);
+    expect(current.uploadPolicy).toMatchObject({ maximumFileMb: 25, effectiveFileMb: 25, notice: expect.stringContaining("saved value is unchanged") });
+    expect((await db.select().from(s.settings).where(eq(s.settings.key, "limits")))[0].value).toMatchObject({ uploadMaxMb: 500 });
+    await expect(execute("admin_update_settings", { setting: "limits", expectedUpdatedAt: current.limitsUpdatedAt, uploadMaxMb: 40, maxAttachmentsPerMessage: 12 })).rejects.toThrow();
+    expect((await db.select().from(s.settings).where(eq(s.settings.key, "limits")))[0].value).toMatchObject({ uploadMaxMb: 500 });
+    expect(await execute("admin_update_settings", { setting: "limits", expectedUpdatedAt: current.limitsUpdatedAt, uploadMaxMb: 25, maxAttachmentsPerMessage: 12 }))
+      .toMatchObject({ status: "verified", value: { uploadMaxMb: 25 } });
+    await expect(execute("admin_update_settings", { setting: "limits", expectedUpdatedAt: current.limitsUpdatedAt, uploadMaxMb: 20, maxAttachmentsPerMessage: 12 })).rejects.toThrow();
+    expect((await execute("admin_get_settings") as { uploadPolicy: unknown }).uploadPolicy).toEqual({ maximumFileMb: 25, effectiveFileMb: 25 });
   });
   it("refuses stale approval, missing targets and missing revisions without mutation", async () => {
     await expect(execute("admin_set_bot_enabled", { botId: "target", enabled: false, expectedRevision: 9 })).rejects.toMatchObject({ status: 409 });

@@ -8,6 +8,7 @@ import { auditVia } from "@/lib/audit";
 import { lockArchitectActor, authorizeArchitectCall } from "@/lib/agent/tools/admin-guard";
 import type { AgentCtx } from "@/lib/agent/types";
 import { BrandingInput } from "@/lib/branding/shared";
+import { effectiveUploadMaxMb, MAX_UPLOAD_MB, uploadMaxMbInput } from "@/lib/files/upload-limits";
 import { getSetting, type BrandingSettings, type LimitsSettings } from "@/lib/settings";
 
 const timestamp = z.string().datetime({ offset: true }).nullable();
@@ -20,7 +21,7 @@ const brandingPatch = z.object({
   "Choose a public branding field to update.");
 const limitsUpdate = z.object({
   setting: z.literal("limits"), expectedUpdatedAt: timestamp,
-  uploadMaxMb: z.number().int().min(1).max(500), maxAttachmentsPerMessage: z.number().int().min(1).max(50),
+  uploadMaxMb: uploadMaxMbInput, maxAttachmentsPerMessage: z.number().int().min(1).max(50),
 }).strict();
 export const architectSettingsUpdateInput = z.discriminatedUnion("setting", [brandingPatch, limitsUpdate]);
 
@@ -51,6 +52,10 @@ export async function adminGetArchitectSettings(p: Principal) {
       brandingUpdatedAt: byKey.get("branding")?.updatedAt ?? null,
       limits: { uploadMaxMb: limits.uploadMaxMb, maxAttachmentsPerMessage: limits.maxAttachmentsPerMessage },
       limitsUpdatedAt: byKey.get("limits")?.updatedAt ?? null,
+      uploadPolicy: {
+        maximumFileMb: MAX_UPLOAD_MB, effectiveFileMb: effectiveUploadMaxMb(limits.uploadMaxMb),
+        ...(limits.uploadMaxMb > MAX_UPLOAD_MB ? { notice: `The saved ${limits.uploadMaxMb} MB limit exceeds the supported ${MAX_UPLOAD_MB} MB maximum. Its saved value is unchanged; uploads use ${MAX_UPLOAD_MB} MB until an admin saves a supported limit.` } : {}),
+      },
     };
   }, { isolationLevel: "repeatable read", accessMode: "read only" });
 }

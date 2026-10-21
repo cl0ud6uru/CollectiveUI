@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { NextConfig } from "next";
+import { MAX_UPLOAD_BODY_MB } from "./src/lib/files/upload-limits";
 
 /**
  * Attachment extraction loads these packages by name in a child process (src/lib/files/extract.ts), so nothing in
@@ -29,10 +30,10 @@ const nextConfig: NextConfig = {
   output: "standalone",
   serverExternalPackages: ["pg", "ldapts", "pg-boss", "unpdf", "mammoth", "google-auth-library", "gaxios"],
   experimental: {
-    serverActions: { bodySizeLimit: "30mb" },
-    // proxy.ts buffers request bodies and silently truncates past this (default 10 MB), which broke uploads between
-    // 10 MB and the 20 MB default upload limit (Hermes accepts 25 MB). Keep in step with the largest upload route.
-    proxyClientMaxBodySize: "30mb",
+    serverActions: { bodySizeLimit: `${MAX_UPLOAD_BODY_MB}mb` },
+    // A supported 25 MB file plus its multipart envelope fits this bound. Remote Hermes' whole-request cap
+    // is also 25 MB. The default 10 MB proxy buffer silently truncated otherwise valid uploads.
+    proxyClientMaxBodySize: `${MAX_UPLOAD_BODY_MB}mb`,
   },
   outputFileTracingIncludes: { "/api/files": packageClosure(["mammoth", "unpdf"]) },
   poweredByHeader: false,
