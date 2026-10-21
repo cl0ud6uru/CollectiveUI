@@ -6,12 +6,12 @@ import { join } from 'node:path';
 
 export const DASHBOARD_PIN = 'f97608f178d1ffeca59860195ab7da295f7c8e5f';
 /** Starts only the repository's disposable loopback fixture, never a user URL/profile. */
-export async function startPinnedDashboard(options: { recoveryAdapters?: boolean } = {}) {
+export async function startPinnedDashboard(options: { recoveryAdapters?: boolean; workspaceAdapter?: 'read' | 'write' } = {}) {
   if (!process.env.HERMES_SOURCE || !process.env.HERMES_DASHBOARD_PYTHON) throw new Error('Exact source checkout and isolated Python runtime required');
   // The launcher owns cleanup even if Python is killed during archive/startup.
-  const temporary = await mkdtemp(join(tmpdir(), 'collective-dashboard-launcher-'));
+  const temporary = await mkdtemp(join(options.workspaceAdapter ? process.cwd() : tmpdir(), 'collective-dashboard-launcher-'));
   const child = spawn(process.env.HERMES_DASHBOARD_PYTHON, ['-B', 'tests/fixtures/remote-hermes-dashboard-bootstrap.py'], {
-    env: { NODE_ENV: 'test', TMPDIR: temporary, PATH: process.env.PATH, HERMES_SOURCE: process.env.HERMES_SOURCE, ...(options.recoveryAdapters ? { REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE: '1' } : {}) }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { NODE_ENV: 'test', TMPDIR: temporary, PATH: process.env.PATH, HERMES_SOURCE: process.env.HERMES_SOURCE, ...(options.recoveryAdapters || options.workspaceAdapter ? { REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE: '1' } : {}), ...(options.workspaceAdapter ? { REMOTE_HERMES_WORKSPACE_ADAPTER_FIXTURE: options.workspaceAdapter } : {}) }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stderr.resume(); // Synthetic diagnostics are not retained as artifacts.
   async function stop() {
@@ -40,6 +40,7 @@ export async function startPinnedDashboard(options: { recoveryAdapters?: boolean
             reject(new Error(`Pinned dashboard startup failed (${ready.startupError}${ready.missingModule ? `: ${ready.missingModule}` : ''})${site}`)); return;
           }
           if (options.recoveryAdapters && ready.recoveryAdapters !== true) throw new Error();
+          if (options.workspaceAdapter && ready.workspaceAdapter !== options.workspaceAdapter) throw new Error();
           if (ready.pin !== DASHBOARD_PIN || ready.runtimeVersion !== '0.21.5' || ready.desktopContract !== 8 || !Number.isInteger(ready.port) || ready.port < 1 || ready.port > 65535) throw new Error();
           resolve(ready.port);
         } catch { reject(new Error('Invalid pinned dashboard identity/readiness')); }

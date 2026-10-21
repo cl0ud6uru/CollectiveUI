@@ -25,6 +25,8 @@ import time
 PIN = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
 SOURCE = Path(os.environ["HERMES_SOURCE"]).resolve()
 RECOVERY_ADAPTERS = os.environ.get("REMOTE_HERMES_RECOVERY_ADAPTER_FIXTURE") == "1"
+WORKSPACE_ADAPTER = os.environ.get("REMOTE_HERMES_WORKSPACE_ADAPTER_FIXTURE", "")
+assert WORKSPACE_ADAPTER in {"", "read", "write"}
 ROOT = Path(__file__).resolve().parents[2]
 assert subprocess.check_output(["git", "-C", str(SOURCE), "rev-parse", "HEAD"], text=True).strip() == PIN
 assert not subprocess.check_output(["git", "-C", str(SOURCE), "status", "--porcelain", "--untracked-files=all"], text=True).strip()
@@ -40,11 +42,35 @@ if RECOVERY_ADAPTERS:
     with tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
         tar.extractall(copy, filter="data")
     assert archive.wait() == 0
-    for script, module in (("install-hermes-recovery.py", "native_recovery.py"),
-                           ("install-hermes-hub-owner.py", "native_hub_owner.py")):
+    installers = {}
+    adapters = (("install-hermes-recovery.py", "native_recovery.py"),
+                ("install-hermes-hub-owner.py", "native_hub_owner.py"))
+    for script, module in adapters:
         spec = importlib.util.spec_from_file_location("fixture_installer_" + module.removesuffix(".py"), ROOT / "scripts" / script)
         installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(installer)
+        installers[module] = installer
+    if WORKSPACE_ADAPTER:
+        spec = importlib.util.spec_from_file_location("fixture_workspace_installer", ROOT / "scripts/install-hermes-workspace-files.py")
+        workspace_installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(workspace_installer)
+        targets = set(installers["native_recovery.py"].TARGETS) | set(installers["native_hub_owner.py"].TARGETS)
+        originals = {name: (copy / name).read_text() for name in targets}
+        changed = workspace_installer.patch_sources(originals, installers["native_recovery.py"], installers["native_hub_owner.py"])
+        for name, content in changed.items():
+            (copy / name).write_text(content)
+        for _script, module in adapters:
+            installer = installers[module]
+            (copy / (getattr(installer, "MODULE", None) or installer.OWNER_MODULE)).write_bytes((ROOT / "src/hermes-recovery" / module).read_bytes())
+        workspace_source = (ROOT / "src/hermes-recovery/native_workspace_files.py").read_bytes()
+        owner_source = (ROOT / "src/hermes-recovery/native_hub_owner.py").read_bytes()
+        ADAPTER_PROVENANCE = {"workspace_sha256": hashlib.sha256(workspace_source).hexdigest(),
+                              "owner_sha256": hashlib.sha256(owner_source).hexdigest(),
+                              "owner_installer_sha256": hashlib.sha256((ROOT / "scripts/install-hermes-hub-owner.py").read_bytes()).hexdigest()}
+        (copy / workspace_installer.MODULE).write_bytes(workspace_source)
+    else:
+      for _script, module in adapters:
+        installer = installers[module]
         originals = {name: (copy / name).read_text() for name in installer.TARGETS}
         for name, content in installer.patch_sources(originals).items():
             (copy / name).write_text(content)
@@ -61,6 +87,18 @@ if RECOVERY_ADAPTERS:
     other = Path(os.environ["HERMES_HOME"], "profiles", "fixture-other")
     other.mkdir(parents=True)
     (other / "config.yaml").write_text(Path(os.environ["HERMES_HOME"], "config.yaml").read_text())
+WORKSPACES = {}
+if WORKSPACE_ADAPTER:
+    for profile in ("default", "fixture-other"):
+        workspace = HOME / ("workspace-" + profile)
+        workspace.mkdir()
+        (workspace / "README.md").write_text("Synthetic " + profile + " workspace\n")
+        (workspace / ".env").write_text("SYNTHETIC_TOKEN=never-project-this\n")
+        outside = HOME / ("outside-" + profile + ".txt")
+        outside.write_text("Synthetic outside boundary\n")
+        (workspace / "outside-link").symlink_to(outside)
+        (workspace / "nested").mkdir()
+        WORKSPACES[profile] = str(workspace)
 METRICS = {"agent_turns": 0, "external_attempts": 0, "refreshes": 0, "protected_answers": 0, "auxiliary_calls": 0, "auxiliary_tracked": 0, "dropped_acks": 0, "attachment_hashes": []}
 # Deny external networking before importing any source with import-time hooks.
 _connect = socket.socket.connect
@@ -316,7 +354,16 @@ async def control(request: Request):
     global DROP_ACK
     web_server._require_token(request)
     body = await request.json()
-    if body == {"drop_next_ack": True}:
+    if WORKSPACE_ADAPTER and body == {"workspace_roots": True}:
+        return {"roots": WORKSPACES, "adapter": WORKSPACE_ADAPTER, **ADAPTER_PROVENANCE}
+    elif WORKSPACE_ADAPTER and set(body) == {"workspace_busy", "session_id"} and isinstance(body["workspace_busy"], bool):
+        with server._sessions_lock:
+            session = server._sessions.get(body["session_id"])
+        assert session is not None
+        with session["history_lock"]:
+            session["running"] = body["workspace_busy"]
+        return {"ok": True}
+    elif body == {"drop_next_ack": True}:
         DROP_ACK = True
     elif RECOVERY_ADAPTERS and body == {"release_recovery_worker": True}:
         RECOVERY_RELEASE.set()
@@ -444,7 +491,7 @@ app.router.routes[:] = controls + [route for route in app.router.routes if route
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
 listener.listen(128)
-print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT, "recoveryAdapters": RECOVERY_ADAPTERS}), file=sys.__stdout__, flush=True)
+print(json.dumps({"port": listener.getsockname()[1], "pin": PIN, "runtimeVersion": "0.21.5", "desktopContract": server.DESKTOP_BACKEND_CONTRACT, "recoveryAdapters": RECOVERY_ADAPTERS, "workspaceAdapter": WORKSPACE_ADAPTER}), file=sys.__stdout__, flush=True)
 try:
     uvicorn.Server(uvicorn.Config(app, lifespan="off", access_log=False, log_level="error")).run(sockets=[listener])
 finally:
