@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { eq } from "drizzle-orm";
 import type { LdapUser } from "@/lib/auth/ldap";
 import type { SecurityActor } from "@/lib/auth/security";
+import { authIdentityFixtureURL } from "../fixtures/auth-identity/disposable-database";
 
 const fixture = vi.hoisted(() => ({ directory: null as LdapUser | null, verified: null as { user: unknown; identity: LdapUser } | null,
   read: vi.fn(), authenticate: vi.fn(), atBinding: vi.fn(), webSession: null as Record<string, unknown> | null, requestHeaders: new Headers() }));
@@ -10,23 +11,42 @@ vi.mock("@/auth", () => ({ auth: async () => fixture.webSession }));
 vi.mock("next/headers", () => ({ headers: async () => fixture.requestHeaders }));
 vi.mock("@/lib/auth/ldap", async (original) => ({ ...await original<typeof import("@/lib/auth/ldap")>(), readLdapIdentity: fixture.read, authenticateLdapAtBinding: fixture.atBinding }));
 vi.mock("@/lib/auth/ldap-account", () => ({ authenticateLdapPassword: fixture.authenticate }));
-import { db, pool, schema as s } from "@/db";
-import { beginPasswordLogin, finishPasswordLogin, consumeLoginTicket, reauthenticatePassword, securitySummary } from "@/lib/auth/security";
-import { recoveryHash } from "@/lib/auth/factors";
-import { randomToken, sha256Hex } from "@/lib/crypto";
-import { lockAccounts } from "@/lib/auth/local";
-import { pkceChallenge, exchangeAuthCode, mobilePrincipal } from "@/lib/auth/mobile";
-import { POST as authorizeMobile } from "@/app/api/mobile/auth/authorize/route";
-import { sessionState } from "@/lib/auth/session-state";
+// Validate the destructive fixture target before importing any application database/network clients.
+const enabled = process.env.AUTH_IDENTITY_POSTGRES_PROOF === "1";
+const fixtureURL = enabled ? authIdentityFixtureURL() : undefined;
+const run = enabled ? describe : describe.skip;
+let db: typeof import("@/db").db, pool: typeof import("@/db").pool, s: typeof import("@/db/schema");
+let beginPasswordLogin: typeof import("@/lib/auth/security").beginPasswordLogin,
+  finishPasswordLogin: typeof import("@/lib/auth/security").finishPasswordLogin,
+  consumeLoginTicket: typeof import("@/lib/auth/security").consumeLoginTicket,
+  reauthenticatePassword: typeof import("@/lib/auth/security").reauthenticatePassword,
+  securitySummary: typeof import("@/lib/auth/security").securitySummary;
+let recoveryHash: typeof import("@/lib/auth/factors").recoveryHash;
+let randomToken: typeof import("@/lib/crypto").randomToken, sha256Hex: typeof import("@/lib/crypto").sha256Hex;
+let lockAccounts: typeof import("@/lib/auth/local").lockAccounts;
+let pkceChallenge: typeof import("@/lib/auth/mobile").pkceChallenge,
+  exchangeAuthCode: typeof import("@/lib/auth/mobile").exchangeAuthCode,
+  mobilePrincipal: typeof import("@/lib/auth/mobile").mobilePrincipal;
+let authorizeMobile: typeof import("@/app/api/mobile/auth/authorize/route").POST;
+let sessionState: typeof import("@/lib/auth/session-state").sessionState;
 
-const run = process.env.AUTH_IDENTITY_POSTGRES_PROOF === "1" ? describe : describe.skip;
 const binding = "synthetic-browser-binding-at-least-20-characters";
 const recovery = "11111111-22222222-33333333-44444444-55555555";
 const oldDn = "uid=alice,ou=old,dc=fixture", newDn = "uid=alice,ou=new,dc=fixture";
 let actor: SecurityActor;
 run("LDAP identity repair and account lock scope (disposable PostgreSQL, synthetic directory)", () => {
-  beforeAll(() => {
-    if (process.env.DATABASE_URL !== "postgres://fixture_auth:synthetic-auth-only@127.0.0.1:55444/collective_auth_identity_test") throw new Error("Requires exact disposable auth identity PostgreSQL target");
+  beforeAll(async () => {
+    vi.stubEnv("DATABASE_URL", fixtureURL!); vi.stubEnv("DATABASE_POOL_MAX", "1");
+    ({ db, pool, schema: s } = await import("@/db"));
+    const { migrate } = await import("drizzle-orm/node-postgres/migrator");
+    await migrate(db, { migrationsFolder: "src/db/migrations" });
+    ({ beginPasswordLogin, finishPasswordLogin, consumeLoginTicket, reauthenticatePassword, securitySummary } = await import("@/lib/auth/security"));
+    ({ recoveryHash } = await import("@/lib/auth/factors"));
+    ({ randomToken, sha256Hex } = await import("@/lib/crypto"));
+    ({ lockAccounts } = await import("@/lib/auth/local"));
+    ({ pkceChallenge, exchangeAuthCode, mobilePrincipal } = await import("@/lib/auth/mobile"));
+    ({ POST: authorizeMobile } = await import("@/app/api/mobile/auth/authorize/route"));
+    ({ sessionState } = await import("@/lib/auth/session-state"));
     vi.stubEnv("LDAP_ENABLED", "true"); vi.stubEnv("LDAP_URL", "ldaps://fixture.invalid"); vi.stubEnv("AUTH_LOCAL_ENABLED", "true"); vi.stubEnv("AUTH_SECRET", "synthetic-auth-identity-session-secret");
   });
   beforeEach(async () => {
@@ -46,7 +66,7 @@ run("LDAP identity repair and account lock scope (disposable PostgreSQL, synthet
     fixture.read.mockImplementation(async (dn: string, identity: string) => dn === fixture.directory?.dn && identity === fixture.directory.identity ? fixture.directory : null);
     actor = { id: user.id, sessionVersion: user.sessionVersion, sessionId: binding };
   });
-  afterAll(async () => { vi.unstubAllEnvs(); await pool.end(); });
+  afterAll(async () => { vi.unstubAllEnvs(); await pool?.end(); });
   it("repairs a moved DN only after matching the verified stable identity, retaining and enforcing enrolled factors", async () => {
     const keys = await db.select().from(s.localPasskeys), codes = await db.select().from(s.localRecoveryCodes);
     const login = await beginPasswordLogin("alice", "synthetic-password", new Headers(), binding, "ldap");
@@ -157,8 +177,10 @@ run("LDAP identity repair and account lock scope (disposable PostgreSQL, synthet
   });
   it("preserves attributed local approvals and rejects them when the local provider is disabled", async () => {
     await db.update(s.users).set({ identityRealm: "local", authSource: "local", upn: "local:alice" }).where(eq(s.users.id, actor.id));
-    await db.insert(s.localCredentials).values({ userId: actor.id, username: "alice", passwordHash: "synthetic-nonusable-password-hash" });
-    const approved = await consent("local"), mobile = await exchangeAuthCode(approved.code, approved.verifier);
+    await db.insert(s.localCredentials).values({ userId: actor.id, username: "alice", passwordHash: "synthetic-nonusable-password-hash", mustChangePassword: false });
+    const approved = await consent("local");
+    expect(approved.response.status).toBe(303);
+    const mobile = await exchangeAuthCode(approved.code, approved.verifier);
     expect((await mobilePrincipal(mobile.token))?.session.authProvider).toBe("local");
     vi.stubEnv("AUTH_LOCAL_ENABLED", "false");
     expect(await mobilePrincipal(mobile.token)).toBeNull();
