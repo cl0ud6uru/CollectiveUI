@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const fixture = vi.hoisted(() => ({ limits: { uploadMaxMb: 20, maxAttachmentsPerMessage: 10 }, save: vi.fn(), put: vi.fn(), insert: vi.fn(), submit: vi.fn() }));
+const fixture = vi.hoisted(() => ({ limits: { uploadMaxMb: 20, maxAttachmentsPerMessage: 10 }, save: vi.fn(), put: vi.fn(), insert: vi.fn(), submit: vi.fn(), lock: vi.fn(), complete: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
@@ -14,7 +14,13 @@ vi.mock("@/lib/settings", () => ({ getSetting: async () => fixture.limits, setSe
 vi.mock("@/lib/audit", () => ({ audit: vi.fn() }));
 vi.mock("@/lib/files/storage", () => ({ storage: () => ({ put: fixture.put }) }));
 vi.mock("@/lib/files/extract", () => ({ extractText: vi.fn(), isImage: () => true }));
-vi.mock("@/db", () => ({ db: { insert: () => ({ values: fixture.insert }) } }));
+vi.mock("@/db", () => ({ db: {
+  insert: () => ({ values: fixture.insert }),
+  transaction: async (work: (tx: unknown) => Promise<unknown>) => work({
+    select: () => ({ from: () => ({ where: () => ({ for: fixture.lock }) }) }),
+    update: () => ({ set: (values: unknown) => ({ where: () => fixture.complete(values) }) }),
+  }),
+} }));
 vi.mock("@/components/admin/branding-form", () => ({ BrandingForm: () => null }));
 vi.mock("@/lib/remote-hermes/sessions", async () => {
   const { z } = await import("zod");
@@ -38,6 +44,7 @@ function uploadRequest(size: number, bearer = false) {
 beforeEach(() => {
   fixture.limits = { uploadMaxMb: 20, maxAttachmentsPerMessage: 10 };
   fixture.save.mockReset(); fixture.put.mockReset(); fixture.insert.mockReset(); fixture.submit.mockReset();
+  fixture.lock.mockReset().mockResolvedValue([{ id: "fixture-upload" }]); fixture.complete.mockReset().mockResolvedValue(undefined);
   fixture.put.mockResolvedValue(undefined); fixture.insert.mockResolvedValue(undefined); fixture.submit.mockResolvedValue({ status: "accepted" });
 });
 
@@ -77,7 +84,15 @@ describe("one supported upload limit across settings and transport", () => {
     const request = uploadRequest(MAX_UPLOAD_MB * mb);
     expect((await request.clone().arrayBuffer()).byteLength).toBeLessThan(MAX_UPLOAD_BODY_MB * mb);
     expect((await POST(request)).status).toBe(200); expect(fixture.put).toHaveBeenCalledOnce();
-    expect(fixture.insert).toHaveBeenCalledWith(expect.objectContaining({ size: MAX_UPLOAD_MB * mb }));
+    expect(fixture.insert).toHaveBeenCalledWith(expect.objectContaining({ size: MAX_UPLOAD_MB * mb, uploadComplete: false }));
+    expect(fixture.lock).toHaveBeenCalledWith("update");
+    expect(fixture.complete).toHaveBeenCalledWith({ extractedText: null, uploadComplete: true });
+  });
+  it("refuses a supported-size upload whose attachment was retired before its row lock", async () => {
+    fixture.lock.mockResolvedValue([]);
+    const response = await POST(uploadRequest(1));
+    expect(response.status).toBe(410);
+    expect(fixture.put).not.toHaveBeenCalled(); expect(fixture.complete).not.toHaveBeenCalled();
   });
   it("retains a lower configured limit and reports it on incomplete multipart data", async () => {
     fixture.limits.uploadMaxMb = 10;

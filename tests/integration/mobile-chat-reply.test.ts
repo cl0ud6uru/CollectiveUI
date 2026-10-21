@@ -54,7 +54,7 @@ suite("native bearer chat through admission, execution, SSE and snapshot", () =>
     const code = await issueAuthCode(principal, {
       codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
       state: "native-reply-fixture", deviceName: "Fixture Mac",
-    });
+    }, "ldap");
     const { token } = await exchangeAuthCode(code, verifier);
     request.headers = new Headers({ authorization: `Bearer ${token}` });
     for (const provider of ["openai", "openai-compatible"] as const) {
