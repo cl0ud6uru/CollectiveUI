@@ -49,8 +49,10 @@ and compatible runtime state before multi-instance rollout; no such rollout occu
 | Tests prove no arbitrary filesystem/dashboard access. | Fixed native methods and server-derived roots; no `/api/fs/*` forwarding. Twelve dispatcher cases, six actual gateway cases and focused operations/project/edit units cover traversal, symlink, hidden secrets, hardlinks, stale digests, path/identity alteration, unsupported backends and bounded FIFO handling. | Covered with documented same-device mount/out-of-band writer residual limits. |
 | Document remaining unsupported operations. | Workspace contract lists folder attachment, project editing/archive/removal, file create/remove/rename, schedule create/remove and plugin lifecycle mutations as unsupported, plus exact-pin and installed-server limits. | Documented; documentation alone does not complete plugin controls. |
 
-Recommendation: keep #95 open at this candidate. A separate bounded installed-plugin toggle
-implementation and independent review are being considered; no plugin mutation is inferred from
+Recommendation: keep #95 open at this candidate. A separate selection-only native capability
+and independent review are being considered; the existing upstream toggle and shared-config CAS
+cannot meet the required boundary, as recorded in [plugin preference validation](native-plugin-preference-boundary.md).
+No plugin mutation is inferred from
 read-only inspection, native upstream capability, or a future proposal. Other unimplemented lifecycle
 operations are explicitly outside the currently offered controls and must not be advertised as present.
 

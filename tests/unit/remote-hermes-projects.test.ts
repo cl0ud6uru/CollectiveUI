@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { NativeConnectionChanged, NativeRpcError } from '@/lib/remote-hermes/socket';
 
 const f = vi.hoisted(() => ({ enabled: true, profiles: vi.fn(), list: [] as Record<string, unknown>[], readbackFolders: null as Record<string, unknown>[] | null, schedules: [] as Record<string, unknown>[], activeId: '', fileContent: 'Synthetic file before edit\n', calls: vi.fn(), beforeSend: false, unscoped: false, concurrentReceipt: null as null | { requestId: string; digest: string; project: Record<string, unknown> }, locks: 0, runAt: 0,
   row: {} as Record<string, unknown>, receipt: null as null | { requestId: string; digest: string }, cached: {} as { row: Record<string, unknown>; view: Record<string, unknown>; pending: Map<string, unknown>; socketEpoch: number } }));
 vi.mock('@/lib/settings', () => ({ getSetting: async () => ({ enabled: f.enabled }) }));
+vi.mock('@/lib/session', () => ({ requirePrincipal: async () => ({ user: { id: 'owner' } }), errorResponse: () => { throw new Error('Unexpected GET error'); } }));
 vi.mock('@/lib/remote-hermes/policy', () => ({ assertRemoteHermesAdmission: (value: { enabled: boolean }) => { if (!value.enabled) throw new Error('Personal remote Hermes is disabled'); } }));
 vi.mock('@/lib/remote-hermes/sessions', async () => ({
   ownedNativeSession: async (owner: string, connection: string, session: string) => { if (owner !== 'owner' || connection !== 'connection' || session !== 'session') throw new Error('not found'); return f.row; },
@@ -64,12 +65,14 @@ vi.mock('@/db', async () => {
 });
 import { nativeProjectOperation, projectOperationInput } from '@/lib/remote-hermes/projects';
 import { nativeWorkspaceFileEdit, workspaceFileEditInput } from '@/lib/remote-hermes/workspace-edit';
-import { decrypt, hmacSha256Hex } from '@/lib/crypto';
+import { decrypt, encrypt, hmacSha256Hex } from '@/lib/crypto';
+import { POST } from '@/app/api/hermes/[connectionId]/operations/route';
 
 const prepareCreate = async () => nativeProjectOperation('owner', 'connection', 'session', { operation: 'prepare', action: 'create', name: 'Example' });
 const confirm = (confirmation: string) => nativeProjectOperation('owner', 'connection', 'session', { operation: 'confirm', confirmation });
 
 describe('confirmed native Hermes project operations', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
     vi.clearAllMocks(); f.enabled = true; f.beforeSend = false; f.unscoped = false; f.concurrentReceipt = null; f.locks = f.runAt = 0; f.list = []; f.readbackFolders = null; f.schedules = []; f.activeId = ''; f.fileContent = 'Synthetic file before edit\n'; f.receipt = null;
     f.row = { id: 'session', connectionId: 'connection', profile: 'default', storedId: 'stored', runtimeId: 'runtime', status: 'idle', revision: 1, queueRequestId: null };
@@ -94,6 +97,35 @@ describe('confirmed native Hermes project operations', () => {
       schedule.state = params.action === 'resume' ? 'scheduled' : 'paused';
       return { success: true, job: { job_id: schedule.id, enabled: schedule.enabled, state: schedule.state } };
     });
+  });
+
+  it.each(['enable-plugin', 'disable-plugin'])('rejects %s at the actual operations POST before native access', async action => {
+    vi.stubEnv('AUTH_URL', 'http://portal.fixture.invalid');
+    const response = await POST(new Request('http://portal.fixture.invalid/api/hermes/connection/operations', {
+      method: 'POST', headers: { Origin: 'http://portal.fixture.invalid', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'session', input: { operation: 'prepare', action, pluginKey: 'teams_pipeline' } }),
+    }), { params: Promise.resolve({ connectionId: 'connection' }) });
+    expect(response.status).toBe(400);
+    expect(f.profiles).not.toHaveBeenCalled(); expect(f.calls).not.toHaveBeenCalled();
+    expect(f.receipt).toBeNull(); expect(f.locks).toBe(0); expect(f.row.status).toBe('idle');
+  });
+
+  it.each([
+    ['remote-hermes-workspace:v1', true], ['remote-hermes-workspace:v1', false],
+    ['remote-hermes-project:v1', true], ['remote-hermes-project:v1', false],
+  ] as const)('rejects encrypted %s plugin claim (enabled=%s) without dispatch or receipt', async (scope, enabled) => {
+    vi.stubEnv('AUTH_URL', 'http://portal.fixture.invalid');
+    const confirmation = encrypt(JSON.stringify({ requestId: 'f29cc742-4d14-4b1a-a13d-4907ef912df7', runtimeId: 'runtime',
+      storedId: 'stored', profile: 'default', socketEpoch: 1, action: 'plugin', pluginKey: 'teams_pipeline',
+      pluginName: 'teams_pipeline', enabled, expiresAt: Date.now() + 30_000 }), JSON.stringify([scope, 'owner', 'connection', 'session']));
+    const response = await POST(new Request('http://portal.fixture.invalid/api/hermes/connection/operations', {
+      method: 'POST', headers: { Origin: 'http://portal.fixture.invalid', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'session', input: { operation: 'confirm', confirmation } }),
+    }), { params: Promise.resolve({ connectionId: 'connection' }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('confirmation is invalid') });
+    expect(f.profiles).not.toHaveBeenCalled(); expect(f.calls).not.toHaveBeenCalled();
+    expect(f.receipt).toBeNull(); expect(f.locks).toBe(0); expect(f.row.status).toBe('idle');
   });
 
   it('accepts only bounded create/select requests; browser-supplied paths are rejected', () => {
