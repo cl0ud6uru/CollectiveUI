@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
 import { expect, it } from "vitest";
+import { routineFixtureURL } from "../fixtures/routines/disposable-database";
 
 // This test deliberately removes a queue to simulate admission failure; never run it on an app database.
 const test = process.env.ROUTINE_QUEUE_TEST === "1" ? it : it.skip;
 test("real pg-boss admission failure recovers the same routine exactly once", async () => {
-  if (new URL(process.env.DATABASE_URL!).pathname !== "/collective_review_queue_test") throw new Error("Requires disposable collective_review_queue_test database");
+  routineFixtureURL("queue");
   const { db, pool, schema } = await import("@/db");
   const { getBoss, QUEUES } = await import("@/lib/jobs");
   const { scheduleDueRoutines, executeRoutineRun } = await import("@/lib/agent/routine-runner");

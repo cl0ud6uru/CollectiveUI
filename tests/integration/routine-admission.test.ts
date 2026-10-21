@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { Pool } from "pg";
+import { routineFixtureURL } from "../fixtures/routines/disposable-database";
 import { db, pool, schema } from "@/db";
 import { getBoss, QUEUES } from "@/lib/jobs";
 import { lockRoutineAdmission, MAX_ACTIVE_ROUTINE_RUNS_PER_USER, queueRoutineRun } from "@/lib/routines/admission";
@@ -13,7 +14,9 @@ const auth = vi.hoisted(() => ({ principal: null as Principal | null }));
 vi.mock("@/lib/session", () => ({ requirePrincipal: async () => auth.principal }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 
-const suite = process.env.ROUTINE_ADMISSION_TEST === "1" ? describe : describe.skip;
+const enabled = process.env.ROUTINE_ADMISSION_TEST === "1";
+if (enabled) routineFixtureURL("admission"); // Pool constructors are lazy; guard before all connections and destructive queries.
+const suite = enabled ? describe : describe.skip;
 suite("bounded routine admission on real PostgreSQL and pg-boss", () => {
   let boss: Awaited<ReturnType<typeof getBoss>>;
   let owners: string[];
@@ -31,8 +34,6 @@ suite("bounded routine admission on real PostgreSQL and pg-boss", () => {
   }), { params: Promise.resolve({ id: webhook.id }) });
 
   beforeAll(async () => {
-    if (new URL(process.env.DATABASE_URL!).pathname !== "/collective_review_routine_admission_test")
-      throw new Error("Requires disposable collective_review_routine_admission_test database");
     boss = await getBoss();
     [ { id: appId } ] = await db.insert(schema.aiApps).values({ name: "Synthetic admission fixture", model: "never-execute", baseUrl: "http://127.0.0.1:1/v1" }).returning();
   });
@@ -133,6 +134,14 @@ suite("bounded routine admission on real PostgreSQL and pg-boss", () => {
     expect((await rows()).map(run => run.routineId)).toEqual([b.id]);
     const invalid = await db.select().from(schema.routines).where(inArray(schema.routines.id, [a.id, cron.id]));
     expect(invalid.every(routine => routine.nextRunAt === null)).toBe(true);
+  });
+
+  it("does not admit a due occurrence at the short spring-DST boundary even when the future slot is safe", async () => {
+    const now = new Date("2026-03-08T07:00:00Z");
+    await db.update(schema.routines).set({ cron: "0,59 1,3 * * *", timezone: "America/New_York", nextRunAt: now }).where(eq(schema.routines.id, cron.id));
+    expect(await scheduleDueRoutines(now)).toBe(0);
+    expect(await rows()).toHaveLength(0);
+    expect((await db.select().from(schema.routines).where(eq(schema.routines.id, cron.id)))[0].nextRunAt).toBeNull();
   });
 
   it("rejects an authenticated webhook paused while waiting for admission", async () => {

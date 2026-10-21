@@ -165,6 +165,9 @@ export async function scheduleDueRoutines(now = new Date()) {
   for (const r of due) {
     let next: Date | null = null;
     try {
+      // Validate the occurrence being admitted as well as the future one. At an
+      // exact/late DST tick the next future slot may already be safe again.
+      nextCronRun(r.cron ?? "", r.timezone, new Date(+r.nextRunAt! - 1));
       next = nextCronRun(r.cron ?? "", r.timezone, now);
     } catch {
       next = null;

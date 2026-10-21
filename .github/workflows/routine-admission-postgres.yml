@@ -36,6 +36,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Prove fixture target guards without connecting
+        run: npx vitest run --project unit tests/unit/routine-disposable-database.test.ts
       - name: Migrate the disposable database
         run: npm run db:migrate
       - name: Require actual action, webhook, scheduler, advisory lock and queue proofs

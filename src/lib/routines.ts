@@ -11,7 +11,14 @@ export function nextCronRun(cron: string, timezone: string, from = new Date()): 
   const slots = expression.fields.hour.values.flatMap(hour => expression.fields.minute.values.map(minute => hour * 60 + minute));
   if (slots.some((slot, index) => ((slots[(index + 1) % slots.length] - slot + 1440) % 1440 || 1440) < 5))
     throw new Error("Scheduled times must be at least five minutes apart.");
-  return expression.next().toDate();
+  const next = expression.next().toDate();
+  // A forward clock change can compress otherwise-safe wall-clock slots. Fresh
+  // iterators start at the candidate itself: neither gap is the wait from `from`.
+  const previous = CronExpressionParser.parse(cron, { currentDate: next, tz: timezone }).prev().toDate();
+  const following = CronExpressionParser.parse(cron, { currentDate: next, tz: timezone }).next().toDate();
+  if (+next - +previous < 300_000 || +following - +next < 300_000)
+    throw new Error("Scheduled times must be at least five minutes apart, including clock changes.");
+  return next;
 }
 
 export function isValidCron(cron: string, timezone = "UTC") {
