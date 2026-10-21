@@ -85,6 +85,10 @@ jobs:
           DATABASE_URL: postgres://postgres:synthetic-fixture-only@127.0.0.1:5432/hermes_fixture
           ENCRYPTION_KEY: synthetic-conformance-only
         run: npm run db:migrate
+      - name: Require selection sidecar CAS and startup-only source identity proof
+        env:
+          HERMES_SOURCE: ${{ github.workspace }}/.remote-hermes-dashboard-source
+        run: python -B tests/native-plugin-selection.py
       - name: Create isolated native ownership locking database
         env:
           PGPASSWORD: synthetic-fixture-only
@@ -138,7 +142,7 @@ jobs:
           DATABASE_POOL_MAX: '1'
           REMOTE_HERMES_WORKSPACE_GATEWAY: '1'
           REMOTE_HERMES_WORKSPACE_GATEWAY_ADAPTER: write
-        run: npx vitest run --project integration tests/integration/remote-hermes-workspace-gateway.test.ts --maxWorkers=1
+        run: npx vitest run --project integration tests/integration/remote-hermes-workspace-gateway.test.ts tests/integration/remote-hermes-plugin-selection.test.ts --maxWorkers=1
 
   checks:
     name: Typecheck, lint and unit tests
@@ -276,7 +280,6 @@ jobs:
           python tests/fixtures/docker-hermes-network.py
           python tests/fixtures/hermes-team-native-contract.py
           python tests/fixtures/hermes-team-pinned-bridge.py
-          python tests/fixtures/hermes-native-plugin-toggle.py
       - name: Verify Remote Hermes commands and session YOLO against the actual pinned protocol
         env:
           HERMES_SOURCE: ${{ github.workspace }}/.native-hermes-source

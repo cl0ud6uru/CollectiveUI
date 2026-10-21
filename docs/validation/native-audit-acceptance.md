@@ -1,9 +1,11 @@
 # Remote Hermes audit acceptance: #90, #95, #96, #100
 
-Checklist readback: the four live GitHub issue bodies on 2026-10-21. Candidate reviewed:
-PR341 at `6814d3d76d9bcd47b5bfac704f22cbb444d8f6d6`. This is an implementation/evidence
-mapping, not an issue closure, deployment or installed-server acceptance. Exact-head CI, final
-review and merge are still delivery gates. At this readback PR341 was draft and CI was running.
+Checklist readback: the four live GitHub issue bodies on 2026-10-21. PR341's reviewed
+native implementation was merged as `a26d60f03e96b8c004cbd419e2491a344948c1d9`;
+the parent audit confirmed post-merge CI and Docker publication passed. Issue #90/#96
+closure audit remains with the parent. This is an implementation/evidence mapping,
+not an issue closure, deployment or installed-server acceptance. The separate plugin
+selection increment below still requires its own final review, exact-head CI and merge.
 
 The actual pinned native source is Hermes `f97608f178d1ffeca59860195ab7da295f7c8e5f`.
 The owner-core module/installer match reviewed `398096de08920bca0b86787c4e9d81b3c41ff5d0`.
@@ -21,8 +23,8 @@ Current workspace proof is detailed in [full gateway validation](native-workspac
 | Queue consumption and late acknowledgements remain fenced. | Durable queue request IDs/revisions, observed native queue evidence and snapshot ordering fence settlement. PostgreSQL tests admit only one concurrent queue and reject a late acknowledgement after a different queue is admitted. | Implemented. |
 | Regression tests cover attachment rejection, lost acknowledgements, reload and Stop. | Reservation units cover all listed triggers and both Stop shapes; real PostgreSQL reservation and actual gateway recovery suites add process loss and terminal evidence. Original attachment/unsupported/Stop regressions were run red before their fixes, as recorded in the recovery contract. | Covered; final exact-head CI remains required. |
 
-Recommendation: #90 may close after final review, exact-head CI and merge of this supported
-native-evidence implementation. Neither ordinary idle state nor deployment absence is treated
+Recommendation: #90 has the supported merged native-evidence implementation and green
+publication; the parent must complete the closure audit. Neither ordinary idle state nor deployment absence is treated
 as terminal proof. No production rollout is required or authorized by the issue.
 
 ## #96 — distributed ownership
@@ -35,7 +37,8 @@ as terminal proof. No production rollout is required or authorized by the issue.
 | Add two-instance tests and deployment requirements. | `remote-hermes-owner-conformance.test.ts`, `remote-hermes-portal-recovery.test.ts`, `remote-hermes-reservations.test.ts` and actual PostgreSQL dispatch-lock tests. The ownership/portal recovery contracts document exact adapter pin/order, shared portal PostgreSQL, durable native profile state, WebSocket transport, and fail-closed version behavior. | Covered; primary deployment wording is aligned by this documentation update. |
 | Preserve secret/server-request routing and bounded resource usage. | Owner/lease/recovery records retain identity/proof, not prompt answers or credentials. Actual protected-request tests reject foreign/unclaimed/missing/stale request routes and assert that answers are absent from native history. Existing bounded transport and response projections remain. Accepted auxiliary/background workers cannot enter after losing their owner claim. | Covered within the reviewed protocol and fixture boundaries. |
 
-Recommendation: #96 may close after final review, exact-head CI and merge. A sticky router or
+Recommendation: #96 has the reviewed merged implementation and green publication; the
+parent must complete the closure audit. A sticky router or
 PostgreSQL lease alone is not the native fence. Operators still need separately reviewed installation
 and compatible runtime state before multi-instance rollout; no such rollout occurred here.
 
@@ -43,16 +46,20 @@ and compatible runtime state before multi-instance rollout; no such rollout occu
 
 | Exact acceptance criterion | Implementation and evidence | Candidate status |
 | --- | --- | --- |
-| Decompose independently reviewable project create/select, safe file access, schedule and plugin controls. | Preserved component histories separate read/list (#264), project create/select and schedule pause/resume (#271), file edit (#281), and required owner/drain foundations. Plugins currently have projected read-only list/fallback behavior; no mutation control is implemented at this candidate. | Partial: plugin controls remain real product work. |
+| Decompose independently reviewable project create/select, safe file access, schedule and plugin controls. | Preserved component histories separate read/list (#264), project create/select and schedule pause/resume (#271), file edit (#281), and required owner/drain foundations. Plugin inventory remains projected; the new separate ordinary-plugin preference increment adds confirmed pending selection, native CAS and explicit local operator promotion for future initialization. Direct activation/install/removal is unsupported. | Bounded plugin preference implementation added; final review, exact-head CI and merge are pending. |
 | Establish runtime capabilities, workspace authorization, traversal/symlink and secret boundaries first. | Exact selected owned chat/profile/project/local-backend binding, full native owner claim, history lock across idle check/I/O, descriptor-relative no-follow opens, protected/hidden/token/hardlink/device gates and bounded UTF-8 files. Actual gateway tests include unclaimed/stale/foreign/busy/native-profile mismatch; dispatcher tests cover both admission races. | Implemented for supported local-project files. |
-| Explicitly confirm disruptive operations. | Encrypted short-lived confirmations bind owner, connection, selected saved chat/runtime/profile and socket. Project/schedule mutations and file edits use durable one-shot receipts and authoritative readback. UI explains profile-wide effects and schedule usage; ambiguous outcomes never replay. | Implemented for currently offered mutations; plugin mutation still absent. |
+| Explicitly confirm disruptive operations. | Encrypted short-lived confirmations bind owner, connection, selected saved chat/runtime/profile and socket. Project/schedule mutations and file edits use durable one-shot receipts and authoritative readback. UI explains profile-wide effects and schedule usage; ambiguous outcomes never replay. | Implemented for offered mutations, including source/revision-bound pending plugin selection; local promotion has its own explicit operator confirmation. |
 | Tests prove no arbitrary filesystem/dashboard access. | Fixed native methods and server-derived roots; no `/api/fs/*` forwarding. Twelve dispatcher cases, six actual gateway cases and focused operations/project/edit units cover traversal, symlink, hidden secrets, hardlinks, stale digests, path/identity alteration, unsupported backends and bounded FIFO handling. | Covered with documented same-device mount/out-of-band writer residual limits. |
-| Document remaining unsupported operations. | Workspace contract lists folder attachment, project editing/archive/removal, file create/remove/rename, schedule create/remove and plugin lifecycle mutations as unsupported, plus exact-pin and installed-server limits. | Documented; documentation alone does not complete plugin controls. |
+| Document remaining unsupported operations. | Workspace contract lists folder attachment, project editing/archive/removal, file create/remove/rename, schedule create/remove and direct plugin activation/lifecycle mutations as unsupported, plus exact-pin and installed-server limits. | Documented; documentation alone does not complete plugin controls. |
 
-Recommendation: keep #95 open at this candidate. A separate bounded installed-plugin toggle
-implementation and independent review are being considered; no plugin mutation is inferred from
-read-only inspection, native upstream capability, or a future proposal. Other unimplemented lifecycle
-operations are explicitly outside the currently offered controls and must not be advertised as present.
+Recommendation: keep #95 open until the separate plugin preference increment completes
+independent review, exact-head CI and merge. Its [precise contract](../architecture/native-hermes-plugin-selection.md)
+supports pending selection for only the positively classified bundled source. Portal writes cannot
+promote, activate, discover or reload. Explicit local promotion authorizes subsequent native
+initializations, including automatic workers; loaded state remains unreported. The existing upstream
+toggle and shared-config CAS are excluded, as recorded in [boundary validation](native-plugin-preference-boundary.md).
+Broader lifecycle operations remain explicitly unsupported; no direct activation or installed-server
+compatibility is inferred from source tests or UI preferences.
 
 ## #100 — parent tracker
 

@@ -6,7 +6,7 @@ Native remote command discovery, supported commands and approval boundaries are 
 
 Personal remote connections belong to the signed-in user. Admin-managed shared backends and isolated managed/local runtimes remain separate. Administrators can disable personal remote access while retaining saved connections and allowing admitted turns to finish, receive prompt answers and stop. New work and new sign-ins are blocked. Cloudflare Access and a connection wizard are deferred.
 
-This integration provides a native **remote dashboard workspace**, separate from Runs API chats and the managed/local controller. [Native settings and MCP administration](native-hermes-settings-mcp.md) and [read-only workspace inspection](native-hermes-workspace.md) are implemented as scoped panels. [Managed/local native chat controls](hermes-managed-local-parity.md) provide attachments and active-turn controls in ordinary bot chats; they do not share the remote dashboard workspace or its credentials.
+This integration provides a native **remote dashboard workspace**, separate from Runs API chats and the managed/local controller. [Native settings and MCP administration](native-hermes-settings-mcp.md), [workspace controls](native-hermes-workspace.md) and separately versioned [ordinary-plugin pending preferences](native-hermes-plugin-selection.md) are implemented as scoped panels. [Managed/local native chat controls](hermes-managed-local-parity.md) provide attachments and active-turn controls in ordinary bot chats; they do not share the remote dashboard workspace or its credentials.
 
 ## Available now
 
