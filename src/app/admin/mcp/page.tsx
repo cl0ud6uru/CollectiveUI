@@ -6,12 +6,15 @@ import { eq, isNull } from "drizzle-orm";
 import { cleanDescription } from "@/lib/mcp/hygiene";
 import type { McpToolDef } from "@/lib/mcp/kinds";
 import { requireAdminPage } from "@/lib/session";
+import { appResource } from "@/lib/mcp/apps-contract";
+import { mcpAppSandboxConfig } from "@/lib/mcp/apps-config";
 
 const toolView = (t: McpToolDef) => ({
   name: t.name,
   description: cleanDescription(t.description ?? t.title) ?? "",
   readOnly: t.annotations?.readOnlyHint === true,
   destructive: t.annotations?.destructiveHint === true,
+  widget: !!appResource(t),
 });
 
 export default async function AdminMcpPage() {
@@ -63,7 +66,7 @@ export default async function AdminMcpPage() {
         title="MCP servers"
         description="Model Context Protocol servers expose your internal systems as tools bots can use. Credentials stay on the server. Add or import a server, test it to review its tools, then enable it."
       />
-      <McpAdmin groups={groupRows} servers={view} />
+      <McpAdmin groups={groupRows} servers={view} sandboxIssue={mcpAppSandboxConfig().issue} />
     </div>
   );
 }
