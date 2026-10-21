@@ -45,7 +45,7 @@ import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 import { useWorkspaceFileOpener } from "./workspace-context";
 import { toolDoneLabel } from "./tool-result-label";
-import { commandLine, RailDot, RunningTicker, toolFailureText } from "./steps";
+import { commandLine, RailDot, RunningTicker, toolDenied, toolFailureText } from "./steps";
 
 type AnyToolPart = ToolUIPart | DynamicToolUIPart;
 
@@ -260,7 +260,7 @@ export function ToolPartView({
   if ((name === "workspace_bash" || name === "workspace_write" || name === "workspace_edit") && part.state === "approval-requested" && !part.approval.isAutomatic) {
     return <WorkspaceApproval name={name} part={part} botName={botName} disabled={readOnly} onApprove={onApprove} onDeny={onDeny} onAlwaysAllow={part.approval.requestReason === ENFORCED_APPROVAL_REASON ? undefined : onAlwaysAllow} />;
   }
-  if (name === "workspace_bash" && ["input-available", "approval-responded", "output-available"].includes(part.state)) {
+  if (name === "workspace_bash" && !toolDenied(part) && ["input-available", "approval-responded", "output-available"].includes(part.state)) {
     return <BashResult part={part as never} live={live} />;
   }
 
@@ -349,20 +349,21 @@ export function ToolPartView({
     );
   }
 
-  const running = part.state === "input-streaming" || part.state === "input-available" || part.state === "approval-responded";
+  const denied = toolDenied(part);
+  const running = !denied && (part.state === "input-streaming" || part.state === "input-available" || part.state === "approval-responded");
   const failureText = toolFailureText(part);
   const failed = failureText !== null;
-  const denied = part.state === "output-denied";
   const output = part.state === "output-available" ? part.output : undefined;
   const memoryResult = output && typeof output === "object" ? output as { status?: string; recordType?: string; recallStatus?: string; deleted?: boolean } : undefined;
   const memoryDone = memoryToolDoneLabel(name, memoryResult, toolDoneLabel(name, output, d.done));
   const isDelegate = isDelegationTool(name);
+  const delegationShowsFailure = isDelegate && !!output && typeof output === "object" && failureText === (output as { error?: unknown }).error;
   const artifact = workspaceArtifact(name, output);
   const preliminary = part.state === "output-available" && !!(part as { preliminary?: boolean }).preliminary;
   // A turn that ended mid-tool (timeout, stop) leaves its last progress update behind: show it as interrupted.
   const preliminaryRunning = preliminary && live;
-  // Remote tool steps whose run ended without a result must not keep spinning.
-  const interrupted = (preliminary && !live) || (running && !live && (isHermesTool(name) || name === "openai_web_search"));
+  // Tool steps whose run ended without a result must not keep spinning.
+  const interrupted = (preliminary || running) && !live;
   const active = (running && !interrupted) || preliminaryRunning;
 
   return (
@@ -383,7 +384,7 @@ export function ToolPartView({
       </button>
       {active && <div className="mt-1 pl-6"><RunningTicker toolCallId={part.toolCallId} command={commandLine(part.input)} /></div>}
       {/* A failure's reason stays on the step; the expanded details keep the full text. */}
-      {failed && !open && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{failureText}</p>}
+      {failed && !open && !delegationShowsFailure && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{failureText}</p>}
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
       {!readOnly && appInstanceId(output) && <McpAppHost key={appInstanceId(output)!} id={appInstanceId(output)!} />}
       {artifact && <div className="mt-2 flex flex-wrap gap-2">

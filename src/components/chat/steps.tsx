@@ -49,6 +49,10 @@ function stepRunning(p: AnyToolPart) {
   return p.state === "input-streaming" || p.state === "input-available" || p.state === "approval-responded" || (p.state === "output-available" && !!(p as { preliminary?: boolean }).preliminary);
 }
 
+export function toolDenied(p: AnyToolPart): boolean {
+  return p.state === "output-denied" || (p.state === "approval-responded" && p.approval?.approved === false);
+}
+
 /** Milliseconds since `since`, ticking while `live`. */
 export function useElapsed(since: number | undefined, live: boolean) {
   const [now, setNow] = useState(() => Date.now());
@@ -122,11 +126,11 @@ export function RunningTicker({ toolCallId, command }: { toolCallId: string; com
   );
 }
 
-type StepState = "done" | "active" | "failed" | "denied";
+type StepState = "done" | "active" | "failed" | "denied" | "interrupted";
 
 function stepState(p: AnyToolPart): StepState {
   if (toolFailureText(p) !== null) return "failed";
-  if (p.state === "output-denied" || (p.state === "approval-responded" && p.approval?.approved === false)) return "denied";
+  if (toolDenied(p)) return "denied";
   return stepRunning(p) ? "active" : "done";
 }
 
@@ -145,7 +149,7 @@ export function RailDot() {
       aria-hidden="true"
       className={cn(
         "absolute left-0 h-2.5 w-2.5 rounded-full",
-        { done: "bg-muted", active: "bg-hermes motion-safe:animate-pulse", failed: "bg-danger", denied: "bg-subtle" }[rail.state],
+        { done: "bg-muted", active: "bg-hermes motion-safe:animate-pulse", failed: "bg-danger", denied: "bg-subtle", interrupted: "bg-subtle" }[rail.state],
         !rail.first && "before:absolute before:bottom-full before:left-[4.5px] before:h-[100vh] before:w-px before:bg-border",
         !rail.last && "after:absolute after:top-full after:left-[4.5px] after:h-[100vh] after:w-px after:bg-border",
       )}
@@ -155,7 +159,7 @@ export function RailDot() {
 
 /**
  * A reply's tool steps: a rail while the reply works on them, then one chip like "terminal · web · 3 steps · 14s".
- * Failed steps stay visible beside the folded chip, with their error, never hidden inside it.
+ * Failed, denied and interrupted steps stay visible beside the folded chip.
  */
 export function StepsGroup({
   parts,
@@ -176,11 +180,16 @@ export function StepsGroup({
 }) {
   const [open, setOpen] = useState(false);
   const failed = parts.filter((p) => stepState(p) === "failed");
+  const denied = parts.filter((p) => stepState(p) === "denied");
+  const interrupted = parts.filter((p) => stepState(p) === "active");
+  const attention = parts.filter((p) => stepState(p) !== "done");
   const kinds = [...new Set(parts.map((p) => toolKind(getToolOrDynamicToolName(p))))];
   const label = [
     ...kinds,
     `${parts.length} ${parts.length === 1 ? "step" : "steps"}`,
     ...(failed.length ? [`${failed.length} failed`] : []),
+    ...(denied.length ? [`${denied.length} denied`] : []),
+    ...(interrupted.length ? [`${interrupted.length} interrupted`] : []),
     ...(timed && startedAt && finishedAt && finishedAt >= startedAt ? [formatDuration(finishedAt - startedAt)] : []),
   ].join(" · ");
 
@@ -188,7 +197,7 @@ export function StepsGroup({
     <ol className="my-1">
       {parts.map((p, i) => (
         <li key={p.toolCallId} className="relative overflow-y-clip py-0.5 pl-5">
-          <RailContext.Provider value={{ state: stepState(p), first: i === 0, last: i === parts.length - 1 }}>{renderStep(p)}</RailContext.Provider>
+          <RailContext.Provider value={{ state: !live && stepState(p) === "active" ? "interrupted" : stepState(p), first: i === 0, last: i === parts.length - 1 }}>{renderStep(p)}</RailContext.Provider>
         </li>
       ))}
     </ol>
@@ -206,11 +215,11 @@ export function StepsGroup({
           failed.length ? "border-danger/60 text-danger" : "border-border text-muted",
         )}
       >
-        {failed.length ? <AlertCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /> : <Check aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+        {attention.length ? <AlertCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /> : <Check aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
         <span>{label}</span>
         {open ? <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
       </button>
-      {open ? rail : failed.map((p) => <div key={p.toolCallId}>{renderStep(p)}</div>)}
+      {open ? rail : attention.map((p) => <div key={p.toolCallId}>{renderStep(p)}</div>)}
     </div>
   );
 }

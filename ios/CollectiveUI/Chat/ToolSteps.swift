@@ -181,7 +181,7 @@ enum StepState: Hashable {
 }
 
 /// A reply's tool calls and reasoning: a rail while the turn works, one chip once it ends.
-/// Failed steps stay visible beside the folded chip, never hidden inside it.
+/// Failed and denied steps stay visible beside the folded chip, never hidden inside it.
 @MainActor
 struct TurnStepsView<Step: View>: View {
     let message: UIMessage
@@ -207,12 +207,14 @@ struct TurnStepsView<Step: View>: View {
                 rail(steps)
             } else {
                 let failed = steps.filter { StepState($0.element) == .failed }
-                StepChip(summary: summary(steps, failed: failed.count), failed: !failed.isEmpty, isExpanded: $isExpanded)
+                let denied = steps.filter { StepState($0.element) == .denied }
+                let attention = steps.filter { [.failed, .denied].contains(StepState($0.element)) }
+                StepChip(summary: summary(steps, failed: failed.count, denied: denied.count), failed: !failed.isEmpty, denied: !denied.isEmpty, isExpanded: $isExpanded)
                     .accessibilityIdentifier("chat.steps.\(message.id)")
                 if isExpanded {
                     rail(steps)
                 } else {
-                    ForEach(failed, id: \.offset) { item in step(item.element) }
+                    ForEach(attention, id: \.offset) { item in step(item.element) }
                 }
             }
         }
@@ -225,7 +227,7 @@ struct TurnStepsView<Step: View>: View {
     }
 
     /// e.g. "terminal · web · 3 steps · 1 failed · 14s".
-    private func summary(_ steps: [(offset: Int, element: MessagePart)], failed: Int) -> String {
+    private func summary(_ steps: [(offset: Int, element: MessagePart)], failed: Int, denied: Int) -> String {
         var kinds: [ToolKind] = []
         for case .tool(let tool) in steps.map(\.element) {
             let kind = ToolKind(toolName: tool.toolName)
@@ -234,6 +236,7 @@ struct TurnStepsView<Step: View>: View {
         var items = kinds.map(\.label)
         items.append("\(steps.count) \(steps.count == 1 ? "step" : "steps")")
         if failed > 0 { items.append("\(failed) failed") }
+        if denied > 0 { items.append("\(denied) denied") }
         if let start = message.metadata?["startedAt"]?.doubleValue ?? message.metadata?["createdAt"]?.doubleValue,
            let end = message.metadata?["finishedAt"]?.doubleValue, end >= start {
             items.append(ToolStep.elapsed(max(1, Int(((end - start) / 1000).rounded()))))
@@ -297,6 +300,7 @@ private struct StepDot: View {
 private struct StepChip: View {
     let summary: String
     let failed: Bool
+    let denied: Bool
     @Binding var isExpanded: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -306,7 +310,7 @@ private struct StepChip: View {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isExpanded.toggle() }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: failed ? "exclamationmark.circle.fill" : "checkmark")
+                Image(systemName: failed ? "exclamationmark.circle.fill" : denied ? "hand.raised.fill" : "checkmark")
                 Text(summary).multilineTextAlignment(.leading)
                 Image(systemName: isExpanded ? "chevron.up" : "chevron.down").font(.caption2)
             }
