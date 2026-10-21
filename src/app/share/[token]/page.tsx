@@ -8,6 +8,7 @@ import { conversations, sharedLinks, users } from "@/db/schema";
 import { loadMessageRows, pathTo, rowToUIMessage } from "@/lib/chat/store";
 import { requirePagePrincipal } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
+import { withoutSharedAttachments } from "@/lib/chat/shared-attachments";
 
 /** Read-only snapshot of a shared chat. Requires sign-in, so links stay inside the organization. */
 export default async function SharedPage(props: PageProps<"/share/[token]">) {
@@ -18,7 +19,12 @@ export default async function SharedPage(props: PageProps<"/share/[token]">) {
   const [conv] = await db.select().from(conversations).where(eq(conversations.id, link.conversationId));
   if (!conv || conv.source === "delegation" || await isPersonalHermesConversation(conv)) notFound();
   const [author] = await db.select({ name: users.name }).from(users).where(eq(users.id, link.createdBy));
-  const path = pathTo(await loadMessageRows(conv.id), link.cutoffMessageId).map(r => rowToUIMessage({ ...r, parts: stripTaskLinks(r.parts as unknown[]) }));
+  let attachmentsOmitted = false;
+  const path = pathTo(await loadMessageRows(conv.id), link.cutoffMessageId).map(r => {
+    const snapshot = withoutSharedAttachments(r.parts as unknown[]);
+    attachmentsOmitted ||= snapshot.omitted;
+    return rowToUIMessage({ ...r, parts: stripTaskLinks(snapshot.parts) });
+  });
   const branding = await getSetting("branding");
   return (
     <SharedView
@@ -28,6 +34,7 @@ export default async function SharedPage(props: PageProps<"/share/[token]">) {
       createdAt={link.createdAt.toISOString()}
       messages={path}
       appName={branding.appName}
+      attachmentsOmitted={attachmentsOmitted}
     />
   );
 }
