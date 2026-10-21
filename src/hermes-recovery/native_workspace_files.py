@@ -316,7 +316,7 @@ def install(server):
         doc="Explicit opt-in native read-only project workspace browser. No arbitrary filesystem path access.")
     server.register_method("collective.workspace.files", handle)
     server._LONG_HANDLERS = server._LONG_HANDLERS | frozenset({"collective.workspace.files"})
-    from tui_gateway import rpc_dispatch
-    rpc_dispatch._LONG_HANDLERS = rpc_dispatch._LONG_HANDLERS | frozenset({"collective.workspace.files"})
+    # The pinned dispatcher is rebound to server.__dict__ by method_ctx.bind_module;
+    # its source module has no _LONG_HANDLERS attribute.
     server._collective_workspace_files = handle
     return handle

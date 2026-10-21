@@ -71,7 +71,6 @@ _current_transport = contextvars.ContextVar("workspace_test_transport", default=
 transport.current_transport = _current_transport.get
 sys.modules["tui_gateway.transport"] = transport
 rpc_dispatch = types.ModuleType("tui_gateway.rpc_dispatch")
-rpc_dispatch._LONG_HANDLERS = frozenset()
 sys.modules["tui_gateway.rpc_dispatch"] = rpc_dispatch
 pydantic = types.ModuleType("pydantic")
 pydantic.Field = _field

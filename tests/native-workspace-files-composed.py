@@ -232,7 +232,10 @@ class ComposedHermesWorkspaceTests(unittest.TestCase):
         self.server._contracts.SERVER_REQUESTS.clear()
         self.server._contracts.EVENTS.clear()
         self.server._LONG_HANDLERS = frozenset()
-        self.server._rpc_dispatch._LONG_HANDLERS = frozenset()
+        # Reproduce fresh native startup: owner compatibility state from a prior
+        # case must not fabricate a source-module table the real dispatcher lacks.
+        if hasattr(self.server._rpc_dispatch, "_LONG_HANDLERS"):
+            delattr(self.server._rpc_dispatch, "_LONG_HANDLERS")
         self.server._collective_workspace_files = None
         self.server._collective_hub_owner = None
         self.workspace_module.install(self.server)
@@ -310,7 +313,7 @@ class ComposedHermesWorkspaceTests(unittest.TestCase):
     def test_authorized_claim_and_reads_cross_actual_pinned_dispatcher_and_owner_wrapper(self):
         self.assertIsNot(self.server._methods["collective.workspace.files"], self.server._collective_workspace_files)
         self.assertIn("collective.workspace.files", self.server._LONG_HANDLERS)
-        self.assertIn("collective.workspace.files", self.server._rpc_dispatch._LONG_HANDLERS)
+        self.assertIn("collective.workspace.files", self.server.dispatch.__globals__["_LONG_HANDLERS"])
         self.claim()
         listed = self.workspace_call({"action": "list"})
         self.assertTrue(listed["result"]["available"], listed)
