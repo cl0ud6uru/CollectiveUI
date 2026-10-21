@@ -83,3 +83,19 @@ it("logs fixed operations and allowlisted codes without directory messages, cred
   expect(JSON.stringify(warn.mock.calls)).not.toMatch(/synthetic-secret|alice@|FORGED|injected-secret/);
   warn.mockRestore();
 });
+
+it("derives the same directory UPN for email aliases, uid logins and bound rechecks", async () => {
+  const alias = { ...entry, uid: "jdoe", mail: "john.doe@corp.local" };
+  const directoryConfig = { ...cfg, upnSuffix: "corp.local", userFilter: "(|(uid={{username}})(mail={{username}}))" };
+  fixture.search.mockResolvedValue({ searchEntries: [alias] });
+  const emailLogin = await authenticateLdap("john.doe@corp.local", "password", directoryConfig);
+  fixture.count = 0;
+  const uidLogin = await authenticateLdap("jdoe", "password", directoryConfig);
+  const recheck = await readLdapIdentity(alias.dn, ldapEntryIdentity(alias, directoryConfig)!, directoryConfig);
+  for (const identity of [emailLogin, uidLogin, recheck]) expect(identity?.upn).toBe("jdoe@corp.local");
+});
+
+it("never invents a directory account identifier from typed input", async () => {
+  fixture.search.mockResolvedValue({ searchEntries: [{ dn: entry.dn, entryUUID: "fixture-alice", cn: "Display name only" }] });
+  expect(await authenticateLdap("attacker-chosen@fixture.invalid", "password", cfg)).toBeNull();
+});

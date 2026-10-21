@@ -150,7 +150,7 @@ export async function authenticateLdap(
       entry = status;
     }
     if (!ldapAccountActive(entry, cfg)) return null;
-    return await directory("group_search", () => resolveEntry(service, entry, username, cfg));
+    return await directory("group_search", () => resolveEntry(service, entry, cfg));
   } finally {
     await service.unbind().catch(() => {});
   }
@@ -206,7 +206,7 @@ export async function lookupLdapUser(usernameInput: string, cfg = ldapConfigFrom
       entry = status;
     }
     if (!ldapAccountActive(entry, cfg)) return null;
-    return await directory("group_search", () => resolveEntry(service, entry, username, cfg));
+    return await directory("group_search", () => resolveEntry(service, entry, cfg));
   } finally { await service.unbind().catch(() => {}); }
 }
 
@@ -248,10 +248,14 @@ export function ldapAccountActive(entry: Entry, cfg: LdapConfig, now = Date.now(
   return true;
 }
 
-async function resolveEntry(service: Client, entry: Entry, username: string, cfg: LdapConfig): Promise<LdapUser> {
-  const account = first(entry.sAMAccountName) ?? first(entry.uid) ?? username;
-  let upn = first(entry.userPrincipalName);
-  if (!upn) upn = username.includes("@") ? username : `${account}${cfg.upnSuffix ? "@" + cfg.upnSuffix : ""}`;
+async function resolveEntry(service: Client, entry: Entry, cfg: LdapConfig): Promise<LdapUser | null> {
+  // Typed aliases select an entry; only directory-owned attributes identify the portal account.
+  const account = first(entry.sAMAccountName)?.trim() || first(entry.uid)?.trim();
+  let upn = first(entry.userPrincipalName)?.trim();
+  if (!upn) {
+    if (!account) return null;
+    upn = `${account}${cfg.upnSuffix ? "@" + cfg.upnSuffix : ""}`;
+  }
 
   let groupDns: string[] = [];
   if (cfg.groupMode === "memberOf") {
@@ -269,7 +273,7 @@ async function resolveEntry(service: Client, entry: Entry, username: string, cfg
     dn: entry.dn,
     identity: ldapEntryIdentity(entry, cfg),
     upn: upn.toLowerCase(),
-    name: first(entry.displayName) ?? first(entry.cn) ?? account,
+    name: first(entry.displayName) ?? first(entry.cn) ?? account ?? upn,
     email: first(entry.mail),
     groups: groupDns.map((dn) => ({ dn: dn.toLowerCase(), name: cnFromDn(dn) })),
   };
@@ -283,7 +287,7 @@ export async function readLdapIdentity(dn: string, identity: string, cfg = ldapC
     const entry = await readAccountEntry(service, dn);
     if (!entry) return null;
     if (ldapEntryIdentity(entry, cfg) !== identity || !ldapAccountActive(entry, cfg)) return null;
-    return await directory("group_search", () => resolveEntry(service, entry, "", cfg));
+    return await directory("group_search", () => resolveEntry(service, entry, cfg));
   } finally { await service.unbind().catch(() => {}); }
 }
 
