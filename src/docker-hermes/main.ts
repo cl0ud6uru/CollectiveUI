@@ -8,7 +8,7 @@ import { DockerBroker } from './broker';
 import { BrokerConfig, DockerDriver, RESOURCE_PROTOCOL_BYTES, type RuntimeDriver } from './docker';
 import { randomUUID } from 'node:crypto';
 import { networkMode } from './network';
-import { ownerId, teamAuthorization, teamEnsure, teamBotId, teamMode } from './types';
+import { ownerId, runtimeOwnerId, teamAuthorization, teamEnsure, teamBotId, teamMode } from './types';
 
 async function teamBody(req: IncomingMessage, maxBytes: number) {
   // Reject an explicitly oversized trusted IPC payload before allocating it or
@@ -34,8 +34,10 @@ export async function listenBroker(broker: DockerBroker) {
   await broker.expireLeases();
   const server = createServer((req, res) => { void (async () => {
     if (req.headers.origin || req.headers.upgrade) throw new LocalError(403, 'Browser connections are not supported.');
-    const owner = ownerId.parse(req.headers['x-collective-owner']);
     const url = req.url ?? '';
+    // Reserved Team owners are network targets, never authenticated human actors
+    // for provisioning, personal access, or Team capability issuance.
+    const owner = (url === '/control/network' ? runtimeOwnerId : ownerId).parse(req.headers['x-collective-owner']);
     if (req.method === 'GET' && url === '/admin/ready') return json(res, 200, { ready: true });
     if (req.method === 'POST' && url === '/team/authorize') return json(res, 200, broker.authorizeTeam(owner, teamAuthorization.parse(await body(req))));
     if (req.method === 'POST' && url === '/team/revoke') return json(res, 200, await broker.revokeTeam(owner, await body(req, 96 * 1024)));
@@ -166,7 +168,7 @@ async function main() {
   if (networkOperation) {
     // Preview is read-only and requires an existing pinned deployment. Apply requires a cleanly stopped broker.
     await stat(path.join(config.stateDir, 'deployment.json'));
-    const owner = ownerId.parse(process.argv[4]);
+    const owner = runtimeOwnerId.parse(process.argv[4]);
     if (operation === '--network-plan') {
       const status = await new DockerBroker(config, new DockerDriver(config)).networkStatus(owner);
       console.info(JSON.stringify({ ...status, requested: networkMode.parse(process.argv[5]), restart: 'Running runtimes restart; stopped runtimes remain stopped. Native volume and profile identities are retained.' }));
@@ -176,14 +178,14 @@ async function main() {
     const guard = await open(lockPath, 'wx', 0o600);
     await guard.writeFile(JSON.stringify({ pid: process.pid })); await guard.close();
     const broker = new DockerBroker(config, new DockerDriver(config));
-    const renewal = setInterval(() => broker.authorize(owner, false), 15000);
+    const renewal = setInterval(() => broker.authorizeNetwork(owner), 15000);
     try {
       await broker.recoverNetworks();
       const status = await broker.networkStatus(owner);
       const mode = networkMode.parse(operation === '--network-rollback' ? status.receipt?.previous : process.argv[5]);
       if (operation === '--network-rollback' && status.receipt?.requestId !== z.string().uuid().parse(process.argv[5])) throw new Error('Rollback request is stale');
       // The operator command has no IPC listener, and never enables a stopped runtime for chat.
-      broker.authorize(owner, false); await broker.stop(owner);
+      broker.authorizeNetwork(owner); await broker.stop(owner);
       broker.requestNetwork(owner, { mode, revision: status.revision, requestId: randomUUID(), confirmRestart: true }, 'operator');
       const result = await broker.settleNetwork(owner); console.info(JSON.stringify(result));
       if (result.receipt?.state !== 'committed' || result.mode !== mode) throw new Error('Network change needs review');

@@ -57,6 +57,11 @@ network policy. With active runtime enabled, offline containers cannot prepare o
 the application must show connection-needed guidance. Fresh Standard Internet and
 operator-approved proxy policies use the existing per-owner network controls. This
 capability check does not claim endpoint reachability or alter network policy.
+Reserved admin owners use `team-admin:<botId>` with the protected Admin network API
+or stopped-broker operator commands. The API requires a current administrator
+assigned to maintain that enabled Team Bot; it does not borrow a human enrollment.
+Personal member owners keep the personal enrollment checks. See the
+[network authority proof](../validation/team-admin-network-324.md).
 
 Chat post-turn review captures a bounded snapshot with a separate handoff token and
 waits for durable acknowledgement. It never launches the old native daemon thread.
