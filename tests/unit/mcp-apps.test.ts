@@ -9,6 +9,7 @@ import type { AgentCtx } from '@/lib/agent/types';
 import type { McpServer } from '@/db/schema';
 import type { McpCallResult } from '@/lib/mcp/hygiene';
 import type { PortalUIMessage } from '@/lib/chat/store';
+import { ticketDraftMarkup, ticketDraftResult, ticketDraftTool } from '../fixtures/mcp-apps/ticket-draft.mjs';
 
 const fixture = vi.hoisted(() => ({ client: null as PGlite | null, human: null as Principal | null, connect: vi.fn(), calls: [] as string[],
   resource: vi.fn(), duringCall: null as (() => Promise<void>) | null }));
@@ -36,6 +37,7 @@ import { sealIdentitySecret } from '@/lib/mcp/identity';
 import { scrubForeignOpenAIMetadata } from '@/lib/agent/replay';
 import { mcpTools } from '@/lib/agent/tools/mcp';
 import { getSetting, setSetting } from '@/lib/settings';
+import { acceptMcpDrift, offeredTools, refreshMcpServer } from '@/lib/mcp/servers';
 import { GET, POST } from '@/app/api/mcp-apps/[id]/route';
 
 const privateMarker = 'SYNTHETIC_COMPONENT_ONLY_8192';
@@ -119,6 +121,19 @@ describe('Reviewed MCP App descriptors and bounded results', () => {
 });
 
 describe('Native resource capture, persistence and private metadata isolation', () => {
+  it('captures the synthetic Ticket Tracker draft and retains safe diagnostics when its sandbox is disabled', async () => {
+    const def = toToolDef(ticketDraftTool)!;
+    await db.update(schema.mcpServers).set({ toolsSnapshot: [def], toolsHash: snapshotHash([def]) });
+    server = await loadServer(); binding = await mcpAuthorityBinding(ctx, server, null, []);
+    fixture.resource.mockResolvedValue({ contents: [{ uri: 'ui://synthetic-ticket-tracker/draft', mimeType: 'text/html;profile=mcp-app', text: ticketDraftMarkup }] });
+    const captured = await capture(def, ticketDraftResult);
+    expect(captured.id).toBeTruthy(); expect((await loadMcpApp(p, captured.id)).html).toContain('Synthetic Ticket Tracker draft');
+    expect(JSON.stringify(captured.output)).not.toContain('SYNTHETIC_TICKET_COMPONENT_ONLY');
+    vi.stubEnv('MCP_APPS_SANDBOX_URL', '');
+    const disabled = await capture(def, ticketDraftResult);
+    expect(disabled.id).toBeNull(); expect(JSON.stringify(disabled.output)).toContain('MCP_APPS_SANDBOX_URL');
+    expect(fixture.resource).toHaveBeenCalledTimes(1); expect(fixture.calls).toEqual([]);
+  });
   it('captures a widget through the real native MCP tool execution wrapper', async () => {
     const toolset = mcpTools(server, { caller: { subject: { kind: 'user', id: p.user.id, upn: p.user.upn, email: p.user.email, name: p.user.name, groups: [] } },
       config: null, taken: new Set(), authority: { ctx, binding, grants: [] }, apps: { audience: 'model' } });
@@ -152,8 +167,9 @@ describe('Native resource capture, persistence and private metadata isolation', 
     await expect(loadMcpApp(other, id)).rejects.toMatchObject({ status: 403 });
   });
   it('keeps successful text when resources fail and fails closed without a separate sandbox', async () => {
-    fixture.resource.mockRejectedValue(new Error('synthetic missing resource'));
+    fixture.resource.mockRejectedValue(new Error('synthetic missing resource PRIVATE_RESOURCE_SECRET'));
     const { output, id } = await capture(); expect(id).toBeNull(); expect(JSON.stringify(output)).toContain('could not be loaded'); expect(JSON.stringify(output)).not.toContain(privateMarker);
+    expect(JSON.stringify(output)).not.toContain('PRIVATE_RESOURCE_SECRET');
     vi.stubEnv('MCP_APPS_SANDBOX_URL', 'https://host.test.invalid/sandbox'); expect(mcpAppSandboxUrl()).toBeNull();
     expect((await capture()).id).toBeNull();
     for (const bad of ['https://u:p@sandbox.test.invalid/sandbox', 'http://public.example.invalid/sandbox', 'https://sandbox.test.invalid/sandbox?x=1']) {
@@ -161,7 +177,7 @@ describe('Native resource capture, persistence and private metadata isolation', 
     }
   });
   it('requires the exact /sandbox endpoint served by the dedicated proxy', () => {
-    for (const path of ['/', '/widgets', '/sandbox/', '/prefix/sandbox', '/%73andbox']) {
+    for (const path of ['/', '/widgets', '/sandbox/', '/prefix/sandbox', '/%73andbox', '/sandbox?', '/sandbox#']) {
       vi.stubEnv('MCP_APPS_SANDBOX_URL', `https://sandbox.test.invalid${path}`);
       expect(mcpAppSandboxUrl()).toBeNull();
     }
@@ -169,6 +185,50 @@ describe('Native resource capture, persistence and private metadata isolation', 
       vi.stubEnv('MCP_APPS_SANDBOX_URL', url);
       expect(mcpAppSandboxUrl()).toBe(url);
     }
+  });
+  it.each(['', 'https://private-user:PRIVATE_SECRET@sandbox.test.invalid/sandbox?PRIVATE_QUERY'])('explains missing/invalid sandbox configuration without disclosing values (%s)', async url => {
+    vi.stubEnv('MCP_APPS_SANDBOX_URL', url);
+    const { output, id } = await capture();
+    expect(id).toBeNull(); expect(fixture.resource).not.toHaveBeenCalled();
+    expect(JSON.stringify(output)).toContain('MCP_APPS_SANDBOX_URL');
+    expect(JSON.stringify(output)).toContain('both web and worker');
+    expect(JSON.stringify(output)).toContain('Two synthetic rows');
+    for (const secret of ['private-user', 'PRIVATE_SECRET', 'PRIVATE_QUERY', privateMarker]) expect(JSON.stringify(output)).not.toContain(secret);
+    expect(await db.select().from(schema.mcpAppInstances)).toEqual([]);
+  });
+  it('retains a configuration diagnostic under the result budget and leaves ordinary/failed tools alone', async () => {
+    vi.stubEnv('MCP_APPS_SANDBOX_URL', '');
+    const { output } = await capture(defs[0], { ...result, content: [{ type: 'text', text: 'x'.repeat(100000) }] });
+    expect(JSON.stringify(output)).toContain('MCP_APPS_SANDBOX_URL');
+    expect(Buffer.byteLength(JSON.stringify(output))).toBeLessThanOrEqual(server.resultBudgetKb * 1024);
+    expect((await capture(defs[1])).output).toEqual(appModelResult(result, server.resultBudgetKb * 1024 - 80));
+    expect((await capture(defs[0], { ...result, isError: true })).output).toEqual(appModelResult({ ...result, isError: true }, server.resultBudgetKb * 1024 - 80));
+  });
+  it('rejects invalid host configuration without leaking it in fallback or load errors', async () => {
+    const { id } = await capture();
+    vi.stubEnv('AUTH_URL', 'https://PRIVATE_USER:PRIVATE_SECRET@host.test.invalid');
+    expect(mcpAppSandboxUrl()).toBeNull();
+    expect(JSON.stringify((await capture()).output)).toContain('AUTH_URL');
+    await expect(loadMcpApp(p, id)).rejects.toMatchObject({ status: 409, message: expect.stringContaining('AUTH_URL') });
+    expect(JSON.stringify((await capture()).output)).not.toContain('PRIVATE_SECRET');
+  });
+  it.each([
+    { ui: { resourceUri: 'ui://synthetic/view' } },
+    { 'ui/resourceUri': 'ui://synthetic/view' },
+    { 'openai/outputTemplate': 'ui://synthetic/view' },
+  ])('requires explicit drift review when refreshing metadata discarded by an older snapshot (%j)', async meta => {
+    const old = tool('draft_ticket');
+    const advertised = tool('draft_ticket', meta);
+    await db.update(schema.mcpServers).set({ toolsSnapshot: [old], toolsHash: snapshotHash([old]) });
+    fixture.connect.mockResolvedValueOnce({ listTools: async () => ({ tools: [advertised] }), close: async () => {} });
+    const refreshed = await refreshMcpServer(server.id, p.user.id);
+    expect(refreshed).toMatchObject({ ok: true, result: 'drift', drift: { changed: ['draft_ticket'] } });
+    expect(fixture.connect.mock.calls[0][1].apps).toBe(true);
+    const pending = await loadServer();
+    expect(appResource(pending.toolsSnapshot![0])).toBeNull(); expect(offeredTools(pending)).toEqual([]);
+    expect(await acceptMcpDrift(server.id, pending.toolsDrift!.hash)).toEqual({ ok: true });
+    expect(appResource(offeredTools(await loadServer())[0])).toMatchObject({ uri: 'ui://synthetic/view' });
+    expect(fixture.resource).not.toHaveBeenCalled(); expect(fixture.calls).toEqual([]);
   });
   it.each(['server', 'bot', 'session', 'descriptor', 'expiry', 'codex', 'hermes', 'sandbox'])('revokes loading and actions after %s changes', async change => {
     const { id } = await capture();

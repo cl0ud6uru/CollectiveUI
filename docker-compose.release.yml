@@ -26,6 +26,7 @@ services:
       DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/portal
       DATABASE_POOL_MAX: ${WORKER_DATABASE_POOL_MAX:-20}
       STORAGE_DIR: /data/uploads
+      MCP_APPS_SANDBOX_URL: ${MCP_APPS_SANDBOX_URL:-}
     command: [node, --import, tsx, src/worker/index.ts]
     volumes:
       - uploads:/data/uploads
@@ -41,6 +42,7 @@ services:
       DATABASE_URL: postgres://portal:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/portal
       STORAGE_DIR: /data/uploads
       PORT: "3000"
+      MCP_APPS_SANDBOX_URL: ${MCP_APPS_SANDBOX_URL:-}
     ports:
       - "${WEB_BIND:-0.0.0.0}:${PORT:-3000}:3000"
     volumes:
@@ -49,6 +51,36 @@ services:
     depends_on:
       db: { condition: service_healthy }
       worker: { condition: service_healthy }
+
+  # Reuse the immutable worker reference from the same release; no third mutable image/tag is needed.
+  mcp-app-sandbox:
+    profiles: [mcp-apps]
+    image: ${COLLECTIVEUI_WORKER_IMAGE:?Set COLLECTIVEUI_WORKER_IMAGE to an immutable worker image reference}
+    command: [node, scripts/mcp-app-sandbox.mjs]
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 32
+    mem_limit: 128m
+    cpus: 0.5
+    # Never load .env into this process: only the three non-secret settings below are forwarded.
+    environment:
+      MCP_APPS_HOST_ORIGIN: ${MCP_APPS_HOST_ORIGIN:-}
+      MCP_APPS_SANDBOX_HOST: "0.0.0.0"
+      MCP_APPS_SANDBOX_PORT: "3102"
+    ports:
+      - "127.0.0.1:${MCP_APPS_SANDBOX_PORT:-3102}:3102"
+    networks: [mcp-apps]
+    # Override the worker image's queue readiness probe.
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3102/sandbox').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
 
   migrate:
     profiles: [maintenance]
@@ -80,3 +112,6 @@ services:
 volumes:
   pgdata:
   uploads:
+
+networks:
+  mcp-apps:
