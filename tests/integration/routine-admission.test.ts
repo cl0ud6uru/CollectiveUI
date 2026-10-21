@@ -1,14 +1,15 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Pool } from "pg";
 import { routineFixtureURL } from "../fixtures/routines/disposable-database";
 import { db, pool, schema } from "@/db";
 import { getBoss, QUEUES } from "@/lib/jobs";
 import { lockRoutineAdmission, MAX_ACTIVE_ROUTINE_RUNS_PER_USER, queueRoutineRun } from "@/lib/routines/admission";
-import { scheduleDueRoutines } from "@/lib/agent/routine-runner";
+import { executeRoutineRun, scheduleDueRoutines } from "@/lib/agent/routine-runner";
+import { claimRun } from "@/lib/runs/state";
 import { POST } from "@/app/api/routines/webhook/[id]/route";
 import type { Principal } from "@/lib/auth/groups";
-import { runRoutineNow, saveRoutine } from "@/app/(chat)/bots/actions";
+import { deleteRoutine, runRoutineNow, saveRoutine } from "@/app/(chat)/bots/actions";
 
 const auth = vi.hoisted(() => ({ principal: null as Principal | null }));
 vi.mock("@/lib/session", () => ({ requirePrincipal: async () => auth.principal }));
@@ -54,6 +55,7 @@ suite("bounded routine admission on real PostgreSQL and pg-boss", () => {
   afterEach(async () => {
     // This database is exclusive to this opt-in suite. No workers or providers run.
     await boss.deleteAllJobs(QUEUES.routineRun);
+    await boss.deleteAllJobs(QUEUES.agentRunBackground);
     await db.delete(schema.users).where(inArray(schema.users.id, owners));
   });
   afterAll(async () => { await boss?.stop({ graceful: false }); if (appId) await db.delete(schema.aiApps).where(eq(schema.aiApps.id, appId)); await pool.end(); });
@@ -75,6 +77,65 @@ suite("bounded routine admission on real PostgreSQL and pg-boss", () => {
     expect(accepted).toHaveLength(3);
     expect(accepted.every(run => run.status === "queued" && run.lastEnqueueAt != null)).toBe(true);
     expect(await boss.fetch(QUEUES.routineRun, { batchSize: 50 })).toHaveLength(3);
+  });
+
+  it.each(["queued", "running"] as const)("counts retained %s background work after each source routine is deleted", async status => {
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("No HTTP or model requests are allowed in this fixture"));
+    const retained: string[] = [];
+    try {
+      for (let n = 0; n < MAX_ACTIVE_ROUTINE_RUNS_PER_USER; n++) {
+        auth.principal = principals[0];
+        const name = `Retained ${status} source ${n}`;
+        await saveRoutine({ botId: a.botId, name, prompt: "Never execute", triggerType: "cron", cron: "*/5 * * * *", timezone: "UTC", enabled: true, notifyEmail: false });
+        const [source] = await db.select().from(schema.routines).where(and(eq(schema.routines.ownerId, a.ownerId), eq(schema.routines.name, name)));
+        const { runId } = await runRoutineNow(source.id);
+        // The routine runner creates a durable queued agent and its pg-boss job; no agent worker or model runs.
+        await executeRoutineRun(runId);
+        const [agent] = await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.routineRunId, runId));
+        expect(agent).toMatchObject({ status: "queued", background: true, userId: a.ownerId });
+        if (status === "running") expect(await claimRun(agent.id, "synthetic-retained-cap-fixture")).toMatchObject({ status: "running" });
+        await deleteRoutine(source.id);
+        expect(await db.select().from(schema.routineRuns).where(eq(schema.routineRuns.id, runId))).toHaveLength(0);
+        expect((await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, agent.id)))[0]).toMatchObject({ routineRunId: null, status });
+        retained.push(agent.id);
+      }
+      await expect(manual()).rejects.toMatchObject({ status: 429 });
+      await manual(b); // Another owner retains independent capacity.
+      await db.update(schema.agentRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(schema.agentRuns.id, retained[0]));
+      await manual(); // Completing retained work frees exactly one slot.
+      await expect(manual()).rejects.toMatchObject({ status: 429 });
+    } finally {
+      try { expect(network).not.toHaveBeenCalled(); }
+      finally { network.mockRestore(); }
+    }
+  });
+
+  it("counts a routine and its still-linked background agent only once", async () => {
+    for (let n = 0; n < MAX_ACTIVE_ROUTINE_RUNS_PER_USER; n++) {
+      const { run } = await manual();
+      await executeRoutineRun(run.id);
+    }
+    expect(await rows()).toHaveLength(3);
+    const agents = await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.userId, a.ownerId));
+    expect(agents).toHaveLength(3);
+    expect(agents.every(agent => agent.routineRunId !== null && agent.background && agent.status === "queued")).toBe(true);
+    await expect(manual()).rejects.toMatchObject({ status: 429 });
+  });
+
+  it("does not count ordinary chat, foreground, paused or finished orphan agents", async () => {
+    const excluded = [
+      { source: "chat", background: true, status: "queued" },
+      { source: "routine", background: false, status: "queued" },
+      { source: "routine", background: true, status: "waiting" },
+      { source: "routine", background: true, status: "waiting_tasks" },
+      { source: "routine", background: true, status: "succeeded" },
+    ] as const;
+    for (const sample of excluded) {
+      const [conversation] = await db.insert(schema.conversations).values({ userId: a.ownerId, source: sample.source }).returning();
+      await db.insert(schema.agentRuns).values({ userId: a.ownerId, conversationId: conversation.id, messageId: conversation.id, background: sample.background, status: sample.status });
+    }
+    await manual(); await manual(); await manual();
+    await expect(manual()).rejects.toMatchObject({ status: 429 });
   });
 
   it("shares the cap across triggers and running work while another owner stays admissible", async () => {
