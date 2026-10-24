@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { routineFixtureURL } from "../fixtures/routines/disposable-database";
 import { db, pool, schema } from "@/db";
 import { newId } from "@/lib/ids";
@@ -12,6 +12,22 @@ vi.mock("@/lib/auth/entra", () => ({ graphFetch: vi.fn(() => { throw new Error("
 
 const enabled = process.env.ROUTINE_ADMISSION_TEST === "1";
 if (enabled) routineFixtureURL("admission");
+
+async function waitForNotificationBlockedBy(holder: PoolClient, table: "users" | "conversations" | "routine_runs") {
+  await vi.waitFor(async () => {
+    // This transaction must retain its parent lock. Refresh activity explicitly because PostgreSQL
+    // otherwise reuses the first pg_stat_activity snapshot until the transaction ends.
+    await holder.query("SELECT pg_stat_clear_snapshot()");
+    const waiting = await holder.query<{ query: string }>(`
+      SELECT query FROM pg_stat_activity
+      WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'
+        AND pg_backend_pid() = ANY(pg_blocking_pids(pid))
+    `);
+    expect(waiting.rows.map(row => row.query)).toEqual(expect.arrayContaining([
+      expect.stringMatching(new RegExp(`${table}|inbox_items`)),
+    ]));
+  }, { timeout: 5_000, interval: 50 });
+}
 
 describe.skipIf(!enabled)("routine notification parent locks on disposable PostgreSQL", () => {
   let userId: string, appId: string, conversationId: string, routineId: string, routineRunId: string;
@@ -54,10 +70,7 @@ describe.skipIf(!enabled)("routine notification parent locks on disposable Postg
       notification = afterRunTransition(agent, "succeeded", null);
       // Attach a rejection handler immediately; the assertion after releasing locks still checks it.
       void notification.catch(() => {});
-      await vi.waitFor(async () => {
-        const waiting = await holder.query("SELECT query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'");
-        expect(waiting.rows.some(row => typeof row.query === "string" && (row.query.includes(table) || row.query.includes("inbox_items")))).toBe(true);
-      });
+      await waitForNotificationBlockedBy(holder, table);
       const deletedTable = parent === "routine" ? "routines" : table;
       await holder.query(`DELETE FROM ${deletedTable} WHERE id = $1`, [parent === "routine" ? routineId : id]);
       await holder.query("COMMIT");
@@ -69,7 +82,7 @@ describe.skipIf(!enabled)("routine notification parent locks on disposable Postg
       await notification?.catch(() => {});
       await otherProcess.end();
     }
-  });
+  }, 10_000);
 
   it("does not hold the routine row while waiting for a missing-run conversation deletion", async () => {
     await db.delete(schema.agentRuns).where(eq(schema.agentRuns.id, agent.id));
@@ -82,10 +95,7 @@ describe.skipIf(!enabled)("routine notification parent locks on disposable Postg
       await holder.query("SELECT id FROM conversations WHERE id = $1 FOR UPDATE", [conversationId]);
       recovery = reconcileRoutines();
       void recovery.catch(() => {});
-      await vi.waitFor(async () => {
-        const waiting = await holder.query("SELECT query FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'");
-        expect(waiting.rows.some(row => typeof row.query === "string" && (row.query.includes("conversations") || row.query.includes("inbox_items")))).toBe(true);
-      });
+      await waitForNotificationBlockedBy(holder, "conversations");
       await holder.query("DELETE FROM conversations WHERE id = $1", [conversationId]);
       await holder.query("COMMIT");
       await recovery;
@@ -99,5 +109,5 @@ describe.skipIf(!enabled)("routine notification parent locks on disposable Postg
       await recovery?.catch(() => {});
       await otherProcess.end();
     }
-  });
+  }, 10_000);
 });
