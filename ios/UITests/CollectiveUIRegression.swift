@@ -181,12 +181,22 @@ final class CollectiveUIRegression: XCTestCase {
     private func openChat(_ conversationId: String) {
         tap(app.buttons["Open sidebar"])
         let row = app.buttons["conversation." + conversationId]
-        for _ in 0..<4 {
-            if row.exists && row.isHittable { break }
-            if app.collectionViews.firstMatch.exists { app.collectionViews.firstMatch.swipeUp() }
-            else if app.tables.firstMatch.exists { app.tables.firstMatch.swipeUp() }
-            else { app.swipeUp() }
+        let collection = app.collectionViews.firstMatch
+        let list = collection.waitForExistence(timeout: 5) ? collection : app.tables.firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        for _ in 0..<12 {
+            let viewport = list.frame.intersection(app.frame)
+            let targetArea = viewport.insetBy(dx: 0, dy: viewport.height * 0.2)
+            if row.exists && targetArea.contains(row.frame) && row.isHittable { break }
+            // Keep the target clear of pinned section headers. If a gesture passes the row,
+            // reverse direction instead of continuing farther away from it.
+            let direction: CGFloat = row.exists && row.frame.minY < targetArea.minY ? 1 : -1
+            list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: list.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5 + direction * 0.2)),
+                       withVelocity: .slow, thenHoldForDuration: 0.2)
         }
+        let viewport = list.frame.intersection(app.frame)
+        XCTAssertTrue(viewport.insetBy(dx: 0, dy: viewport.height * 0.2).contains(row.frame), "Chat row must be fully visible below pinned section headers before tapping")
         print("SIDEBAR_BUTTONS: " + app.buttons.allElementsBoundByIndex.map { $0.label }.joined(separator: " | "))
         capture("sidebar-" + conversationId)
         tap(row)
