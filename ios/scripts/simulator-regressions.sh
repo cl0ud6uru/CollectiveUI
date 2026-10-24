@@ -17,18 +17,7 @@ if [ "$BUNDLE_ID" != "io.collectiveui.qa" ]; then
 fi
 
 if [ -z "$DEVICE_ID" ]; then
-  DEVICE_ID="$(xcrun simctl list devices available -j | python3 -c '
-import json, re, sys
-devices = json.load(sys.stdin)["devices"]
-def version(runtime):
-    return tuple(map(int, re.findall(r"\d+", runtime.split("iOS-")[-1])))
-for runtime in sorted((r for r in devices if ".iOS-" in r), key=version, reverse=True):
-    for device in devices[runtime]:
-        if device.get("isAvailable", True) and device["name"].startswith("iPhone"):
-            print(device["udid"])
-            sys.exit(0)
-sys.exit("No available iPhone simulator")
-')"
+  DEVICE_ID="$(xcrun simctl list devices available -j | python3 "$IOS_DIR/scripts/select-regression-simulator.py")"
 fi
 
 xcrun simctl boot "$DEVICE_ID" >/dev/null 2>&1 || true

@@ -23,6 +23,7 @@ Repairs for seven findings from the 2026-10-23 review, based on `75209d458384aa9
 - `tests/unit/routine-notifications.test.ts` uses the production hooks and reconciler with a migrated disposable PGlite database. It injects failures at both writes, retries recovery, checks receipt deduplication and distinct approval phases, rejects stale hooks, preserves recovered message summaries, and covers deleted/missing conversations and terminal errors.
 - `tests/integration/routine-notifications-postgres.test.ts` adds four real PostgreSQL overlap cases for user/conversation/routine deletion and missing-agent recovery. These are wired into the existing PostgreSQL CI job with pool sizes 1 and 4. Parent rows are protected before acquiring agent locks to avoid cascade-deletion deadlocks while permitting continuation updates.
 - `ios/CollectiveUITests/AuthenticatedImageTests.swift` runs the actual image loader with synthetic HTTP responses. It covers server/account changes with identical relative paths, late responses after login replacement, and logout while a response is outstanding.
+- The complete 28-test iOS UI suite defaults to an available iPhone 18 Pro, matching the screenshot target and locally validated hardware. The runner logs its selected runtime and device, and accepts an explicit simulator UDID for other devices. This makes simulator selection predictable after iOS 27.1/Duo runs exhibited XCTest process-ID and accessibility-connection failures. Compact-viewport assertions and directional sidebar navigation remain covered by the same tests.
 
 ## Validation
 
@@ -54,7 +55,7 @@ npx vitest run --project unit --maxWorkers=2 \
 
 These exclusions cover the Docker/Linux/runtime-dependent suites. Docker was unavailable locally, so this is not a full-suite result. No live provider, user account, or existing application database was used. Native builds used Xcode 27.0 with signing disabled; the iOS tests used the separate QA bundle.
 
-The four real PostgreSQL overlap tests were imported successfully with opt-in disabled and skipped locally because PostgreSQL/Docker was unavailable. Their execution remains for CI; PGlite validates transaction rollback and receipt semantics but does not validate concurrent PostgreSQL row-lock behavior.
+CI subsequently passed the full JavaScript suite (4,275 tests passed, 729 skipped), Docker validation, and both PostgreSQL pool-size jobs on commit `3293961f`. This includes the four real PostgreSQL overlap tests; PGlite alone does not validate concurrent PostgreSQL row-lock behavior. Current PR checks provide the validation status of later test-harness changes.
 
 Optional routine email remains best-effort. Only the transaction that creates the Inbox receipt attempts email, preventing duplicate attempts on hook recovery; durable email delivery and retry history remain a separate feature. The fix does not backfill historical terminal routine runs that lost notifications before this change.
 
