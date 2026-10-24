@@ -194,6 +194,7 @@ jobs:
           npx playwright test --config tests/group-lead.playwright.config.ts
           npx playwright test --config tests/group-activity.playwright.config.ts
           npx playwright test --config tests/message-interactions.playwright.config.ts
+          npx playwright test --config tests/chat-recovery.playwright.config.ts
           node tests/browser/hermes-team-controls.mjs
           node tests/browser/hermes-team-chat-controls.mjs
           node tests/browser/hermes-team-candidate-approvals.mjs

@@ -142,6 +142,52 @@ final class AuthenticationTests: XCTestCase {
         XCTAssertEqual(credentials.values["token"], "replacement-session")
     }
 
+    #if os(iOS)
+    func testStalledActivityUnregisterEndsLocalAccessWhenActivitiesEnabled() async {
+        await checkStalledActivityUnregister(enabled: true)
+    }
+
+    func testStalledActivityUnregisterEndsLocalAccessWhenActivitiesDisabled() async {
+        await checkStalledActivityUnregister(enabled: false)
+    }
+
+    private func checkStalledActivityUnregister(enabled: Bool) async {
+        let previousEnabled = app.liveActivities.enabled
+        await app.liveActivities.setEnabled(enabled)
+        let gate = FixtureDeliveryGate()
+        let capture = SignOutRequestCapture(activityGate: gate)
+        FixtureProtocol.handler = { capture.respond($0) }
+        app.completeSignIn(token: "old-session")
+        let oldDraft = app.conversationStates.state(for: "old-chat")
+        oldDraft.text = "Private draft"
+        let task = Task { await app.signOut() }
+        for _ in 0..<200 {
+            if capture.activityTokens.count == 1 && capture.revokedTokens.count == 1 { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        // Neither a disabled feature nor an unresponsive unregister request can retain access.
+        XCTAssertNil(app.token)
+        XCTAssertEqual(app.phase, .signIn)
+        XCTAssertNil(credentials.values["token"])
+        XCTAssertTrue(defaults.bool(forKey: "nativeSignedOut"))
+        XCTAssertEqual(oldDraft.text, "")
+        XCTAssertEqual(capture.activityTokens, ["Bearer old-session"])
+        XCTAssertEqual(capture.revokedTokens, ["Bearer old-session"])
+
+        app.useServer(URL(string: "https://replacement.invalid")!, info: MobileInfo(enabled: true, appName: "Replacement", logoEmoji: "", apiVersion: 1))
+        app.completeSignIn(token: "replacement-session")
+        // A late unauthorized result from the old server must not clear the replacement login.
+        gate.release()
+        await task.value
+        await Task.yield()
+        XCTAssertEqual(app.serverURL?.host, "replacement.invalid")
+        XCTAssertEqual(app.token, "replacement-session")
+        XCTAssertEqual(credentials.values["token"], "replacement-session")
+        FixtureProtocol.handler = { _ in .init() }
+        await app.liveActivities.setEnabled(previousEnabled)
+    }
+    #endif
+
     func testEndedSessionDoesNotRestoreWhenCredentialDeletionFails() {
         app.completeSignIn(token: "token-that-cannot-be-deleted")
         credentials.rejectsTokenRemoval = true
@@ -230,6 +276,30 @@ final class AuthenticationTests: XCTestCase {
         XCTAssertNil(demo.token)
     }
 }
+
+#if os(iOS)
+private final class SignOutRequestCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activities: [String] = []
+    private var revoked: [String] = []
+    let activityGate: FixtureDeliveryGate
+    init(activityGate: FixtureDeliveryGate) { self.activityGate = activityGate }
+    var activityTokens: [String] { lock.withLock { activities } }
+    var revokedTokens: [String] { lock.withLock { revoked } }
+
+    func respond(_ request: URLRequest) -> FixtureProtocol.Reply {
+        let bearer = request.value(forHTTPHeaderField: "Authorization") ?? ""
+        if request.httpMethod == "DELETE", request.url?.path.hasSuffix("/api/mobile/v1/live-activities") == true {
+            lock.withLock { activities.append(bearer) }
+            return .init(status: 401, deliveryGate: activityGate)
+        }
+        if request.httpMethod == "DELETE", request.url?.path.hasSuffix("/api/mobile/v1/session") == true {
+            lock.withLock { revoked.append(bearer) }
+        }
+        return .init()
+    }
+}
+#endif
 
 private final class AuthRequestCapture: @unchecked Sendable {
     private let lock = NSLock()

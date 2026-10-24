@@ -29,6 +29,7 @@ const run = (over: Partial<AgentRun> = {}) =>
     messageId: "m1",
     botId: "b1",
     routineRunId: "rr1",
+    segment: 0,
     status: "succeeded",
     ...over,
   }) as AgentRun;
@@ -69,6 +70,7 @@ describe("afterRunTransition → afterRoutineTurn", () => {
     await afterRunTransition(run(), "succeeded", reply("Here's the digest"));
     expect(lastCall()).toEqual({
       runId: "rr1",
+      transition: { runId: "ar1", segment: 0, status: "succeeded" },
       routineName: "Daily digest",
       botName: "Digest bot",
       userId: "u1",

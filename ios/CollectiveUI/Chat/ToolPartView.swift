@@ -79,11 +79,11 @@ struct ToolPartView: View {
             if isAwaitingApproval {
                 approvalControls
             }
-            if part.state == "output-available", let path = WorkspaceArtifact.path(toolName: part.toolName, output: part.output) {
+            if part.state == "output-available", let artifact = WorkspaceArtifact.parse(toolName: part.toolName, output: part.output) {
                 Button {
-                    Task { await downloadArtifact(path) }
+                    Task { await downloadArtifact(artifact) }
                 } label: {
-                    Label(downloading ? "Downloading…" : "Download \(path.split(separator: "/").last ?? "file")", systemImage: "square.and.arrow.down")
+                    Label(downloading ? "Downloading…" : "Download \(artifact.path.split(separator: "/").last ?? "file")", systemImage: "square.and.arrow.down")
                         .font(.footnote)
                 }
                 .disabled(downloading)
@@ -119,16 +119,16 @@ struct ToolPartView: View {
         }
     }
 
-    private func downloadArtifact(_ path: String) async {
+    private func downloadArtifact(_ artifact: WorkspaceArtifact) async {
         guard let api = model.app.api else { return }
         downloading = true
         artifactError = nil
         defer { downloading = false }
         do {
-            let data = try await api.workspaceFile(path: path)
+            let data = try await api.workspaceFile(path: artifact.path, instanceId: artifact.instanceId)
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let file = dir.appendingPathComponent(String(path.split(separator: "/").last ?? "file"))
+            let file = dir.appendingPathComponent(String(artifact.path.split(separator: "/").last ?? "file"))
             try data.write(to: file, options: [.atomic, .completeFileProtection])
             artifactFile = file
             showArtifact = true

@@ -14,10 +14,10 @@ import type { ReplyContext } from "@/lib/chat/reply";
 export type UploadedFile = { id: string; url: string; filename: string; mediaType: string };
 type PendingFile = { key: string; filename: string; mediaType: string; preview?: string; uploaded?: UploadedFile; error?: string };
 
-/** Shared by the empty and transcript layouts so replacing the textarea preserves typing intent. */
+/** Tracks typing intent across disabled controls and chat layout changes. */
 export type ComposerFocusState = { restore: boolean; initialized: boolean };
 
-export type ComposerHandle = { focus: () => void; setText: (t: string, ownedReplyMention?: string | null, focus?: boolean) => void; appendText: (t: string) => void; setReplyMention: (prefix: string | null) => void; getReplyMention: () => string | null; submit: (text?: string) => Promise<void> };
+export type ComposerHandle = { focus: () => void; setText: (t: string, ownedReplyMention?: string | null, focus?: boolean) => void; restoreDraft: (text: string, files: UploadedFile[], mention: string | null) => void; appendText: (t: string) => void; setReplyMention: (prefix: string | null) => void; getReplyMention: () => string | null; submit: (text?: string) => Promise<void> };
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -42,6 +42,8 @@ export const Composer = forwardRef<
     onSend: (text: string, files: UploadedFile[]) => void | boolean | Promise<void | boolean>;
     onStop: () => void;
     busy: boolean;
+    stopping?: boolean;
+    sendDisabled?: boolean;
     disabled?: boolean;
     tools?: React.ReactNode;
     placeholder?: string;
@@ -59,7 +61,7 @@ export const Composer = forwardRef<
     replyTo?: ReplyContext | null;
     onCancelReply?: () => void;
   }
->(function Composer({ onSend, onStop, busy, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, focusState: sharedFocusState, tint, voiceActive = false, replyTo, onCancelReply }, ref) {
+>(function Composer({ onSend, onStop, busy, stopping = false, sendDisabled = false, disabled, tools, placeholder = "Ask anything", skills = [], hermesCommands, commands, mentions = [], autoFocus, focusState: sharedFocusState, tint, voiceActive = false, replyTo, onCancelReply }, ref) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -86,6 +88,16 @@ export const Composer = forwardRef<
       replyMention.current = ownedReplyMention ?? null;
       setText(t);
       if (focus) requestAnimationFrame(() => taRef.current?.focus());
+    },
+    restoreDraft: (restoredText, restoredFiles, mention) => {
+      replyMention.current = mention;
+      setText(current => restoredText && current ? `${restoredText}\n\n${current}` : restoredText || current);
+      setFiles(current => [
+        ...restoredFiles.filter(file => !current.some(existing => existing.uploaded?.url === file.url)).map(file => ({
+          key: crypto.randomUUID(), filename: file.filename, mediaType: file.mediaType, uploaded: file,
+        })),
+        ...current,
+      ]);
     },
     appendText: (t: string) => {
       setText(current => `${current}${current && !/\s$/.test(current) ? " " : ""}${t}`);
@@ -219,7 +231,7 @@ export const Composer = forwardRef<
   const uploading = files.some((f) => !f.uploaded && !f.error);
   const hasContent = text.trim().length > 0 || files.some((f) => f.uploaded);
   // While a reply is running you can still send: the current turn stops and your new instruction goes next.
-  const canSend = !disabled && !uploading && !submitting && hasContent;
+  const canSend = !disabled && !sendDisabled && !uploading && !submitting && hasContent;
 
   async function submit(starterText?: string) {
     if (starterText !== undefined && uploading) {
@@ -227,7 +239,7 @@ export const Composer = forwardRef<
       return;
     }
     const messageText = (starterText ?? text).trim();
-    if (disabled || uploading || submitting || sendingRef.current || (!messageText && !files.some((f) => f.uploaded))) return;
+    if (disabled || sendDisabled || uploading || submitting || sendingRef.current || (!messageText && !files.some((f) => f.uploaded))) return;
     // Return keyboard/button activation to typing before Send is disabled or becomes Stop.
     // Imperative submissions from another control do not claim the user's focus.
     if (document.activeElement === taRef.current || document.activeElement === sendRef.current) {
@@ -552,8 +564,8 @@ export const Composer = forwardRef<
               </Tip>
             )}
             {busy && !hasContent ? (
-              <button onClick={onStop} className="flex h-9 w-9 items-center justify-center rounded-full bg-fg text-bg" aria-label="Stop generating">
-                <Square className="h-3.5 w-3.5 fill-current" />
+              <button onClick={onStop} disabled={stopping} className="flex h-9 w-9 items-center justify-center rounded-full bg-fg text-bg disabled:opacity-50" aria-label={stopping ? "Stopping reply" : "Stop generating"}>
+                {stopping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-3.5 w-3.5 fill-current" />}
               </button>
             ) : (
               <button

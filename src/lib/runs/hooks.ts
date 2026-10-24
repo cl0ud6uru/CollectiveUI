@@ -1,9 +1,9 @@
 import { isToolUIPart } from "ai";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { bots, delegatedTasks, routineRuns, routines } from "@/db/schema";
+import { bots, delegatedTasks, messages, routineRuns, routines } from "@/db/schema";
 import { afterRoutineTurn } from "@/lib/agent/routine-runner";
-import type { PortalUIMessage } from "@/lib/chat/store";
+import { rowToUIMessage, type PortalUIMessage } from "@/lib/chat/store";
 import type { AgentRun, AgentRunStatus } from "./types";
 import { teamUsesNativeLearning } from '@/lib/hermes-team/learning';
 
@@ -28,7 +28,7 @@ export function approvalBodyFor(routineName: string, message: PortalUIMessage | 
 }
 
 /**
- * After a run transition applied (exactly once per transition, after commit): routine bookkeeping via
+ * After a run transition commits (replayed by recovery when needed): idempotent routine bookkeeping via
  * afterRoutineTurn (waiting → awaiting_approval + approval Inbox item; succeeded → result + optional email;
  * failed/cancelled/interrupted → failed + error item), plus learning reviews for completed native caller turns.
  */
@@ -54,9 +54,15 @@ export async function afterRunTransition(run: AgentRun, status: AgentRunStatus, 
   if (!routine) return;
   const botId = run.botId ?? routine.botId;
   const [bot] = botId ? await db.select({ name: bots.name }).from(bots).where(eq(bots.id, botId)) : [];
+  // Recovery has the durable outcome but not the executor's in-memory reply.
+  if (!message) {
+    const [stored] = await db.select().from(messages).where(eq(messages.id, run.messageId));
+    if (stored?.conversationId === run.conversationId) message = rowToUIMessage(stored);
+  }
   const waiting = status === "waiting";
   await afterRoutineTurn({
     runId: rr.id,
+    transition: { runId: run.id, segment: run.segment, status },
     routineName: routine.name,
     botName: bot?.name ?? "Your bot",
     userId: run.userId,

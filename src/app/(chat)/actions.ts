@@ -31,7 +31,8 @@ import { getAccessibleBot, getAccessibleModel, getOwnedConversation, listAccessi
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { openSideChat } from "@/lib/chat/side";
 import { assertDefaultBot } from "@/lib/chat/targets";
-import { latestLeaf, loadMessageRows, partsToText, pathTo, type PortalUIMessage } from "@/lib/chat/store";
+import { latestLeaf, loadMessageRows, partsToText, pathTo, rowToUIMessage, type PortalUIMessage } from "@/lib/chat/store";
+import { copiedMessageMetadata, type CopiedReplyTarget } from "@/lib/chat/copy-metadata";
 import { conversationAttachmentIds, retireAttachments } from "@/lib/files/lifecycle";
 import { withoutSharedAttachments } from "@/lib/chat/shared-attachments";
 import { newId, newToken } from "@/lib/ids";
@@ -218,7 +219,6 @@ export async function continueSharedConversation(token: string): Promise<string>
   if (!src.botId && src.appId) await getAccessibleModel(p, src.appId);
   if (src.botId) await getAccessibleBot(p, src.botId).catch(() => null);
   const newConvId = newId();
-  const idMap = new Map<string, string>();
   await db.transaction(async (tx) => {
     // Recheck under a shared row lock: a revocation committed before this copy starts cannot be bypassed.
     const [current] = await tx.select({ id: sharedLinks.id }).from(sharedLinks)
@@ -238,9 +238,9 @@ export async function continueSharedConversation(token: string): Promise<string>
         await tx.insert(conversationBots).values(members.map((m) => ({ conversationId: newConvId, botId: m.botId, position: m.position })));
     }
     let parent: string | null = null;
+    const copiedTargets = new Map<string, CopiedReplyTarget>();
     for (const m of path) {
       const nid = newId();
-      idMap.set(m.id, nid);
       const parts = stripTaskLinks(closedForCopy(m.role, withoutSharedAttachments(m.parts as unknown[]).parts.map(part => part && typeof part === "object" ? withoutOpenAIMetadata(part) : part)));
       await tx.insert(messages).values({
         id: nid,
@@ -251,10 +251,11 @@ export async function continueSharedConversation(token: string): Promise<string>
         // reasoning belong to the sharer's account, so they are dropped too (see src/lib/agent/replay.ts). Approvals
         // still pending belong to the sharer's turn (a Hermes one names the sharer's live run): closed in the copy.
         parts,
-        metadata: withoutReplayKey(m.metadata),
+        metadata: copiedMessageMetadata(m.metadata, copiedTargets),
         model: m.model,
         searchText: partsToText(parts),
       });
+      copiedTargets.set(m.id, { source: rowToUIMessage(m), copy: { id: nid, role: m.role, parts: parts as PortalUIMessage["parts"] } });
       parent = nid;
     }
     await tx.update(conversations).set({ currentLeafId: parent }).where(eq(conversations.id, newConvId));
@@ -268,13 +269,6 @@ function closedForCopy(role: string, parts: unknown[]): unknown[] {
   if (role !== "assistant") return parts;
   const msg = { id: "copy", role: "assistant", parts } as unknown as PortalUIMessage;
   return closeOpenParts(msg, "cancelled", { deniedReason: "Not answered in the shared chat.", stoppedText: "Not run in the shared chat." }).message.parts;
-}
-
-function withoutReplayKey(meta: Record<string, unknown> | null) {
-  if (!meta || !("replayKey" in meta)) return meta;
-  const { replayKey: _drop, ...rest } = meta;
-  void _drop;
-  return rest;
 }
 
 // ---------------------------------------------------------------------------
