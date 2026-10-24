@@ -464,10 +464,18 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertTrue(app.buttons["settings.section.account"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.buttons["settings.section.admin"].exists)
         let security = app.buttons["settings.security"]
-        for _ in 0..<4 {
-            if security.exists && security.isHittable { break }
-            app.scrollViews["settings.content"].swipeUp()
+        let content = app.scrollViews["settings.content"]
+        for _ in 0..<10 {
+            let viewport = content.frame.intersection(app.frame).insetBy(dx: 0, dy: 8)
+            if security.exists && viewport.contains(security.frame) && security.isHittable { break }
+            // A short viewport can leave this row clipped above the section bar after a swipe.
+            // Bring the whole row into view before the shared helper taps its center.
+            let direction: CGFloat = security.exists && security.frame.minY < viewport.minY ? 1 : -1
+            content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: content.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5 + direction * 0.2)),
+                       withVelocity: .slow, thenHoldForDuration: 0.2)
         }
+        XCTAssertTrue(content.frame.intersection(app.frame).insetBy(dx: 0, dy: 8).contains(security.frame), "Security must be fully visible before tapping")
         capture("parity-member-settings")
         tap(security)
         XCTAssertTrue(app.staticTexts["settings.destinationURL"].waitForExistence(timeout: 5))
@@ -528,7 +536,7 @@ final class CollectiveUIRegression: XCTestCase {
         let paragraphs = transcript.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "QA line "))
         XCTAssertNotNil(visibleLatestFixtureParagraph(in: transcript), "The growing reply must render before the reader scrolls")
         XCTAssertFalse(app.buttons["Check message status"].exists, "An attached live stream must not offer an unavailable recovery action")
-        // The transcript extends behind the sticky header; start in visible message content.
+        // Start the reader's drag within the transcript's visible message content.
         let dragStart = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let dragEnd = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
         dragStart.press(forDuration: 0.1, thenDragTo: dragEnd)
@@ -543,13 +551,17 @@ final class CollectiveUIRegression: XCTestCase {
         var visible: [any XCUIElementSnapshot] = []
         while let node = pending.popLast() {
             if node.elementType == .staticText, node.label.hasPrefix("QA line "),
-               node.frame.height > 0, node.frame.minY > snapshot.frame.minY + 100,
-               node.frame.maxY < snapshot.frame.maxY {
+               node.frame.height > 0,
+               // The header is outside this viewport. On a folded phone with the keyboard open,
+               // an extra 100-point inset leaves no paragraph eligible even when text is visible.
+               snapshot.frame.intersection(node.frame).height >= min(44, node.frame.height) {
                 visible.append(node)
             }
             pending.append(contentsOf: node.children)
         }
-        guard let reference = visible.min(by: { $0.frame.minY < $1.frame.minY }) else {
+        guard let reference = visible.max(by: {
+            snapshot.frame.intersection($0.frame).height < snapshot.frame.intersection($1.frame).height
+        }) else {
             return XCTFail("No visible fixture paragraph after scrolling away")
         }
         let older = paragraphs.matching(NSPredicate(format: "label == %@", reference.label)).element
