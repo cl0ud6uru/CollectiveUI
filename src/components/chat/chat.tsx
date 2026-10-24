@@ -56,6 +56,8 @@ export type TreeRow = {
   message: PortalUIMessage;
 };
 
+type RequestAdmission = { kind: "message" | "approval" | "regenerate"; responseReceived: boolean; succeeded: boolean };
+
 function pathTo(rows: Map<string, TreeRow>, leafId: string | null): TreeRow[] {
   const out: TreeRow[] = [];
   let cur = leafId ? rows.get(leafId) : undefined;
@@ -122,6 +124,11 @@ export function Chat({
   const closeBrowser = useCallback(() => { setBrowserOpen(false); browserToggleRef.current?.focus(); }, []);
   const [voiceActive, setVoiceActive] = useState(false);
   const [started, setStarted] = useState(!isNew);
+  const [stopState, setStopState] = useState<"idle" | "pending" | "unconfirmed">("idle");
+  const stopAttempt = useRef<Promise<boolean> | null>(null);
+  const stopController = useRef<AbortController | null>(null);
+  const stopTarget = useRef<{ message: PortalUIMessage | undefined; pendingAdmission: boolean; admission: RequestAdmission | null } | null>(null);
+  useEffect(() => () => { const controller = stopController.current; stopController.current = null; controller?.abort(); }, []);
   const [nativeSearchMode, setNativeSearchMode] = useState<NativeSearchMode | null>(null);
   const [searchPending, setSearchPending] = useState(true);
   const searchPendingRef = useRef(true);
@@ -222,16 +229,24 @@ export function Chat({
   const [feedback, setFeedback] = useState<Record<string, 1 | -1 | null>>(() =>
     Object.fromEntries(initialRows.map((r) => [r.id, r.feedback])),
   );
+  const requestAdmission = useRef<RequestAdmission | null>(null);
+  const rejectedSubmissionId = useRef<string | null>(null);
 
   const transport = useMemo(
     () =>
       new DefaultChatTransport<PortalUIMessage>({
         api: "/api/chat",
-        fetch: chatSendFetch(() => { if (!isNew && target?.kind === "bot") router.refresh(); }),
+        fetch: async (input, init) => {
+          const admission = init?.method?.toUpperCase() === "POST" ? requestAdmission.current : null;
+          const response = await chatSendFetch(() => { if (!isNew && target?.kind === "bot") router.refresh(); })(input, init);
+          if (admission) { admission.responseReceived = true; admission.succeeded = response.ok; }
+          return response;
+        },
         // appId/botId arrive per request (see targetBody) and only matter for a brand-new conversation.
         prepareSendMessagesRequest: ({ messages, trigger, body }) => {
           const base = { ...body, conversationId };
           const last = messages[messages.length - 1];
+          requestAdmission.current = { kind: trigger === "regenerate-message" ? "regenerate" : last?.role === "assistant" ? "approval" : "message", responseReceived: false, succeeded: false };
           if (trigger === "regenerate-message") {
             return { body: { ...base, regenerate: true, parentId: last?.id } };
           }
@@ -260,7 +275,7 @@ export function Chat({
     resume: resumeOnMount,
     transport,
     generateId: () => newId(),
-    sendAutomaticallyWhen: (options) => !unavailable && !searchPendingRef.current && lastAssistantMessageIsCompleteWithApprovalResponses(options),
+    sendAutomaticallyWhen: (options) => !unavailable && !searchPendingRef.current && !stopTarget.current && lastAssistantMessageIsCompleteWithApprovalResponses(options),
     onData: (part) => {
       if (part.type === "data-title") {
         upsertConversation({ id: conversationId, title: (part.data as { title: string }).title });
@@ -290,7 +305,7 @@ export function Chat({
   // The server refused the request before saving anything (busy, over the reply limit, …): take the message back into
   // the composer, or show an answer's approval cards again, so what's on screen matches what's stored.
   const sentReplyMention = useRef<{ messageId: string; mention: string | null } | null>(null);
-  const rejectedDraft = useRef<{ messageId: string; text: string; reply?: ReplyContext; mention: string | null } | null>(null);
+  const rejectedDraft = useRef<{ messageId: string; text: string; files: UploadedFile[]; reply?: ReplyContext; mention: string | null } | null>(null);
   useEffect(() => {
     if (!error) return;
     let body: { unsavedMessageId?: unknown; retryApprovalMessageId?: unknown } | null = null;
@@ -299,7 +314,10 @@ export function Chat({
     } catch {}
     const last = messages.at(-1);
     if (last?.role === "user" && body?.unsavedMessageId === last.id) {
-      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join(""), reply: last.metadata?.replyTo, mention: sentReplyMention.current?.messageId === last.id ? sentReplyMention.current.mention : null };
+      rejectedSubmissionId.current = last.id;
+      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join(""),
+        files: last.parts.flatMap(part => part.type === "file" ? [{ id: part.url, url: part.url, filename: part.filename ?? "Attachment", mediaType: part.mediaType }] : []),
+        reply: last.metadata?.replyTo, mention: sentReplyMention.current?.messageId === last.id ? sentReplyMention.current.mention : null };
       setMessages(messages.slice(0, -1));
     } else if (last?.role === "assistant" && body?.retryApprovalMessageId === last.id) {
       const reopened = last.parts.map((p) => {
@@ -311,13 +329,13 @@ export function Chat({
     clearError();
   }, [error, messages, setMessages, clearError]);
 
-  // Removing the first rejected message mounts the empty-chat composer. Restore after that commit,
-  // so a first-use provisioning failure cannot write the draft into the outgoing composer instance.
+  // Restore only after removing the unsaved message. Keep the complete rejected submission
+  // alongside any newer text or files the user added while admission was in flight.
   useEffect(() => {
     const draft = rejectedDraft.current;
     if (!draft || messages.some((m) => m.id === draft.messageId)) return;
     const ownedMention = draft.mention && draft.text === draft.mention.trimEnd() ? draft.text : draft.mention;
-    composerRef.current?.setText(draft.text, ownedMention, false);
+    composerRef.current?.restoreDraft(draft.text, draft.files, ownedMention ?? null);
     restoreReply(draft.reply);
     rejectedDraft.current = null;
   }, [messages, restoreReply]);
@@ -345,7 +363,9 @@ export function Chat({
   const chatStreamingRef = useRef(streamingBusy);
   useEffect(() => { chatStreamingRef.current = streamingBusy; }, [streamingBusy]);
   const awaitingTasks = hasPendingAsyncTasks(messages.at(-1));
-  const busy = streamingBusy || awaitingTasks;
+  const busy = streamingBusy || awaitingTasks || stopState !== "idle";
+  const streamStatusRef = useRef(status);
+  useEffect(() => { streamStatusRef.current = status; }, [status]);
 
   // A task wait has no open worker or HTTP stream. Resume only the committed next segment.
   useEffect(() => {
@@ -399,20 +419,75 @@ export function Chat({
   useEffect(() => {
     lastMessageIdRef.current = messages.at(-1)?.id;
   }, [messages]);
-  const requestServerStop = useCallback(async () => {
-    if (!started || target?.kind === "group") return;
-    // Names the message the reply answers, so a Stop pressed before its run exists (the request is still being
-    // handled) stops it as soon as it does.
-    const res = await fetch(`/api/chat/${conversationId}/stop`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messageId: lastMessageIdRef.current }),
-    });
-    if (!res.ok) throw new Error(`stop failed (${res.status})`);
-  }, [started, target?.kind, conversationId]);
   const stopReply = () => {
-    void requestServerStop().catch(() => {});
-    stop();
+    if (stopAttempt.current) return stopAttempt.current;
+    const attemptTarget = stopTarget.current ?? { message: messages.at(-1), pendingAdmission: status === "submitted", admission: requestAdmission.current };
+    stopTarget.current = attemptTarget;
+    const { message: requestedMessage, pendingAdmission, admission } = attemptTarget;
+    const decisions = requestedMessage?.parts.filter(isToolUIPart).filter(part => part.state === "approval-responded") ?? [];
+    const controller = new AbortController();
+    stopController.current = controller;
+    setStopState("pending");
+    const attempt = (async () => {
+      const timeout = setTimeout(() => controller.abort("Stop verification timed out"), 20_000);
+      try {
+        // Group work is owned by its HTTP request; direct replies outlive their stream.
+        if (target?.kind === "group") {
+          await stop();
+        } else {
+          const response = await fetch(`/api/chat/${conversationId}/stop`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ messageId: requestedMessage?.id }), signal: controller.signal,
+          });
+          const result = response.ok ? await response.json() as { cancelled?: number; signalled?: number } : {};
+          const requested = Number.isInteger(result.cancelled) && Number.isInteger(result.signalled) &&
+            result.cancelled! >= 0 && result.signalled! >= 0 && result.cancelled! + result.signalled! > 0;
+          // Counts can describe an older run while a send is still admitting. Verify that our
+          // submission exists and the conversation is no longer held before disconnecting or sending again.
+          for (;;) {
+            const current = await fetch(`/api/chat/${conversationId}`, { cache: "no-store", signal: controller.signal });
+            const rejected = requestedMessage?.id === rejectedSubmissionId.current ||
+              admission && admission.kind !== "message" && admission.responseReceived && !admission.succeeded && streamStatusRef.current !== "submitted";
+            if (current.status === 404 && rejected) { await stop(); break; }
+            if (!current.ok) throw new Error("Reply status is unavailable");
+            const snapshot = await current.json() as ConversationSnapshot;
+            const savedMessage = snapshot.initialRows.find(row => row.id === requestedMessage?.id)?.message;
+            // Approval decisions and requeue commit together. Matching persisted decisions prove
+            // admission even when a queued continuation is cancelled before its stream opens.
+            const decisionsSaved = decisions.every(decision => savedMessage?.parts.some(part => isToolUIPart(part) &&
+              part.toolCallId === decision.toolCallId && part.approval?.id === decision.approval.id &&
+              "approved" in part.approval && part.approval.approved === decision.approval.approved));
+            const admitted = admission?.succeeded || savedMessage && admission?.kind !== "regenerate" &&
+              (!pendingAdmission || requestedMessage?.role === "user" || decisionsSaved);
+            const active = snapshot.run && ["queued", "running", "waiting_tasks"].includes(snapshot.run.status);
+            if ((admitted || rejected) && !active) {
+              await stop();
+              const rows = new Map(snapshot.initialRows.map(row => [row.id, row]));
+              setStored(rows);
+              setMessages(pathTo(rows, snapshot.initialLeafId).map(row => row.message));
+              break;
+            }
+            if (!requested) throw new Error("No cancellation was confirmed");
+            await new Promise(resolve => setTimeout(resolve, 500));
+            controller.signal.throwIfAborted();
+          }
+        }
+        controller.signal.throwIfAborted();
+        stopTarget.current = null;
+        setStopState("idle");
+        return true;
+      } catch {
+        // Unmount aborts only this verification. It must never cancel a durable server run.
+        if (stopController.current === controller) setStopState("unconfirmed");
+        return false;
+      } finally {
+        clearTimeout(timeout);
+        if (stopController.current === controller) stopController.current = null;
+        stopAttempt.current = null;
+      }
+    })();
+    stopAttempt.current = attempt;
+    return attempt;
   };
 
   const branchInfo = useCallback(
@@ -490,7 +565,6 @@ export function Chat({
   }
 
   // Redirect work in progress: sending while a reply streams stops it, then sends the new instruction.
-  const pendingRef = useRef<{ text: string; files: UploadedFile[]; reply?: ReplyContext | null; mention: string | null } | null>(null);
   async function executeCommand(text: string, files: UploadedFile[]): Promise<boolean> {
     if (files.length) {
       setCommandOutput({ scope: commandScope, result: { title: "Command not sent", lines: ["Remove attachments before running a command. Your draft and files have been kept."] } });
@@ -513,7 +587,6 @@ export function Chat({
         setCatalogVersion((v) => v + 1);
       }
       if (result.refresh && started) {
-        pendingRef.current = null;
         await stop();
         // Replay the server's closing chunks, including cancelled approval cards.
         void resumeStream();
@@ -526,27 +599,15 @@ export function Chat({
       return false;
     }
   }
-  function send(text: string, files: UploadedFile[], selectedReply = replyTo, ownedMention = composerRef.current?.getReplyMention() ?? null): void | boolean | Promise<boolean> {
+  async function send(text: string, files: UploadedFile[], selectedReply = replyTo, ownedMention = composerRef.current?.getReplyMention() ?? null): Promise<boolean> {
     if (searchPendingRef.current) return false;
+    if (stopState !== "idle") return false;
     if (!target || unavailable) { toast.error("Pick a model or bot first"); return false; }
     const parsed = parseHermesInput(text);
     const localFresh = target.kind === "bot" && parsed.kind === "command" && ["new", "reset"].includes(parsed.name);
     const input = hermes || localFresh ? parsed : { kind: "text" as const, text: target.kind === "bot" && parsed.kind === "text" && parsed.literal ? parsed.text : text, literal: false };
     if (input.kind === "command") return executeCommand(text, files);
-    if (busy) {
-      const stopping = pendingRef.current != null;
-      pendingRef.current = { text, files, reply: selectedReply, mention: ownedMention };
-      // Stop on the server first, so the new message finds the previous reply stopped (or being saved), not running.
-      if (!stopping) {
-        void requestServerStop()
-          .catch(() => {})
-          .then(() => {
-            // Unless the reply ended by itself meanwhile and the pending message was already sent.
-            if (pendingRef.current) stop();
-          });
-      }
-      return;
-    }
+    if (busy && !(await stopReply())) return false;
     begin();
     const messageId = newId();
     sentReplyMention.current = { messageId, mention: ownedMention };
@@ -559,15 +620,8 @@ export function Chat({
       { body: { ...targetBody, literalSlash: input.literal } },
     );
     setReplyState(null);
+    return true;
   }
-
-  useEffect(() => {
-    if (!busy && pendingRef.current) {
-      const next = pendingRef.current;
-      pendingRef.current = null;
-      send(next.text, next.files, next.reply, next.mention);
-    }
-  });
 
   function editMessage(index: number, text: string) {
     if (searchPendingRef.current || busy || unavailable) return;
@@ -645,10 +699,10 @@ export function Chat({
   }, [overlayHeader]);
   const lastAssistantIdx = messages.map((m) => m.role).lastIndexOf("assistant");
 
-  const approve = (id: string) => { if (!searchPendingRef.current) addToolApprovalResponse({ id, approved: true }); };
-  const deny = (id: string) => { if (!searchPendingRef.current) addToolApprovalResponse({ id, approved: false, reason: "The user denied this action." }); };
+  const approve = (id: string) => { if (!searchPendingRef.current && !stopTarget.current) addToolApprovalResponse({ id, approved: true }); };
+  const deny = (id: string) => { if (!searchPendingRef.current && !stopTarget.current) addToolApprovalResponse({ id, approved: false, reason: "The user denied this action." }); };
   const alwaysAllow = async (id: string, toolName: string) => {
-    if (searchPendingRef.current) return;
+    if (searchPendingRef.current || stopTarget.current) return;
     if (target?.kind === "bot") await grantToolForBot(target.id, toolName).catch(() => {});
     approve(id);
   };
@@ -746,9 +800,25 @@ export function Chat({
         {target?.kind === "bot" && target.hermesTeam && !embedded && <HermesTeamChatControls key={`${target.id}:${conversationId}`} botId={target.id} conversationId={conversationId} started={started} busy={busy} />}
         {started && hermes && target?.kind === "bot" && !embedded && <HermesNativeControls key={conversationId} conversationId={conversationId} />}
 
-        {empty ? (
-          <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-4 pt-6 pb-[12vh]">
-            <div className="my-auto w-full max-w-3xl shrink-0">
+        {stopState !== "idle" && <div role={stopState === "unconfirmed" ? "alert" : "status"} className="mx-auto w-full max-w-3xl px-4 py-2 text-sm">
+          {stopState === "pending" ? "Stopping reply… Waiting for the server." : <>
+            Couldn’t confirm that the reply stopped. It may still be running. Your draft has been kept.{" "}
+            <button className="underline" onClick={() => void stopReply()}>Retry stop</button>
+          </>}
+        </div>}
+
+        {/* Keep one composer mounted while the first submission enters or leaves the transcript.
+            Its newer draft, attachment uploads and focus belong to the conversation, not the layout. */}
+        <div className={cn("flex min-h-0 flex-1 flex-col", empty && "items-center overflow-y-auto px-4 pt-6 pb-[12vh]")}>
+          <div
+            ref={empty ? undefined : scrollRef}
+            className={empty ? "mt-auto w-full max-w-3xl shrink-0" : cn("relative min-h-0 flex-1 overflow-y-auto", overlayHeader && styles.scroller)}
+            onScroll={empty ? undefined : (e) => {
+              const el = e.currentTarget;
+              setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
+            }}
+          >
+            {empty ? <>
               {target?.kind === "group" ? (
                 <div className="mb-8 flex flex-col items-center text-center">
                   <div className="mb-3 flex -space-x-3">
@@ -776,48 +846,7 @@ export function Chat({
               ) : (
                 <h1 className="mb-8 text-center text-[28px] font-normal">{branding.welcomeText}</h1>
               )}
-              {commandResult && <CommandResultCard result={commandResult} onClose={() => setCommandOutput(null)} />}
-              {hermes && (!catalog || catalog.commands.some(c => c.name === "yolo")) && <SessionYoloStatus state={catalog?.yolo} />}
-              <Composer
-                tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
-                ref={composerRef}
-                focusState={composerFocusState}
-                onSend={send}
-                onStop={stopReply}
-                voiceActive={voiceActive}
-                busy={busy}
-                disabled={!target || unavailable || searchPending}
-                skills={skills}
-                hermesCommands={hermesCommands}
-                commands={composerCommandList}
-                autoFocus
-                mentions={mentionList}
-                replyTo={replyTo}
-                onCancelReply={cancelReply}
-                tint={tint}
-                placeholder={target ? (target.kind === "app" ? "Ask anything" : `Message ${target.name}`) : "Select a model or browse bots"}
-              />
-              {target?.kind === "bot" && !!target.starters?.length && (
-                <div className="mt-4 flex flex-wrap justify-center gap-2">
-                  {target.starters.map((s) => (
-                    <button key={s} onClick={() => void composerRef.current?.submit(s)} disabled={unavailable || searchPending} className="rounded-full border border-border px-4 py-2 text-sm text-muted hover:bg-hover hover:text-fg">
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <>
-            <div
-              ref={scrollRef}
-              className={cn("relative min-h-0 flex-1 overflow-y-auto", overlayHeader && styles.scroller)}
-              onScroll={(e) => {
-                const el = e.currentTarget;
-                setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
-              }}
-            >
+            </> : (
               <div className={cn("mx-auto w-full max-w-3xl px-4 pb-8 pt-4 md:px-6", bubbles ? "space-y-3" : "space-y-6", overlayHeader && styles.messages)}>
                 <DelegatedApprovals conversationId={conversationId} />
                 {messages.map((m, i) => [
@@ -829,7 +858,7 @@ export function Chat({
                       key={m.id}
                       variant={variant}
                       message={m}
-                      readOnly={unavailable || searchPending}
+                      readOnly={unavailable || searchPending || stopState !== "idle"}
                       onReply={busy || unavailable || searchPending ? undefined : index => chooseReply(m, index)}
                       streaming={busy && i === messages.length - 1}
                       isLast={i === lastAssistantIdx}
@@ -870,17 +899,18 @@ export function Chat({
                         Open settings
                       </Link>
                     )}
-                    <button disabled={unavailable || searchPending} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current) { cancelReply(); regenerate({ body: targetBody }); } }}>
+                    <button disabled={unavailable || searchPending || stopState !== "idle"} className="underline disabled:opacity-50" onClick={() => { if (!searchPendingRef.current && !stopTarget.current) { cancelReply(); regenerate({ body: targetBody }); } }}>
                       Retry
                     </button>
                   </div>
                 )}
               </div>
-            </div>
-            <div className="relative mx-auto w-full max-w-3xl px-4 pb-3 md:px-6">
+            )}
+          </div>
+          <div className={empty ? "mb-auto w-full max-w-3xl shrink-0" : "relative mx-auto w-full max-w-3xl px-4 pb-3 md:px-6"}>
               {/* Replies fade out under the composer instead of colliding with it. */}
-              <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-t from-bg to-transparent" />
-              {!atBottom && (
+              {!empty && <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-t from-bg to-transparent" />}
+              {!empty && !atBottom && (
                 <button
                   onClick={() => {
                     const el = scrollRef.current;
@@ -898,10 +928,13 @@ export function Chat({
                 tools={target && <NativeSearchControl key={`${target.kind}:${target.id}`} target={target} conversationId={conversationId} started={started} busy={busy} onChange={searchChanged} />}
                 ref={composerRef}
                 focusState={composerFocusState}
+                autoFocus={empty}
                 onSend={send}
                 onStop={stopReply}
                 voiceActive={voiceActive}
                 busy={busy}
+                stopping={stopState === "pending"}
+                sendDisabled={stopState !== "idle"}
                 disabled={!target || unavailable || searchPending}
                 skills={skills}
                 hermesCommands={hermesCommands}
@@ -910,12 +943,20 @@ export function Chat({
                 replyTo={replyTo}
                 onCancelReply={cancelReply}
                 tint={tint}
-                placeholder={target?.kind === "group" || target?.kind === "bot" ? `Message ${target.name}` : "Ask anything"}
+                placeholder={target ? (target.kind === "app" ? "Ask anything" : `Message ${target.name}`) : "Select a model or browse bots"}
               />
-              <p className="mt-2 text-center text-xs text-subtle">AI can make mistakes. Check important info.</p>
-            </div>
-          </>
-        )}
+              {empty && target?.kind === "bot" && !!target.starters?.length && (
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  {target.starters.map((s) => (
+                    <button key={s} onClick={() => void composerRef.current?.submit(s)} disabled={unavailable || searchPending} className="rounded-full border border-border px-4 py-2 text-sm text-muted hover:bg-hover hover:text-fg">
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!empty && <p className="mt-2 text-center text-xs text-subtle">AI can make mistakes. Check important info.</p>}
+          </div>
+        </div>
       </div>
       {workspaceAllowed && <WorkspaceBrowser open={workspaceOpen} onClose={closeWorkspace} fileRequest={workspaceFileRequest} history={workspaceHistory} onInsertPath={path => composerRef.current?.appendText(`\`${path}\``)} />}
       {target?.kind === "bot" && !embedded && target.codex && <ComputerViewer open={browserOpen} onClose={closeBrowser} conversationId={conversationId} />}

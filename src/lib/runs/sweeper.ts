@@ -10,7 +10,7 @@
 import type { UIMessageChunk } from "ai";
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { db, type Tx } from "@/db";
-import { agentRuns, inboxItems, messages, routineRuns, routines, runEvents } from "@/db/schema";
+import { agentRuns, conversations, inboxItems, messages, routineRuns, routines, runEvents, users } from "@/db/schema";
 import { logToolCalls } from "@/lib/agent/persist";
 import { rowToUIMessage, setCurrentLeaf, upsertMessage, type PortalUIMessage } from "@/lib/chat/store";
 import type { ProviderKind } from "@/lib/llm";
@@ -210,47 +210,61 @@ const ROUTINE_GRACE_MS = 120_000;
 const ROUTINE_BATCH = 20;
 
 /**
- * Routine runs left behind: still `running` or `awaiting_approval` with no open agent run, because their bookkeeping
+ * Routine runs left behind: still `running` or `awaiting_approval` with no executing agent run, because their bookkeeping
  * hook was lost (the worker died between the run's transition and the hook) or their conversation was deleted (which
  * deletes the agent run). Brought in line with the agent run's outcome, or failed. Approvals pending since before
  * durable runs (no agent run, conversation still there) are left as they are: they continue on a legacy run.
  */
-async function reconcileRoutines(): Promise<number> {
+export async function reconcileRoutines(): Promise<number> {
   const { rows } = await db.execute<{ id: string; status: string; conversation_id: string | null }>(sql`
     select rr.id, rr.status, rr.conversation_id from ${routineRuns} rr
     where rr.status in ('running', 'awaiting_approval')
       and rr.created_at < now() - ${ROUTINE_GRACE_MS}::int * interval '1 millisecond'
-      and not exists (select 1 from ${agentRuns} ar where ar.routine_run_id = rr.id and ar.status in ('queued', 'running', 'waiting', 'waiting_tasks'))
+      and not exists (select 1 from ${agentRuns} ar where ar.routine_run_id = rr.id and ar.status in ('queued', 'running', 'waiting_tasks'))
+      and (rr.status = 'running' or not exists (select 1 from ${agentRuns} ar where ar.routine_run_id = rr.id and ar.status = 'waiting'))
     limit ${ROUTINE_BATCH}`);
   let n = 0;
   for (const rr of rows) {
     try {
       const [last] = await db.select().from(agentRuns).where(eq(agentRuns.routineRunId, rr.id)).orderBy(desc(agentRuns.createdAt)).limit(1);
       if (last) {
-        // Its hook never ran: apply it now (the agent run is final, so this is its outcome).
+        // Its hook never ran: recover either the final outcome or a missing approval notification.
         await afterRunTransition(last, last.status, null, last.error);
         n++;
       } else if (rr.status === "running" || !rr.conversation_id) {
-        const [owner] = await db
-          .select({ userId: routines.ownerId, name: routines.name })
-          .from(routineRuns)
-          .innerJoin(routines, eq(routines.id, routineRuns.routineId))
-          .where(eq(routineRuns.id, rr.id));
-        const error = rr.conversation_id ? "The run was lost. Run the routine again." : "Its conversation was deleted.";
-        const [failed] = await db
-          .update(routineRuns)
-          .set({ status: "failed", error, finishedAt: sql`now()` })
-          .where(and(eq(routineRuns.id, rr.id), inArray(routineRuns.status, ["running", "awaiting_approval"])))
-          .returning({ id: routineRuns.id });
-        if (failed && owner)
-          await db.insert(inboxItems).values({
-            userId: owner.userId,
-            kind: "routine_error",
-            title: `${owner.name} failed`,
-            body: error,
-            conversationId: rr.conversation_id,
-            routineRunId: rr.id,
-          });
+        const failed = await db.transaction(async tx => {
+          const [owner] = await tx
+            .select({ userId: routines.ownerId, name: routines.name })
+            .from(routineRuns)
+            .innerJoin(routines, eq(routines.id, routineRuns.routineId))
+            .where(eq(routineRuns.id, rr.id));
+          if (!owner) return null;
+          const [user] = await tx.select({ id: users.id }).from(users).where(eq(users.id, owner.userId)).for("key share");
+          if (!user) return null;
+          if (rr.conversation_id) await tx.select({ id: conversations.id }).from(conversations)
+            .where(eq(conversations.id, rr.conversation_id)).for("key share");
+          // A deletion may have completed while parent protection was being acquired. Use the current
+          // relationship; defer an unexpected replacement rather than acquire parent locks out of order.
+          const [current] = await tx.select({ conversationId: routineRuns.conversationId }).from(routineRuns).where(eq(routineRuns.id, rr.id));
+          if (!current || (current.conversationId && current.conversationId !== rr.conversation_id)) return null;
+          const error = current.conversationId ? "The run was lost. Run the routine again." : "Its conversation was deleted.";
+          const [failed] = await tx
+            .update(routineRuns)
+            .set({ status: "failed", error, finishedAt: sql`now()` })
+            .where(and(eq(routineRuns.id, rr.id), inArray(routineRuns.status, ["running", "awaiting_approval"]),
+              sql`not exists (select 1 from ${agentRuns} ar where ar.routine_run_id = ${rr.id})`))
+            .returning({ id: routineRuns.id });
+          if (failed)
+            await tx.insert(inboxItems).values({
+              userId: owner.userId,
+              kind: "routine_error",
+              title: `${owner.name} failed`,
+              body: error,
+              conversationId: current.conversationId,
+              routineRunId: rr.id,
+            });
+          return failed;
+        });
         if (failed) n++;
       }
     } catch (err) {

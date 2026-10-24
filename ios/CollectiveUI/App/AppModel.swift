@@ -364,20 +364,21 @@ final class AppModel {
     }
 
     func signOut() async {
-        let generation = settingsAccess.generation
         let signingOutAPI = api
-        #if os(iOS)
-        await liveActivities.clear(removeRemote: true)
-        #endif
-        guard settingsAccess.generation == generation else { return }
         // End local access immediately; a slow revocation must not leave chat usable
         // or clear a replacement session when its response eventually arrives.
+        // resetLogin() also ends local Live Activities without waiting for the network.
         clearSession()
         if let signingOutAPI, signingOutAPI.token != nil {
-            do {
-                try await signingOutAPI.revokeSession()
-            } catch {
-                // The local session is already cleared even if the server is unreachable.
+            await withTaskGroup(of: Void.self) { group in
+                #if os(iOS)
+                group.addTask {
+                    try? await signingOutAPI.sendIgnoringResponse("/api/mobile/v1/live-activities", method: "DELETE", body: .object([:]))
+                }
+                #endif
+                group.addTask {
+                    try? await signingOutAPI.revokeSession()
+                }
             }
         }
     }

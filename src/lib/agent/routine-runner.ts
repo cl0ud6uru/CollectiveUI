@@ -1,6 +1,6 @@
 import { and, eq, lte, sql } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
-import { aiApps, conversations, inboxItems, routineRuns, routines, users, type RoutineRunStatus } from "@/db/schema";
+import { agentRuns, aiApps, conversations, inboxItems, routineRuns, routines, users, type RoutineRunStatus } from "@/db/schema";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { graphFetch } from "@/lib/auth/entra";
 import { getUsableBot } from "@/lib/authz";
@@ -10,6 +10,7 @@ import { enqueue, enqueueRun, QUEUES } from "@/lib/jobs";
 import { nextCronRun } from "@/lib/routines";
 import { insertRoutineRunTx, lockRoutineAdmission } from "@/lib/routines/admission";
 import { insertRunTx } from "@/lib/runs/state";
+import type { AgentRunStatus } from "@/lib/runs/types";
 
 async function finishRun(runId: string, status: RoutineRunStatus, error?: string, q: DbOrTx = db) {
   await q
@@ -92,10 +93,12 @@ export async function executeRoutineRun(runId: string) {
 
 /**
  * Routine bookkeeping for a reply that paused or ended: the routine run's status and an Inbox item (plus the optional
- * email for a result). Called once per run transition by afterRunTransition (src/lib/runs/hooks.ts).
+ * email for a result). The Inbox primary key is a durable receipt for one agent-run segment/outcome.
+ * Status and receipt commit together; replayed or superseded hooks cannot deliver twice or regress a newer turn.
  */
 export async function afterRoutineTurn(opts: {
   runId: string;
+  transition: { runId: string; segment: number; status: AgentRunStatus };
   routineName: string;
   botName: string;
   userId: string;
@@ -108,36 +111,44 @@ export async function afterRoutineTurn(opts: {
   body?: string;
 }) {
   const summary = partsToText(opts.responseMessage.parts).slice(0, 1500);
-  if (opts.error) {
-    await finishRun(opts.runId, "failed", opts.error);
-    await db.insert(inboxItems).values({
+  const delivered = await db.transaction(async tx => {
+    // Inbox foreign keys must be protected before the agent lock: deleting a parent takes its lock
+    // first, then cascades into agent_runs. KEY SHARE fences deletion without blocking status-only updates.
+    const [owner] = await tx.select({ id: users.id }).from(users).where(eq(users.id, opts.userId)).for("key share");
+    if (!owner) return false;
+    const [conversation] = await tx.select({ id: conversations.id }).from(conversations)
+      .where(and(eq(conversations.id, opts.conversationId), eq(conversations.userId, opts.userId))).for("key share");
+    if (!conversation) return false;
+    const [routine] = await tx.select({ id: routineRuns.id }).from(routineRuns)
+      .where(and(eq(routineRuns.id, opts.runId), eq(routineRuns.conversationId, opts.conversationId))).for("key share");
+    if (!routine) return false;
+    // Match continuation's agent-run-before-routine lock order. Holding this shared lock prevents an old
+    // approval hook from racing a resume into the next segment while it writes the routine outcome.
+    const [current] = await tx.select({ id: agentRuns.id }).from(agentRuns).where(and(
+      eq(agentRuns.id, opts.transition.runId), eq(agentRuns.routineRunId, opts.runId),
+      eq(agentRuns.segment, opts.transition.segment), eq(agentRuns.status, opts.transition.status),
+      eq(agentRuns.userId, opts.userId), eq(agentRuns.conversationId, opts.conversationId),
+    )).for("share");
+    if (!current) return false;
+    const status = opts.error ? "failed" : opts.pendingApproval ? "awaiting_approval" : "succeeded";
+    const [receipt] = await tx.insert(inboxItems).values({
+      id: `routine:${opts.transition.runId}:${opts.transition.segment}:${opts.transition.status}`,
       userId: opts.userId,
-      kind: "routine_error",
-      title: `${opts.routineName} failed`,
-      body: opts.body ?? opts.error,
+      kind: opts.error ? "routine_error" : opts.pendingApproval ? "approval" : "routine_result",
+      title: opts.error ? `${opts.routineName} failed` : opts.pendingApproval ? `${opts.botName} needs your approval` : `${opts.routineName} finished`,
+      body: opts.body ?? (opts.error || (opts.pendingApproval
+        ? `Routine "${opts.routineName}" paused before a sensitive action. Open the conversation to allow or deny it.`
+        : summary || "(no text output)")),
       conversationId: opts.conversationId,
       routineRunId: opts.runId,
-    });
-  } else if (opts.pendingApproval) {
-    await finishRun(opts.runId, "awaiting_approval");
-    await db.insert(inboxItems).values({
-      userId: opts.userId,
-      kind: "approval",
-      title: `${opts.botName} needs your approval`,
-      body: opts.body ?? `Routine "${opts.routineName}" paused before a sensitive action. Open the conversation to allow or deny it.`,
-      conversationId: opts.conversationId,
-      routineRunId: opts.runId,
-    });
-  } else {
-    await finishRun(opts.runId, "succeeded");
-    await db.insert(inboxItems).values({
-      userId: opts.userId,
-      kind: "routine_result",
-      title: `${opts.routineName} finished`,
-      body: opts.body ?? (summary || "(no text output)"),
-      conversationId: opts.conversationId,
-      routineRunId: opts.runId,
-    });
+    }).onConflictDoNothing({ target: inboxItems.id }).returning({ id: inboxItems.id });
+    if (!receipt) return false;
+    await finishRun(opts.runId, status, opts.error, tx);
+    return true;
+  });
+  // Email remains best-effort, as before. Only the receipt's creator sends it: replay/recovery never
+  // resends a notification whose delivery may already have reached the upstream mail service.
+  if (delivered && !opts.error && !opts.pendingApproval) {
     const [owner] = opts.notifyEmail ? await db.select({ email: users.email }).from(users).where(eq(users.id, opts.userId)) : [];
     if (opts.notifyEmail && owner?.email) {
       await graphFetch(opts.userId, "/me/sendMail", {

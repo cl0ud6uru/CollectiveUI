@@ -40,10 +40,10 @@ jobs:
         run: npx vitest run --project unit tests/unit/routine-disposable-database.test.ts
       - name: Migrate the disposable database
         run: npm run db:migrate
-      - name: Require actual action, webhook, scheduler, advisory lock and queue proofs
+      - name: Require admission, queue and notification cascade-lock proofs
         env:
           ROUTINE_ADMISSION_TEST: '1'
-        run: npx vitest run --project integration tests/integration/routine-admission.test.ts --maxWorkers=1
+        run: npx vitest run --project integration tests/integration/routine-admission.test.ts tests/integration/routine-notifications-postgres.test.ts --maxWorkers=1
       - name: Create and migrate the queue recovery fixture
         if: matrix.pool == 1
         run: |

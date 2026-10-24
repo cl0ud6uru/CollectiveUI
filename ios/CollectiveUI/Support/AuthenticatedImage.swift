@@ -2,25 +2,6 @@ import SwiftUI
 import UIKit
 import CollectiveKit
 
-/// In-memory cache for images fetched with the bearer token.
-final class ImageCache: @unchecked Sendable {
-    static let shared = ImageCache()
-
-    private let cache = NSCache<NSString, UIImage>()
-
-    init() {
-        cache.countLimit = 150
-    }
-
-    func image(for key: String) -> UIImage? {
-        return cache.object(forKey: key as NSString)
-    }
-
-    func store(_ image: UIImage, for key: String) {
-        cache.setObject(image, forKey: key as NSString)
-    }
-}
-
 /// Loads `/api/files/<id>` (or a data: URL) through the API client so the Authorization header is sent.
 @MainActor
 struct AuthenticatedImage: View {
@@ -28,16 +9,16 @@ struct AuthenticatedImage: View {
     let url: String
     var contentMode: ContentMode = .fill
 
-    @State private var image: UIImage? = nil
-    @State private var failed = false
+    @State private var loader = AuthenticatedImageLoader()
 
     var body: some View {
+        let request = AuthenticatedImageRequest(app: app, resource: url)
         ZStack {
-            if let image {
+            if loader.request == request, let image = loader.image {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
-            } else if failed {
+            } else if loader.request == request, loader.failed {
                 Image(systemName: "photo")
                     .font(.title2)
                     .foregroundStyle(.secondary)
@@ -45,32 +26,8 @@ struct AuthenticatedImage: View {
                 ProgressView()
             }
         }
-        .task(id: url) {
-            await load()
-        }
-    }
-
-    private func load() async {
-        if let cached = ImageCache.shared.image(for: url) {
-            image = cached
-            return
-        }
-        guard let api = app.api else {
-            failed = true
-            return
-        }
-        do {
-            let data = try await api.loadData(from: url)
-            if let loaded = UIImage(data: data) {
-                ImageCache.shared.store(loaded, for: url)
-                image = loaded
-            } else {
-                failed = true
-            }
-        } catch {
-            if !error.isCancellation {
-                failed = true
-            }
+        .task(id: request) {
+            await loader.load(resource: url, app: app)
         }
     }
 }
