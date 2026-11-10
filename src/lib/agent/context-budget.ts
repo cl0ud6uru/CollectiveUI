@@ -114,9 +114,14 @@ function estimatePart(value: unknown): number {
     return 8_192 + Math.ceil(byteLength / (64 * 1024)) * 256 + estimateMetadata(part);
   }
   if (part.type === "file" && typeof part.mediaType === "string") {
-    const data = part.data;
+    const tagged = part.data as { type?: unknown; text?: unknown } | null;
+    if (tagged?.type === "text" && typeof tagged.text === "string" && !part.mediaType.startsWith("image/")) {
+      return estimateText(tagged.text) + estimateMetadata(part);
+    }
+    const data = inlineFileData(part.data, part.mediaType);
     if (typeof data === "string" && data.startsWith("data:")) {
-      const byteLength = data.slice(data.indexOf(",") + 1).length * 3 / 4;
+      const payload = data.slice(data.indexOf(",") + 1);
+      const byteLength = /;base64,/i.test(data) ? Buffer.byteLength(payload, "base64") : estimateText(decodeURIComponent(payload));
       if (part.mediaType.startsWith("image/")) {
         if (byteLength > 8 * 1024 * 1024) throw new Error("Inline images larger than 8 MiB cannot be safely budgeted.");
         return 8_192 + Math.ceil(byteLength / (64 * 1024)) * 256 + estimateMetadata(part);
@@ -138,6 +143,25 @@ function estimatePart(value: unknown): number {
     return estimateText(stableJson(part)) + 32;
   }
   throw new Error("Unknown model content cannot be safely budgeted.");
+}
+
+/** Read the SDK's tagged file union without rewriting the messages sent to the provider. */
+function inlineFileData(value: unknown, mediaType: string): unknown {
+  if (!value || typeof value !== "object") return value;
+  const tagged = value as { type?: unknown; data?: unknown; url?: unknown };
+  if (tagged.type === "url") {
+    // Only inline data is bounded here; never fetch remote URLs or accept provider references.
+    return tagged.url instanceof URL && tagged.url.protocol === "data:" ? tagged.url.href : undefined;
+  }
+  if (tagged.type === "data") {
+    if (tagged.data instanceof ArrayBuffer) return new Uint8Array(tagged.data);
+    if (tagged.data instanceof Uint8Array) return tagged.data;
+    if (typeof tagged.data === "string" && /^[A-Za-z0-9+/]*={0,2}$/.test(tagged.data)) {
+      return `data:${mediaType};base64,${tagged.data}`;
+    }
+    return undefined;
+  }
+  return value;
 }
 
 function estimateMetadata(part: Record<string, unknown>): number {
