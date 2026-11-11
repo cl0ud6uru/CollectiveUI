@@ -524,7 +524,7 @@ export class Manager {
     // Deleting it would hide their activity from admission and the reaper.
   }
 
-  private async toState(ref: string, info: ContainerInfo | null): Promise<SandboxState> {
+  private async toState(ref: string, info: ContainerInfo | null, volumeCreatedAt: string | null = null): Promise<SandboxState> {
     const e = this.entries.get(ref);
     const profileKey = info?.Config.Labels[LABEL_PROFILE] ?? this.refProfiles.get(ref) ?? LEGACY_PROFILE_KEY;
     const profile = getWorkspaceRuntimeProfile(profileKey, this.config.image, this.config.profileImages);
@@ -538,7 +538,8 @@ export class Manager {
       state: !info ? "missing" : info.State.Running ? "running" : "stopped",
       runtime: (info?.HostConfig.Runtime as Runtime | undefined) ?? null,
       drift: !!info && !!want && info.Config.Labels[LABEL_SPEC] !== want,
-      createdAt: info?.Created ?? null,
+      // A volume without a container still reports its age, so the portal's orphan sweep can apply a grace period.
+      createdAt: info?.Created ?? volumeCreatedAt,
       lastUsedAt: e?.lastUsed ? new Date(e.lastUsed).toISOString() : null,
       activeExecs: e?.execs.size ?? 0,
     };
@@ -562,7 +563,7 @@ export class Manager {
     }
     for (const v of await this.docker.volumeList({ [LABEL_INSTANCE]: this.config.instance, [LABEL_KIND]: "workspace" })) {
       const ref = v.Labels?.[LABEL_SANDBOX];
-      if (ref && REF_RE.test(ref) && !refs.has(ref)) out.push(await this.toState(ref, null));
+      if (ref && REF_RE.test(ref) && !refs.has(ref)) out.push(await this.toState(ref, null, v.CreatedAt || null));
     }
     return out;
   }

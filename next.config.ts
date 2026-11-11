@@ -45,6 +45,9 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "SAMEORIGIN" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          // Browsers honour this only on HTTPS responses, so plain-HTTP development and health checks are unaffected.
+          // No includeSubDomains: sibling hosts of the portal's domain are not ours to pin.
+          { key: "Strict-Transport-Security", value: "max-age=31536000" },
         ],
       },
     ];

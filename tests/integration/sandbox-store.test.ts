@@ -139,6 +139,7 @@ run("workspace records (integration)", () => {
       state("orphanold0000000000a", {}), // orphan, 2 h old: removed
       state("orphannew0000000000b", { state: "running", createdAt: at(60_000) }), // orphan, 1 min old: kept
       state("orphanvol0000000000c", { state: "missing", createdAt: null }), // only a volume left: removed
+      state("orphanvolnew0000000e", { state: "missing", createdAt: at(60_000) }), // fresh volume without a container: kept
       state("orphanbusy000000000d", { state: "running", activeExecs: 1 }), // running a command: kept
     ]);
 
