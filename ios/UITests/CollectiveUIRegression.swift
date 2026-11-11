@@ -209,6 +209,8 @@ final class CollectiveUIRegression: XCTestCase {
     private func openBotDirectory() {
         let bots = app.buttons["Bots"]
         if !bots.exists || !bots.isHittable { tap(app.buttons["Open sidebar"]) }
+        // The sidebar can expose its elements before its presentation finishes.
+        XCTAssertTrue(bots.wait(for: \.isHittable, toEqual: true, timeout: 5), "The sidebar's Bots action must become tappable")
         tap(bots)
         XCTAssertTrue(app.searchFields["Search bots"].waitForExistence(timeout: 5))
     }
