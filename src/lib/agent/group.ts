@@ -3,6 +3,7 @@ import { runConfig } from "@/lib/runs/types";
 import { runHost } from "@/lib/runs/host";
 import { receiveGroupResults } from "@/lib/delegation/receipts";
 import { sha256Hex } from "@/lib/crypto";
+import { jsonbSafe } from "@/lib/jsonb";
 import {
   createUIMessageStream,
   getToolOrDynamicToolName,
@@ -335,8 +336,8 @@ export async function runGroupTurn(opts: {
               userId: principal.user.id,
               botId: speaker,
               toolName: getToolOrDynamicToolName(p),
-              input: (p.input ?? null) as object | null,
-              output: ("output" in p ? p.output : null) as object | null,
+              input: jsonbSafe(p.input ?? null) as object | null,
+              output: jsonbSafe("output" in p ? p.output : null) as object | null,
               status,
             })
             .onConflictDoNothing();
