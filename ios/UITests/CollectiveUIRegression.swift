@@ -120,15 +120,17 @@ final class CollectiveUIRegression: XCTestCase {
         launch(extra: ["--demo-group-activity"])
         let researcher = app.buttons["Research Assistant: Working"]
         XCTAssertTrue(researcher.waitForExistence(timeout: 8))
-        capture("ios-activity-collapsed")
+        // The fixture advances on status polls while accessibility queries run.
+        // Keep transient phases screenshot-only; collect the hierarchy after completion.
+        capture("ios-activity-collapsed", includeHierarchy: false)
         tap(researcher)
         XCTAssertTrue(app.staticTexts["Working…"].waitForExistence(timeout: 5))
-        capture("ios-activity-expanded")
+        capture("ios-activity-expanded", includeHierarchy: false)
         tap(app.buttons["Close sidebar"])
         let atlas = app.buttons["Atlas: Working"]
         XCTAssertTrue(atlas.waitForExistence(timeout: 15))
         XCTAssertFalse(researcher.exists, "Completed group speaker must stop showing working")
-        capture("ios-activity-handoff")
+        capture("ios-activity-handoff", includeHierarchy: false)
         let completed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: atlas)
         wait(for: [completed], timeout: 30)
         capture("ios-activity-completed")
@@ -139,7 +141,7 @@ final class CollectiveUIRegression: XCTestCase {
         let researcher = app.buttons["Research Assistant: Working"]
         XCTAssertTrue(researcher.waitForExistence(timeout: 8))
         XCTAssertTrue(researcher.isHittable)
-        capture("ios-activity-accessibility-collapsed")
+        capture("ios-activity-accessibility-collapsed", includeHierarchy: false)
         tap(researcher)
         XCTAssertTrue(app.buttons["Close sidebar"].waitForExistence(timeout: 5))
         for _ in 0..<5 where !app.staticTexts["Working…"].exists { app.swipeUp() }
