@@ -15,6 +15,18 @@ import type { McpToolDef } from "./kinds";
 
 export type ServiceGrant = Awaited<ReturnType<typeof activeServiceGrants>>[number];
 
+/**
+ * The server fields that decide what a call may do. Health bookkeeping written by every refresh (last test time,
+ * last error, reported name/version) is left out: a transient refresh failure must not invalidate in-flight calls
+ * or approvals that are waiting for an answer. Endpoint, credentials, trust, status, policy and the accepted tool
+ * list (with any detected drift) all stay bound.
+ */
+export function authorityServer(server: McpServer) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { lastTestedAt, lastError, serverInfo, ...bound } = server;
+  return bound;
+}
+
 /** Opaque binding only: secrets are hashed, never placed in model definitions, messages or audit records. */
 /**
  * `rememberedApprovals: false` is for approval signing: "Always allow" saves a grant right before answering the
@@ -33,7 +45,7 @@ export async function mcpAuthorityBinding(ctx: AgentCtx, server: McpServer, conf
       groups: [...ctx.principal.groupIds].sort(), admin: ctx.principal.isAdmin },
     identityGroups: names, ...(approvals ? { rememberedApprovals: approvals.map(a => a.name).sort() } : {}),
     bot: ctx.bot, app: ctx.app, config, settings: ctx.toolSettings,
-    server, grants: [...grants].sort((a, b) => a.id.localeCompare(b.id)),
+    server: authorityServer(server), grants: [...grants].sort((a, b) => a.id.localeCompare(b.id)),
     conversation: ctx.conversationId, run: ctx.usage?.runId ?? null,
   }));
 }
