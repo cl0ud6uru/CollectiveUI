@@ -81,7 +81,7 @@ export async function archiveConversation(id: string, archived = true) {
   revalidatePath("/", "layout");
 }
 
-export async function deleteConversation(id: string) {
+async function deleteOwnedConversation(id: string) {
   const p = await requirePrincipal();
   await getOwnedConversation(p, idSchema.parse(id));
   await assertConversationsDeletable(p.user.id, id);
@@ -99,7 +99,7 @@ export async function deleteConversation(id: string) {
   revalidatePath("/", "layout");
 }
 
-export async function deleteAllConversations() {
+async function deleteOwnedConversations() {
   const p = await requirePrincipal();
   await assertConversationsDeletable(p.user.id);
   await stopRunsBeforeDelete({ userId: p.user.id });
@@ -115,12 +115,20 @@ export async function deleteAllConversations() {
   revalidatePath("/", "layout");
 }
 
+export async function deleteConversation(id: string) {
+  return deleteOwnedConversation(id);
+}
+
+export async function deleteAllConversations() {
+  return deleteOwnedConversations();
+}
+
 export async function deleteConversationWithFeedback(id: string) {
-  return conversationDeleteFeedback(() => deleteConversation(id));
+  return conversationDeleteFeedback(() => deleteOwnedConversation(id));
 }
 
 export async function deleteAllConversationsWithFeedback() {
-  return conversationDeleteFeedback(deleteAllConversations);
+  return conversationDeleteFeedback(() => deleteOwnedConversations());
 }
 
 export async function moveConversationToFolder(id: string, folderId: string | null) {

@@ -6,19 +6,20 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "@/lib/auth/groups";
 
-const fixture = vi.hoisted(() => ({ enqueue: vi.fn(), stop: vi.fn(), providerStop: vi.fn(), principal: null as Principal | null }));
+const fixture = vi.hoisted(() => ({ enqueue: vi.fn(), stop: vi.fn(), providerStop: vi.fn(), requirePrincipal: vi.fn<() => Promise<Principal>>(), principal: null as Principal | null }));
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/jobs", () => ({ enqueue: fixture.enqueue, QUEUES: { routineRun: "routine.run" } }));
 vi.mock("@/lib/runs/store", async original => ({ ...await original<typeof import("@/lib/runs/store")>(), stopRuns: fixture.stop }));
 vi.mock("@/lib/runs/provider-stop", () => ({ stopRunsBeforeDelete: fixture.providerStop }));
-vi.mock("@/lib/session", () => ({ requirePrincipal: async () => fixture.principal,
+vi.mock("@/lib/session", () => ({ requirePrincipal: fixture.requirePrincipal,
   errorResponse: (error: Error & { status?: number }) => Response.json({ error: error.message }, { status: error.status ?? 500 }) }));
 
 import { db, pool, schema } from "@/db";
 import { runMigrations } from "@/db/migration-runner";
 import { hmacSha256Hex } from "@/lib/crypto";
 import { loadPrincipal } from "@/lib/auth/groups";
+import { HttpError } from "@/lib/http-error";
 import { POST } from "@/app/api/routines/webhook/[id]/route";
 import { DELETE, PATCH } from "@/app/api/mobile/v1/conversations/[id]/route";
 import { deleteAllConversations, deleteConversation, deleteAllConversationsWithFeedback, deleteConversationWithFeedback } from "@/app/(chat)/actions";
@@ -45,10 +46,41 @@ suite("remaining security regressions on real PostgreSQL", () => {
     await db.execute(sql`truncate users, ai_apps, settings cascade`);
     await db.insert(schema.users).values({ id: "owner", name: "Owner", upn: "owner@fixture.invalid", authSource: "local", identityRealm: "local" });
     fixture.principal = (await loadPrincipal("owner"))!;
+    fixture.requirePrincipal.mockImplementation(async () => {
+      if (!fixture.principal) throw new HttpError(401, "Unauthenticated");
+      return fixture.principal;
+    });
     await db.insert(schema.bots).values({ id: "bot", ownerId: "owner", name: "Fixture" });
     await db.insert(schema.routines).values({ id: "hook", ownerId: "owner", botId: "bot", name: "Hook", prompt: "Never execute", triggerType: "webhook", webhookSecret: secret });
   });
   afterAll(async () => { await pool.end(); });
+
+  it.each([
+    ["single", () => deleteConversation("retained")],
+    ["bulk", () => deleteAllConversations()],
+    ["single feedback", () => deleteConversationWithFeedback("retained")],
+    ["bulk feedback", () => deleteAllConversationsWithFeedback()],
+  ] as const)("authenticates the %s action once and propagates unauthenticated failures before side effects", async (_kind, action) => {
+    await seedRetainedHistory();
+    fixture.principal = null;
+    await expect(action()).rejects.toMatchObject({ status: 401 });
+    expect(fixture.requirePrincipal).toHaveBeenCalledTimes(1);
+    expect(fixture.stop).not.toHaveBeenCalled();
+    expect(fixture.providerStop).not.toHaveBeenCalled();
+    expect(await db.select().from(schema.conversations)).toHaveLength(2);
+    expect(await db.select().from(schema.agentRuns)).toHaveLength(1);
+  });
+
+  it("propagates ownership denial from the feedback action without disclosing retained history", async () => {
+    await seedRetainedHistory();
+    await db.insert(schema.users).values({ id: "other", upn: "other@fixture.invalid", name: "Other", authSource: "local", identityRealm: "local" });
+    fixture.principal = (await loadPrincipal("other"))!;
+    await expect(deleteConversationWithFeedback("retained")).rejects.toMatchObject({ status: 404 });
+    expect(fixture.requirePrincipal).toHaveBeenCalledTimes(1);
+    expect(fixture.stop).not.toHaveBeenCalled();
+    expect(fixture.providerStop).not.toHaveBeenCalled();
+    expect(await db.select().from(schema.conversations)).toHaveLength(2);
+  });
 
   it("admits simultaneous signed deliveries once and returns the persisted receipt after pause and capacity exhaustion", async () => {
     const responses = await Promise.all(Array.from({ length: 8 }, () => webhook()));
