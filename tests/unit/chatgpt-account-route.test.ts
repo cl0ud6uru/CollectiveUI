@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const fixture = vi.hoisted(() => ({ change: vi.fn(), begin: vi.fn(), cancel: vi.fn(), prepare: vi.fn(), legacy: vi.fn(), principal: { user: { id: 'alice' } } }));
 vi.mock('@/lib/session', () => ({ requirePrincipal: vi.fn(async () => fixture.principal) }));
 vi.mock('@/lib/llm/chatgpt/account', () => ({ changeUnifiedAccount: fixture.change, unifiedAccountView: vi.fn() }));
@@ -12,6 +12,15 @@ const request = (body: unknown, origin = 'http://localhost') => new Request('htt
   method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body),
 });
 beforeEach(() => { vi.stubEnv('AUTH_URL', 'http://localhost'); fixture.change.mockReset().mockResolvedValue({ instructions: 'Local setup', hostId: 'public-host', userId: 'alice' }); fixture.prepare.mockReset().mockResolvedValue({ prepared: true }); fixture.legacy.mockReset(); fixture.begin.mockReset().mockResolvedValue({ launchUrl: 'collectiveui-chatgpt://connect' }); fixture.cancel.mockReset().mockResolvedValue({ cancelled: true }); });
+afterEach(() => vi.unstubAllEnvs());
+it.each([undefined, 'bad URL', 'data:text/html,test'])('fails closed on account changes when AUTH_URL is %j', async configured => {
+  vi.stubEnv('AUTH_URL', configured);
+  for (const post of [accountPost, legacyPost]) {
+    const req = request({ action: 'disconnect' });
+    expect((await post(req)).status).toBe(403); expect(req.bodyUsed).toBe(false);
+  }
+  expect(fixture.change).not.toHaveBeenCalled(); expect(fixture.legacy).not.toHaveBeenCalled();
+});
 describe('unified account HTTP mutation boundary', () => {
   it('starts and cancels a sign-in for the authenticated owner with explicit consent', async () => {
     const input = { accepted: true, consentVersion: 1, enableCodex: false };

@@ -1,3 +1,4 @@
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -7,7 +8,7 @@ import { requirePrincipal, errorResponse } from "@/lib/session";
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { partsToText } from "@/lib/chat/store";
 import { runOfMessage } from "@/lib/runs/state";
-import { assertSameOrigin, readBoundedJson } from "@/lib/voice/http";
+import { readBoundedJson } from "@/lib/voice/http";
 import { targetFor } from "@/lib/voice/target";
 import { commitVoiceBatch } from "@/lib/voice/turn";
 
@@ -20,8 +21,8 @@ const Batch = z.object({
 
 export async function POST(req: Request) {
   try {
-    assertSameOrigin(req);
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     const input = Batch.parse(await readBoundedJson(req));
     return Response.json(await commitVoiceBatch(p, input), { headers: { "cache-control": "no-store" } });
   } catch (error) { return errorResponse(error); }

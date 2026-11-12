@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 const f = vi.hoisted(() => ({ principal: vi.fn(), view: vi.fn(), mutate: vi.fn() }));
 vi.mock('@/lib/session', () => ({ requirePrincipal: f.principal }));
-vi.mock('@/lib/authz', () => { class HttpError extends Error { constructor(public status: number, message: string) { super(message); } } return { HttpError }; });
+vi.mock('@/lib/authz', () => import('@/lib/http-error'));
 vi.mock('@/lib/hermes-native/managed', () => ({ viewManagedNative: f.view, mutateManagedNative: f.mutate }));
 // Exercise the real API body reader and origin helper, not a copy of their logic.
 import { GET, POST } from '@/app/api/chat/[id]/native/route';

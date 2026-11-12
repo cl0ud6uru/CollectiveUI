@@ -1,8 +1,9 @@
+import { assertRequestContentType } from '@/lib/auth/mutation-request';
 import { HttpError } from '@/lib/authz';
 
 /** Bound JSON before configuration/provisioning, including streamed requests. */
 export async function readTeamRequest(request: Request): Promise<unknown> {
-  if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
+  assertRequestContentType(request);
   const reader = request.body?.getReader();
   if (!reader) throw new HttpError(400, 'Missing Team request.');
   let size = 0; const chunks: Uint8Array[] = [];

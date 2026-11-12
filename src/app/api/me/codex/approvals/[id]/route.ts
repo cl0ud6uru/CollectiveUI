@@ -1,3 +1,4 @@
+import { assertAuthOrigin } from '@/lib/auth/origin';
 import { requirePrincipal } from '@/lib/session';
 import { HttpError } from '@/lib/authz';
 import { decideApproval } from '@/personal-codex/approvals';
@@ -5,7 +6,7 @@ import { decideApproval } from '@/personal-codex/approvals';
 export async function POST(request: Request, ctx: RouteContext<'/api/me/codex/approvals/[id]'>) {
   try {
     const p = await requirePrincipal();
-    if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
+    assertAuthOrigin(request.headers);
     // Decision is selected by a fixed HTTP header; no command, permission, endpoint or token input.
     const decision = request.headers.get('x-codex-decision');
     if (!['decline', 'cancel'].includes(decision ?? '') || request.body) throw new HttpError(400, 'Choose Deny or Stop.');

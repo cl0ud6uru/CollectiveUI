@@ -1,3 +1,4 @@
+import { assertAuthOrigin } from "@/lib/auth/origin";
 import { callbackUrl, issueAuthCode, mobileEnabled, MobileAuthError, parseAuthorizeRequest } from "@/lib/auth/mobile";
 import { auth } from "@/auth";
 import { isAuthProvider } from "@/lib/auth/config";
@@ -8,9 +9,7 @@ import { errorResponse, requirePrincipal } from "@/lib/session";
 export async function POST(req: Request) {
   try {
     const p = await requirePrincipal();
-    const origin = new URL(process.env.AUTH_URL || req.url).origin;
-    if (req.headers.get("origin") !== origin || req.headers.get("sec-fetch-site") === "cross-site")
-      return Response.json({ error: "Invalid origin" }, { status: 403 });
+    assertAuthOrigin(req.headers);
     if (!mobileEnabled()) return Response.json({ error: "Mobile sign-in is turned off" }, { status: 404 });
     const form = await req.formData();
     const request = parseAuthorizeRequest((name) => form.get(name));

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const read = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/delegation/read", () => ({ markTaskRead: read }));
-vi.mock("@/lib/session", () => ({ requirePrincipal: async () => ({ user: { id: "owner" } }), errorResponse: () => new Response(null, { status: 500 }) }));
+vi.mock("@/lib/session", () => ({ requirePrincipal: async () => ({ user: { id: "owner" } }), errorResponse: (error: { status?: number }) => new Response(null, { status: error.status ?? 500 }) }));
 import { POST } from "@/app/api/chat/[id]/read/route";
 
 afterEach(() => { vi.unstubAllEnvs(); read.mockReset(); });
