@@ -107,6 +107,10 @@ if [ -n "$IPHONE" ]; then
   xcrun simctl io "$IPHONE" screenshot "$OUT_DIR/iphone-11-streamed-reply.png" >/dev/null || true
   kill -INT "$RECORDER" 2>/dev/null || true
   wait "$RECORDER" 2>/dev/null || true
+
+  # Release the iPhone's resources before starting the iPad simulator.
+  log "Shutting down iPhone before iPad capture"
+  xcrun simctl shutdown "$IPHONE"
 else
   echo "::error::No iPhone simulator available"; exit 1
 fi
