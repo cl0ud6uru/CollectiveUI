@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { getToolOrDynamicToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart } from "ai";
 import { AlertCircle, Check, ChevronDown, ChevronRight } from "lucide-react";
+import { appInstanceId } from "@/lib/mcp/apps-contract";
 import { isDelegationTool } from "@/lib/delegation/policy";
 import { cn } from "@/lib/utils";
 
@@ -38,11 +39,14 @@ export function needsAction(part: unknown): boolean {
 }
 
 /**
- * Steps that never fold into the chip: ones waiting for the person, and delegated tasks, whose card carries another
- * bot's live status, answer and errors.
+ * Steps that never fold into the chip: ones waiting for the person, interactive widgets, and delegated tasks,
+ * whose card carries another bot's live status, answer and errors.
  */
 export function standsAlone(part: unknown): boolean {
-  return needsAction(part) || (isToolUIPart(part as AnyToolPart) && isDelegationTool(getToolOrDynamicToolName(part as AnyToolPart)));
+  if (!isToolUIPart(part as AnyToolPart)) return false;
+  const tool = part as AnyToolPart;
+  return needsAction(tool) || isDelegationTool(getToolOrDynamicToolName(tool)) ||
+    (tool.state === "output-available" && appInstanceId(tool.output) !== null);
 }
 
 function stepRunning(p: AnyToolPart) {

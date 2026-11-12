@@ -104,6 +104,20 @@ describe("message layout", () => {
   it("folds even a single finished step", () => {
     expect(render(reply([tool("a", "output-available", { output: {} })]))).toContain("web · 1 step");
   });
+  it.each([true, false])("keeps an interactive widget visible with following text (streaming=%s)", (streaming) => {
+    const widget = { type: "dynamic-tool", toolName: "ticket_tracker__draft_ticket", toolCallId: "draft",
+      state: "output-available", input: {}, output: { _mcpApp: "syntheticInstance1" } };
+    const output = render(reply([tool("lookup", "output-available", { output: {} }), widget,
+      { type: "text", text: "Please review the ticket draft." }]), { streaming });
+    expect(output).toContain("Used draft_ticket (ticket_tracker)");
+    expect(output).toContain("Please review the ticket draft.");
+    if (!streaming) {
+      expect(output).toContain("web · 1 step");
+      expect(output).not.toContain("2 steps");
+      expect(output).not.toContain("Searched the web");
+    }
+  });
+
   it("keeps a delegated task's card out of the fold", () => {
     const delegate = { type: "tool-ask_gemma", toolCallId: "d", state: "output-available", input: {}, output: { status: "error", error: "The assignment is no longer authorized to return a result." } };
     const html = render(reply([delegate]));
