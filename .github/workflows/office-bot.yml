@@ -4,23 +4,45 @@ on:
   pull_request:
     paths:
       - 'docker/sandbox/**'
-      - 'src/lib/agent/**'
-      - 'src/lib/bots/office-*'
-      - 'src/lib/settings.ts'
+      - 'src/lib/**'
+      - 'src/db/**'
+      - 'src/sandboxd/**'
       - 'src/app/admin/bots/**'
       - 'src/components/admin/office-bot-installer.tsx'
       - 'tests/**/office-*'
+      - 'tests/sandbox/harness.ts'
+      - 'scripts/build-sandbox-image.sh'
+      - 'scripts/docker-build-preflight.sh'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vitest.config.mts'
       - '.github/workflows/office-bot.yml'
   push:
     branches: [main]
     paths:
       - 'docker/sandbox/**'
-      - 'src/lib/bots/office-*'
+      - 'src/lib/**'
+      - 'src/db/**'
+      - 'src/sandboxd/**'
+      - 'src/app/admin/bots/**'
+      - 'src/components/admin/office-bot-installer.tsx'
       - 'tests/**/office-*'
+      - 'tests/sandbox/harness.ts'
+      - 'scripts/build-sandbox-image.sh'
+      - 'scripts/docker-build-preflight.sh'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'vitest.config.mts'
       - '.github/workflows/office-bot.yml'
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   office-files:

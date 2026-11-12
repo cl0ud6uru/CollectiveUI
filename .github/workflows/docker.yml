@@ -1,9 +1,11 @@
 name: Docker validation
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  # Optional comparison/debugging only. Automatic Docker validation is covered
+  # by docker-release.yml's "Test exact release images" job, including the
+  # real Docker Codex environment fixture. That workflow also preserves the
+  # "Docker unit tests" and "Production worker image" required-check names.
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -49,7 +49,7 @@ for the shipped dependency audit and a disposable migration/reply smoke test.
 ```bash
 npm run typecheck && npm run lint
 npm test                      # unit tests + integration tests (integration suites skip themselves without DATABASE_URL)
-DATABASE_URL=postgres://… npm run test:integration   # DB-backed tests (e.g. secret re-encryption) against a migrated database
+DATABASE_URL=postgres://… npm run test:integration -- tests/integration/secrets-rewrap.test.ts # Select suites compatible with this disposable, migrated database
 # E2E needs the dev stack + `npm run dev` + `npm run worker:dev` + mock-llm, then:
 npm run test:e2e              # sign-in, chat, branching, search, access control, sharing, approvals, memory, routines, providers, ChatGPT sign-in, workspaces, durable runs (reload, closed tab, Stop)
 SANDBOX_DOCKER=1 npm run test:sandbox   # sandboxd against a real Docker daemon: lifecycle, limits, and the isolation suite
@@ -57,7 +57,13 @@ node tests/browser/workspace-setup.mjs # isolated native Workspace setup UI; no 
 HERMES_TEST_URL=http://127.0.0.1:8642 HERMES_TEST_PROFILE=coder HERMES_TEST_KEY=… npx vitest run --project integration hermes-live
 ```
 
-CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm run lint` and `npm test` on every pull request and push to `main`. The checks job has no database or live Hermes, so opted-in integration/sandbox suites skip there. Separate CI jobs run synthetic browser fixtures, pinned native Hermes contracts and official-image Docker lifecycle tests. The general LDAP/database E2E suite still requires a separately running stack; run the suites your change touches. `.github/workflows/docker.yml` also checks the exact PR head using the Docker unit target and production worker audit/migration/reply smoke test. It uses only synthetic local fixtures and does not deploy anything.
+CI (`.github/workflows/ci.yml`) runs `npm run typecheck`, `npm run lint` and `npm test` on every pull request and push to `main`. The checks job has no database or live Hermes, so opted-in integration/sandbox cases skip there; some files in those projects also contain unconditional offline tests. Separate CI jobs run synthetic browser fixtures, pinned native Hermes contracts and official-image Docker lifecycle tests. The general LDAP/database E2E suite still requires a separately running disposable stack; run the suites your change touches. Its global setup loads `.env.local` and resets fixture data, so never point it at an existing installation.
+
+`.github/workflows/docker-release.yml` owns automatic container validation: offline unit/type/lint checks, the real Docker Codex environment fixture, production image audits, migration/reply smoke tests, and backup/restore tests. It validates PRs without publishing. `.github/workflows/docker.yml` is a manual diagnostic rerun of overlapping Docker checks. iOS builds and UI regressions remain automatic; demo screenshots/video require a manual iOS workflow run with `capture_screenshots` enabled. See the [CI audit](reviews/ci-testing-audit-2026-11-12.md) for measured duplication, retained coverage, and remaining gaps.
+
+Integration suites use different disposable database names and opt-in flags. Select the appropriate files and follow their fixture instructions; running the entire integration project with one `DATABASE_URL` cannot satisfy mutually incompatible database guards. A green command with skipped cases is not evidence that those cases passed.
+
+`.github/workflows/core-integration-postgres.yml` runs provider round trips, model routing, executor lifecycle and web run transitions against a disposable PostgreSQL service and loopback mock models. Its report check requires all four suites and every collected case to pass without skips; it needs no model API keys.
 
 `test:sandbox` needs Docker and the workspace image (`npm run sandbox:image`). It runs under gVisor when Docker has `runsc`, and `SANDBOX_TEST_RUNTIME=runc` runs it under standard isolation. The workspace e2e test runs only when `SANDBOXD_URL` is set (start `npm run sandboxd:dev` first). The Hermes tests (`hermes-live`, and `tests/e2e/hermes.spec.ts` with `HERMES_E2E_URL`/`HERMES_E2E_PROFILE`/`HERMES_E2E_KEY`) need a Hermes gateway whose profile runs on the mock LLM (`model.provider: custom`, `base_url: http://127.0.0.1:4010/v1`), so scripted tool calls work; offline, `tests/unit/hermes-provider.test.ts` replays events recorded from a real gateway.
 

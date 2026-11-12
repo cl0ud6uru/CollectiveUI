@@ -175,7 +175,7 @@ struct SourceLinkView: View {
     let url: String
 
     var body: some View {
-        if let destination = URL(string: url) {
+        if let destination = URL(string: url), ["https", "http"].contains(destination.scheme?.lowercased() ?? "") {
             Link(destination: destination) {
                 Label(title, systemImage: "link")
                     .font(.footnote)

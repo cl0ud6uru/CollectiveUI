@@ -55,8 +55,8 @@ jobs:
           node-version: 22
       - name: Verify the refusal guard before application or database imports
         env:
-          DISPOSABLE_PG_PORT: ${{ job.services.postgres.ports[5432] }}
-          DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/collective_docker_hermes_test
+          DISPOSABLE_PG_PORT: ${{ job.services.postgres.ports['5432'] }}
+          DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/collective_docker_hermes_test
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/acceptance-chromium
         run: |
           env -i PATH="$PATH" HOME="$HOME" node --test tests/unit/docker-hermes-browser-guard.test.mjs tests/unit/docker-hermes-browser-reporter.test.mjs
@@ -77,8 +77,8 @@ jobs:
           env -i PATH="$PATH" HOME="$HOME" PLAYWRIGHT_BROWSERS_PATH="$PLAYWRIGHT_BROWSERS_PATH" npx playwright install --with-deps chromium
       - name: Run every opt-in browser case against the exact accepted app and spec
         env:
-          DISPOSABLE_PG_PORT: ${{ job.services.postgres.ports[5432] }}
-          DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports[5432] }}/collective_docker_hermes_test
+          DISPOSABLE_PG_PORT: ${{ job.services.postgres.ports['5432'] }}
+          DATABASE_URL: postgres://postgres:fixture-${{ github.run_id }}-${{ github.run_attempt }}@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/collective_docker_hermes_test
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/acceptance-chromium
         run: |
           env -i PATH="$PATH" HOME="$HOME" \

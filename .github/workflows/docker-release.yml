@@ -14,7 +14,8 @@ permissions:
 concurrency:
   # Pull requests are independent; main pushes and release events share one publish queue.
   group: docker-hub-release-${{ github.event_name == 'pull_request' && github.ref || 'trusted-publication' }}
-  cancel-in-progress: false
+  # Superseded PR builds can stop; never interrupt trusted publication.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -60,6 +61,9 @@ jobs:
         run: >-
           docker run --rm --init --network none collectiveui-test:ci
           sh -lc 'npm run typecheck && npm run lint && npm test -- --project unit && python3 -m unittest discover -s tests/deployment -v'
+
+      - name: Verify Codex environment with real Docker create and inspect
+        run: bash tests/docker/personal-codex-env.sh
 
       - name: Build the web image that will be published
         env:
@@ -138,6 +142,24 @@ jobs:
           path: release-input/
           if-no-files-found: error
           retention-days: 2
+
+  # Preserve legacy required-check names while running the expensive image proof
+  # only once. A failure, cancellation or skip must fail both compatibility checks.
+  legacy-checks:
+    name: ${{ matrix.check }}
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [Docker unit tests, Production worker image]
+    steps:
+      - name: Require the exact release image proof to succeed
+        env:
+          IMAGE_TEST_RESULT: ${{ needs.test.result }}
+        run: test "$IMAGE_TEST_RESULT" = success
 
   # A published release tag gets its own build/test run. Its manifest records that run's
   # tested image digests; publish loads that run's image archive without rebuilding and

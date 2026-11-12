@@ -1,0 +1,65 @@
+name: Core integration PostgreSQL proof
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-integration-postgres-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-integration:
+    name: Provider round trips, model routing and durable runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: core_fixture
+          POSTGRES_PASSWORD: synthetic-core-only
+          POSTGRES_DB: collective_core_integration_test
+        ports:
+          - 55449:5432
+        options: >-
+          --health-cmd "pg_isready -U core_fixture -d collective_core_integration_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://core_fixture:synthetic-core-only@127.0.0.1:55449/collective_core_integration_test
+      ENCRYPTION_KEY: synthetic-core-only
+      AUTH_SECRET: synthetic-core-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Verify missing or skipped tests cannot count as proof
+        run: node --test .github/scripts/core-integration-proof.test.mjs
+      - name: Migrate the disposable core database
+        run: npm run db:migrate
+      # The provider and executor suites start their own loopback mock LLMs;
+      # queues are mocked. No provider credentials or live worker are needed.
+      - name: Exercise the core integrations with synthetic providers
+        run: >-
+          node node_modules/vitest/vitest.mjs run --project integration
+          tests/integration/provider-roundtrip.test.ts
+          tests/integration/model-routing.test.ts
+          tests/integration/runs-exec.test.ts
+          tests/integration/runs-web.test.ts
+          --maxWorkers=1 --reporter=default --reporter=json
+          --outputFile=core-integration-results.json
+      - name: Require every selected suite and case to execute
+        run: node .github/scripts/check-core-integration-report.mjs core-integration-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: core-integration-results
+          path: core-integration-results.json
+          retention-days: 7
