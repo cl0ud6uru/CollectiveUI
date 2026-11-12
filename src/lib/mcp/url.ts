@@ -7,11 +7,18 @@ const defaultLookup: Lookup = (host) => dnsLookup(host, { all: true });
 
 /** Link-local (incl. the 169.254.169.254 metadata service), unspecified, multicast and other cloud metadata addresses. */
 export function isBlockedAddress(ip: string): boolean {
-  const v = ip.toLowerCase();
-  if (v.startsWith("::ffff:")) return isBlockedAddress(v.slice(7));
-  if (isIP(v) === 4) {
-    const [a, b] = v.split(".").map(Number);
-    return a === 0 || (a === 169 && b === 254) || a >= 224 || v === "100.100.100.200";
+  const host = ip.replace(/^\[|\]$/g, "");
+  if (isIP(host) === 4) {
+    const [a, b] = host.split(".").map(Number);
+    return a === 0 || (a === 169 && b === 254) || a >= 224 || host === "100.100.100.200";
+  }
+  if (isIP(host) !== 6 || host.includes("%")) return true;
+  // URL parsing canonicalizes dotted mapped addresses to hex. Normalize expanded forms too, then check
+  // the actual IPv4 address rather than treating its two hex words as an unrelated IPv6 address.
+  const v = new URL(`http://[${host}]/`).hostname.slice(1, -1).toLowerCase();
+  if (v.startsWith("::ffff:")) {
+    const words = v.slice(7).split(":").map(h => parseInt(h, 16));
+    return words.length !== 2 || isBlockedAddress(`${words[0] >> 8}.${words[0] & 255}.${words[1] >> 8}.${words[1] & 255}`);
   }
   return v === "::" || v.startsWith("fe8") || v.startsWith("fe9") || v.startsWith("fea") || v.startsWith("feb") || v.startsWith("ff") || v === "fd00:ec2::254";
 }
