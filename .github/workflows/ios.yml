@@ -126,6 +126,10 @@ jobs:
         shell: bash
         run: python3 -B ios/scripts/test-simulator-selection.py -v
 
+      - name: Test screenshot evidence export
+        shell: bash
+        run: python3 -B ios/scripts/test-screenshot-readiness.py -v
+
       - name: Build separate QA app for fixtures
         shell: bash
         run: |
@@ -170,8 +174,8 @@ jobs:
 
   screenshots:
     name: Simulator screenshots
-    # These are review artifacts without visual assertions. Actual UI regression
-    # tests above continue to run on every matching pull request and main push.
+    # Captures include iPad readiness smoke checks, but no visual-baseline comparison.
+    # Capture readiness is opt-in; native regressions and exporter guards stay automatic.
     if: github.event_name == 'workflow_dispatch' && inputs.capture_screenshots
     needs: build
     runs-on: xcode-27
@@ -185,10 +189,6 @@ jobs:
         run: |
           xcodebuild -version
           xcrun simctl list runtimes
-
-      - name: Test screenshot evidence export
-        shell: bash
-        run: python3 -B ios/scripts/test-screenshot-readiness.py -v
 
       - name: Build Debug app for the simulator
         shell: bash

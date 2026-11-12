@@ -17,6 +17,8 @@ Reviewed checkout `316a877dad4a0f5cc3c121a22b62511417a99d9d`, all 14 existing wo
 | Workflow expression lint errors | Quoted the PostgreSQL service port map key in the historical Hermes browser harness so its expressions typecheck in actionlint. |
 | Misleading integration instructions | Replaced the broad single-database integration example with explicit suite selection and explained incompatible fixture database names and skips. |
 
+During integration with newer main commits, #349 added iPad light/dark readiness assertions to the screenshot capture job. These validate capture preconditions rather than compare visual baselines. Keeping capture opt-in also makes that specific iPad readiness smoke manual; the full native regression suite remains automatic. Its eight fast exporter-integrity tests were moved into the automatic regression job so those guards are retained on every matching change. The original timing sample above predates that screenshot change.
+
 Legacy required status names `Docker unit tests` and `Production worker image` are retained as small jobs that depend on `Test exact release images`. They fail unless that proof succeeds, including when it is skipped or cancelled. They do not rebuild or rerun tests. Branch-protection administration could not be read (GitHub returned HTTP 403); a ruleset requiring the old workflow **file**, rather than its check names, still needs separate review before merging. No remote repository settings were changed.
 
 ## Measured waste
