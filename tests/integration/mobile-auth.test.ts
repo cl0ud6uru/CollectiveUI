@@ -1,6 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "@/lib/auth/groups";
+import { mobileApiRequestHeaders } from "@/lib/public-routes";
 
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
@@ -89,12 +90,15 @@ run("native app tokens (real Postgres)", () => {
     const { token } = await signIn();
     request.cookieUser = bobId;
 
-    request.headers = new Headers({ authorization: `Bearer ${token}` });
+    request.headers = mobileApiRequestHeaders(new Headers({ authorization: `Bearer ${token}` }), "/api/chat");
     expect((await getPrincipal())?.user.id).toBe(alice.user.id);
 
-    request.headers = new Headers({ authorization: "Bearer cui_m_not-a-real-token" });
+    request.headers = mobileApiRequestHeaders(new Headers({ authorization: "Bearer cui_m_not-a-real-token" }), "/api/chat");
     expect(await getPrincipal()).toBeNull();
-    request.headers = new Headers({ authorization: "Bearer something-else" });
+    request.headers = mobileApiRequestHeaders(new Headers({ authorization: "Bearer something-else" }), "/api/chat");
+    expect(await getPrincipal()).toBeNull();
+
+    request.headers = mobileApiRequestHeaders(new Headers({ authorization: `Bearer ${token}` }), "/c/x.png");
     expect(await getPrincipal()).toBeNull();
 
     // Without a Bearer header (or with another scheme) the browser session applies as before.
@@ -142,7 +146,7 @@ run("native app tokens (real Postgres)", () => {
     const { mobilePrincipal } = await import("@/lib/auth/mobile");
     const { GET, DELETE } = await import("@/app/api/mobile/v1/session/route");
     const { token } = await signIn();
-    request.headers = new Headers({ authorization: `Bearer ${token}` });
+    request.headers = mobileApiRequestHeaders(new Headers({ authorization: `Bearer ${token}` }), "/api/mobile/v1/session");
     const res = await GET();
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ user: { id: alice.user.id, name: "Alice" }, deviceName: "Test iPhone" });
