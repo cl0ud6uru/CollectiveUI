@@ -69,11 +69,12 @@ final class CollectiveUIRegression: XCTestCase {
         element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 
-    private func capture(_ name: String) {
+    private func capture(_ name: String, includeHierarchy: Bool = true) {
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = name
         image.lifetime = .keepAlways
         add(image)
+        guard includeHierarchy else { return }
         let tree = XCTAttachment(string: app.debugDescription)
         tree.name = name + "-hierarchy"
         tree.lifetime = .keepAlways
@@ -119,15 +120,17 @@ final class CollectiveUIRegression: XCTestCase {
         launch(extra: ["--demo-group-activity"])
         let researcher = app.buttons["Research Assistant: Working"]
         XCTAssertTrue(researcher.waitForExistence(timeout: 8))
-        capture("ios-activity-collapsed")
+        // The fixture advances on status polls while accessibility queries run.
+        // Keep transient phases screenshot-only; collect the hierarchy after completion.
+        capture("ios-activity-collapsed", includeHierarchy: false)
         tap(researcher)
         XCTAssertTrue(app.staticTexts["Working…"].waitForExistence(timeout: 5))
-        capture("ios-activity-expanded")
+        capture("ios-activity-expanded", includeHierarchy: false)
         tap(app.buttons["Close sidebar"])
         let atlas = app.buttons["Atlas: Working"]
         XCTAssertTrue(atlas.waitForExistence(timeout: 15))
         XCTAssertFalse(researcher.exists, "Completed group speaker must stop showing working")
-        capture("ios-activity-handoff")
+        capture("ios-activity-handoff", includeHierarchy: false)
         let completed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: atlas)
         wait(for: [completed], timeout: 30)
         capture("ios-activity-completed")
@@ -138,7 +141,7 @@ final class CollectiveUIRegression: XCTestCase {
         let researcher = app.buttons["Research Assistant: Working"]
         XCTAssertTrue(researcher.waitForExistence(timeout: 8))
         XCTAssertTrue(researcher.isHittable)
-        capture("ios-activity-accessibility-collapsed")
+        capture("ios-activity-accessibility-collapsed", includeHierarchy: false)
         tap(researcher)
         XCTAssertTrue(app.buttons["Close sidebar"].waitForExistence(timeout: 5))
         for _ in 0..<5 where !app.staticTexts["Working…"].exists { app.swipeUp() }
@@ -206,6 +209,8 @@ final class CollectiveUIRegression: XCTestCase {
     private func openBotDirectory() {
         let bots = app.buttons["Bots"]
         if !bots.exists || !bots.isHittable { tap(app.buttons["Open sidebar"]) }
+        // The sidebar can expose its elements before its presentation finishes.
+        XCTAssertTrue(bots.wait(for: \.isHittable, toEqual: true, timeout: 5), "The sidebar's Bots action must become tappable")
         tap(bots)
         XCTAssertTrue(app.searchFields["Search bots"].waitForExistence(timeout: 5))
     }
@@ -550,9 +555,12 @@ final class CollectiveUIRegression: XCTestCase {
         let dragStart = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
         let dragEnd = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
         dragStart.press(forDuration: 0.1, thenDragTo: dragEnd)
-        capture("stream-after-reader-gesture")
+        // Full hierarchy captures can each take a minute while this tree grows.
+        // Keep screenshots during the finite stream and collect the hierarchy after Stop,
+        // so diagnostic work cannot consume the fixture before the following assertions.
+        capture("stream-after-reader-gesture", includeHierarchy: false)
         XCTAssertTrue(app.buttons["Scroll to latest message"].waitForExistence(timeout: 5))
-        capture("stream-scrolled-away")
+        capture("stream-scrolled-away", includeHierarchy: false)
         // Compare an already-rendered paragraph while new paragraphs arrive below it.
         // Read one public accessibility snapshot rather than making a remote frame
         // query for every offscreen paragraph while the fixture keeps advancing.
@@ -583,11 +591,12 @@ final class CollectiveUIRegression: XCTestCase {
         XCTAssertNotEqual(latest.label, initialLatestLabel, "New paragraphs must arrive during the viewport assertion")
         XCTAssertTrue(older.exists && older.frame.height > 0, "The visible reply must remain rendered while chunks arrive")
         XCTAssertEqual(older.frame.minY, initialY, accuracy: 6, "Incoming chunks must preserve the reader's viewport")
-        capture("stream-scrolled-away-after-updates")
+        capture("stream-scrolled-away-after-updates", includeHierarchy: false)
         tap(app.buttons["Scroll to latest message"])
         settle(1)
-        capture("stream-after-jump")
+        capture("stream-after-jump", includeHierarchy: false)
         XCTAssertFalse(app.buttons["Scroll to latest message"].exists)
+        XCTAssertTrue(app.buttons["Stop"].exists, "Fixture must still stream before comparing paragraphs after Jump")
         let jumpedTail = visibleLatestFixtureParagraph(in: transcript)
         XCTAssertNotNil(jumpedTail, "Jumping to the latest reply must not leave a blank transcript")
         settle(2)

@@ -1,13 +1,13 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { liveActivities, aiApps, chatgptDeviceLogins, hermesConnections, mcpServers, routines, userTokens, providerConnections } from "@/db/schema";
+import { liveActivities, aiApps, chatgptDeviceLogins, hermesConnections, mcpServers, routines, userTokens, providerConnections, settings } from "@/db/schema";
 import { rewrapRemoteHermesSecrets } from "@/lib/remote-hermes/store";
 import { connectionAAD } from "@/lib/hermes-provisioning/config";
 import { AAD, encrypt, needsRewrap, rewrap } from "@/lib/crypto";
 import { rewrapChatGPTSecrets } from "@/lib/llm/chatgpt/store";
 import { appSecretNeedsRowBinding, openAppSecret, sealAppSecret } from "@/lib/llm/secrets";
 import { providerConnectionAad } from "@/lib/llm/provider-connections";
-import { getSetting, setSetting } from "@/lib/settings";
+import { getSetting } from "@/lib/settings";
 import { rewrapMemberMcpSecrets } from "@/lib/mcp/member-connections";
 import { rewrapBillingSecrets } from "@/lib/billing/secrets";
 import { carryServicePublications } from "@/lib/bots/service";
@@ -63,8 +63,9 @@ export async function rewrapAllSecrets(): Promise<number> {
   for (const row of await db.select({ id: mcpServers.id, v: mcpServers.headersEnc }).from(mcpServers).where(isNotNull(mcpServers.headersEnc))) {
     const next = rewrap(row.v!, AAD.mcpHeaders);
     if (next) {
-      await db.update(mcpServers).set({ headersEnc: next }).where(eq(mcpServers.id, row.id));
-      changed++;
+      const moved = await db.update(mcpServers).set({ headersEnc: next })
+        .where(and(eq(mcpServers.id, row.id), eq(mcpServers.headersEnc, row.v!))).returning({ id: mcpServers.id });
+      changed += moved.length;
     }
   }
 
@@ -85,19 +86,24 @@ export async function rewrapAllSecrets(): Promise<number> {
     const access = rewrap(row.accessTokenEnc, AAD.userAccessToken);
     const refresh = row.refreshTokenEnc ? rewrap(row.refreshTokenEnc, AAD.userRefreshToken) : null;
     if (access || refresh) {
-      await db
+      // Access and refresh tokens form one snapshot. A refresh, revocation or new sign-in must win over
+      // a stale startup scan, including when it installs the first refresh token on this row.
+      const moved = await db
         .update(userTokens)
         .set({ ...(access ? { accessTokenEnc: access } : {}), ...(refresh ? { refreshTokenEnc: refresh } : {}) })
-        .where(eq(userTokens.userId, row.userId));
-      changed++;
+        .where(and(eq(userTokens.userId, row.userId), eq(userTokens.accessTokenEnc, row.accessTokenEnc),
+          row.refreshTokenEnc === null ? isNull(userTokens.refreshTokenEnc) : eq(userTokens.refreshTokenEnc, row.refreshTokenEnc)))
+        .returning({ id: userTokens.userId });
+      changed += moved.length;
     }
   }
 
   for (const row of await db.select({ id: routines.id, v: routines.webhookSecret }).from(routines).where(isNotNull(routines.webhookSecret))) {
     const next = row.v!.startsWith("v2.") ? rewrap(row.v!, AAD.routineWebhookSecret) : encrypt(row.v!, AAD.routineWebhookSecret);
     if (next) {
-      await db.update(routines).set({ webhookSecret: next }).where(eq(routines.id, row.id));
-      changed++;
+      const moved = await db.update(routines).set({ webhookSecret: next })
+        .where(and(eq(routines.id, row.id), eq(routines.webhookSecret, row.v!))).returning({ id: routines.id });
+      changed += moved.length;
     }
   }
 
@@ -120,8 +126,14 @@ export async function rewrapAllSecrets(): Promise<number> {
   if (tools.webSearch.apiKeyEnc) {
     const next = rewrap(tools.webSearch.apiKeyEnc, AAD.webSearchKey);
     if (next) {
-      await setSetting("tools", { ...tools, webSearch: { ...tools.webSearch, apiKeyEnc: next } });
-      changed++;
+      // Change just the ciphertext in the current JSON document. Replacing the earlier settings snapshot
+      // would also roll back unrelated approval, allowlist or search configuration edited during the scan.
+      const moved = await db.update(settings).set({
+        value: sql`jsonb_set(${settings.value}, '{webSearch,apiKeyEnc}', to_jsonb(${next}::text), false)`,
+        updatedAt: sql`now()`,
+      }).where(and(eq(settings.key, "tools"), sql`${settings.value} #>> '{webSearch,apiKeyEnc}' = ${tools.webSearch.apiKeyEnc}`))
+        .returning({ key: settings.key });
+      changed += moved.length;
     }
   }
 

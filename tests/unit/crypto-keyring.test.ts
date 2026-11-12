@@ -34,6 +34,18 @@ describe("crypto keyring", () => {
     expect(needsRewrap(legacy)).toBe(true);
   });
 
+  it("requires the complete 128-bit authentication tag, including for empty plaintext", () => {
+    const current = encrypt("");
+    const legacy = legacyEncrypt("", K0);
+    expect(decrypt(current)).toBe("");
+    expect(decrypt(legacy)).toBe("");
+    for (const length of [0, 4, 8, 12, 13, 14, 15]) {
+      const shorten = (encoded: string) => Buffer.from(encoded, "base64").subarray(0, 12 + length).toString("base64");
+      expect(() => decrypt(`v2.k0.${shorten(current.split(".")[2])}`)).toThrow(/Malformed encrypted value/);
+      expect(() => decrypt(shorten(legacy))).toThrow(/Malformed encrypted value/);
+    }
+  });
+
   it("binds ciphertexts to their AAD", () => {
     const v = encrypt("headers", AAD.mcpHeaders);
     expect(() => decrypt(v, AAD.appApiKey)).toThrow();

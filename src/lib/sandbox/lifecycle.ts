@@ -145,8 +145,10 @@ export async function sweepSandboxes(now = new Date()): Promise<{ expired: numbe
   let orphans = 0;
   for (const state of listed) {
     if (known.has(state.ref) || state.activeExecs > 0) continue;
+    // The grace period covers volume-only sandboxes too: destroying one is irreversible, and "no row" can also
+    // mean a restored database. Only a daemon that reports no age at all (older sandboxd) is treated as old.
     const created = state.createdAt ? Date.parse(state.createdAt) : 0;
-    if (state.state !== "missing" && now.getTime() - created < ORPHAN_AGE_MS) continue;
+    if (now.getTime() - (Number.isNaN(created) ? 0 : created) < ORPHAN_AGE_MS) continue;
     try {
       await client.destroy(state.ref);
       orphans++;
