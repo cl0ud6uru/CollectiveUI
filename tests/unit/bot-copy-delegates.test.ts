@@ -89,10 +89,16 @@ describe("copied bot delegates (production actions and embedded PostgreSQL)", ()
     await expect(updateBot("own", input(delegate))).rejects.toMatchObject({ status: delegate === "hidden" ? 403 : 400 });
     expect(await relations("own")).toEqual([]);
   });
-  it("still requires access to the source and its original connection", async () => {
+  it.each(["disabled", "deleted"])("still requires access to the source and its original connection when %s", async state => {
     await expect(duplicateBot("hidden")).rejects.toMatchObject({ status: 403 });
-    await db.update(s.aiApps).set({ enabled: false }).where(eq(s.aiApps.id, "model"));
+    if (state === "disabled") await db.update(s.aiApps).set({ enabled: false }).where(eq(s.aiApps.id, "model"));
+    else await db.delete(s.aiApps).where(eq(s.aiApps.id, "model"));
     await expect(duplicateBot("source")).rejects.toThrow("source bot connection is unavailable");
+    expect((await db.select().from(s.bots)).length).toBe(9);
+  });
+  it("keeps actual Codex bots unavailable for copying", async () => {
+    await db.insert(s.codexBotConfigs).values({ botId: "no-model", policy: { funding: "api", model: "fixture", effort: "low" } });
+    await expect(duplicateBot("no-model")).rejects.toThrow("Codex supports direct text chats");
     expect((await db.select().from(s.bots)).length).toBe(9);
   });
   it("does not turn a delegate database failure into a successful partial copy", async () => {

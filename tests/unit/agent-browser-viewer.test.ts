@@ -185,18 +185,23 @@ describe("view-only frame stream", () => {
   });
 
   it("discards queued frames when an open stream loses authorization", async () => {
-    source = { ...source, subscribeFrames: async function* (signal: AbortSignal) {
-      f.subscriptionSignal = signal;
-      yield frame();
-      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
-    } };
-    f.resolveSource.mockImplementation(async () => source);
-    const response = await streamRoute(req("stream"));
-    await new Promise(resolve => setTimeout(resolve, 30));
-    f.authSession.mockRejectedValue(new Error("session expired"));
-    await new Promise(resolve => setTimeout(resolve, 3_100));
-    expect(f.subscriptionSignal?.aborted).toBe(true);
-    await expect(response.body!.getReader().read()).rejects.toThrow();
+    vi.useFakeTimers();
+    try {
+      source = { ...source, subscribeFrames: async function* (signal: AbortSignal) {
+        f.subscriptionSignal = signal;
+        yield frame();
+        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      } };
+      f.resolveSource.mockImplementation(async () => source);
+      const response = await streamRoute(req("stream"));
+      // Flush the initial authorization and frame enqueue before revoking the session.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.subscriptionSignal?.aborted).toBe(false);
+      f.authSession.mockRejectedValue(new Error("session expired"));
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.subscriptionSignal?.aborted).toBe(true);
+      await expect(response.body!.getReader().read()).rejects.toThrow();
+    } finally { vi.useRealTimers(); }
   });
 });
 
