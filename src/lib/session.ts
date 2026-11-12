@@ -6,16 +6,19 @@ import { auth } from "@/auth";
 import { loadPrincipal, type Principal } from "@/lib/auth/groups";
 import { bearerToken, mobilePrincipal } from "@/lib/auth/mobile";
 import { HttpError } from "@/lib/authz";
+import { isMobileApiRequest } from "@/lib/public-routes";
 
 const requestBearer = cache(async () => bearerToken(await headers()));
 const mobileAuth = cache(async () => {
+  if (!isMobileApiRequest(await headers())) return null;
   const token = await requestBearer();
   return token ? mobilePrincipal(token) : null;
 });
 
 /**
  * The signed-in principal for this request (memoised per request). A request with an Authorization header is judged
- * by its native app token alone, never by cookies; proxy.ts admits such requests only to the mobile API paths.
+ * by its native app token alone, never by cookies. The server-owned path context must also identify a mobile API;
+ * pages and server actions cannot use native tokens, including asset-like paths that skip proxy cookie checks.
  */
 export const getPrincipal = cache(async (): Promise<Principal | null> => {
   if (await requestBearer() !== undefined) return (await mobileAuth())?.principal ?? null;
