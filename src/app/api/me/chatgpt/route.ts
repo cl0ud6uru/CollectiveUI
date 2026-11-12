@@ -1,3 +1,4 @@
+import { assertAuthOrigin } from '@/lib/auth/origin';
 import { z } from 'zod';
 import { requirePrincipal } from '@/lib/session';
 import { HttpError } from '@/lib/authz';
@@ -17,7 +18,7 @@ export async function GET() { try { return reply(await unifiedAccountView(await 
 export async function POST(request: Request) {
   try {
     const p = await requirePrincipal();
-    if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
+    assertAuthOrigin(request.headers);
     if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') || '')) throw new HttpError(415, 'JSON required.');
     const reader = request.body?.getReader();
     if (!reader) throw new HttpError(400, 'JSON required.');

@@ -1,3 +1,5 @@
+import { assertRequestContentType } from '@/lib/auth/mutation-request';
+import { assertAuthOrigin } from '@/lib/auth/origin';
 import { z } from 'zod';
 import { requireAdmin } from '@/lib/session';
 import { HttpError } from '@/lib/authz';
@@ -12,8 +14,8 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const p = await requireAdmin();
-    if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
-    if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
+    assertAuthOrigin(request.headers);
+    assertRequestContentType(request);
     if (!request.body || Number(request.headers.get('content-length')) > 4096) throw new HttpError(413, 'Network request is too large.');
     const reader = request.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
     try {

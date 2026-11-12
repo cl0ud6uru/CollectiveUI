@@ -63,7 +63,7 @@ describe("voice session API", () => {
   it("creates listening-only reaction tests without loading or saving chat history", async () => {
     deps.getOwnedConversation.mockResolvedValueOnce({ source: "chat", isGroup: false, appId: app.id, botId: null });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "test_voice" }, transport: { type: "webrtc", sdp: "answer" } }));
-    const response = await POST(new Request("https://portal.example/api/voice/session", { method: "POST", headers: { origin: "https://portal.example" }, body: JSON.stringify({ conversationId: "chat00000001", chatId: "chat00000001", sdp: "offer", reactionTest: true }) }));
+    const response = await POST(new Request("https://portal.example/api/voice/session", { method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ conversationId: "chat00000001", chatId: "chat00000001", sdp: "offer", reactionTest: true }) }));
     expect(response.status).toBe(200);
     expect(deps.prepareVoiceConversation).not.toHaveBeenCalled();
     expect(await response.json()).toMatchObject({ context: "", history: [] });
@@ -83,7 +83,7 @@ describe("voice session API", () => {
       .mockResolvedValueOnce(Response.json({ session: { id: "vs_first" }, transport: { type: "webrtc", sdp: "answer-1" } }))
       .mockResolvedValueOnce(Response.json({ session: { id: "vs_second" }, transport: { type: "webrtc", sdp: "answer-2" } }));
     for (const chatId of ["newchat00001", "newchat00002"]) {
-      const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST",
+      const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" },
         body: JSON.stringify({ chatId, appId: app.id, sdp: "offer" }) }));
       expect(response.status).toBe(200);
       expect((await response.json()).history).toEqual([]);
@@ -103,7 +103,7 @@ describe("voice session API", () => {
     deps.resolveTurnTarget.mockResolvedValueOnce(hermes);
     deps.configureVoiceTarget.mockResolvedValueOnce({ ...hermes, voiceApp: app });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "vs_1" }, transport: { type: "webrtc", sdp: "answer" } }));
-    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", body: JSON.stringify({ chatId: "chat00000001", botId: "bot0000001", sdp: "offer" }) }));
+    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ chatId: "chat00000001", botId: "bot0000001", sdp: "offer" }) }));
     expect(response.status).toBe(200);
     expect(deps.configureVoiceTarget).toHaveBeenCalledWith(principal, hermes);
     const body = JSON.parse(String(fetchSpy.mock.calls[0][1]?.body));
@@ -131,7 +131,7 @@ describe("voice session API", () => {
   it("denies session creation before reading targets when authentication fails", async () => {
     deps.requirePrincipal.mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { status: 401 }));
     const response = await POST(new Request("http://localhost/api/voice/session", {
-      method: "POST", body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }),
+      method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }),
     }));
     expect(response.status).toBe(401);
     expect(deps.resolveTurnTarget).not.toHaveBeenCalled();
@@ -145,7 +145,7 @@ describe("voice session API", () => {
     expect(deps.getOwnedConversation).toHaveBeenCalledWith(principal, "private");
     deps.getOwnedConversation.mockResolvedValueOnce({ source: "chat", isGroup: false, appId: app.id, botId: null });
     const mismatch = await POST(new Request("http://localhost/api/voice/session", {
-      method: "POST", body: JSON.stringify({ chatId: "chat00000001", conversationId: "owned", appId: "other", sdp: "offer" }),
+      method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ chatId: "chat00000001", conversationId: "owned", appId: "other", sdp: "offer" }),
     }));
     expect(mismatch.status).toBe(400);
     expect(deps.resolveTurnTarget).not.toHaveBeenCalled();
@@ -202,19 +202,20 @@ describe("voice session API", () => {
     }
   });
 
-  it("preserves local same-origin requests when AUTH_URL is unconfigured", async () => {
+  it("fails closed when AUTH_URL is unconfigured", async () => {
     vi.stubEnv("AUTH_URL", "");
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "vs_1" }, transport: { type: "webrtc", sdp: "answer-sdp" } }));
     const response = await POST(new Request("http://localhost/api/voice/session", {
       method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }),
     }));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 
   it("bounds incoming JSON", async () => {
-    vi.stubEnv("AUTH_URL", "");
+    vi.stubEnv("AUTH_URL", "http://localhost");
     const oversized = await POST(new Request("http://localhost/api/voice/session", {
       method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "x".repeat(65_000) }),
@@ -267,7 +268,7 @@ describe("voice session API", () => {
 
   it("counts an acknowledged session even if its transport answer is invalid, without inventing tokens", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ session: { id: "started-with-bad-answer" }, transport: { type: "webrtc", sdp: "" } }));
-    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }) }));
+    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }) }));
     expect(response.status).toBe(502);
     expect(ledger).toHaveLength(1);
     expect(ledger[0]).toMatchObject({ purpose: "voice", completionStatus: "started", inputTokens: null, outputTokens: null });
@@ -276,7 +277,7 @@ describe("voice session API", () => {
 
   it("does not claim a session start without an upstream acknowledgement", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new DOMException("Aborted", "AbortError"));
-    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }) }));
+    const response = await POST(new Request("http://localhost/api/voice/session", { method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ chatId: "chat00000001", appId: app.id, sdp: "offer" }) }));
     expect(response.status).toBe(502);
     expect(ledger).toHaveLength(0);
     fetchSpy.mockRestore();

@@ -1,3 +1,4 @@
+import { assertAuthOrigin } from "@/lib/auth/origin";
 import sharp from "sharp";
 import { HttpError } from "@/lib/authz";
 import { LOGO_MAX_BYTES, LOGO_TYPES } from "./shared";
@@ -51,6 +52,5 @@ export async function normalizeLogo(data: Buffer, contentType: string): Promise<
 
 export function assertBrandingOrigin(request: Request) {
   // Browsers send Origin on both mutations. Do not trust forwarded host headers.
-  const expected = new URL(process.env.AUTH_URL || request.url).origin;
-  if (request.headers.get("origin") !== expected) throw new HttpError(403, "Invalid request origin");
+  assertAuthOrigin(request.headers);
 }

@@ -1,3 +1,4 @@
+import { assertAuthOrigin } from "@/lib/auth/origin";
 import sharp from "sharp";
 import { z } from "zod";
 import { PET_ANIMATIONS, PET_DIRECTIONS } from "./atlas";
@@ -85,8 +86,7 @@ export async function normalizePetSprite(data: Buffer, version: 1 | 2, filename:
 }
 
 export function assertPetOrigin(request: Request) {
-  const expected = new URL(process.env.AUTH_URL || request.url).origin;
-  if (request.headers.get("origin") !== expected) throw new HttpError(403, "Invalid request origin");
+  assertAuthOrigin(request.headers);
 }
 
 /**

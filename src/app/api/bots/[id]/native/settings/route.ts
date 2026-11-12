@@ -1,3 +1,5 @@
+import { assertRequestContentType } from '@/lib/auth/mutation-request';
+import { assertAuthOrigin } from '@/lib/auth/origin';
 import { z } from 'zod';
 import { requirePrincipal } from '@/lib/session';
 import { HttpError } from '@/lib/authz';
@@ -21,10 +23,10 @@ export async function GET(_request: Request, ctx: RouteContext<'/api/bots/[id]/n
 export async function POST(request: Request, ctx: RouteContext<'/api/bots/[id]/native/settings'>) {
   try {
     const p = await requirePrincipal();
-    if (request.headers.get('origin') !== new URL(process.env.AUTH_URL || request.url).origin) throw new HttpError(403, 'Invalid request origin.');
+    assertAuthOrigin(request.headers);
     const id = (await ctx.params).id;
     await personalProfileBinding(p, id);
-    if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
+    assertRequestContentType(request);
     if (Number(request.headers.get('content-length')) > 16384 || !request.body) throw new HttpError(413, 'Profile request is too large.');
     const reader = request.body.getReader(); let size = 0; const chunks: Uint8Array[] = [];
     try {
