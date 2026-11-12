@@ -26,7 +26,7 @@ import { TASK_READ_ONLY } from "@/lib/delegation/policy";
 import { lockUserRuns } from "@/lib/runs/lock";
 import { stopRuns } from "@/lib/runs/store";
 import { withoutOpenAIMetadata } from "@/lib/agent/replay";
-import { isGrantable } from "@/lib/agent/tool-names";
+import { isGrantable, toolGrantName } from "@/lib/agent/tool-names";
 import { getAccessibleBot, getAccessibleModel, getOwnedConversation, listAccessibleBots, HttpError } from "@/lib/authz";
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { openSideChat } from "@/lib/chat/side";
@@ -360,7 +360,7 @@ export async function grantToolForBot(botId: string, toolName: string) {
   if (bot.executionMode === "service") throw new HttpError(403, "Service-bot approvals are controlled by an admin.");
   await db
     .insert(toolGrants)
-    .values({ userId: p.user.id, botId, toolName: z.string().max(64).parse(toolName) })
+    .values({ userId: p.user.id, botId, toolName: toolGrantName(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).parse(toolName)) })
     .onConflictDoNothing();
 }
 

@@ -14,6 +14,7 @@ import { ticketDraftMarkup, ticketDraftResult, ticketDraftTool } from '../fixtur
 const fixture = vi.hoisted(() => ({ client: null as PGlite | null, human: null as Principal | null, connect: vi.fn(), calls: [] as string[],
   resource: vi.fn(), duringCall: null as (() => Promise<void>) | null }));
 vi.mock('server-only', () => ({}));
+vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 vi.mock('@/db', async () => {
   const { PGlite } = await import('@electric-sql/pglite'), { drizzle } = await import('drizzle-orm/pglite'), schema = await import('@/db/schema');
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
@@ -35,10 +36,13 @@ import { diffTools, snapshotHash, toToolDef, toolHash } from '@/lib/mcp/snapshot
 import { activeServiceGrants, serviceConfigHash } from '@/lib/bots/service';
 import { sealIdentitySecret } from '@/lib/mcp/identity';
 import { scrubForeignOpenAIMetadata } from '@/lib/agent/replay';
+import { modelToolName } from "@/lib/mcp/tool-names";
+import { toolGrantName } from "@/lib/agent/tool-names";
 import { mcpTools } from '@/lib/agent/tools/mcp';
 import { getSetting, setSetting } from '@/lib/settings';
 import { acceptMcpDrift, offeredTools, refreshMcpServer } from '@/lib/mcp/servers';
 import { GET, POST } from '@/app/api/mcp-apps/[id]/route';
+import { grantToolForBot, revokeToolGrant } from '@/app/(chat)/actions';
 
 const privateMarker = 'SYNTHETIC_COMPONENT_ONLY_8192';
 const result = { content: [{ type: 'text', text: 'Two synthetic rows.' }], structuredContent: { rows: [{ label: 'Alpha' }, { label: 'Beta' }] }, _meta: { privateMarker } };
@@ -246,6 +250,25 @@ describe('Native resource capture, persistence and private metadata isolation', 
 });
 
 describe('Widget actions use the native authorization and approval policy', () => {
+  it('saves a namespaced grant for the authenticated user and revokes that exact stored grant', async () => {
+    const name = modelToolName(server, 'refresh', new Set());
+    await grantToolForBot('bot', name);
+    await grantToolForBot('bot', name);
+    expect(await db.select().from(schema.toolGrants)).toMatchObject([
+      { userId: p.user.id, botId: 'bot', toolName: `mcp:${name}` },
+    ]);
+    // The wire input is a model tool name, never a caller-supplied storage namespace.
+    await expect(grantToolForBot('bot', `mcp:${name}`)).rejects.toThrow();
+    await expect(grantToolForBot('bot', 'workspace_bash')).rejects.toThrow();
+    fixture.human = other;
+    await revokeToolGrant('bot', `mcp:${name}`);
+    expect(await db.select().from(schema.toolGrants)).toHaveLength(1);
+    fixture.human = p;
+    await revokeToolGrant('bot', `mcp:${name}`);
+    expect(await db.select().from(schema.toolGrants)).toEqual([]);
+    await grantToolForBot('bot', 'fetch_url');
+    expect(await db.select().from(schema.toolGrants)).toMatchObject([{ toolName: 'fetch_url' }]);
+  });
   it('dispatches trusted read-only actions once, reauthorizes transport, and returns metadata only to the component', async () => {
     const { id } = await capture(), r = request();
     const first = await callMcpAppTool(p, id, r); expect(first.status).toBe('done'); expect(first.result?._meta).toEqual(result._meta);
@@ -277,13 +300,32 @@ describe('Widget actions use the native authorization and approval policy', () =
   });
   it('org enforcement beats remembered grants and untrusted Smart actions ask', async () => {
     await setSetting('tools', { ...ctx.toolSettings, enforcedApproval: ['mcp:synthetic'] }); ctx.toolSettings = await getSetting('tools');
-    await db.insert(schema.toolGrants).values({ userId: p.user.id, botId: 'bot', toolName: 'fixture__refresh' });
+    await db.insert(schema.toolGrants).values({ userId: p.user.id, botId: 'bot', toolName: toolGrantName(modelToolName(server, 'refresh', new Set())) });
     binding = await mcpAuthorityBinding(ctx, server, null, []);
     let captured = await capture(); expect((await callMcpAppTool(p, captured.id, request())).status).toBe('pending');
     await setSetting('tools', { ...ctx.toolSettings, enforcedApproval: [] }); ctx.toolSettings = await getSetting('tools');
     await db.delete(schema.toolGrants); await db.update(schema.mcpServers).set({ trust: 'untrusted' }); server = await loadServer();
     binding = await mcpAuthorityBinding(ctx, server, null, []); captured = await capture();
     expect((await callMcpAppTool(p, captured.id, request())).status).toBe('pending'); expect(fixture.calls).toEqual([]);
+  });
+  it('honors only exact namespaced grants shared with chat, never another server or a legacy alias', async () => {
+    await db.update(schema.botTools).set({ approval: 'ask' });
+    const own = modelToolName(server, 'refresh', new Set());
+    const otherName = modelToolName({ id: 'another-server' }, 'refresh', new Set());
+    await db.insert(schema.toolGrants).values([
+      { userId: p.user.id, botId: 'bot', toolName: 'fixture__refresh' },
+      { userId: p.user.id, botId: 'bot', toolName: own },
+      { userId: p.user.id, botId: 'bot', toolName: toolGrantName(otherName) },
+    ]);
+    binding = await mcpAuthorityBinding(ctx, server, null, []);
+    let captured = await capture();
+    expect((await callMcpAppTool(p, captured.id, request())).status).toBe('pending');
+    expect(fixture.calls).toEqual([]);
+    await db.insert(schema.toolGrants).values({ userId: p.user.id, botId: 'bot', toolName: toolGrantName(own) });
+    binding = await mcpAuthorityBinding(ctx, server, null, []);
+    captured = await capture();
+    expect((await callMcpAppTool(p, captured.id, request())).status).toBe('done');
+    expect(fixture.calls).toEqual(['refresh']);
   });
   it('does not release private results after in-flight revocation or retry uncertain executions', async () => {
     const { id } = await capture(), r = request(); fixture.duringCall = async () => { await db.update(schema.mcpServers).set({ status: 'disabled' }); };

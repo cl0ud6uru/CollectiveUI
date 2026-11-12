@@ -1,3 +1,4 @@
+import { modelToolName } from "../../src/lib/mcp/tool-names";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -32,7 +33,6 @@ test("admin imports an MCP server, turns on identity, tests and enables it; a bo
   test.setTimeout(120_000);
   const stamp = Date.now();
   const name = `E2E Echo ${stamp}`;
-  const prefix = `e2e_echo_${stamp}`;
   const port = await freePort();
   const url = `http://127.0.0.1:${port}/mcp`;
 
@@ -79,19 +79,21 @@ test("admin imports an MCP server, turns on identity, tests and enables it; a bo
   await page.goto("/bots/new");
   await page.getByRole("button", { name: "configure" }).click();
   await page.getByPlaceholder("Name your bot").fill(botName);
-  await page.getByLabel(`${name} (MCP)`, { exact: true }).check();
+  const serverChoice = page.getByLabel(`${name} (MCP)`, { exact: true });
+  const serverId = (await serverChoice.getAttribute("id"))!.replace(/^bot-tool-mcp:/, "");
+  await serverChoice.check();
   await expect(page.getByLabel(`${name} (MCP) approval`)).toHaveText("Ask unless read-only");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForURL(/\/bots\/.+\/edit/);
 
   // whoami is read-only on a trusted server: it runs without asking, and the server knows who is asking.
   await openBot(page, botName);
-  await send(page, `[tool:${prefix}__whoami {}]`);
+  await send(page, `[tool:${modelToolName({ id: serverId }, "whoami", new Set())} {}]`);
   await expect(page.getByText(/alice@corp\.local/).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Allow once" })).toHaveCount(0);
 
   // delete_record is destructive: it asks first.
-  await send(page, `[tool:${prefix}__delete_record {"id":"42"}]`);
+  await send(page, `[tool:${modelToolName({ id: serverId }, "delete_record", new Set())} {"id":"42"}]`);
   await page.getByRole("button", { name: "Allow once" }).click();
   await expect(page.getByText(/deleted record 42/).first()).toBeVisible();
 

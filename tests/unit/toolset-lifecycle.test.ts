@@ -36,6 +36,8 @@ vi.mock("@/lib/mcp/client", async (importOriginal) => ({
   connectMcp: (...a: unknown[]) => connectMcp(...a),
 }));
 
+import { modelToolName } from "@/lib/mcp/tool-names";
+import { toolGrantName } from "@/lib/agent/tool-names";
 import { buildToolset } from "@/lib/agent/toolset";
 import { PortalWorkspace, WorkspaceClosedError } from "@/lib/sandbox/session";
 
@@ -118,8 +120,8 @@ describe("buildToolset MCP loading", () => {
     expect(mcpTools.mock.calls.map((c) => c[1].config)).toEqual([{ tools: ["echo"] }, null]);
     expect(mcpTools.mock.calls[0][1].taken).not.toBe(mcpTools.mock.calls[1][1].taken);
     // Smart + trusted + read-only runs; the untrusted server's tool under "auto" also runs.
-    expect(ts.approval({ toolCall: { toolName: "a__echo" } })).toBeUndefined();
-    expect(ts.approval({ toolCall: { toolName: "b__echo" } })).toBeUndefined();
+    expect(ts.approval({ toolCall: { toolName: modelToolName({ id: "a" }, "echo", new Set()) } })).toBeUndefined();
+    expect(ts.approval({ toolCall: { toolName: modelToolName({ id: "b" }, "echo", new Set()) } })).toBeUndefined();
   });
 
   it("native Auto coexists with an MCP tool without changing that tool's approval or availability", async () => {
@@ -130,15 +132,15 @@ describe("buildToolset MCP loading", () => {
       toolSettings: { disabledTools: [], enforcedApproval: [], fetchAllowlist: [], maxStepsCap: 10, webSearch: { provider: "none" }, botCreation: "everyone", nativeSearch: { enabled: true, maxCalls: 2, allowedDomains: [] } } as never };
     for (const nativeSearchMode of ["auto", "off"] as const) {
       const ts = await buildToolset({ ...nativeCtx, nativeSearchMode });
-      expect(ts.tools.a__lookup).toBeDefined();
+      expect(ts.tools[modelToolName({ id: "a" }, "lookup", new Set())]).toBeDefined();
       expect(Boolean(ts.tools.openai_web_search)).toBe(nativeSearchMode === "auto");
-      expect(ts.approval({ toolCall: { toolName: "a__lookup" } })).toBe("user-approval");
+      expect(ts.approval({ toolCall: { toolName: modelToolName({ id: "a" }, "lookup", new Set()) } })).toBe("user-approval");
       expect(ts.approval({ toolCall: { toolName: "openai_web_search" } })).toBeUndefined();
       await ts.close();
     }
   });
 
-  it("assigns colliding tool names in server order despite reversed discovery completion", async () => {
+  it("keeps tool identities and approval bindings stable despite reversed discovery completion", async () => {
     rows.set(botTools, [{ toolKey: "mcp:a", approval: "auto" }, { toolKey: "mcp:b", approval: "auto" }]);
     listAccessibleMcpServers.mockResolvedValue([server("b", "Tickets"), server("a", "Tickets")]);
     let reverse = false;
@@ -148,9 +150,32 @@ describe("buildToolset MCP loading", () => {
     });
     const first = await buildToolset(ctx); reverse = true;
     const second = await buildToolset(ctx);
-    expect(first.entries.map(e => [e.name, e.key])).toEqual([["tickets__create", "mcp:a"], ["tickets__create_2", "mcp:b"]]);
+    expect(first.entries.map(e => [e.name, e.key])).toEqual([[modelToolName({ id: "a" }, "create", new Set()), "mcp:a"], [modelToolName({ id: "b" }, "create", new Set()), "mcp:b"]]);
     expect(second.entries.map(e => [e.name, e.key])).toEqual(first.entries.map(e => [e.name, e.key]));
     expect(second.approvalBinding).toBe(first.approvalBinding);
+  });
+
+  it("does not transfer a remembered approval when a same-named server disappears or changes its name", async () => {
+    rows.set(botTools, [{ toolKey: "mcp:a", approval: "ask" }, { toolKey: "mcp:b", approval: "ask" }]);
+    const a = server("a", "Tickets", { toolsSnapshot: [] }), b = server("b", "Tickets", { toolsSnapshot: [] });
+    listAccessibleMcpServers.mockResolvedValue([a, b]);
+    mcpTools.mockImplementation((s: McpServer) => ({ entries: [{ name: "temporary", key: `mcp:${s.id}`, tool: {},
+      mcp: { tool: "create", legacyName: "tickets__create", trusted: false, readOnly: false, destructive: true, requireApproval: false } }], close: async () => {} }));
+    const initial = await buildToolset(ctx);
+    const nameA = initial.entries.find(e => e.key === "mcp:a")!.name;
+    const nameB = initial.entries.find(e => e.key === "mcp:b")!.name;
+    rows.set(toolGrants, [{ toolName: toolGrantName(nameA) }, { toolName: "tickets__create" }, { toolName: nameB }]);
+    const granted = await buildToolset(ctx);
+    expect(granted.approval({ toolCall: { toolName: nameA } })).toBeUndefined();
+    expect(granted.approval({ toolCall: { toolName: nameB } })).toBe("user-approval");
+    listAccessibleMcpServers.mockResolvedValue([{ ...b, name: "Renamed" }]);
+    const remaining = await buildToolset(ctx);
+    expect(remaining.entries[0].name).toBe(nameB);
+    expect(remaining.approval({ toolCall: { toolName: nameB } })).toBe("user-approval");
+    rows.set(toolGrants, [{ toolName: toolGrantName(nameB) }]);
+    const ownGrant = await buildToolset(ctx);
+    expect(ownGrant.approval({ toolCall: { toolName: nameB } })).toBeUndefined();
+    await Promise.all([initial, granted, remaining, ownGrant].map(t => t.close()));
   });
 
   it("a Hermes bot gets no portal tools: Hermes brings its own", async () => {
@@ -186,7 +211,7 @@ describe("closed handles don't come back to life (a stream still running after i
   const call = (entry: { tool: unknown }) =>
     (entry.tool as { execute: (input: unknown, o: unknown) => Promise<unknown> }).execute({}, { toolCallId: "t1", messages: [], abortSignal: undefined });
 
-  beforeEach(() => connectMcp.mockReset());
+  beforeEach(() => { connectMcp.mockReset(); });
 
   it('applies resultBudgetKb as serialized bytes through the connector', async () => {
     const { mcpTools } = await real();
@@ -225,6 +250,26 @@ describe("closed handles don't come back to life (a stream still running after i
     const err = new Error('aborted'); client.callTool.mockRejectedValue(err);
     await expect(ts.entries[0].tool.execute!({}, { toolCallId: 't1', messages: [], abortSignal: abort.signal } as never)).rejects.toBe(err);
     await ts.close();
+  });
+
+  it("reuses a connection only within the caller's toolset", async () => {
+    const { mcpTools } = await real();
+    const alice = fakeClient(), bob = fakeClient();
+    connectMcp.mockImplementation(async (_server, caller) => caller.subject.id === "alice" ? alice : bob);
+    const forUser = (id: string) => mcpTools(mcpServer, { ...opts(), caller: { subject: {
+      kind: "user", id, upn: `${id}@example.invalid`, name: id, email: null, groups: [],
+    } } });
+    const first = forUser("alice"), second = forUser("bob");
+    await Promise.all([call(first.entries[0]), call(second.entries[0])]);
+    await call(first.entries[0]);
+    expect(connectMcp).toHaveBeenCalledTimes(2);
+    expect(alice.callTool).toHaveBeenCalledTimes(2);
+    expect(bob.callTool).toHaveBeenCalledTimes(1);
+    await first.close();
+    expect(alice.close).toHaveBeenCalledTimes(1);
+    expect(bob.close).not.toHaveBeenCalled();
+    await second.close();
+    expect(bob.close).toHaveBeenCalledTimes(1);
   });
 
   it("a lazy MCP toolset doesn't reconnect after close()", async () => {

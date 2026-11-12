@@ -19,7 +19,7 @@ import { activeServiceGrants } from "@/lib/bots/service";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { assertDirectServiceContext, mcpAuthorityBinding } from "@/lib/mcp/authorization";
 import { mcpToolsetBinding } from "./toolset-binding";
-import { resolveApproval } from "./approvals";
+import { isApprovalEnforced, resolveApproval } from "./approvals";
 import { memoryEnabled } from "./memory";
 import { knowledgeTool } from "./tools/knowledge";
 import { m365Tools } from "./tools/m365";
@@ -216,7 +216,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
         if (!server) warnings.push("One of this bot's MCP servers isn't available to you, so its tools are missing.");
         return server ? [server] : [];
       })
-      .sort((a, b) => a.id.localeCompare(b.id)); // stable tool names when two servers share a name
+      .sort((a, b) => a.id.localeCompare(b.id)); // stable catalog and approval binding regardless of database row order
     const caller: McpCaller = { subject: await identitySubject(ctx, servers), botId: bot.id, conversationId: ctx.conversationId };
     const taken = new Set<string>();
     const configs = new Map(configured.map((t) => [t.toolKey, t.config ?? null]));
@@ -309,8 +309,8 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
         reason: `${entry.name} needs the user's approval, which isn't possible here. Ask the user to open a direct chat with ${bot.name} to do this.`,
       };
     }
-    if (decision === "user-approval" && (entry.mcp?.requireApproval ||
-        ctx.toolSettings.enforcedApproval.includes(entry.name) || ctx.toolSettings.enforcedApproval.includes(entry.key)))
+    if (decision === "user-approval" && isApprovalEnforced({ toolName: entry.name, toolKey: entry.key,
+      enforced: ctx.toolSettings.enforcedApproval, mcp: entry.mcp }))
       return { type: "user-approval", reason: ENFORCED_APPROVAL_REASON };
     return decision;
   };

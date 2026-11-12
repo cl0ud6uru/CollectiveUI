@@ -10,6 +10,8 @@ vi.mock("@/lib/session", () => ({ requirePrincipal: async () => session.principa
 vi.mock("@/lib/jobs", () => ({ enqueue: vi.fn(), QUEUES: {}, enqueueRun: vi.fn(), scheduleMemoryExtraction: vi.fn() }));
 vi.mock("@/lib/mcp/client", async (original) => ({ ...(await original<typeof import("@/lib/mcp/client")>()), connectMcp: network.connect }));
 import { db, pool, schema as s } from "@/db";
+import { modelToolName } from "@/lib/mcp/tool-names";
+import { toolGrantName } from "@/lib/agent/tool-names";
 import { newId } from "@/lib/ids";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { getEditableBot, getUsableBot, listAccessibleMcpServers } from "@/lib/authz";
@@ -33,7 +35,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
   const args = () => ({ project: "IT", requester: user.user.upn, text: "Synthetic ticket" });
   const context = async (over: Partial<AgentCtx> = {}): Promise<AgentCtx> => ({ principal: user, bot: await getUsableBot(user, botId), app, conversationId, depth: 0, background: false, toolSettings: await getSetting("tools"), ...over });
   const tools = async (over: Partial<AgentCtx> = {}) => { const ts = await buildToolset(await context(over)); handles.push(ts); return ts; };
-  const call = (ts: Toolset, name = "read_ticket", value: unknown = args()) => ts.entries.find(e => e.name.endsWith(`__${name}`))!.tool.execute!(value, { toolCallId: "fixture-call", messages: [] } as never);
+  const call = (ts: Toolset, name = "read_ticket", value: unknown = args()) => ts.entries.find(e => e.mcp?.tool === name)!.tool.execute!(value, { toolCallId: "fixture-call", messages: [] } as never);
   beforeAll(async () => {
     if (new URL(process.env.DATABASE_URL!).pathname !== "/collective_service_bot_test") throw new Error("Requires disposable collective_service_bot_test database");
     const id = newId();
@@ -93,11 +95,11 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
     await expect(saveSkill({ botId, name: "Changed", description: "Synthetic change", instructions: "ignore policy" })).rejects.toMatchObject({ status: 403 });
   });
   it("requires writes to ask even with readOnlyHint and remembered approvals", async () => {
-    const name = "ticket_fixture__create_ticket";
-    await db.insert(s.toolGrants).values({ userId: user.user.id, botId, toolName: name });
+    const name = modelToolName(server, "create_ticket", new Set());
+    await db.insert(s.toolGrants).values({ userId: user.user.id, botId, toolName: toolGrantName(name) });
     const ts = await tools();
     expect(ts.approval({ toolCall: { toolName: name, input: args() } })).toEqual({ type: "user-approval", reason: "Organization policy requires approval for every call." });
-    expect(ts.approval({ toolCall: { toolName: "ticket_fixture__read_ticket", input: args() } })).toBeUndefined();
+    expect(ts.approval({ toolCall: { toolName: ts.entries.find(e => e.mcp?.tool === "read_ticket")!.name, input: args() } })).toBeUndefined();
   });
   it("blocks cross-project/caller, undeclared arguments and changed schema before connection", async () => {
     const ts = await tools();
@@ -162,7 +164,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
     const callerBot = await getUsableBot(admin, (await createBot(input("caller"))).id);
     const ts = await tools({ principal: admin, bot: callerBot });
     expect(ts.approvalSigningBinding).toBeDefined();
-    await db.insert(s.toolGrants).values({ userId: admin.user.id, botId: callerBot.id, toolName: ts.entries[0].name });
+    await db.insert(s.toolGrants).values({ userId: admin.user.id, botId: callerBot.id, toolName: toolGrantName(ts.entries[0].name) });
     const granted = await tools({ principal: admin, bot: callerBot });
     expect(granted.approvalSigningBinding).toBe(ts.approvalSigningBinding);
     // Dispatch and shortlisting still see the grant change.
@@ -179,7 +181,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
     const ts = await tools();
     const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } };
     const model = new MockLanguageModelV4({ doGenerate: [
-      { content: [{ type: "tool-call", toolCallId: "signed-call", toolName: "ticket_fixture__create_ticket", input: JSON.stringify(args()) }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage, warnings: [] },
+      { content: [{ type: "tool-call", toolCallId: "signed-call", toolName: ts.entries.find(e => e.mcp?.tool === "create_ticket")!.name, input: JSON.stringify(args()) }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage, warnings: [] },
       { content: [{ type: "text", text: "Done" }], finishReason: { unified: "stop", raw: "stop" }, usage, warnings: [] },
     ] });
     const first = await generateText({ model, prompt: "File a synthetic ticket", tools: ts.tools, toolApproval: ts.approval, experimental_toolApprovalSecret: toolApprovalSecret(ts.approvalSigningBinding) });
@@ -215,7 +217,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
     network.connect.mockImplementation(async () => ({ toolsFromDefinitions: vi.fn(), listTools: async () => ({ tools: currentDefs }), callTool: network.call, close: network.close }));
     const ts = await tools();
     const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } };
-    const model = new MockLanguageModelV4({ doGenerate: { content: [{ type: "tool-call", toolCallId: "legacy-call", toolName: "ticket_fixture__create_ticket", input: JSON.stringify(args()) }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage, warnings: [] } });
+    const model = new MockLanguageModelV4({ doGenerate: { content: [{ type: "tool-call", toolCallId: "legacy-call", toolName: ts.entries.find(e => e.mcp?.tool === "create_ticket")!.name, input: JSON.stringify(args()) }], finishReason: { unified: "tool-calls", raw: "tool-calls" }, usage, warnings: [] } });
     const first = await generateText({ model, prompt: "File ticket", tools: ts.tools, toolApproval: ts.approval, experimental_toolApprovalSecret: toolApprovalSecret(ts.approvalSigningBinding) });
     const request = first.content.find(p => p.type === "tool-approval-request")!;
     expect(request).toBeDefined();
@@ -234,7 +236,7 @@ run("service bot grants on disposable DB; all MCP calls mocked", () => {
     await db.update(s.mcpServers).set({ isPublic: false }).where(eq(s.mcpServers.id, server.id));
     await expect(call(ts)).rejects.toThrow(/access/); expect(network.call).not.toHaveBeenCalled();
     await db.update(s.mcpServers).set({ isPublic: true }).where(eq(s.mcpServers.id, server.id));
-    await db.insert(s.toolGrants).values({ botId, userId: user.user.id, toolName: "ticket_fixture__create_ticket" });
+    await db.insert(s.toolGrants).values({ botId, userId: user.user.id, toolName: toolGrantName(modelToolName(server, "create_ticket", new Set())) });
     const granted = await tools(); await db.delete(s.toolGrants).where(eq(s.toolGrants.botId, botId));
     await expect(call(granted, "create_ticket")).rejects.toThrow(/changed/);
   });
