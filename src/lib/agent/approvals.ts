@@ -1,5 +1,6 @@
 import type { ApprovalMode } from "@/db/schema";
 import type { McpApprovalFacts } from "./types";
+import { matchesLegacyMcpToolName } from "./tool-names";
 
 export type ApprovalDecisionInput = {
   toolName: string;
@@ -13,7 +14,7 @@ export type ApprovalDecisionInput = {
   /** tool names the user chose to "always allow" for this bot */
   grants: Set<string>;
   /** MCP tools only: annotations, server trust, admin policy and the bot's per-tool override */
-  mcp?: Pick<McpApprovalFacts, "readOnly" | "destructive" | "trusted" | "requireApproval" | "override">;
+  mcp?: Pick<McpApprovalFacts, "readOnly" | "destructive" | "trusted" | "requireApproval" | "override" | "legacyName">;
   /** false: every call asks and "always allow" grants are ignored (e.g. workspace commands) */
   grantable?: boolean;
 };
@@ -22,6 +23,13 @@ const ADMIN_WRITE_TOOLS = new Set([
   "admin_set_bot_enabled", "admin_create_bot", "admin_update_bot", "admin_assign_bot_tools", "admin_assign_bot_skills",
   "admin_prepare_provider_connection", "admin_update_provider_connection", "admin_test_provider_connection", "admin_set_user_disabled", "admin_update_group_profile", "admin_update_settings",
 ]);
+
+export function isApprovalEnforced(i: Pick<ApprovalDecisionInput, 'toolName' | 'toolKey' | 'enforced' | 'mcp'>): boolean {
+  return i.enforced.includes(i.toolName) || i.enforced.includes(i.toolKey) || !!i.mcp && (
+    i.enforced.includes('mcp') || i.mcp.requireApproval || !!i.mcp.legacyName &&
+      i.enforced.some(name => matchesLegacyMcpToolName(name, i.mcp!.legacyName!))
+  );
+}
 
 /**
  * Pure approval policy (unit-tested), in order of precedence:
@@ -36,11 +44,11 @@ const ADMIN_WRITE_TOOLS = new Set([
  */
 export function resolveApproval(i: ApprovalDecisionInput): "user-approval" | undefined {
   if (ADMIN_WRITE_TOOLS.has(i.toolName)) return "user-approval";
-  if (i.enforced.includes(i.toolName) || i.enforced.includes(i.toolKey) || i.mcp?.requireApproval) return "user-approval";
+  if (isApprovalEnforced(i)) return "user-approval";
   const mode = i.mcp?.override ?? i.mode;
   const ask = mode === "ask" || (mode === "smart" && !!i.mcp && !(i.mcp.trusted && i.mcp.readOnly && !i.mcp.destructive));
   if (ask || i.sensitive) {
-    if (i.grantable === false || !i.grants.has(i.toolName)) return "user-approval";
+    if (i.grantable === false || !i.grants.has(i.mcp ? `mcp:${i.toolName}` : i.toolName)) return "user-approval";
   }
   return undefined;
 }

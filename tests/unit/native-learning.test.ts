@@ -1,3 +1,5 @@
+import { modelToolName } from "@/lib/mcp/tool-names";
+import { toolGrantName } from "@/lib/agent/tool-names";
 import { readFileSync, readdirSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -100,17 +102,17 @@ describe("native learning with real PostgreSQL migrations", () => {
     const defs = ["read_report", "send_invoice"].map(name => ({ name, description: name, inputSchema: { type: "object" as const, properties: {} } }));
     await db.insert(schema.mcpServers).values({ id: "finance", name: "Finance", url: "https://fixture.invalid/mcp", status: "enabled", toolsSnapshot: defs });
     await db.insert(schema.botTools).values({ botId: "bot", toolKey: "mcp:finance", approval: "ask" });
-    await db.insert(schema.toolGrants).values({ userId: "member", botId: "bot", toolName: "finance__read_report" });
+    await db.insert(schema.toolGrants).values({ userId: "member", botId: "bot", toolName: toolGrantName(modelToolName({ id: "finance" }, "read_report", new Set())) });
     const [bot] = await db.select().from(schema.bots); const [app] = await db.select().from(schema.aiApps).where(eq(schema.aiApps.id, "model"));
     const ctx = { principal: member, bot, app, conversationId: "chat", depth: 0, background: false, execution: { holder: "fixture", deadlineAt: Date.now() + 30000 }, toolSettings: await getSetting("tools") } as AgentCtx;
     const set = await buildToolset(ctx);
     fixture.decide.mockImplementation(async (_p, _input, q) => ({ status: "ok", inputTokens: 12,
       answers: q.map((question: { name: string }, i: number) => ({ type: "predicate", name: question.name, probability: i === 0 ? 0.95 : 0.05 })) }));
     try {
-      expect(await toolShortlisting(ctx, set, "Read a report")).toEqual(["finance__read_report"]);
-      expect(set.approval({ toolCall: { toolName: "finance__send_invoice", input: {} } })).toBe("user-approval");
+      expect(await toolShortlisting(ctx, set, "Read a report")).toEqual([modelToolName({ id: "finance" }, "read_report", new Set())]);
+      expect(set.approval({ toolCall: { toolName: modelToolName({ id: "finance" }, "send_invoice", new Set()), input: {} } })).toBe("user-approval");
       await db.delete(schema.toolGrants);
-      await expect(set.tools.finance__read_report.execute!({}, { toolCallId: "revoked", messages: [], context: undefined })).rejects.toThrow("Tool permissions or configuration changed");
+      await expect(set.tools[modelToolName({ id: "finance" }, "read_report", new Set())].execute!({}, { toolCallId: "revoked", messages: [], context: undefined })).rejects.toThrow("Tool permissions or configuration changed");
       expect(await toolShortlisting(ctx, set, "Read a report")).toBeUndefined();
       expect(fixture.decide).toHaveBeenCalledTimes(1);
     } finally { await set.close(); }

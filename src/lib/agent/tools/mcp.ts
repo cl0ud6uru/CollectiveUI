@@ -14,22 +14,12 @@ import { capResult, cleanDescription, mcpResultToModelOutput, stripHidden, type 
 import type { McpToolDef } from "@/lib/mcp/kinds";
 import { offeredTools } from "@/lib/mcp/servers";
 import { listAllTools } from "@/lib/mcp/snapshot";
-import { slugify } from "@/lib/utils";
+import { legacyMcpToolName, modelToolName } from "@/lib/mcp/tool-names";
 import { appResource, appToolVisible } from '@/lib/mcp/apps-contract';
 import { appComponentResult, appModelResult } from '@/lib/mcp/apps-result';
 import type { AgentCtx, ToolEntry } from "../types";
 
-const TOOL_NAME_MAX = 64;
-
-/** "<server slug>__<tool>", limited to what model APIs accept (letters, digits, _ and -; 64 chars), unique per turn. */
-export function modelToolName(server: Pick<McpServer, "name">, tool: string, taken: Set<string>): string {
-  const prefix = slugify(server.name).replace(/-/g, "_") || "mcp";
-  const base = `${prefix}__${tool.replace(/[^A-Za-z0-9_-]/g, "_")}`.slice(0, TOOL_NAME_MAX);
-  let name = base;
-  for (let n = 2; taken.has(name); n++) name = `${base.slice(0, TOOL_NAME_MAX - String(n).length - 1)}_${n}`;
-  taken.add(name);
-  return name;
-}
+export { modelToolName } from "@/lib/mcp/tool-names";
 
 type Opts = { caller: McpCaller; config: BotToolConfig | null; taken: Set<string>;
   apps?: { audience: 'model' | 'app'; compatibility?: boolean };
@@ -68,6 +58,7 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
       key: `mcp:${server.id}`,
       mcp: {
         tool: def.name,
+        legacyName: legacyMcpToolName(server, def.name),
         definitionHash: toolHash(def),
         readOnly: grant ? grant.effect === "read" : def.annotations?.readOnlyHint === true,
         destructive: grant ? grant.effect === "write" : def.annotations?.destructiveHint === true,
@@ -78,7 +69,8 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
       validateInput: validate,
       ...(grant ? { grantable: false } : {}),
       tool: dynamicTool({
-        description: (cleanDescription(def.description ?? def.title ?? def.annotations?.title) ?? "") +
+        title: cleanDescription(`${def.name} (${server.name})`),
+        description: (cleanDescription(`${server.name}: ${def.description ?? def.title ?? def.annotations?.title ?? def.name}`) ?? "") +
           (grant ? `\nRequired scope (exact values): ${JSON.stringify(grant.constraints.map((c) => ({
             path: c.path, equals: c.source === "constant" ? c.value : authority!.ctx.principal.user[c.source.slice(7) as "id" | "upn" | "email"],
           })))}` : ""),

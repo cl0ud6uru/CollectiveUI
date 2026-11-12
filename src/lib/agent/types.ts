@@ -41,6 +41,8 @@ export type AgentCtx = {
 export type McpApprovalFacts = {
   /** the tool's name on the server */
   tool: string;
+  /** Previous display alias, accepted only for restrictive organization approval rules. */
+  legacyName?: string;
   definitionHash?: string;
   readOnly: boolean;
   destructive: boolean;

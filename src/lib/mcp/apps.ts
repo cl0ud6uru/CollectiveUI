@@ -4,9 +4,9 @@ import { db } from '@/db';
 import { aiApps, botTools, codexBotConfigs, groups, mcpAppActions, mcpAppInstances, mcpServers, toolGrants, type McpServer } from '@/db/schema';
 import type { AgentCtx } from '@/lib/agent/types';
 import { resolveApproval } from '@/lib/agent/approvals';
-import { mcpTools, modelToolName } from '@/lib/agent/tools/mcp';
+import { mcpTools } from '@/lib/agent/tools/mcp';
 import type { Principal } from '@/lib/auth/groups';
-import { getOwnedConversation, getUsableBot, HttpError, listAccessibleMcpServers } from '@/lib/authz';
+import { getOwnedConversation, getUsableBot, HttpError } from '@/lib/authz';
 import { activeServiceGrants } from '@/lib/bots/service';
 import { decrypt, encrypt, sha256Hex } from '@/lib/crypto';
 import { newId } from '@/lib/ids';
@@ -119,20 +119,7 @@ async function toolsFor(c: AppContext, input: Record<string, unknown>, target: s
     } };
   const toolset = mcpTools(server, { caller, config: configured.config ?? null, taken: new Set(),
     authority: { ctx, binding: instance.binding, grants }, apps: { audience: 'app', compatibility: payload.compatibility } });
-  // Use the same cross-server aliases as the native toolset for name-based enforced/remembered approvals.
-  // Legacy unsnapshotted servers can change aliases on discovery: fail closed until their review is captured.
-  const configuredServers = await db.select().from(botTools).where(eq(botTools.botId, instance.botId));
-  const configs = new Map(configuredServers.filter(t => t.toolKey.startsWith('mcp:')).map(t => [t.toolKey.slice(4), t.config]));
-  const servers = (ctx.bot!.executionMode === 'service' ? await db.select().from(mcpServers) : await listAccessibleMcpServers(ctx.principal))
-    .filter(s => configs.has(s.id) && !ctx.toolSettings.disabledTools.includes(`mcp:${s.id}`)).sort((a, b) => a.id.localeCompare(b.id));
-  if (servers.some(s => !s.toolsSnapshot)) throw unavailable();
-  const taken = new Set<string>(), aliases = new Map<string, string>();
-  for (const audience of ['model', 'app'] as const) for (const s of servers) for (const d of offeredTools(s)) {
-    const key = `${s.id}:${d.name}`, selected = configs.get(s.id)?.tools;
-    if (aliases.has(key) || (selected && !selected.includes(d.name)) || !appToolVisible(d, audience)) continue;
-    aliases.set(key, modelToolName(s, d.name, taken));
-  }
-  for (const entry of toolset.entries) entry.name = aliases.get(`${server.id}:${entry.mcp!.tool}`) ?? entry.name;
+  // Stable server/tool identities are shared with chat, independently of catalog membership or app visibility.
   return { toolset, decision: (entry: typeof toolset.entries[number]) => resolveApproval({
     toolName: entry.name, toolKey: entry.key, mode: configured.approval, sensitive: false,
     enforced: ctx.toolSettings.enforcedApproval, grants: new Set(remembered.map(g => g.toolName)), mcp: entry.mcp,

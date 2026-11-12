@@ -10,7 +10,10 @@ import { HermesTeamSavedConnections } from "@/components/settings/hermes-team-co
 import { listOwnedMemberMcpConnections } from "@/lib/mcp/member-connections";
 import { db } from "@/db";
 import { botTools, bots, conversations, memories, toolGrants } from "@/db/schema";
-import { listAccessibleBots, listAccessibleModels } from "@/lib/authz";
+import { listAccessibleBots, listAccessibleMcpServers, listAccessibleModels } from "@/lib/authz";
+import { modelToolName } from "@/lib/mcp/tool-names";
+import { toolGrantName } from "@/lib/agent/tool-names";
+import { cleanDescription } from "@/lib/mcp/hygiene";
 import { listStartBots } from "@/lib/chat/targets";
 import { requirePagePrincipal } from "@/lib/session";
 import { workspaceView } from "@/lib/sandbox/view";
@@ -25,7 +28,7 @@ export default async function SettingsPage() {
     try { await assertDockerCreate(p, await getSetting("tools")); } catch { canCreate = false; }
     hermes = <PersonalHermes canCreate={canCreate} />;
   }
-  const [apps, startBots, accessibleBots, workspaceToolRows, mems, archived, grants, workspace, teamConnections] = await Promise.all([
+  const [apps, startBots, accessibleBots, workspaceToolRows, mems, archived, grants, workspace, teamConnections, mcpServers] = await Promise.all([
     listAccessibleModels(p),
     listStartBots(p),
     listAccessibleBots(p),
@@ -43,7 +46,11 @@ export default async function SettingsPage() {
       .where(eq(toolGrants.userId, p.user.id)),
     workspaceView(p),
     listOwnedMemberMcpConnections(p),
+    listAccessibleMcpServers(p),
   ]);
+  const grantLabels = new Map(mcpServers.flatMap(server => (server.toolsSnapshot ?? []).map(tool => [
+    toolGrantName(modelToolName(server, tool.name, new Set())), cleanDescription(`${tool.name} (${server.name})`),
+  ] as const)));
   const workspaceBotIds = new Set(workspaceToolRows.map((row) => row.botId));
   const workspaceBots = accessibleBots.filter((bot) => workspaceBotIds.has(bot.id)).map((bot) => ({ id: bot.id, name: bot.name }));
   const savedTeamConnections = { ...teamConnections, connections: teamConnections.connections.filter(row => row.id !== undefined) };
@@ -56,7 +63,7 @@ export default async function SettingsPage() {
         bots={startBots.map((b) => ({ id: b.id, name: b.name }))}
         memories={mems.map((m) => ({ id: m.id, content: m.content, pinned: m.pinned }))}
         archived={archived.map((a) => ({ id: a.id, title: a.title, updatedAt: a.updatedAt.toISOString() }))}
-        grants={grants}
+        grants={grants.map(grant => ({ ...grant, displayName: grantLabels.get(grant.toolName) }))}
         user={{ name: p.user.name, upn: p.user.upn, authSource: p.user.authSource }}
         workspace={workspace}
         workspaceBots={workspaceBots}
