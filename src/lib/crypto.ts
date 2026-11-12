@@ -81,9 +81,10 @@ function parse(payload: string): { kid: string; data: Buffer; legacy: boolean } 
 
 export function decrypt(payload: string, aad?: string): string {
   const { kid, data, legacy } = parse(payload);
+  if (data.length < 28) throw new Error("Malformed encrypted value");
   const key = keyring().keys.get(kid);
   if (!key) throw new Error(`Unknown encryption key id "${kid}"`);
-  const decipher = createDecipheriv("aes-256-gcm", key, data.subarray(0, 12));
+  const decipher = createDecipheriv("aes-256-gcm", key, data.subarray(0, 12), { authTagLength: 16 });
   // Legacy values were written without AAD.
   if (aad && !legacy) decipher.setAAD(Buffer.from(aad, "utf8"));
   decipher.setAuthTag(data.subarray(12, 28));

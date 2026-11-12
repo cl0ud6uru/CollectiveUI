@@ -289,6 +289,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
                   conversationId: conversation.id,
                   botId: bot?.id ?? null,
                   usage,
+                  abortSignal: opts.abortSignal,
                 }).catch(error => {
                   if (error instanceof NativeRunBudgetError) writer.write({ type: "data-notice", data: { message: error.message }, transient: true });
                   return fallback;

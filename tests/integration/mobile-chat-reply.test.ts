@@ -56,7 +56,8 @@ suite("native bearer chat through admission, execution, SSE and snapshot", () =>
       state: "native-reply-fixture", deviceName: "Fixture Mac",
     }, "ldap");
     const { token } = await exchangeAuthCode(code, verifier);
-    request.headers = new Headers({ authorization: `Bearer ${token}` });
+    const { mobileApiRequestHeaders } = await import("@/lib/public-routes");
+    request.headers = mobileApiRequestHeaders(new Headers({ authorization: `Bearer ${token}` }), "/api/chat");
     for (const provider of ["openai", "openai-compatible"] as const) {
       const id = newId();
       appIds.push(id);

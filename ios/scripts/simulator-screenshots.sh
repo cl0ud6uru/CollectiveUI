@@ -3,13 +3,20 @@
 #
 # Usage: ios/scripts/simulator-screenshots.sh <path/to/CollectiveUI.app> <output-dir>
 #
-# The app must be a Debug simulator build: demo mode (--demo) only exists in Debug.
+# The app must be a Debug simulator build with QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa.
+# Demo mode (--demo) only exists in Debug. The separate bundle protects the user's app.
 set -euo pipefail
 
 APP_PATH="${1:?path to CollectiveUI.app}"
 OUT_DIR="${2:?output directory}"
-BUNDLE_ID="io.collectiveui.app"
+IOS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP_PATH/Info.plist")"
+if [ "$BUNDLE_ID" != "io.collectiveui.qa" ]; then
+  echo "Build the screenshot app with QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa." >&2
+  exit 1
+fi
 mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 log() { echo "==> $*"; }
 
@@ -72,6 +79,23 @@ run() {
   "$@" || { echo "::error::Scenario failed: $*"; exit 1; }
 }
 
+research_shots() {
+  local udid="$1" evidence
+  evidence="$(mktemp -d "$OUT_DIR/research-readiness.XXXXXX")"
+  log "Waiting for visible iPad research content in light and dark appearance"
+  xcodebuild test \
+    -project "$IOS_DIR/ScreenshotTests/CollectiveUIScreenshots.xcodeproj" \
+    -scheme CollectiveUIScreenshots \
+    -destination "platform=iOS Simulator,id=$udid" \
+    -parallel-testing-enabled NO \
+    -derivedDataPath "$evidence/.DerivedData" \
+    -resultBundlePath "$evidence/Research.xcresult" \
+    CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$evidence/tests.log" | tail -120
+  xcrun xcresulttool export attachments \
+    --path "$evidence/Research.xcresult" --output-path "$evidence/attachments"
+  python3 "$IOS_DIR/scripts/export-research-screenshots.py" "$evidence/attachments" "$OUT_DIR"
+}
+
 IPHONE="$(pick_device "iPhone 18 Pro" "iPhone" || true)"
 IPAD="$(pick_device "iPad Pro 13-inch (M5)" "iPad" || true)"
 log "iPhone: ${IPHONE:-none}  iPad: ${IPAD:-none}"
@@ -107,14 +131,17 @@ if [ -n "$IPHONE" ]; then
   xcrun simctl io "$IPHONE" screenshot "$OUT_DIR/iphone-11-streamed-reply.png" >/dev/null || true
   kill -INT "$RECORDER" 2>/dev/null || true
   wait "$RECORDER" 2>/dev/null || true
+
+  # Release the iPhone's resources before starting the iPad simulator.
+  log "Shutting down iPhone before iPad capture"
+  xcrun simctl shutdown "$IPHONE"
 else
   echo "::error::No iPhone simulator available"; exit 1
 fi
 
 if [ -n "$IPAD" ]; then
   prepare_device "$IPAD"
-  run shot "$IPAD" light ipad-01-research-chat 8 --demo-open demo-research
-  run shot "$IPAD" dark ipad-dark-01-research-chat 8 --demo-open demo-research
+  research_shots "$IPAD"
   run shot "$IPAD" light ipad-02-image-chat 8 --demo-open demo-image
   run shot "$IPAD" light ipad-03-welcome 6 --demo-screen welcome
   run shot "$IPAD" dark ipad-04-admin-settings 6 --demo-screen settings --demo-settings-section admin

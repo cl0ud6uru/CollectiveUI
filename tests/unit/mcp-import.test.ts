@@ -81,6 +81,9 @@ describe("MCP server URL check", () => {
 
   it("blocks metadata and link-local addresses, credentials in the URL, and cleartext to public hosts", async () => {
     expect(await checkMcpUrl("http://169.254.169.254/latest")).toMatch(/metadata/);
+    for (const host of ["::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:a9fe:a9fe"])
+      expect(await checkMcpUrl(`https://[${host}]/latest`), host).toMatch(/metadata/);
+    expect(await checkMcpUrl("https://evil.example/mcp", resolvesTo("::ffff:a9fe:a9fe"))).toMatch(/metadata/);
     expect(await checkMcpUrl("https://evil.example/mcp", resolvesTo("169.254.169.254"))).toMatch(/metadata/);
     expect(await checkMcpUrl("http://[fe80::1]/mcp")).toMatch(/metadata/);
     expect(await checkMcpUrl("https://user:pw@mcp.internal/mcp", resolvesTo("10.0.0.1"))).toMatch(/header/);
@@ -94,8 +97,9 @@ describe("MCP server URL check", () => {
   });
 
   it("classifies blocked addresses", () => {
-    for (const ip of ["169.254.1.1", "0.0.0.0", "224.0.0.1", "::", "fe80::1", "ff02::1", "fd00:ec2::254", "::ffff:169.254.169.254", "100.100.100.200"])
+    for (const ip of ["169.254.1.1", "0.0.0.0", "224.0.0.1", "::", "fe80::1", "ff02::1", "fd00:ec2::254", "::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "0:0:0:0:0:FFFF:A9FE:A9FE", "100.100.100.200"])
       expect(isBlockedAddress(ip), ip).toBe(true);
-    for (const ip of ["10.0.0.1", "127.0.0.1", "192.168.1.1", "8.8.8.8", "::1", "fd12::1"]) expect(isBlockedAddress(ip), ip).toBe(false);
+    for (const ip of ["10.0.0.1", "127.0.0.1", "192.168.1.1", "8.8.8.8", "::1", "fd12::1", "::ffff:a00:1", "::ffff:808:808"])
+      expect(isBlockedAddress(ip), ip).toBe(false);
   });
 });

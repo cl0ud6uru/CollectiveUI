@@ -176,6 +176,11 @@ welcome` for the welcome screen. Regression tests capture personal/admin route
 previews, role visibility, welcome navigation and header/transcript separation.
 The screenshot script explicitly sets `--demo-appearance` per scenario, requires
 both iPhone/iPad and fails on any required screenshot failure or empty file.
+Build its Debug app with `QA_APP_BUNDLE_IDENTIFIER=io.collectiveui.qa`; screenshots
+use the separate QA installation. The two iPad research captures use the standalone
+`ScreenshotTests/CollectiveUIScreenshots.xcodeproj` target to wait for visible
+conversation content before capturing. The existing regression suite is unchanged.
+Readiness failures fail the screenshot job and retain an xcresult bundle and test log.
 
 Local Linux guardrails: `python3 ios/scripts/test-parity-contracts.py` checks source
 contracts only, **not** rendering or native compilation. The Foundation-only

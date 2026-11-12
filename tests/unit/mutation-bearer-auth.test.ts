@@ -7,6 +7,7 @@ vi.mock("@/db", () => ({ db: {} }));
 vi.mock("@/lib/auth/groups", () => ({ loadPrincipal: f.principal }));
 vi.mock("@/lib/auth/mobile", async (original) => ({ ...await original<typeof import("@/lib/auth/mobile")>(), mobilePrincipal: f.mobile }));
 import { requirePrincipal } from "@/lib/session";
+import { MOBILE_API_PATH_HEADER } from "@/lib/public-routes";
 
 const principal = { user: { id: "owner", sessionVersion: 1 } };
 beforeEach(() => {
@@ -21,6 +22,7 @@ it.each(["Bearer", "Bearer invalid", "Bearer cui_m_revoked"])("does not authenti
   expect(f.cookie).not.toHaveBeenCalled(); expect(f.principal).not.toHaveBeenCalled();
 });
 it("accepts a verified bearer principal without consulting cookies", async () => {
+  f.headers.set(MOBILE_API_PATH_HEADER, "/api/chat");
   f.headers.set("authorization", "Bearer cui_m_verified"); f.mobile.mockResolvedValue({ principal });
   expect(await requirePrincipal()).toBe(principal); expect(f.cookie).not.toHaveBeenCalled();
 });
