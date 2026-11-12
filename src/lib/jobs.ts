@@ -92,6 +92,12 @@ export const runQueue = (run: Parameters<typeof isBackgroundSegment>[0]) =>
 /**
  * Queues one segment of a run (on runQueue's queue). Throws when the queue is unreachable (the caller fails the run
  * rather than leaving it queued forever). Duplicate sends for the same segment are harmless: claiming is idempotent.
+ *
+ * A delayed send is a "try this claim again later" retry. On these standard-policy queues pg-boss does not dedupe on
+ * singletonKey alone, and every job whose claim is still blocked sends another retry, so retries from the sweeper,
+ * task transitions and earlier retries would each start their own chain. singletonSeconds collapses them to one
+ * pending retry per segment per delay window (a dropped duplicate resolves to null). The delay equals the window, so
+ * the retry that owns a window is always still pending when a duplicate for that window arrives.
  */
 export async function enqueueRun(run: { id: string; segment: number; background: boolean }, opts: { delaySeconds?: number } = {}) {
   const { getRun } = await import("@/lib/runs/state");
@@ -101,7 +107,7 @@ export async function enqueueRun(run: { id: string; segment: number; background:
   const { id: runId, segment } = run;
   return boss.send(runQueue(stored), { runId, segment } satisfies AgentRunJob, {
     singletonKey: `${runId}:${segment}`,
-    ...(opts.delaySeconds ? { startAfter: opts.delaySeconds } : {}),
+    ...(opts.delaySeconds ? { startAfter: opts.delaySeconds, singletonSeconds: opts.delaySeconds } : {}),
   });
 }
 
