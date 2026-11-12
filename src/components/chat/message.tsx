@@ -15,6 +15,7 @@ import { needsAction, standsAlone, StepsGroup } from "./steps";
 import { ToolPartView } from "./tool-part";
 import { ReplyQuote } from "./reply-quote";
 import { replyContext } from "@/lib/chat/reply";
+import { SourceLink } from "./source-link";
 
 export type BranchInfo = { index: number; total: number; onPrev: () => void; onNext: () => void };
 
@@ -312,11 +313,7 @@ export function AssistantMessage({
       ) : null;
     }
     if (part.type === "source-url") {
-      return (
-        <a key={i} href={part.url} target="_blank" rel="noreferrer" className="mr-2 inline-flex rounded-full bg-surface-2 px-2.5 py-0.5 text-xs text-muted hover:text-fg">
-          {part.title ?? new URL(part.url).hostname}
-        </a>
-      );
+      return <SourceLink key={i} url={part.url} title={part.title} />;
     }
     return tool(part);
   };
