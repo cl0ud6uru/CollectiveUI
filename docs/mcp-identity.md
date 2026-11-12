@@ -13,6 +13,25 @@ use it to apply its own per-user permissions instead of trusting one shared key.
   also issues a new secret.
 - **Lifetime:** 60 seconds. A fresh token is minted for every request.
 
+## Tool approval identity
+
+The portal's model-facing MCP names bind the server's immutable ID and exact raw tool name with a 128-bit SHA-256
+suffix. Display names, punctuation normalization, truncation, catalog order and neighboring servers cannot transfer
+a remembered approval to another tool. Renaming a server preserves the tool identity; the displayed title updates.
+Connections are scoped to a turn's caller; they are never pooled between people.
+
+New "Always allow" grants are stored in a separate `mcp:` namespace. Earlier alias-based grants are intentionally
+ignored: approve the desired tool again, and remove obsolete entries in Settings → Tool approvals. Settings shows
+the current server and tool labels when the server and its snapshot remain accessible. Existing organization rules
+using old aliases remain restrictive, including possible numeric collision suffixes; an ambiguous rule can require
+approval for more than one matching tool. Prefer `mcp:<serverId>`, the current stable tool name, or per-tool server
+policy for new organization rules. Migrate old display-name rules before renaming a server: those compatibility
+rules use the current display name and do not track earlier names.
+
+Pending chat approvals issued under the old tool mapping fail signature validation after upgrade; start a new turn
+to review them again. Web, iOS and macOS use the tool's readable title for direct approval cards. Standing-grant
+management remains in web Settings; no native grant-management API is added.
+
 ## Claims
 
 | Claim | Meaning |

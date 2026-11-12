@@ -42,13 +42,33 @@ describe("MCP tool snapshots", () => {
 });
 
 describe("model-facing MCP tool names", () => {
-  it("prefixes the server, keeps to what model APIs accept, and never collides", () => {
+  it("binds names to the exact server and raw tool within provider limits", () => {
+    const server = { id: "jira", name: "Jira Cloud" }, taken = new Set<string>();
+    const names = ["issues.search", "issues/search", "issues_search", "x".repeat(100) + "a", "x".repeat(100) + "b"]
+      .map(tool => modelToolName(server, tool, taken));
+    expect(new Set(names).size).toBe(names.length);
+    for (const name of names) {
+      expect(name).toMatch(/^mcp__[A-Za-z0-9_-]+__[a-f0-9]{32}$/);
+      expect(name.length).toBeLessThanOrEqual(64);
+    }
+    expect(names[3]).toHaveLength(64);
+    expect(modelToolName({ id: "other", name: "Jira Cloud" }, "issues.search", taken)).not.toBe(names[0]);
+    // Array serialization prevents a boundary collision between server IDs and tool names.
+    expect(modelToolName({ id: "a:b" }, "c", new Set())).not.toBe(modelToolName({ id: "a" }, "b:c", new Set()));
+  });
+
+  it("stays stable across display renames, catalog order and neighboring tool removal", () => {
+    const before = modelToolName({ id: "a", name: "Old name" }, "issues/search", new Set());
     const taken = new Set<string>();
-    expect(modelToolName({ name: "Jira Cloud" }, "issues.search", taken)).toBe("jira_cloud__issues_search");
-    expect(modelToolName({ name: "Jira Cloud" }, "issues/search", taken)).toBe("jira_cloud__issues_search_2");
-    const long = modelToolName({ name: "x".repeat(60) }, "y".repeat(60), taken);
-    expect(long).toHaveLength(64);
-    expect(modelToolName({ name: "x".repeat(60) }, "y".repeat(60), taken)).toMatch(/_2$/);
-    expect(modelToolName({ name: "!!!" }, "t", taken)).toBe("mcp__t");
+    modelToolName({ id: "b", name: "New name" }, "issues/search", taken);
+    modelToolName({ id: "a", name: "New name" }, "issues.search", taken);
+    expect(modelToolName({ id: "a", name: "New name" }, "issues/search", taken)).toBe(before);
+    expect(modelToolName({ id: "a" }, "issues/search", new Set())).toBe(before);
+  });
+
+  it("rejects duplicate identities instead of assigning a reusable numeric alias", () => {
+    const taken = new Set<string>();
+    modelToolName({ id: "a" }, "tool", taken);
+    expect(() => modelToolName({ id: "a" }, "tool", taken)).toThrow(/Duplicate MCP tool identity/);
   });
 });

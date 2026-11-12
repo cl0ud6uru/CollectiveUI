@@ -1,3 +1,4 @@
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 import { z } from "zod";
 import { requirePrincipal, errorResponse } from "@/lib/session";
 import { getSetting } from "@/lib/settings";
@@ -5,7 +6,7 @@ import { providerContextFor } from "@/lib/llm/resolve";
 import { requestDecision } from "@/lib/llm/providers/decisions";
 import { configureVoiceTarget } from "@/lib/voice/configuration";
 import { targetFor } from "@/lib/voice/target";
-import { assertSameOrigin, readBoundedJson } from "@/lib/voice/http";
+import { readBoundedJson } from "@/lib/voice/http";
 import { REACTIONS, REACTION_CONFIDENCE, REACTION_INSTRUCTIONS } from "@/lib/voice/policy";
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { allowVoiceRequest } from "@/lib/auth/throttle";
@@ -16,8 +17,8 @@ import { inspectDecision, type DecisionInspection } from "@/lib/voice/reaction-i
 const Input = z.object({ conversationId: z.string().regex(CLIENT_ID_RE), context: z.string().min(1).max(5000), revision: z.number().int().nonnegative(), libraryVersion: z.literal(1).optional(), currentPlan: reactionPlanSchema.optional(), inspection: z.literal(true).optional() }).strict().refine(v => !v.inspection || v.libraryVersion === 1, "Inspection requires reaction library version 1.");
 export async function POST(req: Request) {
   try {
-    assertSameOrigin(req);
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     const input = Input.parse(await readBoundedJson(req));
     const target = await configureVoiceTarget(p, await targetFor(p, { conversationId: input.conversationId }));
     const settings = await getSetting("voice");

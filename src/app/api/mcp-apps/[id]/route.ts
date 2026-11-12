@@ -1,3 +1,4 @@
+import { assertRequestContentType } from '@/lib/auth/mutation-request';
 import { z } from 'zod';
 import { assertAuthOrigin } from '@/lib/auth/origin';
 import { HttpError } from '@/lib/authz';
@@ -22,7 +23,7 @@ export async function POST(request: Request, ctx: RouteContext<'/api/mcp-apps/[i
   try {
     assertAuthOrigin(request.headers);
     const p = await requirePrincipal(), { id } = await ctx.params;
-    if (!request.headers.get('content-type')?.startsWith('application/json')) throw new HttpError(415, 'JSON required.');
+    assertRequestContentType(request);
     const reader = request.body?.getReader();
     if (!reader) throw new HttpError(400, 'Request body required.');
     const chunks: Uint8Array[] = []; let size = 0;

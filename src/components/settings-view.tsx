@@ -10,7 +10,7 @@ import { Pin, Trash2 } from "lucide-react";
 import {
   archiveConversation,
   clearMemories,
-  deleteAllConversations,
+  deleteAllConversationsWithFeedback,
   deleteMemory,
   revokeToolGrant,
   saveMemory,
@@ -50,7 +50,7 @@ export function SettingsView({
   bots: { id: string; name: string }[];
   memories: { id: string; content: string; pinned: boolean }[];
   archived: { id: string; title: string; updatedAt: string }[];
-  grants: { botId: string; toolName: string; botName: string }[];
+  grants: { botId: string; toolName: string; botName: string; displayName?: string }[];
   user: { name: string; upn: string; authSource: string };
   /** Null when workspaces are off (the tab is hidden). */
   workspace: WorkspaceView | null;
@@ -225,11 +225,12 @@ export function SettingsView({
         {tab === "Approvals" && (
           <>
             <p className="text-sm text-muted">Actions you chose to &quot;Always allow&quot;. Revoke to be asked again. Admin-enforced approvals always ask.</p>
+            <p className="text-sm text-muted">Earlier MCP approvals need to be granted again to bind them to the exact server and tool. You can remove the old entries here.</p>
             <div className="divide-y divide-border rounded-xl border border-border text-sm">
               {grants.map((g) => (
                 <div key={g.botId + g.toolName} className="flex items-center gap-3 px-3 py-2">
                   <span className="font-medium">{g.botName}</span>
-                  <span className="font-mono text-xs text-muted">{g.toolName}</span>
+                  <span className="text-xs text-muted">{g.displayName ?? g.toolName}</span>
                   <Button variant="ghost" size="sm" className="ml-auto" onClick={async () => { await revokeToolGrant(g.botId, g.toolName); router.refresh(); }}>
                     Revoke
                   </Button>
@@ -262,8 +263,11 @@ export function SettingsView({
               variant="danger"
               onClick={async () => {
                 if (!confirm("Delete ALL your chats? This cannot be undone.")) return;
-                await deleteAllConversations();
-                router.push("/");
+                try {
+                  const result = await deleteAllConversationsWithFeedback();
+                  if (!result.ok) { toast.error(result.error); return; }
+                  router.push("/");
+                } catch { toast.error("Could not delete your chats. Try again."); }
               }}
             >
               Delete all chats

@@ -36,7 +36,7 @@ import {
 import { BotAvatar } from "@/components/bots/bot-avatar";
 import { useOptionalPets, usePetEnvironment } from "@/components/pets/pet-context";
 import { Button } from "@/components/ui/button";
-import { isGrantable, isHermesTool } from "@/lib/agent/tool-names";
+import { isGrantable, isHermesTool, isMcpToolName } from "@/lib/agent/tool-names";
 import { memoryToolDoneLabel } from "@/lib/agent/tools/memory-result";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
@@ -254,7 +254,9 @@ export function ToolPartView({
   const [open, setOpen] = useState(false);
   const openWorkspaceFile = useWorkspaceFileOpener();
   const name = getToolOrDynamicToolName(part);
-  const d = describe(name);
+  const d = isMcpToolName(name) && part.title
+    ? { icon: Plug, running: `Using ${part.title}`, done: `Used ${part.title}`, ask: `use ${part.title}` }
+    : describe(name);
   const Icon = d.icon;
 
   if ((name === "workspace_bash" || name === "workspace_write" || name === "workspace_edit") && part.state === "approval-requested" && !part.approval.isAutomatic) {

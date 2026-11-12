@@ -45,7 +45,16 @@ describe("resolveApproval for MCP tools", () => {
   });
 
   it("the user's 'always allow' covers smart's ask", () => {
-    expect(resolveApproval({ ...mcpBase, grants: new Set(["jira__get_issue"]), mcp: facts() })).toBeUndefined();
+    expect(resolveApproval({ ...mcpBase, grants: new Set(["mcp:jira__get_issue"]), mcp: facts() })).toBeUndefined();
+  });
+
+  it("ignores grants from the old display-alias namespace", () => {
+    expect(resolveApproval({ ...mcpBase, grants: new Set([mcpBase.toolName]), mcp: facts() })).toBe("user-approval");
+  });
+
+  it.each(["jira__get_issue", "jira__get_issue_2", "jira__get_issue_12", "mcp"])("preserves restrictive legacy enforcement: %s", name => {
+    expect(resolveApproval({ ...mcpBase, toolName: "new-stable-name", mode: "auto", enforced: [name],
+      mcp: { ...facts(), legacyName: "jira__get_issue" } })).toBe("user-approval");
   });
 
   it("the bot's per-tool override beats the server's mode", () => {
@@ -55,7 +64,7 @@ describe("resolveApproval for MCP tools", () => {
   });
 
   it("an admin's 'require approval' always asks, even over overrides and grants", () => {
-    const i = { ...mcpBase, mode: "auto" as const, grants: new Set(["jira__get_issue"]), mcp: facts({ requireApproval: true, override: "auto", trusted: true, readOnly: true }) };
+    const i = { ...mcpBase, mode: "auto" as const, grants: new Set(["mcp:jira__get_issue"]), mcp: facts({ requireApproval: true, override: "auto", trusted: true, readOnly: true }) };
     expect(resolveApproval(i)).toBe("user-approval");
   });
 

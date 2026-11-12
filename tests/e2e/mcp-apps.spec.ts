@@ -76,3 +76,17 @@ test('source-bound messages cannot spoof calls; revocation removes the iframe an
   await request.post('/__control', { data: { reset: true, loadError: true } }); await page.reload();
   await expect(page.getByRole('alert')).toContainText('resource is unavailable'); await expect(page.getByRole('alert')).toContainText('saved text result');
 });
+
+test('ticket form stays visible and keeps edits when the bot finishes its reply', async ({ page, request }) => {
+  await request.post('/__control', { data: { reset: true, ticket: true } });
+  await page.goto('/#transcript');
+  const draft = page.frameLocator('iframe[title="Synthetic ticket draft"]').frameLocator('iframe[title="Widget content"]');
+  await expect(draft.getByText('Draft ready', { exact: true })).toBeVisible();
+  await draft.getByLabel('Summary', { exact: true }).fill('Unsaved draft stays here');
+  await page.getByRole('button', { name: 'Finish bot reply' }).click();
+  await expect(page.getByText('Please review the ticket draft.')).toBeVisible();
+  await expect(draft.getByLabel('Summary', { exact: true })).toBeVisible();
+  await expect(draft.getByLabel('Summary', { exact: true })).toHaveValue('Unsaved draft stays here');
+  await expect(page.getByText('Looked up reporter')).not.toBeVisible();
+  expect((await (await request.get('/__stats')).json()).calls).toEqual([]);
+});

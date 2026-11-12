@@ -1113,6 +1113,9 @@ export const routineRuns = pgTable(
       .notNull(),
     /** Event-triggered runs: the provider event id, unique per routine so redelivered events never run twice. */
     triggerEventId: text("trigger_event_id"),
+    /** Signed webhook retries keep one durable run per sender delivery ID. */
+    webhookDeliveryId: text("webhook_delivery_id"),
+    webhookPayloadHash: text("webhook_payload_hash"),
     payload: jsonb("payload"),
     conversationId: text("conversation_id").references(() => conversations.id, {
       onDelete: "set null",
@@ -1128,6 +1131,10 @@ export const routineRuns = pgTable(
     index("routine_runs_routine_idx").on(t.routineId, t.createdAt),
     index("routine_runs_conversation_idx").on(t.conversationId),
     uniqueIndex("routine_runs_trigger_event_idx").on(t.routineId, t.triggerEventId).where(sql`${t.triggerEventId} is not null`),
+    uniqueIndex("routine_runs_webhook_delivery_idx").on(t.routineId, t.webhookDeliveryId).where(sql`${t.webhookDeliveryId} is not null`),
+    check("routine_runs_webhook_delivery_check", sql`(${t.webhookDeliveryId} is null and ${t.webhookPayloadHash} is null) or
+      (${t.trigger} = 'webhook' and ${t.webhookDeliveryId} is not null and ${t.webhookPayloadHash} is not null
+       and ${t.webhookDeliveryId} ~ '^[A-Za-z0-9_-]{16,100}$' and ${t.webhookPayloadHash} ~ '^[a-f0-9]{64}$')`),
   ],
 );
 

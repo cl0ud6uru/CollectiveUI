@@ -1,7 +1,8 @@
+import { assertMutationRequest } from "@/lib/auth/mutation-request";
 import { z } from "zod";
 import { HttpError } from "@/lib/authz";
 import { targetFor } from "@/lib/voice/target";
-import { assertSameOrigin, readBoundedJson } from "@/lib/voice/http";
+import { readBoundedJson } from "@/lib/voice/http";
 import { createVoiceSession, voiceEligibility } from "@/lib/voice/session";
 import { configureVoiceTarget } from "@/lib/voice/configuration";
 import { prepareVoiceConversation } from "@/lib/voice/conversation";
@@ -32,8 +33,8 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    assertSameOrigin(req);
     const p = await requirePrincipal();
+    assertMutationRequest(req);
     const parsed = PostInput.safeParse(await readBoundedJson(req));
     if (!parsed.success) throw new HttpError(400, "Invalid voice session request.");
     if (!await allowVoiceRequest(p.user.id, "session")) throw new HttpError(429, "Too many voice starts. Try again in a minute.");

@@ -16,7 +16,7 @@ await writeFile(stubs,`
 import React from 'react';export const useRouter=()=>({refresh:()=>{}});export const useSearchParams=()=>new URLSearchParams(location.search);export const useTheme=()=>({theme:'system',setTheme:()=>{}});
 const Empty=()=>null;export {Empty as WorkspacePanel,Empty as StartTargetSelect};
 export default function Link({children,href,...props}){return <a href={href} {...props}>{children}</a>;}
-export const archiveConversation=async()=>{},clearMemories=async()=>{},deleteAllConversations=async()=>{},deleteMemory=async()=>{},revokeToolGrant=async()=>{},saveMemory=async()=>{},setMemoryPinned=async()=>{},updatePrefs=async()=>{};
+export const archiveConversation=async()=>{},clearMemories=async()=>{},deleteAllConversationsWithFeedback=async()=>{},deleteMemory=async()=>{},revokeToolGrant=async()=>{},saveMemory=async()=>{},setMemoryPinned=async()=>{},updatePrefs=async()=>{};
 `);
 await writeFile(entry,`
 import React,{useState} from 'react';import {createRoot} from '${root}/node_modules/react-dom/client';import {SettingsView} from '${root}/src/components/settings-view';import {HermesTeamSavedConnections} from '${root}/src/components/settings/hermes-team-connections';

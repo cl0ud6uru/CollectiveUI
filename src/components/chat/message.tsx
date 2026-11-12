@@ -187,7 +187,7 @@ type Block =
   | { kind: "part"; part: Part; index: number }
   | { kind: "steps"; parts: { part: Part; index: number }[] };
 
-/** Consecutive tool steps become one block; steps waiting for your approval and delegated tasks stand alone. */
+/** Consecutive tool steps become one block; approval steps, interactive widgets and delegated tasks stand alone. */
 function toBlocks(parts: { part: Part; index: number }[]): Block[] {
   const out: Block[] = [];
   for (const p of parts) {

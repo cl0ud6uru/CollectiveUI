@@ -1,7 +1,9 @@
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { assertPetOrigin, normalizePetSprite, parsePetManifest, readPetBody } from "@/lib/pets/import";
 import { DEFAULT_PET, PET_MAX_BYTES, petPreferencesSchema, petState } from "@/lib/pets/shared";
+
+afterEach(() => vi.unstubAllEnvs());
 
 const manifest = { displayName: "Original sample", spritesheetPath: "spritesheet.png" };
 const parse = (v: unknown) => parsePetManifest(Buffer.from(JSON.stringify(v)), "Test artist · MIT");
@@ -58,7 +60,8 @@ describe("bounded data-only pet imports", () => {
     await expect(readPetBody(new Request("http://localhost/upload", { method: "POST", headers: { "Content-Length": "200" }, body: "x" }), 4)).rejects.toThrow();
   });
   it("refuses cross-site or missing origins", () => {
-    const url = process.env.AUTH_URL ?? "http://localhost:3102";
+    const url = "http://localhost:3102";
+    vi.stubEnv("AUTH_URL", url);
     expect(() => assertPetOrigin(new Request(url, { headers: { origin: new URL(url).origin } }))).not.toThrow();
     expect(() => assertPetOrigin(new Request(url, { headers: { origin: "https://attacker.example" } }))).toThrow();
     expect(() => assertPetOrigin(new Request(url))).toThrow();

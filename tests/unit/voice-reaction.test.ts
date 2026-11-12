@@ -33,7 +33,7 @@ describe("listening reactions through Decisions", () => {
       { type: "choice", name: "intensity", choice: "natural", confidence: 0.8 },
       { type: "choice", name: "pace", choice: "linger", confidence: 0.8 },
     ] });
-    const request = (inspection?: true) => new Request("https://portal.example/api/voice/reaction", { method: "POST", headers: { origin: "https://portal.example" }, body: JSON.stringify({ conversationId: "conversation01", context: "PRIVATE_STORY", revision: 1, libraryVersion: 1, ...(inspection ? { inspection } : {}) }) });
+    const request = (inspection?: true) => new Request("https://portal.example/api/voice/reaction", { method: "POST", headers: { origin: "https://portal.example", "content-type": "application/json" }, body: JSON.stringify({ conversationId: "conversation01", context: "PRIVATE_STORY", revision: 1, libraryVersion: 1, ...(inspection ? { inspection } : {}) }) });
     const plain = await (await POST(request())).json(); expect(plain.decision).toBeUndefined();
     const inspected = await (await POST(request(true))).json();
     expect(inspected.reaction).toBe("keep_current");

@@ -1,14 +1,16 @@
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import path from "node:path";
-import { db, pool } from "./index";
+import { pool } from "./index";
+import { runMigrations } from "./migration-runner";
 import { installBundledPets } from "@/lib/pets/bundled";
 
 async function main() {
   const migrationsFolder = process.env.MIGRATIONS_DIR ?? path.join(process.cwd(), "src/db/migrations");
-  await migrate(db, { migrationsFolder });
-  await installBundledPets();
-  console.log("migrations applied");
-  await pool.end();
+  try {
+    await runMigrations(pool, { migrationsFolder }, db => installBundledPets(undefined, undefined, db));
+    console.log("migrations applied");
+  } finally {
+    await pool.end();
+  }
 }
 
 main().catch((err) => {

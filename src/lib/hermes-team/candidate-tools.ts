@@ -10,7 +10,8 @@ import { snapshotHash } from '@/lib/mcp/snapshot';
 import { capResult, type McpCallResult } from '@/lib/mcp/hygiene';
 import { HERMES_COMMIT } from '@/local-hermes/config';
 import { getSetting } from '@/lib/settings';
-import { modelToolName } from '@/lib/agent/tools/mcp';
+import { legacyMcpToolName, modelToolName } from '@/lib/mcp/tool-names';
+import { matchesLegacyMcpToolName } from '@/lib/agent/tool-names';
 import { candidateHash, candidateObjectHash, loadCandidateContext, lockCandidateContext, validateCandidateContext } from './candidate-context';
 import { nativeRequestId, type CandidateResponse } from './candidate-model';
 import { candidateResourceAdapterId } from './candidate-resource-adapter';
@@ -38,12 +39,8 @@ async function resolvedToolAuthority(current:Awaited<ReturnType<typeof loadCandi
   // Ordinary MCP names append numeric suffixes after collisions, truncating the base
   // again to retain the 64-character limit. Honor any possible persisted alias;
   // a native capability must not escape an admin rule by using its hashed name.
-  const legacyBase=server && capability?.action ? modelToolName(server,capability.action,new Set()) : null;
-  const legacyEnforced=!!legacyBase && settings.enforcedApproval.some(name=>{
-    const suffix=/_([0-9]+)$/.exec(name)?.[1];
-    return !!suffix && Number.isSafeInteger(Number(suffix)) && Number(suffix)>=2
-      && name===`${legacyBase.slice(0,64-suffix.length-1)}_${suffix}`;
-  });
+  const legacyBase=server && capability?.action ? legacyMcpToolName(server,capability.action) : null;
+  const legacyEnforced=!!legacyBase && settings.enforcedApproval.some(name=>matchesLegacyMcpToolName(name,legacyBase));
   const requireApproval=server?.toolPolicy[capability?.action??'']?.requireApproval===true || legacyEnforced || enforcedNames.some(name=>settings.enforcedApproval.includes(name));
   const policy={...current.run.definition.toolPolicy,capabilities:current.run.definition.toolPolicy.capabilities.map(c=>c.capabilityId===capabilityId ? {...c,requireApproval:c.requireApproval || requireApproval} : c)};
   const usable=!disabled && server?.status==='enabled' && server.trust==='trusted' && !server.toolsDrift && !!server.toolsSnapshot?.length

@@ -244,13 +244,20 @@ The optional [personal Codex app-server](codex-harness.md) uses the owner-bound 
 
 ## Routines via webhook
 
-Each webhook routine shows its URL and secret. Calls must be authenticated in one of two ways:
+Each webhook routine shows its URL and secret. Signed requests require a Unix-seconds timestamp and a unique delivery ID (16–100 ASCII letters, digits, underscores or hyphens). Sign the exact UTF-8 string `timestamp.deliveryId.rawBody` with the routine secret:
 
 ```bash
 BODY='{"ticket":"INC-123"}'
-SIG=$(printf %s "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)
-curl -X POST "$PORTAL/api/routines/webhook/$ROUTINE_ID" -H "X-Portal-Signature: sha256=$SIG" -d "$BODY"
-# or, for tools that can't sign requests (e.g. Power Automate): -H "Authorization: Bearer $SECRET"
+TIMESTAMP=$(date +%s)
+DELIVERY_ID=$(openssl rand -hex 16)
+SIG=$(printf '%s.%s.%s' "$TIMESTAMP" "$DELIVERY_ID" "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)
+curl -X POST "$PORTAL/api/routines/webhook/$ROUTINE_ID" \
+  -H "X-Portal-Timestamp: $TIMESTAMP" -H "X-Portal-Delivery-Id: $DELIVERY_ID" \
+  -H "X-Portal-Signature: sha256=$SIG" --data-binary "$BODY"
 ```
 
-The JSON payload is added to the bot's task for that run.
+The timestamp must be within five minutes of the server clock. Retry the same delivery ID with exactly the same body to receive its original run ID without starting another run, even when the routine is subsequently paused or its owner's run limit is full. A retry outside the window must use a fresh timestamp and signature. Reusing an ID with a different body returns 409. Delivery receipts remain with routine run history after conversation deletion; deleting the routine removes its secret and receipts.
+
+**Upgrade existing signed senders before deploying this version:** legacy body-only HMAC requests now return 401. There is no legacy-signature fallback because such signatures have no expiration or authenticated delivery identity.
+
+Tools unable to sign requests (for example, Power Automate) can still send `Authorization: Bearer <routine secret>` without signature headers. Bearer-only requests retain their existing behavior: each accepted request starts a run, with no freshness or retry deduplication guarantee. Use the signed protocol when those guarantees are needed. The JSON payload is added to the bot's task for that run.

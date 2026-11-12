@@ -74,16 +74,16 @@ run("MCP servers against mcp-echo (integration)", () => {
       config: { tools: ["whoami", "long_text"] },
       taken: new Set(),
     });
-    expect(ts.entries.map((e) => e.name).sort()).toEqual([expect.stringMatching(/__long_text$/), expect.stringMatching(/__whoami$/)]);
+    expect(ts.entries.map((e) => e.mcp?.tool).sort()).toEqual(["long_text", "whoami"]);
     expect((await stats()).requests).toBe(0); // a turn that calls no MCP tool opens no connection
 
-    const whoami = ts.entries.find((e) => e.name.endsWith("__whoami"))!;
+    const whoami = ts.entries.find((e) => e.mcp?.tool === "whoami")!;
     const out = (await whoami.tool.execute!({}, { toolCallId: "t1", messages: [] } as never)) as { content: { text: string }[] };
     expect(JSON.parse(out.content[0].text)).toEqual({ upn: "alice@corp.local", name: "Alice", groups: ["Engineering"] });
     expect((await stats()).lastIdentity).toMatchObject({ sub: "u-it", bot: "b-it", conv: "c-it", aud: echo.url });
 
     // Long results are cut to the server's limit (1 KB here), and hidden characters are stripped.
-    const long = ts.entries.find((e) => e.name.endsWith("__long_text"))!;
+    const long = ts.entries.find((e) => e.mcp?.tool === "long_text")!;
     const capped = (await long.tool.execute!({ size: 50_000 }, { toolCallId: "t2", messages: [] } as never)) as { content: { text: string }[] };
     expect(capped.content[0].text.startsWith("startx")).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(capped), "utf8")).toBeLessThanOrEqual(1024);

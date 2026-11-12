@@ -26,7 +26,7 @@ import { TASK_READ_ONLY } from "@/lib/delegation/policy";
 import { lockUserRuns } from "@/lib/runs/lock";
 import { stopRuns } from "@/lib/runs/store";
 import { withoutOpenAIMetadata } from "@/lib/agent/replay";
-import { isGrantable } from "@/lib/agent/tool-names";
+import { isGrantable, toolGrantName } from "@/lib/agent/tool-names";
 import { getAccessibleBot, getAccessibleModel, getOwnedConversation, listAccessibleBots, HttpError } from "@/lib/authz";
 import { CLIENT_ID_RE } from "@/lib/ids";
 import { openSideChat } from "@/lib/chat/side";
@@ -39,6 +39,7 @@ import { newId, newToken } from "@/lib/ids";
 import { stopRunsBeforeDelete } from "@/lib/runs/provider-stop";
 import { closeOpenParts } from "@/lib/runs/replay";
 import { requirePrincipal } from "@/lib/session";
+import { assertConversationsDeletable, conversationDeleteFeedback, rethrowConversationDeleteError } from "@/lib/chat/delete-policy";
 
 const idSchema = z.string().min(1).max(64);
 
@@ -80,34 +81,54 @@ export async function archiveConversation(id: string, archived = true) {
   revalidatePath("/", "layout");
 }
 
-export async function deleteConversation(id: string) {
+async function deleteOwnedConversation(id: string) {
   const p = await requirePrincipal();
   await getOwnedConversation(p, idSchema.parse(id));
+  await assertConversationsDeletable(p.user.id, id);
   await stopRuns(p, id);
   await stopRunsBeforeDelete({ conversationId: id });
   const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
+    await assertConversationsDeletable(p.user.id, id, tx);
     await cancelTasksForConversationTx(tx, p.user.id, id);
     const ids = await conversationAttachmentIds(tx, p.user.id, id);
     await tx.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.userId, p.user.id)));
     return ids;
-  });
+  }).catch(rethrowConversationDeleteError);
   await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
 }
 
-export async function deleteAllConversations() {
+async function deleteOwnedConversations() {
   const p = await requirePrincipal();
+  await assertConversationsDeletable(p.user.id);
   await stopRunsBeforeDelete({ userId: p.user.id });
   const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
+    await assertConversationsDeletable(p.user.id, undefined, tx);
     await cancelTasksForConversationTx(tx, p.user.id);
     const ids = await conversationAttachmentIds(tx, p.user.id);
     await tx.delete(conversations).where(eq(conversations.userId, p.user.id));
     return ids;
-  });
+  }).catch(rethrowConversationDeleteError);
   await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
+}
+
+export async function deleteConversation(id: string) {
+  return deleteOwnedConversation(id);
+}
+
+export async function deleteAllConversations() {
+  return deleteOwnedConversations();
+}
+
+export async function deleteConversationWithFeedback(id: string) {
+  return conversationDeleteFeedback(() => deleteOwnedConversation(id));
+}
+
+export async function deleteAllConversationsWithFeedback() {
+  return conversationDeleteFeedback(() => deleteOwnedConversations());
 }
 
 export async function moveConversationToFolder(id: string, folderId: string | null) {
@@ -360,7 +381,7 @@ export async function grantToolForBot(botId: string, toolName: string) {
   if (bot.executionMode === "service") throw new HttpError(403, "Service-bot approvals are controlled by an admin.");
   await db
     .insert(toolGrants)
-    .values({ userId: p.user.id, botId, toolName: z.string().max(64).parse(toolName) })
+    .values({ userId: p.user.id, botId, toolName: toolGrantName(z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).parse(toolName)) })
     .onConflictDoNothing();
 }
 

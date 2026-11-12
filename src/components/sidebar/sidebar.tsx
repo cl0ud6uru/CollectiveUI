@@ -32,7 +32,7 @@ import {
 import {
   archiveConversation,
   createFolder,
-  deleteConversation,
+  deleteConversationWithFeedback,
   deleteFolder,
   moveConversationToFolder,
   renameConversation,
@@ -253,9 +253,12 @@ function ConversationItem({ c, active, recent = false }: { c: ConversationSummar
             danger
             onSelect={async () => {
               if (!confirm(`Delete "${c.title}"?`)) return;
-              removeConversation(c.id);
-              await deleteConversation(c.id);
-              if (isCurrent) router.push("/");
+              try {
+                const result = await deleteConversationWithFeedback(c.id);
+                if (!result.ok) { toast.error(result.error); return; }
+                removeConversation(c.id);
+                if (isCurrent) router.push("/");
+              } catch { toast.error("Could not delete this chat. Try again."); }
             }}
           >
             <Trash2 /> Delete
