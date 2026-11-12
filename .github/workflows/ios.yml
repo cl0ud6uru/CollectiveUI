@@ -15,6 +15,12 @@ on:
       - 'src/components/chat/voice-avatar.tsx'
       - '.github/workflows/ios.yml'
   workflow_dispatch:
+    inputs:
+      capture_screenshots:
+        description: Capture demo screenshots and video for manual visual review
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -164,6 +170,9 @@ jobs:
 
   screenshots:
     name: Simulator screenshots
+    # These are review artifacts without visual assertions. Actual UI regression
+    # tests above continue to run on every matching pull request and main push.
+    if: github.event_name == 'workflow_dispatch' && inputs.capture_screenshots
     needs: build
     runs-on: xcode-27
     timeout-minutes: 40

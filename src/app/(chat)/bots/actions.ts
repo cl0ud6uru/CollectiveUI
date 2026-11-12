@@ -68,6 +68,7 @@ async function localEngine(appId: string | null, q: DbOrTx = db) {
   const [app] = await q.select().from(aiApps).where(eq(aiApps.id, appId));
   return !!app && isLocalHermes(app);
 }
+const SOURCE_CONNECTION_UNAVAILABLE = "The source bot connection is unavailable. Ask an admin to restore or configure it before copying this bot.";
 async function requirePortableEngine(appId: string | null, team = false, q: DbOrTx = db) {
   if (team) throw new HttpError(400, "Team Bots use native resources and direct chats only.");
   if (!appId) throw new HttpError(400, CODEX_DIRECT_ONLY);
@@ -650,7 +651,7 @@ async function createBotFromSnapshot(snap: BotTemplateSnapshot, opts: { name: st
   const accessible = await listAccessibleApps(p);
   const app = accessible.find((a) => a.id === opts.preferredAppId);
   // Copies must retain the source connection, including when deletion has cleared its foreign key.
-  if (!app) throw new HttpError(400, "The source bot connection is unavailable. Ask an admin to restore or configure it before copying this bot.");
+  if (!app) throw new HttpError(400, SOURCE_CONNECTION_UNAVAILABLE);
   assertApprovedBot(app);
   const input: BotInput = {
     name: opts.name.slice(0, 80),
@@ -707,6 +708,9 @@ async function createBotFromSnapshot(snap: BotTemplateSnapshot, opts: { name: st
 export async function duplicateBot(botId: string) {
   const p = await requirePrincipal();
   const src = await getAccessibleBot(p, botId);
+  // Provider deletion also clears appId; only a stored Codex policy identifies a Codex bot.
+  if (!src.appId && !src.hermesTeam && !(await codexPolicy(src.id)))
+    throw new HttpError(400, SOURCE_CONNECTION_UNAVAILABLE);
   await requirePortableEngine(src.appId, src.hermesTeam);
   const snap = await snapshotBot(src.id, p.user.id);
   const delegates = await db.select().from(botDelegates).where(eq(botDelegates.botId, src.id));
