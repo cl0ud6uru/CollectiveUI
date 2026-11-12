@@ -31,7 +31,7 @@ const initial={bots:${JSON.stringify(bots)},conversations:${JSON.stringify(conve
 createRoot(document.getElementById('root')).render(<Tooltip.Provider><ShellProvider {...initial}><ChatShell><Controls/></ChatShell></ShellProvider></Tooltip.Provider>);
 `);
 const noAction = 'async()=>{}';
-const actions = Object.fromEntries(['archiveConversation','createFolder','deleteConversation','deleteFolder','moveConversationToFolder','renameConversation','renameFolder','setConversationPinned','refreshBotStatuses'].map(name=>[name,noAction]));
+const actions = Object.fromEntries(['archiveConversation','createFolder','deleteConversationWithFeedback','deleteFolder','moveConversationToFolder','renameConversation','renameFolder','setConversationPinned','refreshBotStatuses'].map(name=>[name,noAction]));
 const stubs = {
  'next/navigation': `export const usePathname=()=>'/c/audit-home';export const useRouter=()=>({refresh:()=>{},push:href=>{window.fixtureNavigation=href;}});`,
  'next/link': `import React from 'react';export default function Link({href,prefetch,onClick,children,...props}){return <a href={href} {...props} onClick={e=>{e.preventDefault();onClick?.(e);window.fixtureNavigation=href;}}>{children}</a>;}`,
