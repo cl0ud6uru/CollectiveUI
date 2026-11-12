@@ -1,0 +1,43 @@
+name: Remaining security PostgreSQL proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  remaining-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: review_fixture
+          POSTGRES_PASSWORD: synthetic-review-only
+          POSTGRES_DB: collective_remaining_security_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U review_fixture -d collective_remaining_security_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://review_fixture:synthetic-review-only@127.0.0.1:5432/collective_remaining_security_test
+      DATABASE_POOL_MAX: '1'
+      ENCRYPTION_KEY: synthetic-review-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Migrate and bootstrap with one database connection
+        run: npm run db:migrate
+      - name: Require migration locking, webhook replay and retained history regressions
+        env:
+          REMAINING_SECURITY_TEST: '1'
+        run: npx vitest run --project integration tests/integration/remaining-security.test.ts --maxWorkers=1

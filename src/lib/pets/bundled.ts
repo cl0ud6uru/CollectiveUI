@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
-import { db } from "@/db";
+import { db, type DB } from "@/db";
 import { petCatalog } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { assertHdMatches, normalizePetSprite, normalizePetSpriteHd, parsePetManifest, validateV2Cells } from "./import";
@@ -67,8 +67,8 @@ async function readExpected(root: string, pet: BundledPet) {
  * official release is replaced, and the current release gains a newly shipped HD rendition. Operator-replaced artwork
  * under a bundled ID never matches and is never touched.
  */
-export async function installBundledPets(root = path.join(process.cwd(), "assets/pets"), pets = BUNDLED_PETS): Promise<string[]> {
-  const existing = await db.select({ id: petCatalog.id, revision: petCatalog.revision, hd: sql<boolean>`${petCatalog.spriteHd} is not null`,
+export async function installBundledPets(root = path.join(process.cwd(), "assets/pets"), pets = BUNDLED_PETS, q: Omit<DB, "$client"> = db): Promise<string[]> {
+  const existing = await q.select({ id: petCatalog.id, revision: petCatalog.revision, hd: sql<boolean>`${petCatalog.spriteHd} is not null`,
     sprite: sql<string>`encode(sha256(${petCatalog.sprite}), 'hex')` }).from(petCatalog).where(inArray(petCatalog.id, pets.map(pet => pet.id)));
   const rows = new Map(existing.map(row => [row.id, row]));
   const missing = pets.filter(pet => !rows.has(pet.id));
@@ -86,7 +86,7 @@ export async function installBundledPets(root = path.join(process.cwd(), "assets
   const replacements = await Promise.all(upgrades.map(async (upgrade) => ({ ...upgrade, bundle: await readExpected(root, upgrade.pet) })));
   // Row predicates are rechecked under the UPDATE lock, so a concurrent startup upgrades once and never overwrites a
   // different revision or an operator's replacement artwork. A new revision never inherits public sign-in consent.
-  return db.transaction(async (tx) => {
+  return q.transaction(async (tx) => {
     const inserted = values.length ? await tx.insert(petCatalog).values(values)
       .onConflictDoNothing({ target: petCatalog.id }).returning({ id: petCatalog.id }) : [];
     for (const { pet, row, bundle } of replacements) {

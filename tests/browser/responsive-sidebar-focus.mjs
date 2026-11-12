@@ -17,6 +17,7 @@ await import('node:fs/promises').then(({ writeFile }) => writeFile(entry, `
 import React from 'react';
 import { createRoot } from '${root}/node_modules/react-dom/client';
 import { Tooltip } from 'radix-ui';
+import { Toaster } from 'sonner';
 import { ShellProvider, useShell } from '${root}/src/components/chat/shell-context';
 import { ChatShell } from '${root}/src/components/chat/chat-shell';
 function Controls() { const shell=useShell(); return <><button id="open" onClick={()=>shell.setMobileOpen(true)}>Open sidebar</button><button id="start-side-chat">Start side chat</button><button onClick={()=>shell.setSidebarOpen(false)}>Collapse desktop sidebar</button><button onClick={()=>shell.setSidebarOpen(true)}>Expand desktop sidebar</button></>; }
@@ -24,10 +25,11 @@ const bots=[{kind:'bot',id:'bot-a',name:'Alpha',icon:null,description:'Fixture b
 const conversations=[{id:'chat-fixture',title:'Fixture chat',pinned:false,folderId:null,botId:null,appId:null,source:'chat',updatedAt:'2026-10-15T00:00:00.000Z'}];
 const folders=[{id:'folder-fixture',name:'Example project'}];
 const initial={bots,conversations,apps:[],folders,inboxUnread:0,user:{id:'fixture',name:'Demo User',email:'demo@example.invalid',isAdmin:false,canCreateBots:true},branding:{appName:'CollectiveUI',welcomeText:'',logoEmoji:''}};
-createRoot(document.getElementById('root')).render(<Tooltip.Provider><ShellProvider {...initial}><ChatShell><Controls/></ChatShell></ShellProvider></Tooltip.Provider>);
+createRoot(document.getElementById('root')).render(<Tooltip.Provider><ShellProvider {...initial}><ChatShell><Controls/></ChatShell></ShellProvider><Toaster/></Tooltip.Provider>);
 `));
 const noAction = 'async()=>{}';
-const actions = Object.fromEntries(['archiveConversation','createFolder','deleteConversation','deleteFolder','moveConversationToFolder','renameConversation','renameFolder','setConversationPinned','refreshBotStatuses'].map(name=>[name,noAction]));
+const actions = Object.fromEntries(['archiveConversation','createFolder','deleteConversationWithFeedback','deleteFolder','moveConversationToFolder','renameConversation','renameFolder','setConversationPinned','refreshBotStatuses'].map(name=>[name,noAction]));
+actions.deleteConversationWithFeedback = 'async()=>({ok:false,error:"Team execution history must be retained. Archive these conversations instead, or delete other conversations individually."})';
 const stubs = {
   'next/navigation': `export const usePathname=()=>'/';export const useRouter=()=>({refresh:()=>{},push:()=>{}});`,
   'next/link': `import React from 'react';export default function Link({href,onClick,children,...props}){return <a href={href} {...props} onClick={e=>{e.preventDefault();onClick?.(e);}}>{children}</a>;}`,
@@ -144,6 +146,12 @@ try {
   await expect(desktopSidebar).toHaveJSProperty('inert',false);
   await expect(desktopSidebar).toHaveAttribute('aria-hidden','false');
   expect(await page.locator('body').ariaSnapshot()).toContain('navigation "Main navigation"');
+  // Expected Server Action failures return safe feedback without optimistically hiding retained history.
+  await desktopSidebar.getByRole('button',{name:'Chat options'}).first().click();
+  page.once('dialog', dialog=>dialog.accept());
+  await page.getByRole('menuitem',{name:'Delete',exact:true}).click();
+  await expect(page.getByText('Team execution history must be retained. Archive these conversations instead, or delete other conversations individually.',{exact:true})).toBeVisible();
+  await expect(desktopSidebar.getByRole('link',{name:'Fixture chat'})).toBeVisible();
   console.log('Responsive sidebar containment, nested portals, resize recovery, and collapsed desktop accessibility/tab exclusion passed.');
 } finally {
   await browser.close();

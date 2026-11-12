@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Archive, History, Home, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { archiveConversation, deleteConversation } from "@/app/(chat)/actions";
+import { archiveConversation, deleteConversationWithFeedback } from "@/app/(chat)/actions";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger } from "@/components/ui/menu";
 import { useShell } from "./shell-context";
 import { StartSideChat } from "./start-side-chat";
@@ -17,7 +17,10 @@ export function BotChatNavigation({ botId, isHome, conversationId, onNewHome }: 
   async function retire(remove: boolean) {
     if (remove && !confirm("Delete this home chat?")) return;
     try {
-      await (remove ? deleteConversation(conversationId) : archiveConversation(conversationId));
+      if (remove) {
+        const result = await deleteConversationWithFeedback(conversationId);
+        if (!result.ok) { toast.error(result.error); return; }
+      } else await archiveConversation(conversationId);
       removeConversation(conversationId);
       router.push("/");
       toast.success(remove ? "Chat deleted" : "Chat archived");

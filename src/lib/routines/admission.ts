@@ -3,6 +3,7 @@ import { db, type Tx } from "@/db";
 import { agentRuns, conversations, routineRuns, routines } from "@/db/schema";
 import { HttpError } from "@/lib/http-error";
 import { enqueue, QUEUES } from "@/lib/jobs";
+import { assertWebhookFresh, type WebhookDelivery } from "./webhook";
 
 export const MAX_ACTIVE_ROUTINE_RUNS_PER_USER = 3;
 const active = ["queued", "running"] as const;
@@ -13,7 +14,7 @@ export async function lockRoutineAdmission(tx: Tx, ownerId: string) {
 }
 
 /** Caller holds the owner admission lock and has claimed/locked the current routine. */
-export async function insertRoutineRunTx(tx: Tx, routine: { id: string; ownerId: string }, trigger: "manual" | "webhook" | "schedule", payload?: unknown) {
+export async function insertRoutineRunTx(tx: Tx, routine: { id: string; ownerId: string }, trigger: "manual" | "webhook" | "schedule", payload?: unknown, webhookDelivery?: WebhookDelivery) {
   // Deleting a routine cascades its run rows but retains their agent work with a
   // null routineRunId. One statement sees either side of that cascade in the
   // same snapshot; two counts could miss work deleted between the statements.
@@ -43,12 +44,13 @@ export async function insertRoutineRunTx(tx: Tx, routine: { id: string; ownerId:
       .where(and(eq(routineRuns.routineId, routine.id), inArray(routineRuns.status, active))).limit(1);
     if (pending) return null;
   }
-  const [run] = await tx.insert(routineRuns).values({ routineId: routine.id, trigger, payload, lastEnqueueAt: new Date() }).returning();
+  const [run] = await tx.insert(routineRuns).values({ routineId: routine.id, trigger, payload, lastEnqueueAt: new Date(),
+    webhookDeliveryId: webhookDelivery?.id, webhookPayloadHash: webhookDelivery?.payloadHash }).returning();
   return run;
 }
 
 /** Manual/webhook admission. A recorded row remains accepted if pg-boss is unavailable; the sweeper retries it. */
-export async function queueRoutineRun(input: { routineId: string; ownerId: string; trigger: "manual" | "webhook"; payload?: unknown; webhookSecret?: string | null }) {
+export async function queueRoutineRun(input: { routineId: string; ownerId: string; trigger: "manual" | "webhook"; payload?: unknown; webhookSecret?: string | null; webhookDelivery?: WebhookDelivery }) {
   const accepted = await db.transaction(async tx => {
     await lockRoutineAdmission(tx, input.ownerId);
     const [routine] = await tx.select().from(routines)
@@ -56,12 +58,25 @@ export async function queueRoutineRun(input: { routineId: string; ownerId: strin
     if (!routine) throw new HttpError(404, "Routine not found");
     // Authentication happened before admission; a pause, trigger change or secret
     // rotation while waiting for the owner lock must also take effect here.
-    if (input.trigger === "webhook" && (!routine.enabled || routine.triggerType !== "webhook" || routine.webhookSecret !== input.webhookSecret))
-      throw new HttpError(409, "Routine webhook is paused or changed. Retry with its current settings.");
-    const run = await insertRoutineRunTx(tx, routine, input.trigger, input.payload);
+    if (input.trigger === "webhook") {
+      if (routine.triggerType !== "webhook" || routine.webhookSecret !== input.webhookSecret)
+        throw new HttpError(409, "Routine webhook changed. Retry with its current settings.");
+      if (input.webhookDelivery) {
+        assertWebhookFresh(input.webhookDelivery.timestamp);
+        const [existing] = await tx.select().from(routineRuns).where(and(eq(routineRuns.routineId, routine.id),
+          eq(routineRuns.webhookDeliveryId, input.webhookDelivery.id)));
+        if (existing) {
+          if (existing.webhookPayloadHash !== input.webhookDelivery.payloadHash)
+            throw new HttpError(409, "Webhook delivery ID was already used for a different payload.");
+          return { run: existing, botId: routine.botId, duplicate: true };
+        }
+      }
+      if (!routine.enabled) throw new HttpError(409, "Routine is paused");
+    }
+    const run = await insertRoutineRunTx(tx, routine, input.trigger, input.payload, input.webhookDelivery);
     if (!run) throw new HttpError(429, `You already have ${MAX_ACTIVE_ROUTINE_RUNS_PER_USER} queued or running routine runs. Wait for one to finish.`);
-    return { run, botId: routine.botId };
+    return { run, botId: routine.botId, duplicate: false };
   });
-  await enqueue(QUEUES.routineRun, { runId: accepted.run.id }, { singletonKey: accepted.run.id });
+  if (!accepted.duplicate) await enqueue(QUEUES.routineRun, { runId: accepted.run.id }, { singletonKey: accepted.run.id });
   return accepted;
 }

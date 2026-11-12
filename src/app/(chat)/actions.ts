@@ -39,6 +39,7 @@ import { newId, newToken } from "@/lib/ids";
 import { stopRunsBeforeDelete } from "@/lib/runs/provider-stop";
 import { closeOpenParts } from "@/lib/runs/replay";
 import { requirePrincipal } from "@/lib/session";
+import { assertConversationsDeletable, conversationDeleteFeedback, rethrowConversationDeleteError } from "@/lib/chat/delete-policy";
 
 const idSchema = z.string().min(1).max(64);
 
@@ -83,31 +84,43 @@ export async function archiveConversation(id: string, archived = true) {
 export async function deleteConversation(id: string) {
   const p = await requirePrincipal();
   await getOwnedConversation(p, idSchema.parse(id));
+  await assertConversationsDeletable(p.user.id, id);
   await stopRuns(p, id);
   await stopRunsBeforeDelete({ conversationId: id });
   const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
+    await assertConversationsDeletable(p.user.id, id, tx);
     await cancelTasksForConversationTx(tx, p.user.id, id);
     const ids = await conversationAttachmentIds(tx, p.user.id, id);
     await tx.delete(conversations).where(and(eq(conversations.id, id), eq(conversations.userId, p.user.id)));
     return ids;
-  });
+  }).catch(rethrowConversationDeleteError);
   await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
 }
 
 export async function deleteAllConversations() {
   const p = await requirePrincipal();
+  await assertConversationsDeletable(p.user.id);
   await stopRunsBeforeDelete({ userId: p.user.id });
   const attachmentIds = await db.transaction(async tx => {
     await lockUserRuns(tx, p.user.id);
+    await assertConversationsDeletable(p.user.id, undefined, tx);
     await cancelTasksForConversationTx(tx, p.user.id);
     const ids = await conversationAttachmentIds(tx, p.user.id);
     await tx.delete(conversations).where(eq(conversations.userId, p.user.id));
     return ids;
-  });
+  }).catch(rethrowConversationDeleteError);
   await retireAttachments({ userId: p.user.id, ids: attachmentIds }).catch(error => console.error("[attachments] cleanup deferred to sweep", error));
   revalidatePath("/", "layout");
+}
+
+export async function deleteConversationWithFeedback(id: string) {
+  return conversationDeleteFeedback(() => deleteConversation(id));
+}
+
+export async function deleteAllConversationsWithFeedback() {
+  return conversationDeleteFeedback(deleteAllConversations);
 }
 
 export async function moveConversationToFolder(id: string, folderId: string | null) {

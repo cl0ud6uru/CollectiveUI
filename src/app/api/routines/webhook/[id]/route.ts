@@ -1,14 +1,15 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { routines } from "@/db/schema";
-import { hmacSha256Hex, safeEqual } from "@/lib/crypto";
 import { openWebhookSecret } from "@/lib/routines";
 import { queueRoutineRun } from "@/lib/routines/admission";
+import { authenticateRoutineWebhook } from "@/lib/routines/webhook";
 import { HttpError } from "@/lib/http-error";
 
 /**
  * Inbound webhook trigger for a routine. Authenticate with either:
- *  - X-Portal-Signature: sha256=<hex HMAC-SHA256 of the raw body using the routine secret>, or
+ *  - X-Portal-Signature: sha256=<HMAC-SHA256 of timestamp.deliveryId.rawBody>, with
+ *    X-Portal-Timestamp (Unix seconds) and X-Portal-Delivery-Id, or
  *  - Authorization: Bearer <routine secret>  (for tools that can't sign requests)
  */
 export async function POST(req: Request, ctx: RouteContext<"/api/routines/webhook/[id]">) {
@@ -20,12 +21,13 @@ export async function POST(req: Request, ctx: RouteContext<"/api/routines/webhoo
   if (!routine || !secret) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
-  const sig = req.headers.get("x-portal-signature")?.replace(/^sha256=/, "") ?? "";
-  const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-  const ok =
-    (sig && safeEqual(sig, hmacSha256Hex(secret, raw))) || (bearer && safeEqual(bearer, secret));
-  if (!ok) return Response.json({ error: "Invalid signature" }, { status: 401 });
-  if (!routine.enabled) return Response.json({ error: "Routine is paused" }, { status: 409 });
+  let webhookDelivery;
+  try {
+    webhookDelivery = authenticateRoutineWebhook(req.headers, secret, raw);
+  } catch (error) {
+    if (error instanceof HttpError) return Response.json({ error: error.message }, { status: error.status });
+    throw error;
+  }
 
   let payload: unknown = null;
   if (raw) {
@@ -36,7 +38,7 @@ export async function POST(req: Request, ctx: RouteContext<"/api/routines/webhoo
     }
   }
   try {
-    const { run } = await queueRoutineRun({ routineId: routine.id, ownerId: routine.ownerId, trigger: "webhook", payload, webhookSecret: routine.webhookSecret });
+    const { run } = await queueRoutineRun({ routineId: routine.id, ownerId: routine.ownerId, trigger: "webhook", payload, webhookSecret: routine.webhookSecret, webhookDelivery });
     return Response.json({ ok: true, runId: run.id }, { status: 202 });
   } catch (error) {
     if (error instanceof HttpError) return Response.json({ error: error.message }, { status: error.status });

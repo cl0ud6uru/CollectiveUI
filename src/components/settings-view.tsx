@@ -10,7 +10,7 @@ import { Pin, Trash2 } from "lucide-react";
 import {
   archiveConversation,
   clearMemories,
-  deleteAllConversations,
+  deleteAllConversationsWithFeedback,
   deleteMemory,
   revokeToolGrant,
   saveMemory,
@@ -263,8 +263,11 @@ export function SettingsView({
               variant="danger"
               onClick={async () => {
                 if (!confirm("Delete ALL your chats? This cannot be undone.")) return;
-                await deleteAllConversations();
-                router.push("/");
+                try {
+                  const result = await deleteAllConversationsWithFeedback();
+                  if (!result.ok) { toast.error(result.error); return; }
+                  router.push("/");
+                } catch { toast.error("Could not delete your chats. Try again."); }
               }}
             >
               Delete all chats
