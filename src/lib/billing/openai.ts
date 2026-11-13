@@ -43,6 +43,8 @@ export async function readOpenAISpending(organization: string, key: string, proj
       const parsed = Limit.safeParse(raw); if (!parsed.success) return emptyLimit('unknown');
       const expected = path === 'spend_limit' ? 'organization.spend_limit' : 'project.spend_limit';
       if (parsed.data.object !== expected) return emptyLimit('unknown');
+      // A zero threshold that is not enforcing is the provider's no-limit shape, not a USD 0.00 cap.
+      if (parsed.data.threshold_amount === 0 && parsed.data.enforcement.status === 'inactive') return emptyLimit('unset');
       return { status: 'known', amount: parsed.data.threshold_amount / 100, currency: parsed.data.currency.toUpperCase(), enforcement: parsed.data.enforcement.status };
     } catch (error) { return emptyLimit(error instanceof ReadError ? error.status : 'unknown', error instanceof ReadError ? error.httpStatus : undefined); }
   };
@@ -51,12 +53,14 @@ export async function readOpenAISpending(organization: string, key: string, proj
     const cursors = new Set<string>(); const buckets = new Set<number>();
     const add = (map: Map<string, number>, amount: Money) => map.set(amount.currency, (map.get(amount.currency) ?? 0) + amount.value);
     const amounts = (map: Map<string, number>) => [...map].map(([currency, value]) => ({ currency, value }));
-    const query = new URLSearchParams({ start_time: String(period.start), end_time: String(period.through), bucket_width: '1d', limit: '31' });
+    // Ask through the end of the current UTC day: a mid-day end_time drops the current day's partial bucket.
+    const queryEnd = (Math.floor(period.through / 86_400) + 1) * 86_400;
+    const query = new URLSearchParams({ start_time: String(period.start), end_time: String(queryEnd), bucket_width: '1d', limit: '31' });
     if (grouped) query.set('group_by[]', 'project_id');
     for (let page = 0; page < 20; page++) {
       const parsed = Page.safeParse(await get('costs', query)); if (!parsed.success) throw new ReadError('unknown');
       for (const bucket of parsed.data.data) {
-        if (bucket.start_time < period.start || bucket.start_time >= period.through || bucket.end_time <= bucket.start_time || buckets.has(bucket.start_time)) throw new ReadError('unknown');
+        if (bucket.start_time < period.start || bucket.start_time >= queryEnd || bucket.end_time <= bucket.start_time || buckets.has(bucket.start_time)) throw new ReadError('unknown');
         buckets.add(bucket.start_time); const day = new Map<string, number>();
         for (const result of bucket.results) {
           if (!result.amount || (grouped && result.project_id === undefined)) throw new ReadError('unknown');
