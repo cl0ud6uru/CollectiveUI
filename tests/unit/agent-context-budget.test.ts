@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { asSchema, convertToModelMessages, tool } from "ai";
 import { z } from "zod";
-import { compactModelContext, estimateModelContextTokens, resolveContextBudget } from "@/lib/agent/context-budget";
+import { ContextBudgetError, compactModelContext, estimateModelContextTokens, resolveContextBudget } from "@/lib/agent/context-budget";
 import type { ModelMessage } from "ai";
 
 const text = (role: ModelMessage["role"], value: string): ModelMessage => ({ role, content: value } as ModelMessage);
@@ -157,11 +157,16 @@ describe("bounded model context", () => {
       instructions: "Policy",
       tools,
     })).rejects.toThrow(/instructions and tools/i);
+    // With a short request the tools are still the cause, so the guidance must not be "shorten the request".
+    const failure = await compactModelContext([text("user", "hi")], { inputBudgetTokens: 1_000, instructions: "Policy", tools }).catch(e => e);
+    expect(failure).toBeInstanceOf(ContextBudgetError);
+    expect(failure.message).toMatch(/instructions and tools.*remove some tools/i);
   });
 
   it("fails closed when the protected latest turn cannot fit", async () => {
-    const messages = [text("user", "a request too large to fit")];
-    await expect(compactModelContext(messages, { inputBudgetTokens: 10, instructions: "Policy" })).rejects.toThrow(/latest turn/i);
+    const messages = [text("user", "a request too large to fit ".repeat(100))];
+    const inputBudgetTokens = await estimateModelContextTokens([], "Policy") + 100;
+    await expect(compactModelContext(messages, { inputBudgetTokens, instructions: "Policy" })).rejects.toThrow(/latest turn/i);
   });
 
   it("accounts for instructions and rejects unknown multimodal payloads", async () => {
