@@ -20,7 +20,29 @@ describe('provider-reported spending', () => {
     expect(snapshot.projects).toEqual([{ id: 'proj-one', amounts: [{ currency: 'USD', value: 95 }] }]);
     expect(JSON.stringify(snapshot)).not.toContain('fixture-admin-key');
     for (const [, init] of fetcher.mock.calls) expect((init?.headers as Record<string,string>)['OpenAI-Organization']).toBe('org-one');
-    expect(new URL(String(fetcher.mock.calls[0][0])).searchParams.get('end_time')).toBe(String(now.getTime() / 1000));
+    expect(new URL(String(fetcher.mock.calls[0][0])).searchParams.get('end_time')).toBe(String(Date.parse('2026-10-09T00:00:00Z') / 1000));
+    expect(snapshot.through).toBe(now.getTime() / 1000);
+  });
+  it('includes the current partial UTC day, also at exactly midnight on the first of the month', async () => {
+    for (const at of [now, new Date('2026-10-01T00:00:00Z')]) {
+      const start = Math.floor(at.getTime() / 86_400_000) * 86_400;
+      const today = { ...bucket, start_time: start, end_time: start + 86_400, results: [{ ...bucket.results[0], amount: { value: 5, currency: 'usd' } }] };
+      const snapshot = await readOpenAISpending('org', 'fixture', [], at, (async (input: string) => response(String(input).includes('/costs?') ? { ...page, data: [today] } : limit)) as typeof fetch);
+      expect(snapshot.costsStatus).toBe('known'); expect(snapshot.amounts).toEqual([{ currency: 'USD', value: 5 }]);
+      expect(snapshot.daily).toEqual([{ start, end: at.getTime() / 1000, amounts: [{ currency: 'USD', value: 5 }] }]);
+    }
+  });
+  it('rejects a bucket beyond the current UTC day', async () => {
+    const tomorrow = { ...bucket, start_time: Date.parse('2026-10-09') / 1000, end_time: Date.parse('2026-10-10') / 1000 };
+    const snapshot = await readOpenAISpending('org', 'fixture', [], now, (async (input: string) => response(String(input).includes('/costs?') ? { ...page, data: [tomorrow] } : limit)) as typeof fetch);
+    expect(snapshot.costsStatus).toBe('unknown');
+  });
+  it('reads a zero, non-enforcing limit as unset and keeps an enforcing zero limit', async () => {
+    const read = (raw: unknown) => readOpenAISpending('org', 'fixture', [], now, (async (input: string) => response(String(input).includes('/costs?') ? page : raw)) as typeof fetch);
+    const unset = (await read({ ...limit, threshold_amount: 0, enforcement: { status: 'inactive' } })).organizationLimit;
+    expect(unset).toEqual({ status: 'unset', amount: null, currency: null, enforcement: null });
+    const zero = (await read({ ...limit, threshold_amount: 0 })).organizationLimit;
+    expect(zero).toMatchObject({ status: 'known', amount: 0, enforcement: 'enforcing' });
   });
   it('keeps organization costs when project permission is absent; never interprets 404 as unset', async () => {
     const snapshot = await readOpenAISpending('org', 'fixture', ['proj'], now, (async input => {
