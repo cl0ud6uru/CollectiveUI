@@ -106,6 +106,22 @@ describe("native budget admission around the actual AI SDK dispatch", () => {
     expect(await db.select().from(schema.usageEvents)).toHaveLength(2);
     expect((await db.select().from(schema.nativeRunBudgets))[0]).toMatchObject({ usedTokens: 5 });
   });
+  it("retains a failed generation's reservation and records its partial counters once", async () => {
+    const ctx = context();
+    const model = wrapped(new MockLanguageModelV4({ doGenerate: async () => ({
+      ...response(), finishReason: { unified: "error", raw: "error" },
+    }) }), ctx);
+    const result = await model.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "Fixture" }] }] });
+    await Promise.all(ctx.scope!.pending);
+    expect(result.finishReason.unified).toBe("error");
+    expect(await db.select().from(schema.nativeRunBudgetAttempts)).toMatchObject([
+      { state: "uncertain", inputTokens: 3, outputTokens: 2 },
+    ]);
+    expect((await db.select().from(schema.nativeRunBudgets))[0].reservedTokens).toBeGreaterThan(0);
+    expect(await db.select().from(schema.usageEvents)).toMatchObject([
+      { completionStatus: "incomplete", inputTokens: 3, outputTokens: 2 },
+    ]);
+  });
   it("holds an error-finished stream while recording its partial usage once", async () => {
     const ctx = context();
     const model = wrapped(new MockLanguageModelV4({ doStream: async () => ({ stream: convertArrayToReadableStream([

@@ -1,5 +1,5 @@
 import type { EmbeddingModelMiddleware, LanguageModelMiddleware } from "ai";
-import { mapUsage, recordUsage, type UsageContext } from "./usage";
+import { isCompleteFinish, mapUsage, recordUsage, type UsageContext } from "./usage";
 import { nativeBudgetEnvelope, nativeBudgetRoute, NativeRunBudgetError } from "./run-budget-policy";
 import { markNativeBudgetDispatched, nativeBudgetHandle, releaseNativeBudget, reserveNativeBudget, retainNativeBudget, settleNativeBudget, type NativeBudgetReceipt } from "./run-budget-store";
 
@@ -36,7 +36,7 @@ export function nativeRunBudgetMiddleware(ctx: UsageContext): LanguageModelMiddl
         params.abortSignal?.throwIfAborted();
         await markNativeBudgetDispatched(receipt); dispatched = true;
         const result = await doGenerate();
-        await settleNativeBudget(receipt, result.usage.inputTokens.total, result.usage.outputTokens.total);
+        await settleNativeBudget(receipt, result.usage.inputTokens.total, result.usage.outputTokens.total, { complete: isCompleteFinish(result.finishReason.unified) });
         return result;
       } catch (error) {
         if (dispatched) await uncertain(receipt, ctx); else await releaseNativeBudget(receipt);
@@ -60,7 +60,7 @@ export function nativeRunBudgetMiddleware(ctx: UsageContext): LanguageModelMiddl
               if (part.done) { if (!completed) await uncertain(receipt, ctx, false); controller.close(); return; }
               if (part.value.type === "error") failed = true;
               if (part.value.type === "finish") {
-                const complete = !failed && ["stop", "length", "tool-calls"].includes(part.value.finishReason.unified);
+                const complete = !failed && isCompleteFinish(part.value.finishReason.unified);
                 await settleNativeBudget(receipt, part.value.usage.inputTokens.total, part.value.usage.outputTokens.total, { complete });
                 completed = complete;
               }
