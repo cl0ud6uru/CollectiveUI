@@ -74,6 +74,20 @@ async function check(name, run) {
 }
 try {
   browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  await check('unmount releases an active dictation session', async ({ page }) => {
+    await page.addInitScript(() => {
+      window.SpeechRecognition = class {
+        start() { window.dictating = true; }
+        abort() { window.dictating = false; }
+      };
+    });
+    await page.reload();
+    await page.getByRole('button', { name: 'Start voice input' }).click();
+    await expect(page.getByRole('button', { name: 'Stop dictation' })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.dictating), true);
+    await page.evaluate(() => window.unmountComposer());
+    await expect.poll(() => page.evaluate(() => window.dictating)).toBe(false);
+  });
   await check('removed preview is revoked', async ({ page, upload, complete, previews }) => {
     await upload(); await complete(); await page.getByRole('button', { name: 'Remove fixture-0.png' }).click();
     await expect.poll(previews).toEqual({ created: 1, revoked: 1, unreleased: 0 });
