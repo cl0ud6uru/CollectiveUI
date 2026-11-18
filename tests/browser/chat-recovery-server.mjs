@@ -28,6 +28,7 @@ const branding={appName:'CollectiveUI',welcomeText:'',logoEmoji:'✨'};
 const convs=[{id:'synthetic-group',title:target.name,botId:null,appId:null,source:'chat',isGroup:true,memberBotIds:members.map(b=>b.id),pinned:false,folderId:null,updatedAt:'2026-10-11'}];
 const params=new URLSearchParams(location.search);
 if(params.has('empty')) initialRows.length=0;
+if(params.has('hermes')) target.hermes=true;
 if(params.has('approval')) initialRows[1].message.parts=[{type:'tool-synthetic_write',toolCallId:'fixture-tool',state:'approval-requested',input:{value:'synthetic'},approval:{id:'fixture-approval'}}];
 if(params.has('branches'))initialRows.push({id:'alternate-answer',parentId:'source-question',createdAt:3,feedback:null,message:{id:'alternate-answer',role:'assistant',parts:[{type:'data-speaker',data:{botId:'writer',name:'Writer'}},{type:'text',text:'Alternate draft version.'}]}});
 if(params.has('attachment'))initialRows[0].message.parts=[{type:'file',mediaType:'application/pdf',filename:'synthetic.pdf',url:'/api/files/fixture'}];
