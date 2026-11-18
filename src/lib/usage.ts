@@ -103,7 +103,7 @@ export async function usageSummary(days = ADMIN_USAGE_DAYS) {
       select to_char(d, 'YYYY-MM-DD') as day,
              coalesce(sum(t.replies), 0)::int as messages,
              coalesce(sum(t.input_tokens + t.output_tokens), 0)::bigint as tokens
-      from generate_series(date_trunc('day', now()) - make_interval(days => ${days - 1}), date_trunc('day', now()), interval '1 day') d
+      from generate_series(date_trunc('day', ${since}), date_trunc('day', now()), interval '1 day') d
       left join t on date_trunc('day', t.at) = d
       group by d order by d
     `)

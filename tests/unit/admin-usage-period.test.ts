@@ -90,6 +90,16 @@ describe("admin Usage period on isolated SQL", () => {
     expect((await usageExportRows(90)).reduce((sum, row) => sum + Number(row.replies), 0)).toBe(4);
   });
 
+  it("includes the first partial calendar day in the daily breakdown", async () => {
+    // Put a reply halfway between the rolling cutoff and the following midnight.
+    await fixture.client!.exec(`UPDATE messages SET created_at = now() - interval '30 days'
+      + (date_trunc('day', now()) + interval '1 day' - now()) / 2 WHERE id = 'reply-31'`);
+    const { daily, totals } = await usageSummary();
+    expect(daily[0]).toMatchObject({ day: ago(30).toISOString().slice(0, 10), messages: 1 });
+    expect(daily.reduce((sum, row) => sum + Number(row.tokens), 0))
+      .toBe(Number(totals.input_tokens) + Number(totals.output_tokens));
+  });
+
   it("labels the rendered download and downloaded filename with the range actually exported", async () => {
     const html = renderToStaticMarkup(await AdminUsagePage());
     expect(html).toContain("Last 30 days");
