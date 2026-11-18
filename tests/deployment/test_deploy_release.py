@@ -406,6 +406,21 @@ class BackupDurabilityTests(unittest.TestCase):
         def backup(self, release, destination):
             return deploy.Operator.backup(self, release, destination)
 
+    def test_uploads_validation_checks_the_gzip_trailer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = self.BackupIOOperator(tmp)
+            op.state.mkdir(mode=0o700)
+            destination = op.state / "backup-fixture"
+            op.backup(manifest(), destination)
+            uploads = destination / "uploads.tar.gz"
+            original = uploads.read_bytes()
+            bad_crc = bytes([original[-8] ^ 1]) + original[-7:]
+            for trailer in (b"", bad_crc):
+                with self.subTest(trailer=trailer):
+                    uploads.write_bytes(original[:-8] + trailer)
+                    with self.assertRaisesRegex(deploy.DeploymentError, "corrupt or truncated"):
+                        deploy.verify_archive(uploads)
+
     def test_backup_fsyncs_archive_directory_and_parent_before_return(self):
         with tempfile.TemporaryDirectory() as tmp:
             op = self.BackupIOOperator(tmp)

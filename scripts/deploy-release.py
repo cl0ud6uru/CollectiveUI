@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import zlib
 
 
 class DeploymentError(Exception):
@@ -74,14 +76,21 @@ def validate_manifest(value, namespace):
 
 def verify_archive(path):
     # Storage has regular files/directories. Refuse unsafe names/links before any extraction.
-    with tarfile.open(path, "r|gz") as archive:
-        count = 0
-        for member in archive:
-            count += 1
-            if member.name.startswith("/") or ".." in Path(member.name).parts or not (member.isfile() or member.isdir()):
-                raise DeploymentError("Uploads backup contains an unsafe entry")
-        if not count:
-            raise DeploymentError("Empty uploads archive")
+    try:
+        with gzip.open(path, "rb") as stream:
+            with tarfile.open(fileobj=stream, mode="r|") as archive:
+                count = 0
+                for member in archive:
+                    count += 1
+                    if member.name.startswith("/") or ".." in Path(member.name).parts or not (member.isfile() or member.isdir()):
+                        raise DeploymentError("Uploads backup contains an unsafe entry")
+                if not count:
+                    raise DeploymentError("Empty uploads archive")
+            # Tar iteration stops at its end marker. Read through the gzip trailer to verify the CRC and size.
+            while stream.read(1024 * 1024):
+                pass
+    except (gzip.BadGzipFile, EOFError, zlib.error) as error:
+        raise DeploymentError("Uploads backup is corrupt or truncated") from error
 
 
 class Operator:
