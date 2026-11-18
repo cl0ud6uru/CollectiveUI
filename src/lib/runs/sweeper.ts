@@ -222,6 +222,11 @@ export async function reconcileRoutines(): Promise<number> {
       and rr.created_at < now() - ${ROUTINE_GRACE_MS}::int * interval '1 millisecond'
       and not exists (select 1 from ${agentRuns} ar where ar.routine_run_id = rr.id and ar.status in ('queued', 'running', 'waiting_tasks'))
       and (rr.status = 'running' or not exists (select 1 from ${agentRuns} ar where ar.routine_run_id = rr.id and ar.status = 'waiting'))
+      -- Legacy approvals with a conversation but no agent run are still answerable.
+      -- Exclude them before LIMIT so they cannot fill every recovery batch.
+      and (rr.status = 'running' or rr.conversation_id is null or exists (
+        select 1 from ${agentRuns} ar where ar.routine_run_id = rr.id
+      ))
     limit ${ROUTINE_BATCH}`);
   let n = 0;
   for (const rr of rows) {
