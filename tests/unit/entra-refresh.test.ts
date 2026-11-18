@@ -52,6 +52,19 @@ it.each([200, 400])("uses the newer sign-in when the delayed token response retu
   expect(decrypt(row.refreshTokenEnc!, AAD.userRefreshToken)).toBe("sign-in-refresh");
 });
 
+it("refreshes a replacement sign-in with less than two minutes left", async () => {
+  const tokensUsed: string[] = [];
+  vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+    tokensUsed.push((init.body as URLSearchParams).get("refresh_token")!);
+    if (tokensUsed.length === 1) {
+      await saveEntraTokens("owner", { access_token: "expiring", refresh_token: "new-refresh", expires_at: Date.now() / 1000 + 30 });
+    }
+    return Response.json({ access_token: `access-${tokensUsed.length}`, expires_in: 3600 });
+  });
+  expect(await getGraphToken("owner")).toBe("access-2");
+  expect(tokensUsed).toEqual(["old-refresh", "new-refresh"]);
+});
+
 it("keeps credentials removed during refresh absent", async () => {
   providerRefresh(async () => { await db.delete(userTokens); });
   expect(await getGraphToken("owner")).toBeNull();
