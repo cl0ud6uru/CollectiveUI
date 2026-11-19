@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const input = (page: Page) => page.getByRole('textbox', { name: 'Message', exact: true });
+const input = (page: Page) => page.getByLabel('Message', { exact: true });
 const state = async (page: Page) => (await page.request.get('/fixture/state')).json();
 const configure = async (page: Page, value: Record<string, unknown>) => { await page.request.post('/fixture/config', { data: value }); };
 async function open(page: Page, mode = '') {
@@ -190,6 +190,24 @@ for (const empty of [false, true]) for (const text of ['', 'Read this attachment
     expect(requests[1].message.parts).toEqual(requests[0].message.parts);
   });
 }
+
+test('retrying rejected literal slash text sends a message with the same literal content', async ({ page }) => {
+  await open(page, '?hermes'); await configure(page, { send: 'reject' });
+  await input(page).fill('//reset');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect.poll(async () => (await state(page)).requests.length).toBe(1);
+  await page.request.get('/fixture/release');
+  await expect(input(page)).toHaveValue('//reset');
+  await configure(page, { send: 'accept' });
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText('Synthetic reply accepted.', { exact: true })).toBeVisible();
+  const { requests } = await state(page);
+  expect(requests).toHaveLength(2);
+  for (const request of requests) {
+    expect(request.literalSlash).toBe(true);
+    expect(request.message.parts).toEqual([{ type: 'text', text: '/reset' }]);
+  }
+});
 
 test('first-message rejection preserves newer text and an upload already in flight', async ({ page }) => {
   await open(page, '?empty'); await configure(page, { send: 'reject' });

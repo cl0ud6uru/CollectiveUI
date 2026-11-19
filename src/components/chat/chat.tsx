@@ -304,7 +304,7 @@ export function Chat({
 
   // The server refused the request before saving anything (busy, over the reply limit, …): take the message back into
   // the composer, or show an answer's approval cards again, so what's on screen matches what's stored.
-  const sentReplyMention = useRef<{ messageId: string; mention: string | null } | null>(null);
+  const submittedDraft = useRef<{ messageId: string; text: string; mention: string | null } | null>(null);
   const rejectedDraft = useRef<{ messageId: string; text: string; files: UploadedFile[]; reply?: ReplyContext; mention: string | null } | null>(null);
   useEffect(() => {
     if (!error) return;
@@ -315,9 +315,11 @@ export function Chat({
     const last = messages.at(-1);
     if (last?.role === "user" && body?.unsavedMessageId === last.id) {
       rejectedSubmissionId.current = last.id;
-      rejectedDraft.current = { messageId: last.id, text: last.parts.map((p) => (p.type === "text" ? p.text : "")).join(""),
+      // A literal slash message has already been unescaped in the transcript. Restore the composer input.
+      const draft = submittedDraft.current?.messageId === last.id ? submittedDraft.current : null;
+      rejectedDraft.current = { messageId: last.id, text: draft?.text ?? last.parts.map((p) => (p.type === "text" ? p.text : "")).join(""),
         files: last.parts.flatMap(part => part.type === "file" ? [{ id: part.url, url: part.url, filename: part.filename ?? "Attachment", mediaType: part.mediaType }] : []),
-        reply: last.metadata?.replyTo, mention: sentReplyMention.current?.messageId === last.id ? sentReplyMention.current.mention : null };
+        reply: last.metadata?.replyTo, mention: draft?.mention ?? null };
       setMessages(messages.slice(0, -1));
     } else if (last?.role === "assistant" && body?.retryApprovalMessageId === last.id) {
       const reopened = last.parts.map((p) => {
@@ -610,7 +612,7 @@ export function Chat({
     if (busy && !(await stopReply())) return false;
     begin();
     const messageId = newId();
-    sentReplyMention.current = { messageId, mention: ownedMention };
+    submittedDraft.current = { messageId, text, mention: ownedMention };
     sendMessage(
       {
         id: messageId,
