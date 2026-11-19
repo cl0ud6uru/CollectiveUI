@@ -406,6 +406,21 @@ class BackupDurabilityTests(unittest.TestCase):
         def backup(self, release, destination):
             return deploy.Operator.backup(self, release, destination)
 
+    def test_uploads_validation_checks_the_gzip_trailer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            op = self.BackupIOOperator(tmp)
+            op.state.mkdir(mode=0o700)
+            destination = op.state / "backup-fixture"
+            op.backup(manifest(), destination)
+            uploads = destination / "uploads.tar.gz"
+            original = uploads.read_bytes()
+            bad_crc = bytes([original[-8] ^ 1]) + original[-7:]
+            for trailer in (b"", bad_crc):
+                with self.subTest(trailer=trailer):
+                    uploads.write_bytes(original[:-8] + trailer)
+                    with self.assertRaisesRegex(deploy.DeploymentError, "corrupt or truncated"):
+                        deploy.verify_archive(uploads)
+
     def test_backup_fsyncs_archive_directory_and_parent_before_return(self):
         with tempfile.TemporaryDirectory() as tmp:
             op = self.BackupIOOperator(tmp)
@@ -726,6 +741,59 @@ class RollbackSafetyTests(unittest.TestCase):
             op, _, _ = self._pending(tmp, previous=None)
             with self.assertRaisesRegex(deploy.DeploymentError, "No complete backup and previous"):
                 op.rollback(True)
+
+    def test_unusable_retained_backup_does_not_block_future_operations(self):
+        for problem in ("initial release", "checksum"):
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory() as tmp:
+                previous = None if problem == "initial release" else manifest(revision=PREVIOUS_REVISION)
+                op, destination, journal = self._pending(tmp, previous=previous)
+                op.clear_pending()
+                deploy.atomic_json(destination / "receipt.json", journal)
+                deploy.atomic_json(op.current_path, journal["target"])
+                if problem == "checksum":
+                    (destination / "database.dump").write_bytes(b"damaged")
+
+                with self.assertRaises(deploy.DeploymentError):
+                    op.rollback(True, destination)
+
+                self.assertFalse(op.journal_path.exists())
+                self.assertEqual(deploy.read_json(op.current_path), journal["target"])
+                self.assertFalse(any(call[0] == "stop" for call in op.calls))
+
+    def test_retry_after_interruption_between_database_drop_and_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = manifest(revision=PREVIOUS_REVISION)
+            op, destination, journal = self._pending(tmp, previous=previous)
+            op.clear_pending()
+            deploy.atomic_json(destination / "receipt.json", journal)
+            deploy.atomic_json(op.current_path, journal["target"])
+            compose = op.compose
+            portal_exists = True
+            interrupt = True
+
+            def interrupted_compose(release, *args, **kwargs):
+                nonlocal portal_exists, interrupt
+                if "psql" in args and args[args.index("-d") + 1] == "portal" and not portal_exists:
+                    raise deploy.DeploymentError("database portal does not exist")
+                if "dropdb" in args:
+                    portal_exists = False
+                if "createdb" in args:
+                    if interrupt:
+                        interrupt = False
+                        raise KeyboardInterrupt
+                    portal_exists = True
+                return compose(release, *args, **kwargs)
+
+            with patch.object(op, "compose", interrupted_compose):
+                with self.assertRaises(KeyboardInterrupt):
+                    op.rollback(True, destination)
+                self.assertFalse(portal_exists)
+                self.assertEqual(deploy.read_json(op.journal_path)["phase"], "restoring")
+                op.rollback(True)
+
+            self.assertTrue(portal_exists)
+            self.assertFalse(op.journal_path.exists())
+            self.assertEqual(deploy.read_json(op.current_path), previous)
 
     def test_restore_orders_database_then_uploads_then_previous_pair(self):
         with tempfile.TemporaryDirectory() as tmp:

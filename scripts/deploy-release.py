@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import zlib
 
 
 class DeploymentError(Exception):
@@ -74,14 +76,21 @@ def validate_manifest(value, namespace):
 
 def verify_archive(path):
     # Storage has regular files/directories. Refuse unsafe names/links before any extraction.
-    with tarfile.open(path, "r|gz") as archive:
-        count = 0
-        for member in archive:
-            count += 1
-            if member.name.startswith("/") or ".." in Path(member.name).parts or not (member.isfile() or member.isdir()):
-                raise DeploymentError("Uploads backup contains an unsafe entry")
-        if not count:
-            raise DeploymentError("Empty uploads archive")
+    try:
+        with gzip.open(path, "rb") as stream:
+            with tarfile.open(fileobj=stream, mode="r|") as archive:
+                count = 0
+                for member in archive:
+                    count += 1
+                    if member.name.startswith("/") or ".." in Path(member.name).parts or not (member.isfile() or member.isdir()):
+                        raise DeploymentError("Uploads backup contains an unsafe entry")
+                if not count:
+                    raise DeploymentError("Empty uploads archive")
+            # Tar iteration stops at its end marker. Read through the gzip trailer to verify the CRC and size.
+            while stream.read(1024 * 1024):
+                pass
+    except (gzip.BadGzipFile, EOFError, zlib.error) as error:
+        raise DeploymentError("Uploads backup is corrupt or truncated") from error
 
 
 class Operator:
@@ -311,7 +320,7 @@ class Operator:
         elif not self.is_ancestor(current["revision"], target["revision"]):
             raise DeploymentError("Target revision is older or divergent; apply requires a descendant and downgrade requires explicit rollback --restore-data")
 
-    def verify_database(self, manifest, require_running=True):
+    def verify_database(self, manifest, require_running=True, *, database_name="portal"):
         database = self.containers(manifest, "db")
         if len(database) != 1 or not any(m.get("Name") == f"{self.project}_pgdata" and m["Destination"] == "/var/lib/postgresql/data" for m in database[0]["Mounts"]):
             raise DeploymentError("Database volume does not match the explicit project")
@@ -323,7 +332,7 @@ class Operator:
                 raise DeploymentError("Database must be running for version and pgvector verification")
             return
         version = self.compose(manifest, "exec", "-T", "db", "psql", "-X", "-At", "-v", "ON_ERROR_STOP=1",
-                               "-U", "portal", "-d", "portal", "-c",
+                               "-U", "portal", "-d", database_name, "-c",
                                "SELECT current_setting('server_version_num'), EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector');").strip()
         if not re.fullmatch(r"16\d{4}\|t", version):
             raise DeploymentError("Live database must run PostgreSQL 16 with pgvector available; back up and migrate unsupported databases separately before adoption/update")
@@ -461,12 +470,24 @@ class Operator:
             raise
         print("Recovered previous release before any migration; retained partial backups for inspection")
 
-    def rollback(self, restore_data):
+    def rollback(self, restore_data, backup=None):
         if not restore_data:
             raise DeploymentError("Rollback restores database AND uploads, losing writes since the snapshot; pass --restore-data deliberately")
-        if not self.journal_path.exists():
+        if backup is not None:
+            if self.journal_path.exists():
+                raise DeploymentError("Pending operation exists; recover that operation before selecting another backup")
+            destination = backup.resolve()
+            if destination.parent != self.state or backup.is_symlink():
+                raise DeploymentError("Select a retained backup inside this installation's protected state directory")
+            journal = read_json(destination / "receipt.json")
+            if journal["backup"] != str(destination):
+                raise DeploymentError("Backup receipt does not belong to the selected directory")
+            if read_json(self.current_path) != journal["target"]:
+                raise DeploymentError("Backup target is not the current release; rollback one recorded update at a time")
+        elif self.journal_path.exists():
+            journal = read_json(self.journal_path)
+        else:
             raise DeploymentError("No pending operation; choose a retained backup with rollback --backup PATH --restore-data")
-        journal = read_json(self.journal_path)
         self.operation = journal.get("operation")
         previous = journal.get("previous")
         if not previous or not journal.get("checksums"):
@@ -490,7 +511,8 @@ class Operator:
         try:
             self.stop(previous)
             self.stop_helpers()
-            self.verify_database(previous)
+            # An interrupted restore may have dropped portal without recreating it.
+            self.verify_database(previous, database_name="postgres")
             # --clean alone leaves new objects absent from the old dump. Recreate the fixed core DB instead.
             self.compose(previous, "exec", "-T", "db", "dropdb", "--force", "--if-exists", "-U", "portal", "portal")
             self.compose(previous, "exec", "-T", "db", "createdb", "-U", "portal", "--owner=portal", "portal")
@@ -539,19 +561,7 @@ def main():
             elif arguments.action == "recover":
                 operator.recover()
             elif arguments.action == "rollback":
-                if arguments.backup:
-                    if not arguments.restore_data:
-                        raise DeploymentError("Choose --restore-data deliberately before preparing rollback")
-                    if operator.journal_path.exists():
-                        raise DeploymentError("Pending operation exists; recover that operation before selecting another backup")
-                    destination = arguments.backup.resolve()
-                    if destination.parent != operator.state or destination.is_symlink():
-                        raise DeploymentError("Select a retained backup inside this installation's protected state directory")
-                    receipt = read_json(destination / "receipt.json")
-                    if read_json(operator.current_path) != receipt["target"]:
-                        raise DeploymentError("Backup target is not the current release; rollback one recorded update at a time")
-                    atomic_json(operator.journal_path, receipt)
-                operator.rollback(arguments.restore_data)
+                operator.rollback(arguments.restore_data, arguments.backup)
             else:
                 for name, path in (("current", operator.current_path), ("pending", operator.journal_path)):
                     if path.exists():
