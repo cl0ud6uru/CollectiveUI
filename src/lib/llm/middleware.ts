@@ -1,6 +1,6 @@
 import type { LanguageModelMiddleware } from "ai";
 import { isAnthropicFamily, speaksResponses, type AnyProviderConfig, type EnabledKind } from "./catalog";
-import { mapUsage, recordUsage, type ProviderUsage, type UsageContext } from "./usage";
+import { isCompleteFinish, mapUsage, recordUsage, type ProviderUsage, type UsageContext } from "./usage";
 
 type Purpose = UsageContext["purpose"] | "probe";
 type StreamPart<S> = S extends ReadableStream<infer T> ? T : never;
@@ -65,7 +65,7 @@ export function usageMiddleware(ctx: UsageContext, opts: { skipUnknown?: boolean
     specificationVersion: "v4",
     wrapGenerate: async ({ doGenerate }) => {
       const result = await doGenerate();
-      record(result.usage as ProviderUsage, result.providerMetadata);
+      record(result.usage as ProviderUsage, result.providerMetadata, isCompleteFinish(result.finishReason.unified) ? "complete" : "incomplete");
       return result;
     },
     wrapStream: async ({ doStream }) => {
@@ -83,7 +83,7 @@ export function usageMiddleware(ctx: UsageContext, opts: { skipUnknown?: boolean
             if (part.done) { await once(); controller.close(); return; }
             if (part.value.type === "error") failed = true;
             if (part.value.type === "finish") await once(part.value.usage as ProviderUsage, part.value.providerMetadata,
-              !failed && ["stop", "length", "tool-calls"].includes(part.value.finishReason.unified) ? "complete" : "incomplete");
+              !failed && isCompleteFinish(part.value.finishReason.unified) ? "complete" : "incomplete");
             controller.enqueue(part.value);
           } catch (error) {
             await once();

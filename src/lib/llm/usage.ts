@@ -64,6 +64,11 @@ export type ProviderUsage = {
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : null);
 
+/** Provider finish reasons that establish a completed call for accounting. */
+export function isCompleteFinish(reason: string): boolean {
+  return reason === "stop" || reason === "length" || reason === "tool-calls";
+}
+
 export function mapUsage(u: ProviderUsage | undefined) {
   return {
     inputTokens: num(u?.inputTokens?.total), // includes cached tokens
