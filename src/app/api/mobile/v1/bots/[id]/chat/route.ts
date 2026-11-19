@@ -5,14 +5,14 @@ import { openSideChat } from "@/lib/chat/side";
 import { newId } from "@/lib/ids";
 import { errorResponse, requirePrincipal } from "@/lib/session";
 
-const Body = z.object({ kind: z.enum(["home", "side"]).default("home") });
+const Body = z.object({ kind: z.enum(["home", "side"]).default("home") }).strict();
 
 /** Opens the bot's home chat (created on first use), or a new side chat with it. */
 export async function POST(req: Request, ctx: RouteContext<"/api/mobile/v1/bots/[id]/chat">) {
   try {
     const p = await requirePrincipal();
     const { id } = await ctx.params;
-    const body = Body.safeParse(await req.json().catch(() => ({})));
+    const body = Body.safeParse(await req.json().catch(() => null));
     if (!body.success || id.length > 64) return Response.json({ error: "Invalid request" }, { status: 400 });
     const conv = body.data.kind === "side" ? await openSideChat(p, id, newId()) : await openBotHome(p, id);
     revalidatePath("/", "layout");
