@@ -36,6 +36,8 @@ final class AppModel {
 
     var shell: ShellResponse? = nil
     var shellError: String? = nil
+    @ObservationIgnored private var shellRequest = 0
+    @ObservationIgnored private var lastAppliedShellRequest = 0
     private var botStatusRequest = 0
     var sessionInfo: SessionInfo? = nil
     private(set) var settingsAccess = SettingsSessionAccess()
@@ -420,9 +422,12 @@ final class AppModel {
     func refreshShell() async {
         guard let api, token != nil else { return }
         let generation = settingsAccess.generation
+        shellRequest += 1
+        let request = shellRequest
         do {
             let fresh = try await api.shell()
-            guard settingsAccess.generation == generation else { return }
+            guard settingsAccess.generation == generation, request > lastAppliedShellRequest else { return }
+            lastAppliedShellRequest = request
             botStatusRequest += 1
             shell = fresh
             shellError = nil
@@ -430,10 +435,11 @@ final class AppModel {
             liveActivities.restore()
             #endif
         } catch {
-            guard settingsAccess.generation == generation else { return }
+            guard settingsAccess.generation == generation, request > lastAppliedShellRequest else { return }
             if error.isUnauthorized || error.isCancellation {
                 return
             }
+            lastAppliedShellRequest = request
             shellError = error.localizedDescription
         }
     }
