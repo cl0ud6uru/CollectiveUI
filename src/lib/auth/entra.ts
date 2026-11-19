@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { userTokens } from "@/db/schema";
-import { AAD, decrypt, decryptOptional, encrypt, encryptOptional } from "@/lib/crypto";
+import { AAD, decrypt, encrypt, encryptOptional } from "@/lib/crypto";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -26,31 +26,29 @@ type OAuthAccount = {
   scope?: string;
 };
 
-export async function saveEntraTokens(userId: string, account: OAuthAccount) {
-  if (!account.access_token) return;
+function tokenValues(accessToken: string, account: OAuthAccount) {
   const expiresAt = new Date((account.expires_at ?? Math.floor(Date.now() / 1000) + 3600) * 1000);
-  const values = {
-    userId,
-    accessTokenEnc: encrypt(account.access_token, AAD.userAccessToken),
+  return {
+    accessTokenEnc: encrypt(accessToken, AAD.userAccessToken),
     refreshTokenEnc: encryptOptional(account.refresh_token, AAD.userRefreshToken),
     expiresAt,
     scope: account.scope ?? null,
     updatedAt: new Date(),
   };
-  await db.insert(userTokens).values(values).onConflictDoUpdate({ target: userTokens.userId, set: values });
 }
 
-/** Returns a valid delegated Graph token for the user, refreshing it if needed. */
-export async function getGraphToken(userId: string, signal?: AbortSignal | null): Promise<string | null> {
-  signal?.throwIfAborted();
-  const [row] = await db.select().from(userTokens).where(eq(userTokens.userId, userId));
-  signal?.throwIfAborted();
-  if (!row) return null;
-  if (row.expiresAt.getTime() - Date.now() > 120_000) return decrypt(row.accessTokenEnc, AAD.userAccessToken);
+export async function saveEntraTokens(userId: string, account: OAuthAccount) {
+  if (!account.access_token) return;
+  const values = tokenValues(account.access_token, account);
+  await db.insert(userTokens).values({ userId, ...values }).onConflictDoUpdate({ target: userTokens.userId, set: values });
+}
 
-  const refresh = decryptOptional(row.refreshTokenEnc, AAD.userRefreshToken);
+type EntraTokens = typeof userTokens.$inferSelect;
+
+async function refreshGraphToken(row: EntraTokens, signal?: AbortSignal | null) {
   const issuer = process.env.AUTH_MICROSOFT_ENTRA_ID_ISSUER; // https://login.microsoftonline.com/<tenant>/v2.0
-  if (!refresh || !issuer) return null;
+  if (!row.refreshTokenEnc || !issuer) return null;
+  const refresh = decrypt(row.refreshTokenEnc, AAD.userRefreshToken);
   const tokenUrl = issuer.replace(/\/v2\.0\/?$/, "") + "/oauth2/v2.0/token";
   const res = await fetch(tokenUrl, {
     method: "POST",
@@ -64,15 +62,42 @@ export async function getGraphToken(userId: string, signal?: AbortSignal | null)
       scope: row.scope ?? "openid offline_access User.Read",
     }),
   });
-  if (!res.ok) return null;
-  const t = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number; scope?: string };
-  await saveEntraTokens(userId, {
-    access_token: t.access_token,
-    refresh_token: t.refresh_token ?? refresh,
-    expires_at: Math.floor(Date.now() / 1000) + t.expires_in,
-    scope: t.scope ?? row.scope ?? undefined,
-  });
-  return t.access_token;
+  if (res.ok) {
+    const t = (await res.json()) as { access_token: string; refresh_token?: string; expires_in: number; scope?: string };
+    const values = tokenValues(t.access_token, {
+      refresh_token: t.refresh_token ?? refresh,
+      expires_at: Math.floor(Date.now() / 1000) + t.expires_in,
+      scope: t.scope ?? row.scope ?? undefined,
+    });
+    // A sign-in, a second refresh or removal may have committed during the provider round-trip.
+    const updated = await db.update(userTokens).set(values).where(and(
+      eq(userTokens.userId, row.userId),
+      eq(userTokens.accessTokenEnc, row.accessTokenEnc),
+      eq(userTokens.refreshTokenEnc, row.refreshTokenEnc),
+    )).returning({ userId: userTokens.userId });
+    if (updated.length) return t.access_token;
+  }
+
+  return null;
+}
+
+/** Returns a valid delegated Graph token for the user, refreshing it if needed. */
+export async function getGraphToken(userId: string, signal?: AbortSignal | null): Promise<string | null> {
+  let previous: EntraTokens | undefined;
+  // If credentials changed during refresh, allow one attempt with the replacement pair.
+  const maxRefreshes = 2;
+  for (let refreshes = 0; refreshes <= maxRefreshes; refreshes++) {
+    signal?.throwIfAborted();
+    const [row] = await db.select().from(userTokens).where(eq(userTokens.userId, userId));
+    signal?.throwIfAborted();
+    if (!row || (previous && row.accessTokenEnc === previous.accessTokenEnc && row.refreshTokenEnc === previous.refreshTokenEnc)) return null;
+    if (row.expiresAt.getTime() - Date.now() > 120_000) return decrypt(row.accessTokenEnc, AAD.userAccessToken);
+    if (refreshes === maxRefreshes) break;
+    const token = await refreshGraphToken(row, signal);
+    if (token) return token;
+    previous = row;
+  }
+  return null;
 }
 
 export async function graphFetch<T = void>(userId: string, path: string, init?: RequestInit): Promise<T> {
