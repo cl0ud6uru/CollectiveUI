@@ -146,6 +146,20 @@ describe("durable routine Inbox notifications (production hooks with migrated PG
     expect(await inbox()).toMatchObject([{ kind: "routine_error", title: "Daily digest failed", body: deleted ? "Its conversation was deleted." : "The run was lost. Run the routine again." }]);
   });
 
+  it("can recover a lost run behind a full batch of legacy approvals", async () => {
+    await db.delete(schema.agentRuns);
+    await db.delete(schema.routineRuns);
+    const base = { routineId: "routine", trigger: "manual" as const, conversationId: "chat", createdAt: new Date(Date.now() - 300_000) };
+    await db.insert(schema.routineRuns).values(Array.from({ length: 20 }, (_, i) => ({
+      ...base, id: `legacy-${i}`, status: "awaiting_approval" as const,
+    })));
+    await db.insert(schema.routineRuns).values({ ...base, id: "routine-run", status: "running" });
+
+    expect(await reconcileRoutines()).toBe(1);
+    expect((await routine()).status).toBe("failed");
+    expect(await inbox()).toMatchObject([{ kind: "routine_error", routineRunId: "routine-run" }]);
+  });
+
   it("leaves a legacy approval without an agent run answerable", async () => {
     await db.delete(schema.agentRuns);
     await db.update(schema.routineRuns).set({ status: "awaiting_approval" });
