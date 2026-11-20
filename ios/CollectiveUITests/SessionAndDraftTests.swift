@@ -128,6 +128,27 @@ final class SessionAndDraftTests: XCTestCase {
         XCTAssertEqual(model.phase, .setup)
     }
 
+    func testOlderShellResponseCannotReplaceNewerSnapshotOrSetAnError() async {
+        let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
+            defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)
+        for status in [200, 503] {
+            let started = expectation(description: "Older refresh started")
+            let gate = FixtureDeliveryGate()
+            FixtureProtocol.handler = { _ in
+                started.fulfill()
+                return .init(status: status, data: Data(#"{"inboxUnread":5}"#.utf8), deliveryGate: gate)
+            }
+            let older = Task { await model.refreshShell() }
+            await fulfillment(of: [started], timeout: 3)
+            FixtureProtocol.handler = { _ in .init(data: Data(#"{"inboxUnread":1}"#.utf8)) }
+            await model.refreshShell()
+            gate.release()
+            await older.value
+            XCTAssertEqual(model.inboxUnread, 1)
+            XCTAssertNil(model.shellError)
+        }
+    }
+
     private func botStatusModel() throws -> AppModel {
         let model = AppModel(credentials: MemoryCredentials(["baseURL": server.absoluteString, "token": "fixture"]),
             defaults: defaults, draftRoot: root, session: FixtureProtocol.session(), launchDemo: false)

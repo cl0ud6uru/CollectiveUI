@@ -7,7 +7,7 @@ import { db } from "@/db";
 import { hostedSearchBudgets } from "@/db/schema";
 import { NATIVE_SEARCH_KEY, SEARCH_CALL_MICROS } from "@/lib/native-search-policy";
 import { ProviderUnavailableError } from "./errors";
-import { mapUsage, recordUsage, type UsageContext } from "./usage";
+import { isCompleteFinish, mapUsage, recordUsage, type UsageContext } from "./usage";
 
 export type NativeSearchOptions = { maxCalls: number; authorize: () => Promise<void> };
 export type SearchBudget = { reserve: () => Promise<number>; settle: (reserved: number, observed: number) => Promise<void> };
@@ -63,7 +63,7 @@ export function nativeSearchMiddleware(ctx: UsageContext, options: NativeSearchO
               return;
             }
           }
-          if (part.type === "finish" && !failed && ["stop", "length", "tool-calls"].includes(part.finishReason.unified) && part.usage.inputTokens.total !== undefined) await budget.settle(reserved, seen.size);
+          if (part.type === "finish" && !failed && isCompleteFinish(part.finishReason.unified) && part.usage.inputTokens.total !== undefined) await budget.settle(reserved, seen.size);
           controller.enqueue(part);
         },
       })) };

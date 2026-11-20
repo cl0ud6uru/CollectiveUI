@@ -27,6 +27,7 @@ type SpeechRecognitionLike = {
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
+  abort: () => void;
 };
 
 function speechCtor(): (new () => SpeechRecognitionLike) | undefined {
@@ -201,6 +202,14 @@ export const Composer = forwardRef<
   const canDictate = useSyncExternalStore(noopSubscribe, () => !!speechCtor(), () => false);
   const [listening, setListening] = useState(false);
   const recRef = useRef<SpeechRecognitionLike | null>(null);
+  useEffect(() => () => {
+    const recognition = recRef.current;
+    if (!recognition) return;
+    recRef.current = null;
+    recognition.onresult = null;
+    recognition.onend = null;
+    recognition.abort();
+  }, []);
   useEffect(() => { if (voiceActive) recRef.current?.stop(); }, [voiceActive]);
   const toggleDictation = useCallback(() => {
     if (voiceActive) return;
