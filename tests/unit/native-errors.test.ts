@@ -7,6 +7,7 @@ import { ProviderUnavailableError } from "@/lib/llm/errors";
 import { ChatGPTNotConnectedError, ChatGPTUsageLimitError } from "@/lib/llm/chatgpt/errors";
 import { McpToolError } from "@/lib/mcp/errors";
 import { NativeRunBudgetError } from "@/lib/llm/run-budget-policy";
+import { ContextBudgetError } from "@/lib/agent/context-budget";
 import { DelegationBudgetError } from "@/lib/delegation/errors";
 import { HttpError } from "@/lib/http-error";
 const privateText = "arbitrary-fixture-secret https://private.fixture.invalid/request-data";
@@ -34,6 +35,12 @@ describe("native error boundary", () => {
       expect(nativeErrorText(err)).toBe(err.message);
       expect(nativeErrorText(new RetryError({ message: privateText, reason: "maxRetriesExceeded", errors: [err] }))).toBe(err.message);
     }
+  });
+  it("shows context budget guidance instead of an opaque reference", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const err = new ContextBudgetError("Increase the model context window.");
+    expect(nativeErrorText(err)).toBe(err.message);
+    expect(log).not.toHaveBeenCalled();
   });
   it("preserves trusted local approval guidance", () => {
     expect(nativeErrorText(new Error(privateText), "Review the new approval card.")).toBe("Review the new approval card.");

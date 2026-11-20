@@ -5,6 +5,17 @@ export const DEFAULT_CONTEXT_WINDOW_TOKENS = 16_384;
 /** Reserved for generation when an app has no explicit maxTokens setting. */
 export const DEFAULT_OUTPUT_RESERVE_TOKENS = 2_048;
 
+/** Every message is a fixed string written for the person: it never carries prompt, tool or provider content. */
+export class ContextBudgetError extends Error {
+  readonly userFacing = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "ContextBudgetError";
+  }
+}
+
+const STATIC_PROMPT_TOO_LARGE = "This model's instructions and tools exceed its configured context budget. Remove some tools or ask an admin to increase the model context window.";
+
 export type ContextBudget = {
   inputBudgetTokens: number;
   outputReserveTokens: number;
@@ -45,7 +56,7 @@ export async function compactModelContext(
   if (!turns.length) {
     const instructions = buildPrompt(omittedTurnsBefore);
     const estimatedInputTokens = await estimateModelContextTokens([], instructions, options.tools);
-    if (estimatedInputTokens > options.inputBudgetTokens) throw new Error("Model instructions and tools exceed this model's configured context budget.");
+    if (estimatedInputTokens > options.inputBudgetTokens) throw new ContextBudgetError(STATIC_PROMPT_TOO_LARGE);
     return { messages: [], omittedTurns: omittedTurnsBefore, instructions, estimatedInputTokens,
       ...(omittedTurnsBefore ? { notice: formatOmissionNotice(omittedTurnsBefore) } : {}) };
   }
@@ -55,7 +66,10 @@ export async function compactModelContext(
   while (retained.length > 1 && await cost() > options.inputBudgetTokens) retained.shift();
   const estimatedInputTokens = await cost();
   if (estimatedInputTokens > options.inputBudgetTokens) {
-    throw new Error("The latest turn is too large for this model's configured context budget. Shorten the request or increase the model context window.");
+    // Name the real cause when the tools and instructions alone don't fit: shortening the request can't help then.
+    if (await estimateModelContextTokens([], buildPrompt(omittedTurns()), options.tools) > options.inputBudgetTokens)
+      throw new ContextBudgetError(STATIC_PROMPT_TOO_LARGE);
+    throw new ContextBudgetError("The latest turn is too large for this model's configured context budget. Shorten the request or increase the model context window.");
   }
   const totalOmittedTurns = omittedTurns();
   const instructions = buildPrompt(totalOmittedTurns);
@@ -83,7 +97,7 @@ export function resolveContextBudget(contextWindowTokens?: number | null, maxOut
   const outputReserve = maxOutputTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
   const contextWindow = contextWindowTokens ?? Math.max(DEFAULT_CONTEXT_WINDOW_TOKENS, outputReserve + 1_024);
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || !Number.isSafeInteger(outputReserve) || outputReserve < 1 || outputReserve >= contextWindow) {
-    throw new Error("The model context window must be larger than its output token reserve.");
+    throw new ContextBudgetError("The model context window must be larger than its output token reserve.");
   }
   return { contextWindowTokens: contextWindow, outputReserveTokens: outputReserve, inputBudgetTokens: contextWindow - outputReserve };
 }
@@ -99,7 +113,7 @@ function splitTurns(messages: ModelMessage[]): ModelMessage[][] {
 }
 
 function estimatePart(value: unknown): number {
-  if (!value || typeof value !== "object") throw new Error("Unknown model content cannot be safely budgeted.");
+  if (!value || typeof value !== "object") throw new ContextBudgetError("Unknown model content cannot be safely budgeted.");
   const part = value as Record<string, unknown>;
   if (part.type === "text" && typeof part.text === "string") return estimateText(part.text) + estimateMetadata(part) + 8;
   if (part.type === "reasoning" && typeof part.text === "string") return estimateText(part.text) + estimateMetadata(part) + 8;
@@ -108,9 +122,9 @@ function estimatePart(value: unknown): number {
     const data = part.image ?? part.data;
     const inline = typeof data === "string" && /^(data:image\/[a-z0-9.+-]+;base64,|[A-Za-z0-9+/]+={0,2}$)/i.test(data);
     const bytes = data instanceof Uint8Array;
-    if (!mediaType?.startsWith("image/") || (!inline && !bytes)) throw new Error("Unknown or remote multimodal content cannot be safely budgeted.");
+    if (!mediaType?.startsWith("image/") || (!inline && !bytes)) throw new ContextBudgetError("Unknown or remote multimodal content cannot be safely budgeted.");
     const byteLength = typeof data === "string" ? data.slice(data.indexOf(",") + 1).length * 3 / 4 : (data as Uint8Array).byteLength;
-    if (byteLength > 8 * 1024 * 1024) throw new Error("Inline images larger than 8 MiB cannot be safely budgeted.");
+    if (byteLength > 8 * 1024 * 1024) throw new ContextBudgetError("Inline images larger than 8 MiB cannot be safely budgeted.");
     return 8_192 + Math.ceil(byteLength / (64 * 1024)) * 256 + estimateMetadata(part);
   }
   if (part.type === "file" && typeof part.mediaType === "string") {
@@ -123,26 +137,26 @@ function estimatePart(value: unknown): number {
       const payload = data.slice(data.indexOf(",") + 1);
       const byteLength = /;base64,/i.test(data) ? Buffer.byteLength(payload, "base64") : estimateText(decodeURIComponent(payload));
       if (part.mediaType.startsWith("image/")) {
-        if (byteLength > 8 * 1024 * 1024) throw new Error("Inline images larger than 8 MiB cannot be safely budgeted.");
+        if (byteLength > 8 * 1024 * 1024) throw new ContextBudgetError("Inline images larger than 8 MiB cannot be safely budgeted.");
         return 8_192 + Math.ceil(byteLength / (64 * 1024)) * 256 + estimateMetadata(part);
       }
       return estimateText(data) + estimateMetadata(part);
     }
     if (data instanceof Uint8Array) {
       if (part.mediaType.startsWith("image/")) {
-        if (data.byteLength > 8 * 1024 * 1024) throw new Error("Inline images larger than 8 MiB cannot be safely budgeted.");
+        if (data.byteLength > 8 * 1024 * 1024) throw new ContextBudgetError("Inline images larger than 8 MiB cannot be safely budgeted.");
         return 8_192 + Math.ceil(data.byteLength / (64 * 1024)) * 256 + estimateMetadata(part);
       }
       return data.byteLength + estimateMetadata(part);
     }
-    throw new Error("Unknown or remote multimodal content cannot be safely budgeted.");
+    throw new ContextBudgetError("Unknown or remote multimodal content cannot be safely budgeted.");
   }
   if (part.type === "file" && typeof part.data === "string" && part.data.startsWith("data:text/")) return estimateText(part.data) + estimateMetadata(part) + 16;
   // Tool calls/results and approval protocol parts are small JSON structures with potentially large text outputs.
   if (typeof part.type === "string" && (part.type.startsWith("tool-") || part.type === "dynamic-tool")) {
     return estimateText(stableJson(part)) + 32;
   }
-  throw new Error("Unknown model content cannot be safely budgeted.");
+  throw new ContextBudgetError("Unknown model content cannot be safely budgeted.");
 }
 
 /** Read the SDK's tagged file union without rewriting the messages sent to the provider. */
@@ -211,5 +225,5 @@ function estimateText(text: string): number {
 
 function stableJson(value: unknown): string {
   try { return JSON.stringify(value) ?? ""; }
-  catch { throw new Error("Model tool definitions cannot be safely budgeted."); }
+  catch { throw new ContextBudgetError("Model tool definitions cannot be safely budgeted."); }
 }
