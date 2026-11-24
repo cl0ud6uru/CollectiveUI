@@ -57,6 +57,7 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
       name: modelToolName(server, def.name, opts.taken),
       key: `mcp:${server.id}`,
       mcp: {
+        app: !!appResource(def),
         tool: def.name,
         legacyName: legacyMcpToolName(server, def.name),
         definitionHash: toolHash(def),
@@ -123,7 +124,8 @@ function buildEntries(server: McpServer, defs: McpToolDef[], getClient: (caller?
               ? { isError: true, content: [{ type: "text", text: nativeErrorText(new Error()) }] }
               : redactMcpValue(result as McpCallResult, server);
             if (opts.apps?.audience === 'app') return appComponentResult(clean, budget);
-            if (opts.apps && authority && appResource(def) && server.toolsSnapshot && !ctx?.background && !ctx?.inGroup && ctx?.depth === 0) {
+            if (opts.apps && authority && appResource(def) && server.toolsSnapshot && !ctx?.inGroup &&
+                ((!ctx?.background && ctx?.depth === 0) || !!ctx?.taskId)) {
               const { captureMcpApp } = await import('@/lib/mcp/apps');
               return await captureMcpApp({ ctx: authority.ctx, binding: authority.binding, server, def, client, input: (input ?? {}) as Record<string, unknown>,
                 result: clean, authorize: check });

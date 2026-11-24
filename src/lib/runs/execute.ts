@@ -355,7 +355,8 @@ async function prepareSegment(run: AgentRun,holder:string,admitted:(value:Active
       rows = await loadMessageRows(conversation.id);
     }
     const parent = rows.find((r) => r.id === parentId);
-    if (!parent || parent.role !== "user") throw new HttpError(400, "The message this reply answers is gone.");
+    const appAction = (run.resumeState as ResumeState | null)?.appAction;
+    if (!parent || (parent.role !== "user" && !(appAction && parent.role === 'assistant'))) throw new HttpError(400, "The message this reply answers is gone.");
     return { principal, conversation, bot, app, history: pathTo(rows, parentId).map(rowToUIMessage), continuation: false, delegation,candidate };
   }
   const stored = rows.find((r) => r.id === run.messageId);

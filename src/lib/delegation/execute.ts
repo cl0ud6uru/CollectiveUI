@@ -22,6 +22,7 @@ import { tailRun } from "@/lib/runs/tail";
 import { abortKindOf, RunAbort, runConfig, type FinalStatus, type RunHandle } from "@/lib/runs/types";
 import { admitDelegation, assertTaskExecution, type DelegatedTask } from "./store";
 import type { DelegationResult } from "./policy";
+import { appInstanceIds } from '@/lib/mcp/apps-contract';
 
 const safeError = (e: unknown) => nativeErrorText(e, e instanceof HttpError && e.constructor === HttpError ? e.message : undefined);
 
@@ -147,7 +148,8 @@ export async function taskResult(task: DelegatedTask, q: DbOrTx = db): Promise<D
   const parts = message?.parts ?? [];
   const lastStep = parts.findLastIndex(p => p.type === "step-start");
   const timing = run.startedAt && run.finishedAt ? { startedAt: run.startedAt.toISOString(), finishedAt: run.finishedAt.toISOString() } : {};
-  return { ...base, ...timing, status: "done", answer: parts.slice(Math.max(0, lastStep)).map(p => p.type === "text" ? p.text : "").join("").trim() };
+  const apps = [...new Set(parts.flatMap(p => 'output' in p ? appInstanceIds(p.output) : []))].slice(-16);
+  return { ...base, ...timing, ...(apps.length ? { apps } : {}), status: "done", answer: parts.slice(Math.max(0, lastStep)).map(p => p.type === "text" ? p.text : "").join("").trim() };
 }
 
 export async function* runDelegation(ctx: AgentCtx, receiverId: string, prompt: string, toolCallId: string, signal?: AbortSignal, authorizationMode: "manual" | "coordinator" = "manual"): AsyncGenerator<DelegationResult> {

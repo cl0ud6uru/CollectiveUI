@@ -2,7 +2,7 @@
 
 import { isDelegationTool } from "@/lib/delegation/policy";
 import { workspaceArtifact } from "@/lib/chat/workspace-artifacts";
-import { appInstanceId, withoutAppReference } from '@/lib/mcp/apps-contract';
+import { appInstanceIds, withoutAppReference } from '@/lib/mcp/apps-contract';
 import dynamic from 'next/dynamic';
 const McpAppHost = dynamic(() => import('./mcp-app-host').then(m => m.McpAppHost), { ssr: false });
 
@@ -40,7 +40,6 @@ import { isGrantable, isHermesTool, isMcpToolName } from "@/lib/agent/tool-names
 import { memoryToolDoneLabel } from "@/lib/agent/tools/memory-result";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
-import { Markdown } from "./markdown";
 import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 import { useWorkspaceFileOpener } from "./workspace-context";
@@ -225,7 +224,7 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
             {steps.length > 3 && <p className="text-subtle">Showing 3 recent steps. Open task for the full history.</p>}
           </div>}
           {(!steps.length || status === "queued" || current?.status === "waiting" || activity?.phase || unavailable) && <p className="text-xs text-muted">{waitingMessage}</p>}
-          {status === "done" && output.answer ? <Markdown text={output.answer} className="markdown-bubble text-fg" />
+          {status === "done" && output.answer ? <p className="text-xs text-muted">Result delivered to the coordinating bot. Open task to inspect the specialist’s saved response.</p>
             : status === "done" && steps.length > 0 && <p className="text-xs text-muted">{waitingMessage}</p>}
         </>}
       </div>
@@ -388,7 +387,7 @@ export function ToolPartView({
       {/* A failure's reason stays on the step; the expanded details keep the full text. */}
       {failed && !open && !delegationShowsFailure && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{failureText}</p>}
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
-      {!readOnly && appInstanceId(output) && <McpAppHost key={appInstanceId(output)!} id={appInstanceId(output)!} />}
+      {!readOnly && appInstanceIds(output).map(id => <McpAppHost key={id} id={id} />)}
       {artifact && <div className="mt-2 flex flex-wrap gap-2">
         {openWorkspaceFile && !artifact.instanceId && <button onClick={() => openWorkspaceFile(artifact.path)} className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 hover:bg-hover">Open {artifact.path.split("/").at(-1)}</button>}
         <a href={artifact.downloadUrl} download className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>
@@ -400,7 +399,7 @@ export function ToolPartView({
           {output !== undefined && (
             <>
               <div className="text-xs font-medium text-subtle">Result</div>
-              <Json value={withoutAppReference(output)} />
+              {isDelegate ? <p className="text-xs text-muted">The specialist’s response is delivered internally. Use Open task to inspect its saved work.</p> : <Json value={withoutAppReference(output)} />}
             </>
           )}
           {failed && <Json value={failureText} />}

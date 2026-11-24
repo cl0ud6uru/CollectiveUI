@@ -235,3 +235,22 @@ test('first-message rejection preserves newer text and an upload already in flig
     'sample.txt', 'newer.txt', 'Original draft\n\nNewer draft',
   ]);
 });
+
+
+test('an app result creates only an assistant confirmation, with no fabricated user message before or after reload', async ({ page, request }) => {
+  await open(page, '?persistent=1');
+  const detail = { conversationId: 'synthetic-group', instanceId: 'syntheticInstance1', actionId: 'syntheticAction1234' };
+  await page.evaluate(detail => window.dispatchEvent(new CustomEvent('mcp-app-action', { detail })), detail);
+  await expect(page.getByText('Confirmed, your note was posted.', { exact: true })).toBeVisible();
+  const state = await (await request.get('/fixture/state')).json();
+  expect(state.requests).toHaveLength(1);
+  expect(state.requests[0]).toMatchObject({ appAction: { instanceId: detail.instanceId, actionId: detail.actionId }, parentId: 'source-answer' });
+  expect(state.requests[0]).not.toHaveProperty('message');
+  await expect(page.getByText('Research findings: focus on a small pilot before launch.', { exact: true })).toHaveCount(1);
+  await expect(page.getByText('I submitted an interactive app action', { exact: false })).toHaveCount(0);
+  await page.evaluate(detail => window.dispatchEvent(new CustomEvent('mcp-app-action', { detail })), detail);
+  expect((await (await request.get('/fixture/state')).json()).requests).toHaveLength(1);
+  await page.reload();
+  await expect(page.getByText('Confirmed, your note was posted.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Internal app result', { exact: false })).toHaveCount(0);
+});

@@ -1,4 +1,6 @@
 import { HERMES_BOT_ONLY_MESSAGE } from "@/lib/llm/model-policy";
+import { sha256Hex } from "@/lib/crypto";
+import { isCodexApp } from '@/lib/codex/target';
 /**
  * The web side of durable runs: starting a turn, answering its approvals, stopping it, and picking the run a reload
  * resumes. Every status change goes through ./state.ts; these functions only compose them into the web's
@@ -84,11 +86,22 @@ export async function startRun(i: {
   parentId: string | null;
   /** Server-generated stable reply identity for an idempotent voice delegation. */
   replyId?: string;
+  appAction?: { instanceId: string; actionId: string };
 }): Promise<AgentRun> {
   if (i.conversation.source === "delegation") throw new HttpError(409, "Delegated tasks are read-only. Start a separate chat to follow up.");
   if (i.app.provider === "hermes" && (!i.bot || i.conversation.botId !== i.bot.id)) throw new HttpError(400, HERMES_BOT_ONLY_MESSAGE);
   const userId = i.principal.user.id;
   const conversationId = i.conversation.id;
+  const replyId = i.appAction ? `app_ack_${sha256Hex(`${conversationId}:${i.appAction.instanceId}:${i.appAction.actionId}`).slice(0, 32)}` : i.replyId;
+  if (i.appAction && (i.userMessage || i.app.provider === 'hermes' || isCodexApp(i.app) || i.bot?.hermesTeam)) throw new HttpError(400, 'Invalid internal app confirmation.');
+  if (i.appAction) {
+    const [existing] = await db.select().from(agentRuns).where(eq(agentRuns.messageId, replyId!));
+    if (existing) {
+      if (existing.userId !== userId || existing.conversationId !== conversationId || existing.botId !== (i.bot?.id ?? null))
+        throw new HttpError(409, 'This app confirmation belongs to another request.');
+      return existing;
+    }
+  }
   const team = await teamUsesNativeLearning(conversationId);
   if (team && !isTeamRuntimeApp(i.app)) throw new HttpError(409, 'Use this Team bot’s private chat to start verified native work.');
   let provisionId: string | undefined;
@@ -106,17 +119,25 @@ export async function startRun(i: {
     if (after && (isActive(after.status) || after.status === "waiting_tasks")) throw new RunBusyError();
   }
 
+  let created = false;
   const run = await db.transaction(async (tx) => {
     // Conversion, audience/policy changes and member choice use the same bot-before-user lock order.
     if (i.conversation.botId) await tx.select({ id: bots.id }).from(bots).where(eq(bots.id, i.conversation.botId)).for('share');
     await lockUserRuns(tx, userId);
-    if (i.replyId) {
+    if (i.appAction) {
+      const [existing] = await tx.select().from(agentRuns).where(eq(agentRuns.messageId, replyId!));
+      if (existing) {
+        if (existing.userId !== userId || existing.conversationId !== conversationId || existing.botId !== (i.bot?.id ?? null)) throw new HttpError(409, 'This app confirmation belongs to another request.');
+        return existing;
+      }
+    }
+    if (replyId) {
       const [current] = await tx.select({ leaf: conversations.currentLeafId }).from(conversations).where(eq(conversations.id, conversationId));
-      if (!current || current.leaf !== i.parentId) throw new HttpError(409, "The chat changed before this voice request could start. Your speech was saved; send the request again.");
+      if (!current || current.leaf !== i.parentId) throw new HttpError(409, i.appAction ? "The chat changed. The completed app result is still available in its widget." : "The chat changed before this voice request could start. Your speech was saved; send the request again.");
     }
     // Lock personal preferences before conversation writes, matching home/side-chat user-before-conversation
     // locking. The record commits only if message/run admission below succeeds; every denial rolls it back.
-    if ((i.userMessage?.role === "user" || i.replyId) && i.bot?.id === i.conversation.botId)
+    if ((i.userMessage?.role === "user" || replyId) && i.bot?.id === i.conversation.botId)
       await recordBotSendTx(tx, i.principal, i.conversation);
     let app = i.app;
     const currentTeam = await teamUsesNativeLearning(conversationId, tx);
@@ -146,16 +167,18 @@ export async function startRun(i: {
     const run = await insertRunTx(tx, {
       userId,
       conversationId,
-      messageId: i.replyId ?? newId(),
+      messageId: replyId ?? newId(),
       parentMessageId: i.userMessage?.id ?? i.parentId,
       appId: app.id,
       botId: i.bot?.id ?? null,
       background: false,
+      ...(i.appAction ? { resumeState: { appAction: { ...i.appAction, sessionVersion: i.principal.user.sessionVersion } } } : {}),
     });
+    created = true;
     if (hermes) await tx.insert(hermesRunContexts).values({ runId: run.id, ...hermes, provisionId, admissionState: "prepared" });
     return run;
   });
-  await enqueueOrFail(run);
+  if (created) await enqueueOrFail(run);
   return run;
 }
 

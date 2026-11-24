@@ -167,3 +167,23 @@ Protocol references: [MCP Apps specification](https://github.com/modelcontextpro
 ### Transcript visibility
 
 Interactive widget results stay outside the completed-tool summary chip, alongside the bot's reply. Finishing a reply does not collapse the widget or discard edits in its iframe. Ordinary completed tool calls still fold into the summary. This applies to the web transcript; iOS and macOS do not currently render MCP Apps widgets, as described above.
+
+### Delegated forms
+
+A native specialist can return its MCP App reference to the assigning bot. The web transcript renders that instance under the delegation card, outside the collapsed tool details. HTML, private component metadata, and tool credentials remain in the existing encrypted instance store and isolated sandbox. References are excluded from model replay and shared/copied task results.
+
+Widget access resolves the original owner, task, child run, and originating human chat from persisted records. It rechecks every current manual/coordinator delegation edge, along with the existing instance/session/connector/tool authority. A completed bot run can hand a draft to its human owner; cancelled, failed, interrupted, archived, scheduled, and group-chat sources cannot authorize these interactions. This is a separate human dispatch, not a continuation using an expired bot execution lease. Every widget transport and returned result rechecks the lineage. Existing immutable action IDs, approvals, service restrictions and uncertain-dispatch handling remain in force.
+
+Native specialists with configured MCP App tools schedule durably, including sync requests, so preparing a form can relay a signed approval to the owning human. Successful write results initiated in the originating web chat return public result fields to that chat after the current reply finishes; component-only metadata stays private. Reload and polling do not automatically repeat those notifications or external writes.
+
+Platform parity: web supports delegated forms. iOS and macOS still use the existing textual delegation/task result and web handoff; neither native client embeds MCP Apps. No native capability is added or removed. The shared result retains the specialist's text and optional app reference fields remain compatible with native JSON decoding. Native builds cannot run on this Linux deployment host; web browser and backend tests cover the change.
+
+Rollout uses the existing web, worker, and sandbox configuration, with no migration or connector permission changes. Deploy the matching web and worker commit; keep the current sandbox service. Old failed assignments should be retried as new requests so they can capture a widget instance.
+
+Model replay and trusted UI continuation use separate app-reference handling. A parent that resumes after a specialist finishes must retain both delegated `apps` references and direct `_mcpApp` references in the completed saved transcript, so widgets survive completion and page reload. Model-bound history still excludes these references. Foreign sealed provider metadata is scrubbed in both paths.
+
+### Internal result handoff
+
+A successful widget write sends only its instance/action IDs to the originating chat. The chat endpoint verifies the owner, original chat, current permissions and completed action, and loads the recorded result on the server. An idempotent confirmation run adds public result data only to that model request. It inserts no user message and exposes no internal payload in the saved transcript, page reload, copied history or client stream. The model receives no executable tools for this acknowledgement, so it cannot repeat the submitted write. The run stores only identifiers while queued/executing; the existing encrypted action record remains the audit source.
+
+The normal parent transcript shows the widget, task status and the coordinating bot's confirmation. Specialist answer text and raw delegated output are available through the explicit Open task audit view, rather than duplicated in the parent's expanded task card. iOS/macOS still do not host widgets; they see the same normal assistant confirmation in shared conversation history, without a fabricated user handoff message. Existing historical handoff messages are not rewritten.

@@ -1,3 +1,4 @@
+import { appResource, withoutAppReference } from "@/lib/mcp/apps-contract";
 import { and, eq, inArray } from "drizzle-orm";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
@@ -252,7 +253,13 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
   for (const choice of choices) {
     const [receiverApp] = ctx.awaitTask ? await db.select().from(aiApps).where(eq(aiApps.id, choice.bot.appId!)) : [];
     const receiverTools = ctx.awaitTask && receiverApp?.provider !== "hermes" ? await db.select().from(botTools).where(eq(botTools.botId, choice.bot.id)) : [];
-    const durableWorkspace = !!ctx.awaitTask && !ctx.inGroup && receiverTools.some(t => t.toolKey === "workspace");
+    const mcpIds = receiverTools.filter(t => t.toolKey.startsWith("mcp:")).map(t => t.toolKey.slice(4));
+    const servers = mcpIds.length ? await db.select().from(mcpServers).where(inArray(mcpServers.id, mcpIds)) : [];
+    const hasApp = servers.some(server => {
+      const selected = receiverTools.find(t => t.toolKey === `mcp:${server.id}`)?.config?.tools;
+      return server.toolsSnapshot?.some(def => appResource(def) && (!selected || selected.includes(def.name)));
+    });
+    const durableWorkspace = !!ctx.awaitTask && !ctx.inGroup && (receiverTools.some(t => t.toolKey === "workspace") || hasApp);
     entries.push(delegateEntry(ctx, choice.bot, choice.mode, durableWorkspace));
     if (ctx.awaitTask && ctx.usage?.runId && !ctx.inGroup)
       entries.push(continueDelegateEntry(ctx, choice.bot, choice.mode));
@@ -303,7 +310,7 @@ export async function buildToolset(ctx: AgentCtx): Promise<Toolset> {
       grantable: entry.grantable,
     });
     // Only a durable native workspace child can pause for its owning human. Inline/group/other tools keep denying.
-    if (decision === "user-approval" && (ctx.inGroup || (ctx.depth > 0 && !(ctx.relayWorkspaceApproval && entry.key === "workspace")))) {
+    if (decision === "user-approval" && (ctx.inGroup || (ctx.depth > 0 && !((ctx.relayWorkspaceApproval && entry.key === "workspace") || (ctx.relayMcpAppApproval && !!entry.mcp?.app))))) {
       return {
         type: "denied",
         reason: `${entry.name} needs the user's approval, which isn't possible here. Ask the user to open a direct chat with ${bot.name} to do this.`,
@@ -348,8 +355,9 @@ function delegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: Delegati
     name,
     key: `delegate:${delegate.id}`,
     tool: tool({
-      description: `Start a NEW task with the specialist bot "${delegate.name}". Its job: ${delegate.description ?? "n/a"}. Give it a complete, self-contained task description. For a related follow-up, use this specialist's continue_* tool with the taskId from its earlier result when offered. New or unrelated work must use this ask_* tool. ${durableWorkspace ? "This workspace specialist runs durably so its actions can pause for the human owner's approval. Both mode values schedule independent work and return a queued receipt; this reply resumes after the result arrives. Never approve on behalf of the human or repeat an accepted assignment." : ctx.awaitTask ? "Choose sync to ask and wait in this turn, or async to schedule durable independent work. Async results resume this reply automatically; do not start the same task twice. You may start several different async tasks in one model step." : "This context supports synchronous delegation only."}`,
+      description: `Start a NEW task with the specialist bot "${delegate.name}". Its job: ${delegate.description ?? "n/a"}. Give it a complete, self-contained task description. For a related follow-up, use this specialist's continue_* tool with the taskId from its earlier result when offered. New or unrelated work must use this ask_* tool. ${durableWorkspace ? "This specialist runs durably so its interactive actions can pause for the human owner's approval. Both mode values schedule independent work and return a queued receipt; this reply resumes after the result arrives. Never approve on behalf of the human or repeat an accepted assignment." : ctx.awaitTask ? "Choose sync to ask and wait in this turn, or async to schedule durable independent work. Async results resume this reply automatically; do not start the same task twice. You may start several different async tasks in one model step." : "This context supports synchronous delegation only."}`,
       inputSchema: z.object({ task: z.string().min(1).max(200_000).describe("Self-contained task for the specialist"), mode: z.enum(ctx.awaitTask ? ["sync", "async"] : ["sync"]).default("sync") }),
+      toModelOutput: ({ output }) => ({ type: "json", value: withoutAppReference(output) as never }),
       async *execute({ task, mode }, { abortSignal, toolCallId }) {
         try {
           if (mode === "async" || durableWorkspace) {
@@ -376,6 +384,7 @@ function continueDelegateEntry(ctx: AgentCtx, delegate: Bot, authorizationMode: 
     tool: tool({
       description: `Continue related work with "${delegate.name}" in its existing task conversation. Use the exact taskId from an earlier assignment to this specialist in this originating chat. Prior context is preserved; busy turns queue in order and the result resumes this reply automatically. Give only the new instruction and necessary updates. Never guess IDs, retry an accepted call, or reuse a task merely because the bot is the same. For unrelated work use ask_*. Supported for native engines only.`,
       inputSchema: z.object({ taskId: z.string().min(1).max(200).describe("Exact taskId returned by an earlier related assignment"), task: z.string().min(1).max(200_000).describe("Related follow-up instruction") }),
+      toModelOutput: ({ output }) => ({ type: "json", value: withoutAppReference(output) as never }),
       async execute({ taskId, task }, { abortSignal, toolCallId }) {
         try {
           abortSignal?.throwIfAborted();

@@ -90,3 +90,27 @@ test('ticket form stays visible and keeps edits when the bot finishes its reply'
   await expect(page.getByText('Looked up reporter')).not.toBeVisible();
   expect((await (await request.get('/__stats')).json()).calls).toEqual([]);
 });
+
+test('delegated widgets stay outside collapsed steps and report an approved write once without private metadata', async ({ page, request }) => {
+  await page.goto('/#delegated');
+  await page.evaluate(() => {
+    const state = window as unknown as { appResults: unknown[] };
+    state.appResults = [];
+    window.addEventListener('mcp-app-action', event => state.appResults.push((event as CustomEvent).detail));
+  });
+  const app = widget(page);
+  await expect(app.getByText('Ready', { exact: true })).toBeVisible();
+  await app.getByLabel('Filter').fill('Keep delegated edits');
+  await page.getByRole('button', { name: 'Finish bot reply' }).click();
+  await expect(app.getByLabel('Filter')).toHaveValue('Keep delegated edits');
+  await app.getByRole('button', { name: 'Save row' }).click();
+  await expect(page.getByText('Approval required: save')).toBeVisible();
+  expect((await (await request.get('/__stats')).json()).calls).toEqual([]);
+  await page.getByRole('button', { name: 'Allow once' }).click();
+  await expect(app.getByText('Saved', { exact: true })).toBeVisible();
+  const events = await page.evaluate(() => (window as unknown as { appResults: unknown[] }).appResults);
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ conversationId: 'synthetic-origin', instanceId: 'syntheticInstance1', actionId: expect.any(String) });
+  expect(JSON.stringify(events)).not.toContain('SYNTHETIC_BROWSER_COMPONENT_ONLY');
+  expect(JSON.stringify(events)).not.toContain('structuredContent');
+});

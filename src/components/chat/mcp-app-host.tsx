@@ -24,16 +24,23 @@ export function McpAppHost({ id }: { id: string }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const waiting = useRef(new Map<string, { resolve: (result: AppView['result']) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const alive = useRef(true);
+  const initiated = useRef(new Set<string>());
+  const notified = useRef(new Set<string>());
   const teardown = useRef<(() => Promise<void>) | null>(null);
   const updateAction = useCallback((action: AppActionReply) => {
     setActions(previous => [...previous.filter(a => a.id !== action.id), action].slice(-100));
+    if (action.status === 'done' && action.notify && action.result && !action.result.isError &&
+        action.sourceConversationId && initiated.current.has(action.id) && !notified.current.has(action.id)) {
+      notified.current.add(action.id);
+      window.dispatchEvent(new CustomEvent('mcp-app-action', { detail: { actionId: action.id, instanceId: id, conversationId: action.sourceConversationId } }));
+    }
     const waiter = waiting.current.get(action.id);
     if (waiter && ['done', 'error', 'denied'].includes(action.status)) {
       clearTimeout(waiter.timer); waiting.current.delete(action.id);
       if (action.result) waiter.resolve(action.result);
       else waiter.reject(new Error('The widget request was denied.'));
     }
-  }, []);
+  }, [id]);
 
   useEffect(() => {
     alive.current = true;
@@ -64,6 +71,7 @@ export function McpAppHost({ id }: { id: string }) {
         if (disposed) throw new Error('Widget closed.');
         const { action } = await appRequest(id, { operation: 'call', id: crypto.randomUUID(), name, arguments: input });
         if (disposed) throw new Error('Widget closed.');
+        initiated.current.add(action.id);
         updateAction(action);
         if (action.result) return action.result;
         if (action.status !== 'pending') throw new Error('The widget request is unavailable or already running.');
@@ -81,6 +89,7 @@ export function McpAppHost({ id }: { id: string }) {
 
   const decide = async (action: AppActionReply, approve: boolean) => {
     setBusy(action.id);
+    if (approve) initiated.current.add(action.id);
     try { const data = await appRequest(id, { operation: 'decide', id: action.id, approve }); if (alive.current) updateAction(data.action); }
     catch (e) { if (alive.current) { setError(e instanceof Error ? e.message : 'The request could not be completed.'); setView(null); } }
     finally { if (alive.current) setBusy(null); }

@@ -74,6 +74,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   if (isCodexApp(opts.app) && await nativeBudgetApplies(opts.delegation?.task.rootMessageId ?? (opts.continuation ? opts.history.at(-1)?.id : opts.responseMessageId))) throw new NativeRunBudgetError("Codex has no supported native company budget contract. No billing fallback was selected.");
   if (isCodexApp(opts.app)) return (await import('@/lib/codex/run')).runCodexTurn(opts);
   const { principal, conversation, app, bot, history } = opts;
+  const appAction = opts.run?.resumeState?.appAction;
+  if (appAction && appAction.sessionVersion !== principal.user.sessionVersion) throw new HttpError(403, 'The app confirmation session changed.');
   const toolSettings = await getSetting("tools");
   const background = !!opts.background;
   // The assistant message id is fixed up front (by the run for a new turn) so every model call of the turn
@@ -96,7 +98,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     ...(opts.run?.holder && opts.run.deadlineAt ? { execution: { holder: opts.run.holder, deadlineAt: opts.run.deadlineAt, segment: opts.run.segment } } : {}),
     ...(native ? { awaitTask: (taskId: string) => { if (!native.taskIds.includes(taskId)) native.taskIds.push(taskId); } } : {}),
     ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace, workspaceBotId: delegated.parent?.workspaceBotId,
-      relayWorkspaceApproval: nativeEligible && delegated.task.mode === "async" } : {}) };
+      relayWorkspaceApproval: nativeEligible && delegated.task.mode === "async",
+      relayMcpAppApproval: nativeEligible && delegated.task.mode === "async" } : {}) };
   const { delegatedAuthorityBinding, DelegationAuthorityChangedError } = await import("@/lib/delegation/authority");
   const authority = delegated ? await delegatedAuthorityBinding(ctx, true) : null;
   const toolset = await buildToolset(ctx);
@@ -126,16 +129,17 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   // Everything between opening MCP connections and handing the stream over can throw (attachments, memory,
   // model resolution); close the toolset in that case so MCP clients don't leak.
   const start = async () => {
+    const appResult = appAction ? await (await import('@/lib/mcp/apps')).appActionModelMessage(principal, conversation.id, appAction) : null;
     const lastUser = [...history].reverse().find((m) => m.role === "user");
     const userText = lastUser ? partsToText(lastUser.parts) : "";
-    const memories = !bot?.hermesTeam && !delegated && bot?.executionMode !== "service" && (await memoryEnabled(principal.user.id))
+    const memories = !appAction && !bot?.hermesTeam && !delegated && bot?.executionMode !== "service" && (await memoryEnabled(principal.user.id))
       ? await selectMemories({ userId: principal.user.id, botId: bot?.id ?? null, query: userText, limit: 15, conversationId: conversation.id, usage }).catch(
           error => { if (error instanceof NativeRunBudgetError) throw error; return []; },
         )
       : [];
 
     const coordinator = await getSetting("coordinator");
-    const decisions = bot && app.provider !== "hermes"
+    const decisions = bot && !appAction && app.provider !== "hermes"
       ? await getSetting("decisions") : null;
     const routedTools = decisions?.queenRouting
       ? await (await import("./queen-routing")).queenRouting(ctx, toolset, history, userText, {
@@ -167,7 +171,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     });
     // "/skill-slug do X" in the composer explicitly invokes a skill.
     const invoked = slashInvokedSkill(toolset.skills, userText);
-    if (invoked && !opts.continuation && !delegated) {
+    if (invoked && !appAction && !opts.continuation && !delegated) {
       sections.push({
         kind: "dynamic",
         text: `The user explicitly invoked the skill "${invoked.slug}". Call use_skill with slug "${invoked.slug}" first, then follow it.`,
@@ -181,7 +185,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       conversationId: conversation.id,
       botId: bot?.id ?? null,
       usage,
-      nativeSearch: toolset.nativeSearch,
+      nativeSearch: appAction ? undefined : toolset.nativeSearch,
       background,
       interactive: opts.interactive,
       run: opts.run,
@@ -189,7 +193,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     });
     // Sealed reasoning is only replayed to the app, model and account that produced it (see replay.ts).
     const modelHistory = scrubForeignOpenAIMetadata(withFiles, { appId: app.id, providerKind: app.provider, model: app.model, replayKey });
-    const messages = await convertToModelMessages(modelHistory, { tools: toolset.tools, ignoreIncompleteToolCalls: true });
+    const messages = await convertToModelMessages(appResult ? [...modelHistory, appResult] : modelHistory, { tools: toolset.tools, ignoreIncompleteToolCalls: true });
     const contextBudget = resolveContextBudget(app.contextWindowTokens, app.maxTokens);
     const instructions = toModelInstructions(sections, capabilities.instructionStyle);
     const maxSteps = native ? native.maxSteps - native.stepsUsed : bot ? Math.min(bot.maxSteps, toolSettings.maxStepsCap) : 1;
@@ -199,7 +203,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       onError: () => {},
       instructions,
       messages,
-      tools: toolset.tools,
+      tools: appAction ? {} : toolset.tools,
+      ...(appAction ? { toolChoice: 'none' as const } : {}),
       toolApproval: toolset.approval,
       experimental_toolApprovalSecret: toolApprovalSecret(delegated && nativeEligible
         ? `${toolset.approvalSigningBinding ?? ""}:${delegated.task.id}:${opts.run!.id}:${authority}` : toolset.approvalSigningBinding),
@@ -214,11 +219,12 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
       // Compose context management with delegated re-authorization and the existing first-step tool visibility.
       // prepareStep runs before every model request, including every tool continuation.
       prepareStep: async ({ stepNumber, messages: stepMessages }) => {
+        if (appAction) await (await import('@/lib/mcp/apps')).appActionModelMessage(principal, conversation.id, appAction);
         await authorizeDispatch();
         const bounded = await compactModelContext(stepMessages, {
           inputBudgetTokens: contextBudget.inputBudgetTokens,
           instructions,
-          tools: toolset.tools,
+          tools: appAction ? {} : toolset.tools,
           omittedTurnsBefore: omittedContextTurns,
         });
         omittedContextTurns = bounded.omittedTurns;
@@ -227,7 +233,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
         return {
           messages: bounded.messages,
           instructions: bounded.instructions,
-          ...(!delegated && firstTools ? { activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools) } : {}),
+          ...(!appAction && !delegated && firstTools ? { activeTools: stepNumber === 0 ? firstTools : Object.keys(toolset.tools) } : {}),
         };
       },
     });
@@ -247,7 +253,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   // merged into it. Drop sealed reasoning the new identity may not replay from its earlier parts first, so the
   // saved message never pairs one account's reasoning with another account's key.
   const replayTarget = { appId: app.id, providerKind: app.provider, model: app.model, replayKey };
-  const originalMessages = opts.continuation ? [...history.slice(0, -1), ...scrubForeignOpenAIMetadata(history.slice(-1), replayTarget)] : history;
+  const originalMessages = opts.continuation ? [...history.slice(0, -1), ...scrubForeignOpenAIMetadata(history.slice(-1), replayTarget, { preserveAppReferences: true })] : history;
 
   // The first user-facing error text the stream carried (a model error chunk, or a failure while streaming): it
   // fails the turn (done.error), so a routine doesn't report an empty reply as a success. `produced` holds every error
@@ -257,7 +263,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   const produced = new Set<string>();
   const produce = (text: string) => (produced.add(text), text);
   const stream = createUIMessageStream<PortalUIMessage>({
-    originalMessages,
+    originalMessages: appAction && !opts.continuation ? [] : originalMessages,
     generateId: () => responseMessageId,
     // Sees every error chunk (never tool errors, which are tool output) and failures of the stream itself.
     onError: (err) => {

@@ -25,6 +25,7 @@ import { isTeamRuntimeApp } from '@/lib/agent/team-target';
 import { authorizeTeamConversation } from '@/lib/hermes-team/conversations';
 import { resolveReplyReference, resolveStoredReplyReference } from "@/lib/chat/reply-server";
 import { assertMutationRequest } from "@/lib/auth/mutation-request";
+import { appActionModelMessage } from '@/lib/mcp/apps';
 
 // No maxDuration: direct chats run in the worker and this response only tails the run's event log, which may stay
 // open for as long as the reply takes (self-hosted Node has no route time limit; a proxy must allow long reads).
@@ -45,6 +46,7 @@ const Body = z.object({
   nativeSearchMode: z.enum(["off", "auto"]).nullable().optional(),
   regenerate: z.boolean().optional(),
   literalSlash: z.boolean().optional(),
+  appAction: z.object({ instanceId: z.string().regex(CLIENT_ID_RE), actionId: z.string().regex(CLIENT_ID_RE) }).strict().optional(),
   replyTo: z.object({ messageId: z.string().regex(CLIENT_ID_RE), speakerIndex: z.number().int().min(0).max(10000).optional() }).strict().optional(),
   message: z
     .object({
@@ -167,7 +169,13 @@ export async function POST(req: Request) {
     const rows = await loadMessageRows(conv.id);
     let run: AgentRun;
     let continuation = false;
-    if (body.message?.role === "user") {
+    if (body.appAction) {
+      if (body.message || body.regenerate || !body.parentId) throw new HttpError(400, 'An app confirmation cannot include a user message.');
+      await appActionModelMessage(p, conv.id, body.appAction);
+      const parent = rows.find(row => row.id === body!.parentId);
+      if (!parent || parent.role !== 'assistant') throw new HttpError(400, 'The app confirmation needs its originating reply.');
+      run = await startRun({ principal: p, conversation: conv, bot, app, parentId: parent.id, appAction: body.appAction });
+    } else if (body.message?.role === "user") {
       if (rows.some((r) => r.id === input.message!.id)) throw new HttpError(409, "Duplicate message id");
       const userMessage = await userMessageOf(body.message);
       if (app.provider === "hermes" && !body.literalSlash) {

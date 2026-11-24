@@ -22,7 +22,7 @@ import React from 'react'; import { createRoot } from 'react-dom/client'; import
 import { ShellProvider } from '@/components/chat/shell-context'; import { Chat } from '@/components/chat/chat';
 const members=[{kind:'bot',id:'researcher',name:'Researcher',icon:'🔎',description:'Synthetic researcher'}, {kind:'bot',id:'writer',name:'Writer',icon:'✍️',description:'Synthetic writer'}];
 const target={kind:'app',id:'synthetic-group',name:'Synthetic launch team',icon:null,description:null,members};
-const initialRows=${JSON.stringify(seedRows)};
+const initialRows=window.__fixtureRows ?? ${JSON.stringify(seedRows)};
 const user={id:'synthetic-user',name:'Demo User',email:null,isAdmin:false,canCreateBots:false};
 const branding={appName:'CollectiveUI',welcomeText:'',logoEmoji:'✨'};
 const convs=[{id:'synthetic-group',title:target.name,botId:null,appId:null,source:'chat',isGroup:true,memberBotIds:members.map(b=>b.id),pinned:false,folderId:null,updatedAt:'2026-10-11'}];
@@ -99,6 +99,13 @@ createServer(async (req, res) => {
   if (url.pathname === '/api/chat' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
     const input = JSON.parse(body); requests.push(input);
+    if (input.appAction) {
+      const id = 'fixture-internal-confirmation';
+      rows.push(row({ id, role: 'assistant', parts: [{ type: 'text', text: 'Confirmed, your note was posted.' }] }, input.parentId));
+      res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('x-vercel-ai-ui-message-stream', 'v1');
+      for (const part of [{ type: 'start', messageId: id }, { type: 'text-start', id: 'text' }, { type: 'text-delta', id: 'text', delta: 'Confirmed, your note was posted.' }, { type: 'text-end', id: 'text' }, { type: 'finish' }]) res.write('data: ' + JSON.stringify(part) + '\n\n');
+      res.end('data: [DONE]\n\n'); return;
+    }
     if (sendMode === 'reject') {
       delayed.push(() => { res.statusCode = 409; json(res, { error: 'Synthetic admission rejection', unsavedMessageId: input.message.id }); }); return;
     }
@@ -129,5 +136,9 @@ createServer(async (req, res) => {
   }
   const name = ['/app.js', '/app.css', '/style.css'].includes(url.pathname) ? url.pathname.slice(1) : 'index.html';
   res.setHeader('Content-Type', name.endsWith('.js') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html');
+  if (name === 'index.html' && url.searchParams.has('persistent')) {
+    const html = await readFile(path.join(out, name), 'utf8');
+    res.end(html.replace('<head>', '<head><script>window.__fixtureRows=' + JSON.stringify(rows).replaceAll('<', '\\u003c') + '</script>')); return;
+  }
   res.end(await readFile(path.join(out, name)));
 }).listen(port, '127.0.0.1', () => console.log('Offline recovery harness http://127.0.0.1:' + port));

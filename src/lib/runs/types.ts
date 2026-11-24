@@ -39,6 +39,8 @@ export type EventDraft = { kind: "chunk"; chunk: UIMessageChunk; transient?: boo
 
 /** Provider state saved at a pause, so the next segment can continue without the live stream (agent_runs.resume_state). */
 export type ResumeState = {
+  /** Only server-verified identifiers; the result is loaded privately for this model turn. */
+  appAction?: { instanceId: string; actionId: string; sessionVersion: number };
   /** Native continuation budget and the exact durable assignments this segment awaits. */
   native?: { deadlineAt: number; sessionVersion: number; stepsUsed: number; maxSteps: number; taskIds: string[]; background?: boolean };
   /**

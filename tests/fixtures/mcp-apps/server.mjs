@@ -32,7 +32,8 @@ const app = createServer(async (req, res) => {
       resourceHash: 'synthetic-pinned-html', input: {}, result: ticket ? ticketDraftResult : result, compatibility, sandboxUrl, title: ticket ? 'Synthetic ticket draft' : 'Synthetic table widget' }, actions: [...actions.values()] });
     const input = JSON.parse(await new Response(req).text());
     if (input.operation === 'call') {
-      const action = { id: input.id, status: input.name === 'save' ? 'pending' : 'done', tool: input.name, input: input.arguments };
+      const action = { id: input.id, status: input.name === 'save' ? 'pending' : 'done', tool: input.name, input: input.arguments,
+        sourceConversationId: 'synthetic-origin', notify: input.name === 'save' };
       if (action.status === 'done') {
         calls.push(action.tool); action.result = input.name === 'fail' ? { isError: true, content: [{ type: 'text', text: 'Synthetic error' }] } : { ...result, structuredContent: { rows: result.structuredContent.rows.filter(r => !input.arguments.filter || r.label.includes(input.arguments.filter)) } };
       }
