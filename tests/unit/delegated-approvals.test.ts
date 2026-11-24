@@ -22,7 +22,7 @@ import { db, schema } from "@/db";
 import { loadPrincipal } from "@/lib/auth/groups";
 import { getSetting, setSetting } from "@/lib/settings";
 import { newUsageScope } from "@/lib/llm";
-import { upsertMessage } from "@/lib/chat/store";
+import { upsertMessage, updateMessageParts, rowToUIMessage } from "@/lib/chat/store";
 import { startAsyncDelegation, suspendForTasks, reconcileAsyncTasks } from "@/lib/delegation/async";
 import { answerTaskApproval, pendingTaskApprovals } from "@/lib/delegation/approvals";
 import { getRun } from "@/lib/runs/state";
@@ -74,6 +74,34 @@ async function paused(parts?:LanguageModelV4StreamPart[]) {
   return {task,requests:await pendingTaskApprovals(owner,"origin")};
 }
 describe("durable native workspace approvals with embedded PostgreSQL and real executor/SDK",()=>{
+  it.each(["draft_note", "draft_ticket"])("keeps %s widget references after the parent resumes and saves its completed reply", async toolName => {
+    const { task, requests } = await paused();
+    const request = requests[0];
+    await answerTaskApproval(owner, "origin", { runId: request.runId, approvalId: request.part.approval!.id, approved: true });
+    scripted(response());
+    await executeRun(request.runId);
+    await reconcileAsyncTasks();
+    expect((await getRun("parent"))?.status).toBe("queued");
+    const [row] = await db.select().from(schema.messages).where(eq(schema.messages.id, "parent-message"));
+    const widgetId = "fixtureAppInstance1234";
+    const directId = "fixtureDirectApp12345";
+    const message = rowToUIMessage(row);
+    message.parts = message.parts.map(part => "output" in part && part.output && typeof part.output === "object" && "taskId" in part.output && part.output.taskId === task.id
+      ? { ...part, output: { ...part.output, apps: [widgetId] } } : part);
+    message.parts.push({ type: "dynamic-tool", toolName, toolCallId: "direct-draft", state: "output-available", input: {}, output: { content: [{ type: "text", text: "Draft ready" }], _mcpApp: directId } });
+    await updateMessageParts("origin", message);
+    const model = scripted(response());
+    await executeRun("parent");
+    expect((await getRun("parent"))?.status).toBe("succeeded");
+    const [saved] = await db.select().from(schema.messages).where(eq(schema.messages.id, "parent-message"));
+    const reloaded = rowToUIMessage(saved);
+    const outputs = reloaded.parts.flatMap(part => "output" in part ? [part.output] : []);
+    expect(outputs).toContainEqual(expect.objectContaining({ taskId: task.id, apps: [widgetId] }));
+    expect(outputs).toContainEqual(expect.objectContaining({ _mcpApp: directId }));
+    expect(JSON.stringify(model.doStreamCalls)).not.toContain(widgetId);
+    expect(JSON.stringify(model.doStreamCalls)).not.toContain(directId);
+  });
+
   it("shows the same durable request to the owner in coordinator and task chats, then dispatches once",async()=>{
     const {task,requests}=await paused();expect(requests).toHaveLength(1);
     expect(await pendingTaskApprovals(owner,task.childConversationId!)).toEqual(requests);

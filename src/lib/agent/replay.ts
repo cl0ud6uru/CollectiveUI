@@ -29,10 +29,12 @@ export function withoutOpenAIMetadata<P extends object>(part: P): P {
 export function scrubForeignOpenAIMetadata(
   history: PortalUIMessage[],
   target: { appId: string; providerKind: string; model: string; replayKey?: string | null },
+  { preserveAppReferences = false }: { preserveAppReferences?: boolean } = {},
 ): PortalUIMessage[] {
   return history.map((m) => {
     if (m.role !== "assistant") return m;
-    const safeParts = m.parts.map(p => 'output' in p && p.output && typeof p.output === 'object' && ('_mcpApp' in p.output || ('taskId' in p.output && 'apps' in p.output))
+    // Model replay drops rendering references; the trusted UI continuation must keep them when saving the reply.
+    const safeParts = preserveAppReferences ? m.parts : m.parts.map(p => 'output' in p && p.output && typeof p.output === 'object' && ('_mcpApp' in p.output || ('taskId' in p.output && 'apps' in p.output))
       ? { ...p, output: withoutAppReference(p.output) } : p);
     if (safeParts.some((p, i) => p !== m.parts[i])) m = { ...m, parts: safeParts as PortalUIMessage['parts'] };
     const meta = m.metadata ?? {};

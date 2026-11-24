@@ -16,6 +16,22 @@ const user: PortalUIMessage = { id: "u1", role: "user", parts: [{ type: "text", 
 describe("cross-endpoint replay hygiene", () => {
   const chatgptTarget = { appId: "cg", providerKind: "chatgpt", model: "gpt-codex", replayKey: "acct-a" };
 
+  it("retains direct and delegated widgets for a UI continuation while still removing foreign sealed reasoning", () => {
+    const message = assistant({ appId: "other", providerKind: "chatgpt", model: "old", replayKey: "other-account" });
+    message.parts.push(
+      { type: "dynamic-tool", toolName: "draft_note", toolCallId: "draft", state: "output-available", input: {}, output: { content: [{ type: "text", text: "Draft ready" }], _mcpApp: "directAppInstance1234" } },
+      { type: "tool-ask_ticket", toolCallId: "delegate", state: "output-available", input: {}, output: { taskId: "task", status: "done", apps: ["delegatedAppInstance12"] } },
+    );
+    const [display] = scrubForeignOpenAIMetadata([message], chatgptTarget, { preserveAppReferences: true });
+    expect(display.parts[0]).toMatchObject({ providerMetadata: undefined });
+    expect(display.parts[2]).toMatchObject({ output: { _mcpApp: "directAppInstance1234" } });
+    expect(display.parts[3]).toMatchObject({ output: { apps: ["delegatedAppInstance12"] } });
+    const model = JSON.stringify(scrubForeignOpenAIMetadata([message], chatgptTarget));
+    expect(model).not.toContain("directAppInstance1234");
+    expect(model).not.toContain("delegatedAppInstance12");
+    expect(message.parts[0]).toMatchObject({ providerMetadata: { openai: { reasoningEncryptedContent: "blob" } } });
+  });
+
   it("keeps a ChatGPT app's own metadata when replaying to the same app, model and account", () => {
     const h = [user, assistant({ appId: "cg", providerKind: "chatgpt", model: "gpt-codex", replayKey: "acct-a" })];
     expect(scrubForeignOpenAIMetadata(h, chatgptTarget)[1]).toBe(h[1]);

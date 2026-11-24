@@ -248,7 +248,7 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
   // merged into it. Drop sealed reasoning the new identity may not replay from its earlier parts first, so the
   // saved message never pairs one account's reasoning with another account's key.
   const replayTarget = { appId: app.id, providerKind: app.provider, model: app.model, replayKey };
-  const originalMessages = opts.continuation ? [...history.slice(0, -1), ...scrubForeignOpenAIMetadata(history.slice(-1), replayTarget)] : history;
+  const originalMessages = opts.continuation ? [...history.slice(0, -1), ...scrubForeignOpenAIMetadata(history.slice(-1), replayTarget, { preserveAppReferences: true })] : history;
 
   // The first user-facing error text the stream carried (a model error chunk, or a failure while streaming): it
   // fails the turn (done.error), so a routine doesn't report an empty reply as a success. `produced` holds every error
