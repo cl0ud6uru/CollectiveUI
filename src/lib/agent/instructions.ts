@@ -84,7 +84,7 @@ export function buildInstructionSections(opts: InstructionOptions): InstructionS
     stable(`## The user's custom instructions\n${opts.customInstructions.trim()}`);
   }
   if (opts.delegatedBy) {
-    stable(`## Delegated task\n${opts.delegatedBy} assigned this task on behalf of the user. Complete the supplied task and return your result to the assigning bot. This is separate from your home chat. Durable native workspace actions pause for the owning human's approval in the originating and task chats. The assigning bot cannot approve for the human. If another action is denied, explain the blocked action; never retry it to bypass approval.`);
+    stable(`## Delegated task\n${opts.delegatedBy} assigned this task on behalf of the user. Complete the supplied task and return your result to the assigning bot. This is separate from your home chat. Durable native workspace actions pause for the owning human's approval in the originating and task chats. The assigning bot cannot approve for the human. MCP app drafts appear in the originating web chat for the human to review and submit. Return the draft for review; never claim drafting created the ticket or repeat creation yourself. If another action is denied, explain the blocked action; never retry it to bypass approval.`);
   } else if (opts.background) {
     stable(
       "## Background run\nYou are running a scheduled routine with no one watching live. Complete the task end to end and finish with a concise report of what you did and anything that needs the user's attention.",

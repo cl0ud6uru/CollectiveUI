@@ -1,5 +1,5 @@
 import { nativeErrorText } from "@/lib/llm/native-errors";
-import type { ToolUIPart, UIMessageChunk } from "ai";
+import type { ToolUIPart, DynamicToolUIPart, UIMessageChunk } from "ai";
 import { and, eq } from "drizzle-orm";
 import { db, type DbOrTx } from "@/db";
 import { agentRuns, delegatedTasks, messages } from "@/db/schema";
@@ -16,8 +16,9 @@ import type { ResumeState } from "@/lib/runs/types";
 import { assertTaskExecution } from "./store";
 import { resolveTaskSource } from "./source";
 
-type Part = ToolUIPart & { approval?: { id: string; approved?: boolean; reason?: string } };
-const workspaceRequest = (part: Part) => /^tool-workspace_(bash|write|edit|read|list|grep)$/.test(part.type) && !!part.approval?.id;
+type Part = (ToolUIPart | DynamicToolUIPart) & { approval?: { id: string; approved?: boolean; reason?: string } };
+// The toolset gates which durable child tools may pause; the SDK verifies their signed decisions.
+const workspaceRequest = (part: Part) => !!part.approval?.id && (part.type === "dynamic-tool" || part.type.startsWith("tool-"));
 
 /** The route can be used in the task transcript or the root human conversation, never another assignment. */
 async function scope(p: Principal, conversationId: string, runId: string, q: DbOrTx) {

@@ -2,7 +2,7 @@
 
 import { isDelegationTool } from "@/lib/delegation/policy";
 import { workspaceArtifact } from "@/lib/chat/workspace-artifacts";
-import { appInstanceId, withoutAppReference } from '@/lib/mcp/apps-contract';
+import { appInstanceIds, withoutAppReference } from '@/lib/mcp/apps-contract';
 import dynamic from 'next/dynamic';
 const McpAppHost = dynamic(() => import('./mcp-app-host').then(m => m.McpAppHost), { ssr: false });
 
@@ -388,7 +388,7 @@ export function ToolPartView({
       {/* A failure's reason stays on the step; the expanded details keep the full text. */}
       {failed && !open && !delegationShowsFailure && <p className="mt-1 line-clamp-4 whitespace-pre-wrap break-words pl-6 text-xs text-danger">{failureText}</p>}
       {isDelegate && !!output && typeof output === "object" && <DelegationCard output={output as DelegateOutput} />}
-      {!readOnly && appInstanceId(output) && <McpAppHost key={appInstanceId(output)!} id={appInstanceId(output)!} />}
+      {!readOnly && appInstanceIds(output).map(id => <McpAppHost key={id} id={id} />)}
       {artifact && <div className="mt-2 flex flex-wrap gap-2">
         {openWorkspaceFile && !artifact.instanceId && <button onClick={() => openWorkspaceFile(artifact.path)} className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 hover:bg-hover">Open {artifact.path.split("/").at(-1)}</button>}
         <a href={artifact.downloadUrl} download className="inline-flex max-w-full break-all rounded-lg border border-border px-3 py-2 underline">Download {artifact.path.split("/").at(-1)}</a>

@@ -57,17 +57,31 @@ export function appInstanceId(output: unknown): string | null {
   return record(output) && typeof output._mcpApp === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(output._mcpApp) ? output._mcpApp : null;
 }
 
+/** Delegation forwards references only; encrypted HTML and component metadata stay with the specialist. */
+export function appInstanceIds(output: unknown): string[] {
+  const direct = appInstanceId(output);
+  if (direct) return [direct];
+  return record(output) && typeof output.taskId === 'string' && Array.isArray(output.apps)
+    ? [...new Set(output.apps.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(id)))].slice(0, 16) : [];
+}
+
 /** Also used when replay has no corresponding tool definition. Never serialize component fields to a model. */
 export function withoutAppReference(output: unknown): unknown {
-  if (!record(output) || !('_mcpApp' in output)) return output;
+  if (!record(output)) return output;
+  if (typeof output.taskId === 'string' && Array.isArray(output.apps)) {
+    const { apps, ...result } = output;
+    return { ...result, ...(apps.length ? { interaction: 'An interactive draft is shown to the user in the originating chat. Wait for the submission result; drafting is not completion.' } : {}) };
+  }
+  if (!('_mcpApp' in output)) return output;
   const { content, structuredContent, isError } = output;
   return { ...(Array.isArray(content) ? { content } : {}), ...(structuredContent !== undefined ? { structuredContent } : {}),
     ...(typeof isError === 'boolean' ? { isError } : {}) };
 }
 
 export type AppView = {
+  sourceConversationId?: string;
   html: string; resourceHash: string; input: Record<string, unknown>;
   result: { content: { type: string; [key: string]: unknown }[]; structuredContent?: unknown; _meta?: Record<string, unknown>; isError?: boolean };
   compatibility: boolean; sandboxUrl: string; title: string;
 };
-export type AppActionReply = { id: string; status: 'pending' | 'running' | 'done' | 'denied' | 'error'; tool: string; input: unknown; result?: AppView['result'] };
+export type AppActionReply = { id: string; status: 'pending' | 'running' | 'done' | 'denied' | 'error'; tool: string; input: unknown; result?: AppView['result']; sourceConversationId?: string; notify?: boolean };

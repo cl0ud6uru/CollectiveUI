@@ -623,6 +623,24 @@ export function Chat({
     return true;
   }
 
+  const appResults = useRef<string[]>([]);
+  const appActionsSeen = useRef(new Set<string>());
+  const [, refreshAppResults] = useState(0);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (detail?.conversationId !== conversationId || typeof detail.id !== "string" || appActionsSeen.current.has(detail.id)) return;
+      appActionsSeen.current.add(detail.id);
+      appResults.current.push(`I submitted an interactive app action (${detail.tool}). The app returned this data:\n${JSON.stringify(detail.result).slice(0, 16000)}\nAcknowledge this outcome without repeating the submitted action.`);
+      refreshAppResults(v => v + 1);
+    };
+    window.addEventListener("mcp-app-action", receive);
+    return () => window.removeEventListener("mcp-app-action", receive);
+  }, [conversationId]);
+  useEffect(() => {
+    if (!busy && !awaitingApproval && !unavailable && !searchPendingRef.current && appResults.current.length) send(appResults.current.splice(0).join("\n\n"), []);
+  });
+
   function editMessage(index: number, text: string) {
     if (searchPendingRef.current || busy || unavailable) return;
     const original = messages[index];

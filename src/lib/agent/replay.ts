@@ -32,7 +32,7 @@ export function scrubForeignOpenAIMetadata(
 ): PortalUIMessage[] {
   return history.map((m) => {
     if (m.role !== "assistant") return m;
-    const safeParts = m.parts.map(p => 'output' in p && p.output && typeof p.output === 'object' && '_mcpApp' in p.output
+    const safeParts = m.parts.map(p => 'output' in p && p.output && typeof p.output === 'object' && ('_mcpApp' in p.output || ('taskId' in p.output && 'apps' in p.output))
       ? { ...p, output: withoutAppReference(p.output) } : p);
     if (safeParts.some((p, i) => p !== m.parts[i])) m = { ...m, parts: safeParts as PortalUIMessage['parts'] };
     const meta = m.metadata ?? {};

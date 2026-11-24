@@ -96,7 +96,8 @@ export async function runTurn(opts: TurnOptions): Promise<TurnResult> {
     ...(opts.run?.holder && opts.run.deadlineAt ? { execution: { holder: opts.run.holder, deadlineAt: opts.run.deadlineAt, segment: opts.run.segment } } : {}),
     ...(native ? { awaitTask: (taskId: string) => { if (!native.taskIds.includes(taskId)) native.taskIds.push(taskId); } } : {}),
     ...(delegated ? { taskId: delegated.task.id, delegationPath: delegated.task.ancestry, inGroup: delegated.parent?.inGroup, workspace: delegated.parent?.workspace, workspaceBotId: delegated.parent?.workspaceBotId,
-      relayWorkspaceApproval: nativeEligible && delegated.task.mode === "async" } : {}) };
+      relayWorkspaceApproval: nativeEligible && delegated.task.mode === "async",
+      relayMcpAppApproval: nativeEligible && delegated.task.mode === "async" } : {}) };
   const { delegatedAuthorityBinding, DelegationAuthorityChangedError } = await import("@/lib/delegation/authority");
   const authority = delegated ? await delegatedAuthorityBinding(ctx, true) : null;
   const toolset = await buildToolset(ctx);

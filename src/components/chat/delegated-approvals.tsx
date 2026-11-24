@@ -1,4 +1,6 @@
 "use client";
+import { getToolOrDynamicToolName } from "ai";
+import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import type { TaskApprovalRequest } from "@/lib/delegation/approvals";
@@ -32,11 +34,16 @@ export function DelegatedApprovals({ conversationId }: { conversationId: string 
     } catch (err) { setError(err instanceof Error ? err.message : "The approval could not be saved."); }
     finally { await refresh().catch(() => setRequests([])); setBusy(false); }
   };
-  return <div aria-label="Delegated workspace approvals" className="space-y-3">
+  return <div aria-label="Delegated approvals" className="space-y-3">
     {requests.map(request => <section key={`${request.runId}:${request.part.approval!.id}`}>
       <p className="text-sm text-muted">Assigned by {request.assignerName} · <Link href={`/c/${encodeURIComponent(request.conversationId)}`} className="underline">Open {request.botName}’s task</Link></p>
-      <WorkspaceApproval name={request.part.type.slice(5)} part={request.part} botName={request.botName} disabled={busy || Date.parse(request.expiresAt) <= now}
-        onApprove={() => void answer(request, true)} onDeny={() => void answer(request, false)} />
+      {getToolOrDynamicToolName(request.part).startsWith("workspace_") ? <WorkspaceApproval name={getToolOrDynamicToolName(request.part)} part={request.part} botName={request.botName} disabled={busy || Date.parse(request.expiresAt) <= now}
+        onApprove={() => void answer(request, true)} onDeny={() => void answer(request, false)} /> : <div className="my-3 space-y-3 rounded-xl border border-border p-4">
+        <p>{request.botName} wants to use {getToolOrDynamicToolName(request.part).replace(/_/g, " ")}</p>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(request.part.input, null, 2)}</pre>
+        <Button size="sm" disabled={busy || Date.parse(request.expiresAt) <= now} onClick={() => void answer(request, true)}>Allow once</Button>
+        <Button size="sm" variant="outline" disabled={busy || Date.parse(request.expiresAt) <= now} onClick={() => void answer(request, false)}>Deny</Button>
+      </div>}
       <p className="text-xs text-muted">Only you can approve this action. The task expires at {new Date(request.expiresAt).toLocaleTimeString()}.</p>
     </section>)}
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}

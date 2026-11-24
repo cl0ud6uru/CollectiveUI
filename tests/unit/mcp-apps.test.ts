@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { PGlite } from '@electric-sql/pglite';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { convertToModelMessages } from 'ai';
 import type { Principal } from '@/lib/auth/groups';
@@ -29,7 +29,7 @@ import { db, schema } from '@/db';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { mcpAuthorityBinding, authorizeMcpInvocation } from '@/lib/mcp/authorization';
 import { callMcpAppTool, captureMcpApp, decideMcpAppAction, listMcpAppActions, loadMcpApp, mcpAppSandboxUrl } from '@/lib/mcp/apps';
-import { appInstanceId, appResource, appToolVisible } from '@/lib/mcp/apps-contract';
+import { appInstanceId, appInstanceIds, appResource, appToolVisible, withoutAppReference } from '@/lib/mcp/apps-contract';
 import { appComponentResult, appHtmlResource, appModelResult, MAX_APP_META_BYTES } from '@/lib/mcp/apps-result';
 import { capResult, mcpResultToModelOutput } from '@/lib/mcp/hygiene';
 import { diffTools, snapshotHash, toToolDef, toolHash } from '@/lib/mcp/snapshot';
@@ -42,6 +42,10 @@ import { mcpTools } from '@/lib/agent/tools/mcp';
 import { getSetting, setSetting } from '@/lib/settings';
 import { acceptMcpDrift, offeredTools, refreshMcpServer } from '@/lib/mcp/servers';
 import { GET, POST } from '@/app/api/mcp-apps/[id]/route';
+import { buildToolset } from '@/lib/agent/toolset';
+import { taskResult } from '@/lib/delegation/execute';
+import { upsertMessage } from '@/lib/chat/store';
+import { stripTaskLinks } from '@/lib/delegation/receipts';
 import { grantToolForBot, revokeToolGrant } from '@/app/(chat)/actions';
 
 const privateMarker = 'SYNTHETIC_COMPONENT_ONLY_8192';
@@ -396,5 +400,88 @@ describe('Private HTTP boundary', () => {
     expect((await post({ operation: 'call', ...request(randomUUID(), 'save', { filter: 'x'.repeat(50000) }) })).status).toBe(413);
     const response = await GET(new Request('https://host.test.invalid'), route(id)); expect(response.headers.get('cache-control')).toBe('private, no-store');
     expect((await response.json()).view.result._meta.privateMarker).toBe(privateMarker); expect(fixture.calls).toEqual([]);
+  });
+});
+
+async function delegatedContext() {
+  await db.insert(schema.bots).values({ id: 'parent', ownerId: 'owner', name: 'LloydGPT', appId: 'model', visibility: 'org' });
+  await db.insert(schema.botDelegates).values({ botId: 'parent', delegateBotId: 'bot' });
+  await db.insert(schema.conversations).values({ id: 'origin', userId: 'owner', botId: 'parent' });
+  await db.update(schema.conversations).set({ source: 'delegation' }).where(eq(schema.conversations.id, 'chat'));
+  await db.insert(schema.agentRuns).values([
+    { id: 'parent-run', userId: 'owner', conversationId: 'origin', messageId: 'parent-message', botId: 'parent', appId: 'model', status: 'running' },
+    { id: 'child-run', userId: 'owner', conversationId: 'chat', messageId: 'child-message', botId: 'bot', appId: 'model', status: 'running', executionMode: 'async_delegate', background: true },
+  ]);
+  const ancestry = [{ from: 'parent', to: 'bot', mode: 'manual' as const }];
+  const [task] = await db.insert(schema.delegatedTasks).values({ id: 'task', userId: 'owner', originConversationId: 'origin', originMessageId: 'parent-message', originToolCallId: 'assignment',
+    parentRunId: 'parent-run', rootTaskId: 'task', rootMessageId: 'parent-message', assignerBotId: 'parent', receiverBotId: 'bot', assignerName: 'LloydGPT', receiverName: 'Ticket Bot',
+    childConversationId: 'chat', childRunId: 'child-run', inputHash: 'fixture', mode: 'async', depth: 1, ancestry, sessionVersion: p.user.sessionVersion, deadlineAt: new Date(Date.now() + 60000) }).returning();
+  ctx = { ...ctx, depth: 1, background: true, taskId: task.id, delegationPath: task.ancestry, usage: { pending: [], runId: 'child-run', messageId: 'child-message' } };
+  binding = await mcpAuthorityBinding(ctx, server, null, []);
+  return task;
+}
+
+describe('Delegated MCP app delivery', () => {
+  it('captures an unattended native child form and forwards it to the parent without private hydration', async () => {
+    const task = await delegatedContext();
+    const tools = mcpTools(server, { caller: { subject: { kind: 'user', id: p.user.id, upn: p.user.upn, email: p.user.email, name: p.user.name, groups: [] } },
+      config: null, taken: new Set(), authority: { ctx, binding, grants: [] }, apps: { audience: 'model' } });
+    const output = await tools.entries.find(e => e.mcp?.tool === 'view')!.tool.execute!({}, { toolCallId: 'draft', messages: [], context: undefined });
+    await tools.close();
+    const id = appInstanceId(output)!; expect(id).toBeTruthy();
+    await upsertMessage('chat', { id: 'child-message', role: 'assistant', parts: [{ type: 'dynamic-tool', toolName: 'fixture__view', toolCallId: 'draft', state: 'output-available', input: {}, output }] }, null);
+    await db.update(schema.agentRuns).set({ status: 'succeeded' });
+    const delivered = await taskResult(task);
+    expect(appInstanceIds(delivered)).toEqual([id]);
+    expect((await loadMcpApp(p, id)).sourceConversationId).toBe('origin');
+    expect(JSON.stringify(withoutAppReference(delivered))).not.toContain(id);
+    expect(JSON.stringify(stripTaskLinks([{ output: delivered }]))).not.toContain(id);
+    const history = [{ id: 'parent-message', role: 'assistant', parts: [{ type: 'dynamic-tool', toolName: 'ask_ticket_bot', toolCallId: 'ask', state: 'output-available', input: {}, output: delivered }] }] as PortalUIMessage[];
+    expect(JSON.stringify(await convertToModelMessages(scrubForeignOpenAIMetadata(history, { appId: 'model', model: 'fixture', providerKind: 'openai-compatible' })))).not.toContain(id);
+    expect(JSON.stringify(delivered)).not.toContain(privateMarker);
+    const pending = await callMcpAppTool(p, id, request(randomUUID(), 'save', {}));
+    expect(pending.status).toBe('pending');
+    const completed = await decideMcpAppAction(p, id, pending.id, true);
+    expect(completed).toMatchObject({ status: 'done', sourceConversationId: 'origin', notify: true });
+    await decideMcpAppAction(p, id, pending.id, true);
+    expect(fixture.calls.filter(name => name === 'save')).toHaveLength(1);
+  });
+  it('allows only durable app children to relay approval for preparing a form', async () => {
+    await delegatedContext();
+    await db.update(schema.botTools).set({ approval: 'ask' }).where(eq(schema.botTools.botId, 'bot'));
+    const tools = await buildToolset({ ...ctx, relayMcpAppApproval: true });
+    const entry = tools.entries.find(e => e.mcp?.tool === 'view')!;
+    expect(tools.approval({ toolCall: { toolName: entry.name, input: {} } })).toBe('user-approval');
+    await tools.close();
+    const inline = await buildToolset({ ...ctx, relayMcpAppApproval: false });
+    expect(inline.approval({ toolCall: { toolName: entry.name, input: {} } })).toMatchObject({ type: 'denied' });
+    await inline.close();
+  });
+  it('uses durable scheduling when an app specialist is requested synchronously', async () => {
+    await delegatedContext();
+    const [parent] = await db.select().from(schema.bots).where(eq(schema.bots.id, 'parent'));
+    const tools = await buildToolset({ ...ctx, bot: parent, taskId: undefined, delegationPath: undefined, depth: 0, background: false, conversationId: 'origin', awaitTask: () => {} });
+    expect(tools.entries.find(e => e.name.startsWith('ask_'))?.tool.description).toContain('Both mode values schedule independent work');
+    await tools.close();
+  });
+  it('rejects foreign owners and revoked lineage after the delegated run finishes', async () => {
+    await delegatedContext(); const { id } = await capture(); expect(id).toBeTruthy();
+    await db.update(schema.agentRuns).set({ status: 'succeeded' });
+    await expect(loadMcpApp(other, id)).rejects.toMatchObject({ status: 403 });
+    await db.delete(schema.botDelegates).where(and(eq(schema.botDelegates.botId, 'parent'), eq(schema.botDelegates.delegateBotId, 'bot')));
+    await expect(loadMcpApp(p, id)).rejects.toMatchObject({ status: 403 });
+    await expect(callMcpAppTool(p, id, request())).rejects.toMatchObject({ status: 403 });
+  });
+  it('withholds results if the delegation is revoked during a widget dispatch', async () => {
+    await delegatedContext(); const { id } = await capture(); expect(id).toBeTruthy();
+    await db.update(schema.agentRuns).set({ status: 'succeeded' });
+    fixture.duringCall = async () => { await db.delete(schema.botDelegates).where(eq(schema.botDelegates.botId, 'parent')); };
+    const action = await callMcpAppTool(p, id, request());
+    expect(action.status).toBe('error'); expect(JSON.stringify(action)).not.toContain(privateMarker);
+  });
+  it('does not allow widgets to continue a cancelled assignment', async () => {
+    await delegatedContext(); const { id } = await capture(); expect(id).toBeTruthy();
+    await db.update(schema.agentRuns).set({ status: 'cancelled', cancelRequestedAt: new Date() }).where(eq(schema.agentRuns.id, 'child-run'));
+    await expect(loadMcpApp(p, id)).rejects.toMatchObject({ status: 403 });
   });
 });

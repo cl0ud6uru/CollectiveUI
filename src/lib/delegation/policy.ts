@@ -25,6 +25,7 @@ export type DelegationResult = {
   status: "queued" | "working" | "done" | "error" | "cancelled" | "interrupted";
   steps: { tool: string; status: "running" | "done" | "error" | "denied" }[];
   answer?: string;
+  apps?: string[];
   error?: string;
   /** ISO times of the receiver's run, present only on a finished result that recorded both. */
   startedAt?: string;

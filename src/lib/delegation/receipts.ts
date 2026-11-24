@@ -60,8 +60,8 @@ export function stripTaskLinks(parts: unknown[]): unknown[] {
     if (!p || typeof p !== "object") return p;
     const part = p as Record<string, unknown>;
     if (!part.output || typeof part.output !== "object" || !("taskId" in part.output)) return p;
-    const { taskId: _task, conversationId: _conversation, ...output } = part.output as Record<string, unknown>;
-    void _task; void _conversation;
+    const { taskId: _task, conversationId: _conversation, apps: _apps, ...output } = part.output as Record<string, unknown>;
+    void _task; void _conversation; void _apps;
     return { ...part, output };
   });
 }

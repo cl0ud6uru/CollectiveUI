@@ -21,6 +21,7 @@ export type AgentCtx = {
   awaitTask?: (taskId: string) => void;
   /** Native durable children can relay workspace requests to their human owner. Never a bot approval grant. */
   relayWorkspaceApproval?: boolean;
+  relayMcpAppApproval?: boolean;
   /**
    * A routine's first segment (nobody watching live): the instructions say so, personal plans refuse unless an admin
    * allows it, and no memories are extracted. Routine continuations (after an Inbox approval) aren't background.
@@ -39,6 +40,7 @@ export type AgentCtx = {
 
 /** What the approval policy knows about an MCP tool (from the server's accepted snapshot and admin policy). */
 export type McpApprovalFacts = {
+  app?: boolean;
   /** the tool's name on the server */
   tool: string;
   /** Previous display alias, accepted only for restrictive organization approval rules. */
