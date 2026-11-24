@@ -32,8 +32,7 @@ export function McpAppHost({ id }: { id: string }) {
     if (action.status === 'done' && action.notify && action.result && !action.result.isError &&
         action.sourceConversationId && initiated.current.has(action.id) && !notified.current.has(action.id)) {
       notified.current.add(action.id);
-      window.dispatchEvent(new CustomEvent('mcp-app-action', { detail: { id: action.id, conversationId: action.sourceConversationId,
-        tool: action.tool, result: { content: action.result.content, structuredContent: action.result.structuredContent } } }));
+      window.dispatchEvent(new CustomEvent('mcp-app-action', { detail: { actionId: action.id, instanceId: id, conversationId: action.sourceConversationId } }));
     }
     const waiter = waiting.current.get(action.id);
     if (waiter && ['done', 'error', 'denied'].includes(action.status)) {
@@ -41,7 +40,7 @@ export function McpAppHost({ id }: { id: string }) {
       if (action.result) waiter.resolve(action.result);
       else waiter.reject(new Error('The widget request was denied.'));
     }
-  }, []);
+  }, [id]);
 
   useEffect(() => {
     alive.current = true;

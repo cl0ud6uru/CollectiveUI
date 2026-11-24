@@ -181,3 +181,9 @@ Platform parity: web supports delegated forms. iOS and macOS still use the exist
 Rollout uses the existing web, worker, and sandbox configuration, with no migration or connector permission changes. Deploy the matching web and worker commit; keep the current sandbox service. Old failed assignments should be retried as new requests so they can capture a widget instance.
 
 Model replay and trusted UI continuation use separate app-reference handling. A parent that resumes after a specialist finishes must retain both delegated `apps` references and direct `_mcpApp` references in the completed saved transcript, so widgets survive completion and page reload. Model-bound history still excludes these references. Foreign sealed provider metadata is scrubbed in both paths.
+
+### Internal result handoff
+
+A successful widget write sends only its instance/action IDs to the originating chat. The chat endpoint verifies the owner, original chat, current permissions and completed action, and loads the recorded result on the server. An idempotent confirmation run adds public result data only to that model request. It inserts no user message and exposes no internal payload in the saved transcript, page reload, copied history or client stream. The model receives no executable tools for this acknowledgement, so it cannot repeat the submitted write. The run stores only identifiers while queued/executing; the existing encrypted action record remains the audit source.
+
+The normal parent transcript shows the widget, task status and the coordinating bot's confirmation. Specialist answer text and raw delegated output are available through the explicit Open task audit view, rather than duplicated in the parent's expanded task card. iOS/macOS still do not host widgets; they see the same normal assistant confirmation in shared conversation history, without a fabricated user handoff message. Existing historical handoff messages are not rewritten.

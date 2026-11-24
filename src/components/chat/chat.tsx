@@ -1,4 +1,5 @@
 "use client";
+import { AppActionChatTransport } from "@/lib/chat/app-action-transport";
 import { HermesNativeControls } from "./hermes-native-controls";
 import { HermesTeamChatControls } from "./hermes-team-chat-controls";
 
@@ -7,7 +8,7 @@ import { useRouter } from "next/navigation";
 import { chatSendFetch } from "@/lib/chat/send-fetch";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
+import { isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import { toast } from "sonner";
 import { ArrowDown, Eye, Menu as MenuIcon, Monitor, PanelRightClose, PanelRightOpen, SquarePen } from "lucide-react";
 import { grantToolForBot, setConversationLeaf, setMessageFeedback } from "@/app/(chat)/actions";
@@ -234,7 +235,7 @@ export function Chat({
 
   const transport = useMemo(
     () =>
-      new DefaultChatTransport<PortalUIMessage>({
+      new AppActionChatTransport({
         api: "/api/chat",
         fetch: async (input, init) => {
           const admission = init?.method?.toUpperCase() === "POST" ? requestAdmission.current : null;
@@ -246,6 +247,10 @@ export function Chat({
         prepareSendMessagesRequest: ({ messages, trigger, body }) => {
           const base = { ...body, conversationId };
           const last = messages[messages.length - 1];
+          if (body?.appAction) {
+            requestAdmission.current = { kind: 'message', responseReceived: false, succeeded: false };
+            return { body: { ...base, parentId: body.parentId ?? last?.id } };
+          }
           requestAdmission.current = { kind: trigger === "regenerate-message" ? "regenerate" : last?.role === "assistant" ? "approval" : "message", responseReceived: false, succeeded: false };
           if (trigger === "regenerate-message") {
             return { body: { ...base, regenerate: true, parentId: last?.id } };
@@ -623,22 +628,27 @@ export function Chat({
     return true;
   }
 
-  const appResults = useRef<string[]>([]);
+  const appResults = useRef<{ instanceId: string; actionId: string }[]>([]);
   const appActionsSeen = useRef(new Set<string>());
+  const appConfirmationInFlight = useRef(false);
   const [, refreshAppResults] = useState(0);
   useEffect(() => {
     const receive = (event: Event) => {
       const detail = (event as CustomEvent).detail;
-      if (detail?.conversationId !== conversationId || typeof detail.id !== "string" || appActionsSeen.current.has(detail.id)) return;
-      appActionsSeen.current.add(detail.id);
-      appResults.current.push(`I submitted an interactive app action (${detail.tool}). The app returned this data:\n${JSON.stringify(detail.result).slice(0, 16000)}\nAcknowledge this outcome without repeating the submitted action.`);
+      if (detail?.conversationId !== conversationId || typeof detail.actionId !== "string" || typeof detail.instanceId !== 'string' || appActionsSeen.current.has(detail.actionId)) return;
+      appActionsSeen.current.add(detail.actionId);
+      appResults.current.push({ instanceId: detail.instanceId, actionId: detail.actionId });
       refreshAppResults(v => v + 1);
     };
     window.addEventListener("mcp-app-action", receive);
     return () => window.removeEventListener("mcp-app-action", receive);
   }, [conversationId]);
   useEffect(() => {
-    if (!busy && !awaitingApproval && !unavailable && !searchPendingRef.current && appResults.current.length) send(appResults.current.splice(0).join("\n\n"), []);
+    if (!busy && !awaitingApproval && !unavailable && !searchPendingRef.current && !appConfirmationInFlight.current && appResults.current.length) {
+      appConfirmationInFlight.current = true;
+      void resumeStream({ body: { ...targetBody, parentId: lastMessageIdRef.current, appAction: appResults.current.shift()! } })
+        .finally(() => { appConfirmationInFlight.current = false; refreshAppResults(v => v + 1); });
+    }
   });
 
   function editMessage(index: number, text: string) {

@@ -137,7 +137,8 @@ try {
     }
     await toggle.focus(); await page.keyboard.press('Enter');
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByText('Delegated reading:', { exact: true })).toBeVisible();
+    await expect(page.getByText('Delegated reading:', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Result delivered to the coordinating bot. Open task to inspect the specialist’s saved response.', { exact: true })).toBeVisible();
     await page.evaluate(() => window.updateDelegation({ label: 'Updated host' }));
     await expect(page.getByText('replied in 25s · Updated host', { exact: true })).toBeVisible();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
@@ -229,7 +230,7 @@ try {
     await first.click();
     await expect(first).toHaveAttribute('aria-expanded', 'false');
     await expect(second).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByText('Second receiver answer.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Second receiver answer.', { exact: true })).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 
     await page.goto(`${origin}/?motion=auto`);

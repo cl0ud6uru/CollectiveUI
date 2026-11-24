@@ -4,6 +4,7 @@ import type { PGlite } from '@electric-sql/pglite';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { convertToModelMessages } from 'ai';
+import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import type { Principal } from '@/lib/auth/groups';
 import type { AgentCtx } from '@/lib/agent/types';
 import type { McpServer } from '@/db/schema';
@@ -12,7 +13,7 @@ import type { PortalUIMessage } from '@/lib/chat/store';
 import { ticketDraftMarkup, ticketDraftResult, ticketDraftTool } from '../fixtures/mcp-apps/ticket-draft.mjs';
 
 const fixture = vi.hoisted(() => ({ client: null as PGlite | null, human: null as Principal | null, connect: vi.fn(), calls: [] as string[],
-  resource: vi.fn(), duringCall: null as (() => Promise<void>) | null }));
+  resource: vi.fn(), model: vi.fn(), enqueue: vi.fn(async () => "fixture-job"), duringCall: null as (() => Promise<void>) | null }));
 vi.mock('server-only', () => ({}));
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 vi.mock('@/db', async () => {
@@ -20,6 +21,10 @@ vi.mock('@/db', async () => {
   fixture.client = new PGlite(); return { db: drizzle(fixture.client, { schema }), schema };
 });
 vi.mock('@/lib/mcp/client', async original => ({ ...await original<typeof import('@/lib/mcp/client')>(), connectMcp: fixture.connect }));
+vi.mock('@/lib/runs/lock', () => ({ lockUserRuns: async () => {} }));
+vi.mock('@/lib/runs/host', () => ({ runHost: () => ({ instanceId: 'fixture-worker', shuttingDown: false, track: () => () => {} }) }));
+vi.mock('@/lib/jobs', async original => ({ ...await original<typeof import('@/lib/jobs')>(), enqueueRun: fixture.enqueue, enqueue: async () => null, scheduleMemoryExtraction: async () => {} }));
+vi.mock('@/lib/llm', async original => ({ ...await original<typeof import('@/lib/llm')>(), resolveModel: fixture.model, utilityApp: async () => undefined }));
 vi.mock('@/lib/session', async () => {
   const { HttpError } = await import('@/lib/authz');
   return { requirePrincipal: async () => { if (!fixture.human) throw new HttpError(401, 'Unauthorized'); return fixture.human; },
@@ -28,7 +33,7 @@ vi.mock('@/lib/session', async () => {
 import { db, schema } from '@/db';
 import { loadPrincipal } from '@/lib/auth/groups';
 import { mcpAuthorityBinding, authorizeMcpInvocation } from '@/lib/mcp/authorization';
-import { callMcpAppTool, captureMcpApp, decideMcpAppAction, listMcpAppActions, loadMcpApp, mcpAppSandboxUrl } from '@/lib/mcp/apps';
+import { callMcpAppTool, captureMcpApp, decideMcpAppAction, listMcpAppActions, loadMcpApp, mcpAppSandboxUrl, appActionModelMessage } from '@/lib/mcp/apps';
 import { appInstanceId, appInstanceIds, appResource, appToolVisible, withoutAppReference } from '@/lib/mcp/apps-contract';
 import { appComponentResult, appHtmlResource, appModelResult, MAX_APP_META_BYTES } from '@/lib/mcp/apps-result';
 import { capResult, mcpResultToModelOutput } from '@/lib/mcp/hygiene';
@@ -44,7 +49,9 @@ import { acceptMcpDrift, offeredTools, refreshMcpServer } from '@/lib/mcp/server
 import { GET, POST } from '@/app/api/mcp-apps/[id]/route';
 import { buildToolset } from '@/lib/agent/toolset';
 import { taskResult } from '@/lib/delegation/execute';
-import { upsertMessage } from '@/lib/chat/store';
+import { startRun } from '@/lib/runs/store';
+import { executeRun } from '@/lib/runs/execute';
+import { setCurrentLeaf, upsertMessage } from '@/lib/chat/store';
 import { stripTaskLinks } from '@/lib/delegation/receipts';
 import { grantToolForBot, revokeToolGrant } from '@/app/(chat)/actions';
 
@@ -74,7 +81,7 @@ beforeEach(async () => {
   vi.stubEnv('AUTH_URL', 'https://host.test.invalid'); vi.stubEnv('MCP_APPS_SANDBOX_URL', 'https://sandbox.test.invalid/sandbox');
   vi.stubEnv('ENCRYPTION_KEY', 'synthetic-apps-test-only'); vi.stubEnv('ENCRYPTION_KEYS', ''); vi.stubEnv('ENCRYPTION_PRIMARY_KID', '');
   await fixture.client!.exec('TRUNCATE users, ai_apps, mcp_servers, settings CASCADE');
-  fixture.calls = []; fixture.connect.mockReset(); fixture.resource.mockReset(); fixture.duringCall = null;
+  fixture.calls = []; fixture.enqueue.mockClear(); fixture.model.mockReset(); fixture.connect.mockReset(); fixture.resource.mockReset(); fixture.duringCall = null;
   await db.insert(schema.users).values([{ id: 'owner', upn: 'owner@example.invalid', name: 'Fixture owner', isAdmin: true, authSource: 'local', identityRealm: 'local' }, { id: 'other', upn: 'other@example.invalid', name: 'Fixture other', isAdmin: true, authSource: 'local', identityRealm: 'local' }]);
   p = (await loadPrincipal('owner'))!; other = (await loadPrincipal('other'))!; fixture.human = p;
   await db.insert(schema.aiApps).values({ id: 'model', name: 'Synthetic model', provider: 'openai-compatible', baseUrl: 'https://provider.example.invalid/v1', model: 'fixture', supportsTools: true });
@@ -483,5 +490,56 @@ describe('Delegated MCP app delivery', () => {
     await delegatedContext(); const { id } = await capture(); expect(id).toBeTruthy();
     await db.update(schema.agentRuns).set({ status: 'cancelled', cancelRequestedAt: new Date() }).where(eq(schema.agentRuns.id, 'child-run'));
     await expect(loadMcpApp(p, id)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+
+describe('Internal app confirmations', () => {
+  it('reads only the owned recorded result and rejects pending, read-only and wrong-chat handoffs', async () => {
+    const { id } = await capture();
+    const pending = await callMcpAppTool(p, id, request(randomUUID(), 'save', {}));
+    const ref = { instanceId: id, actionId: pending.id };
+    await expect(appActionModelMessage(p, 'chat', ref)).rejects.toMatchObject({ status: 409 });
+    await decideMcpAppAction(p, id, pending.id, true);
+    const message = await appActionModelMessage(p, 'chat', ref);
+    expect(JSON.stringify(message)).toContain('Two synthetic rows');
+    expect(JSON.stringify(message)).not.toContain(privateMarker);
+    await expect(appActionModelMessage(other, 'chat', ref)).rejects.toMatchObject({ status: 403 });
+    await expect(appActionModelMessage(p, 'unrelated', ref)).rejects.toMatchObject({ status: 403 });
+    const read = await callMcpAppTool(p, id, request());
+    await expect(appActionModelMessage(p, 'chat', { instanceId: id, actionId: read.id })).rejects.toMatchObject({ status: 409 });
+  });
+  it('sends the recorded result only to the model, creates no user message and cannot repeat a write', async () => {
+    const { id } = await capture();
+    const pending = await callMcpAppTool(p, id, request(randomUUID(), 'save', {}));
+    await decideMcpAppAction(p, id, pending.id, true);
+    const ref = { instanceId: id, actionId: pending.id };
+    await upsertMessage('chat', { id: 'original-question', role: 'user', parts: [{ type: 'text', text: 'Please draft a note.' }] }, null);
+    await upsertMessage('chat', { id: 'original-draft', role: 'assistant', parts: [{ type: 'text', text: 'Review your draft.' }] }, 'original-question');
+    await setCurrentLeaf('chat', 'original-draft');
+    const [conversation] = await db.select().from(schema.conversations).where(eq(schema.conversations.id, 'chat'));
+    const input = { principal: p, conversation, bot: ctx.bot, app: ctx.app, parentId: 'original-draft', appAction: ref };
+    const run = await startRun(input);
+    expect((await startRun(input)).id).toBe(run.id);
+    expect(fixture.enqueue).toHaveBeenCalledTimes(1);
+    const model = new MockLanguageModelV4({ doStream: async () => ({ stream: convertArrayToReadableStream([
+      { type: 'text-start', id: 'text' }, { type: 'text-delta', id: 'text', delta: 'Confirmed, your note was posted.' }, { type: 'text-end', id: 'text' },
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } } },
+    ]) }) });
+    fixture.model.mockResolvedValue({ model, capabilities: { instructionStyle: 'legacy', embeddings: false, responses: false }, billing: { source: 'org' }, replayKey: null });
+    await executeRun(run.id);
+    const [finished] = await db.select().from(schema.agentRuns).where(eq(schema.agentRuns.id, run.id));
+    expect(finished.status).toBe('succeeded');
+    const rows = await db.select().from(schema.messages).where(eq(schema.messages.conversationId, 'chat'));
+    expect(rows.filter(row => row.role === 'user')).toHaveLength(1);
+    expect(rows.find(row => row.id === run.messageId)).toMatchObject({ role: 'assistant', parentId: 'original-draft' });
+    expect(JSON.stringify(rows)).not.toContain('Internal app result');
+    expect(JSON.stringify(rows)).not.toContain('Two synthetic rows');
+    expect(JSON.stringify(rows)).not.toContain(privateMarker);
+    expect(JSON.stringify(model.doStreamCalls)).toContain('Two synthetic rows');
+    expect(JSON.stringify(model.doStreamCalls)).not.toContain(privateMarker);
+    expect(model.doStreamCalls[0].tools ?? []).toEqual([]);
+    expect(fixture.calls.filter(name => name === 'save')).toHaveLength(1);
+    expect((await startRun(input)).id).toBe(run.id);
   });
 });

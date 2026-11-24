@@ -40,7 +40,6 @@ import { isGrantable, isHermesTool, isMcpToolName } from "@/lib/agent/tool-names
 import { memoryToolDoneLabel } from "@/lib/agent/tools/memory-result";
 import { ENFORCED_APPROVAL_REASON } from "@/lib/bots/service-policy";
 import { cn } from "@/lib/utils";
-import { Markdown } from "./markdown";
 import { useTaskActivity } from "./use-task-activity";
 import { BashResult, WorkspaceApproval } from "./workspace-parts";
 import { useWorkspaceFileOpener } from "./workspace-context";
@@ -225,7 +224,7 @@ export function DelegationCard({ output }: { output: DelegateOutput }) {
             {steps.length > 3 && <p className="text-subtle">Showing 3 recent steps. Open task for the full history.</p>}
           </div>}
           {(!steps.length || status === "queued" || current?.status === "waiting" || activity?.phase || unavailable) && <p className="text-xs text-muted">{waitingMessage}</p>}
-          {status === "done" && output.answer ? <Markdown text={output.answer} className="markdown-bubble text-fg" />
+          {status === "done" && output.answer ? <p className="text-xs text-muted">Result delivered to the coordinating bot. Open task to inspect the specialist’s saved response.</p>
             : status === "done" && steps.length > 0 && <p className="text-xs text-muted">{waitingMessage}</p>}
         </>}
       </div>
@@ -400,7 +399,7 @@ export function ToolPartView({
           {output !== undefined && (
             <>
               <div className="text-xs font-medium text-subtle">Result</div>
-              <Json value={withoutAppReference(output)} />
+              {isDelegate ? <p className="text-xs text-muted">The specialist’s response is delivered internally. Use Open task to inspect its saved work.</p> : <Json value={withoutAppReference(output)} />}
             </>
           )}
           {failed && <Json value={failureText} />}

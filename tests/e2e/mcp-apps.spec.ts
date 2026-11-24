@@ -110,6 +110,7 @@ test('delegated widgets stay outside collapsed steps and report an approved writ
   await expect(app.getByText('Saved', { exact: true })).toBeVisible();
   const events = await page.evaluate(() => (window as unknown as { appResults: unknown[] }).appResults);
   expect(events).toHaveLength(1);
-  expect(events[0]).toMatchObject({ conversationId: 'synthetic-origin', tool: 'save' });
+  expect(events[0]).toMatchObject({ conversationId: 'synthetic-origin', instanceId: 'syntheticInstance1', actionId: expect.any(String) });
   expect(JSON.stringify(events)).not.toContain('SYNTHETIC_BROWSER_COMPONENT_ONLY');
+  expect(JSON.stringify(events)).not.toContain('structuredContent');
 });
